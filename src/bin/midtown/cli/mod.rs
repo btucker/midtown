@@ -1,11 +1,13 @@
 mod channel;
 mod coworker;
+mod daemon;
 mod pr;
 mod response;
 mod task;
 
 pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
+// Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
 pub use pr::PrCommand;
 pub use response::Response;
 pub use task::{HookEvent, TaskCommand};
@@ -40,4 +42,19 @@ pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
 
 pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, String> {
     pr::handle(cmd, client)
+}
+
+/// Handle start command (no daemon required - it starts the daemon)
+pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
+    daemon::handle_start(daemon_only)
+}
+
+/// Handle stop command (no daemon required - it stops the daemon)
+pub fn handle_stop(keep_lead: bool) -> Result<Response, String> {
+    daemon::handle_stop(keep_lead)
+}
+
+/// Handle attach command (no daemon required - just attaches to tmux)
+pub fn handle_attach() -> Result<Response, String> {
+    daemon::handle_attach()
 }

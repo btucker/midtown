@@ -31,6 +31,20 @@ enum OutputFormat {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Start midtown (daemon + Lead session)
+    Start {
+        /// Start daemon only, without Lead session
+        #[arg(long)]
+        daemon_only: bool,
+    },
+    /// Stop midtown (daemon + Lead session)
+    Stop {
+        /// Keep the Lead session running
+        #[arg(long)]
+        keep_lead: bool,
+    },
+    /// Attach to the Lead session (shortcut for tmux attach -t midtown-lead)
+    Attach,
     /// Channel messaging commands
     Channel {
         #[command(subcommand)]
@@ -72,12 +86,33 @@ fn main() {
         return;
     }
 
+    // Start command (starts daemon, doesn't need existing connection)
+    if let Commands::Start { daemon_only } = &cli.command {
+        let result = cli::handle_start(*daemon_only);
+        handle_result(&cli, result);
+        return;
+    }
+
+    // Stop command (stops daemon, doesn't need existing connection)
+    if let Commands::Stop { keep_lead } = &cli.command {
+        let result = cli::handle_stop(*keep_lead);
+        handle_result(&cli, result);
+        return;
+    }
+
+    // Attach command (just tmux, doesn't need daemon)
+    if let Commands::Attach = &cli.command {
+        let result = cli::handle_attach();
+        handle_result(&cli, result);
+        return;
+    }
+
     // All other commands require daemon connection
     let client = match DaemonClient::connect() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: Failed to connect to midtown daemon: {}", e);
-            eprintln!("Is the daemon running? Try: midtownd");
+            eprintln!("Is the daemon running? Try: midtown start");
             std::process::exit(1);
         }
     };
@@ -88,6 +123,8 @@ fn main() {
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
+        // These are handled before daemon connection, so unreachable
+        Commands::Start { .. } | Commands::Stop { .. } | Commands::Attach => unreachable!(),
     };
 
     handle_result(&cli, result);

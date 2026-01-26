@@ -30,6 +30,12 @@ pub struct StatusResponse {
     pub active_coworkers: usize,
     pub pending_tasks: usize,
     pub socket_path: String,
+    /// Lead session name (usually "midtown-lead")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead_session: Option<String>,
+    /// Whether the Lead tmux session is active
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead_session_active: Option<bool>,
     /// Full status info (optional, for expanded status command)
     #[serde(flatten)]
     pub full_status: Option<FullStatusInfo>,
@@ -169,18 +175,25 @@ impl Response {
                     out.trim_end().to_string()
                 } else {
                     // Legacy minimal format
+                    let lead_status = match status.lead_session_active {
+                        Some(true) => "running",
+                        Some(false) => "stopped",
+                        None => "unknown",
+                    };
                     format!(
                         "Midtown Status\n\
                          ─────────────────────────────\n\
-                         Daemon:          {}\n\
+                         Daemon:           {}\n\
+                         Lead session:     {}\n\
                          Active coworkers: {}\n\
-                         Pending tasks:   {}\n\
-                         Socket:          {}",
+                         Pending tasks:    {}\n\
+                         Socket:           {}",
                         if status.daemon_running {
                             "running"
                         } else {
                             "stopped"
                         },
+                        lead_status,
                         status.active_coworkers,
                         status.pending_tasks,
                         status.socket_path
@@ -352,6 +365,8 @@ mod tests {
             active_coworkers: 2,
             pending_tasks: 1,
             socket_path: "/tmp/test.sock".to_string(),
+            lead_session: Some("midtown-lead".to_string()),
+            lead_session_active: Some(true),
             full_status: Some(FullStatusInfo {
                 coworkers: vec![
                     CoworkerInfo {
