@@ -36,6 +36,9 @@ enum Commands {
         /// Start daemon only, without Lead session
         #[arg(long)]
         daemon_only: bool,
+        /// Repository in OWNER/REPO format for GitHub webhook forwarding
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Stop midtown (daemon + Lead session)
     Stop {
@@ -67,6 +70,17 @@ enum Commands {
         #[command(subcommand)]
         command: PrCommand,
     },
+    /// GitHub webhook commands
+    Webhooks {
+        #[command(subcommand)]
+        command: WebhooksCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebhooksCommand {
+    /// Show webhook forwarding status
+    Status,
 }
 
 fn main() {
@@ -87,8 +101,15 @@ fn main() {
     }
 
     // Start command (starts daemon, doesn't need existing connection)
-    if let Commands::Start { daemon_only } = &cli.command {
-        let result = cli::handle_start(*daemon_only);
+    if let Commands::Start { daemon_only, repo } = &cli.command {
+        let result = cli::handle_start(*daemon_only, repo.as_deref());
+        handle_result(&cli, result);
+        return;
+    }
+
+    // Webhooks status doesn't need daemon (checks config and process)
+    if let Commands::Webhooks { command: WebhooksCommand::Status } = &cli.command {
+        let result = cli::handle_webhooks_status();
         handle_result(&cli, result);
         return;
     }
@@ -124,7 +145,7 @@ fn main() {
         Commands::Status => cli::handle_status(&client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
         // These are handled before daemon connection, so unreachable
-        Commands::Start { .. } | Commands::Stop { .. } | Commands::Attach => unreachable!(),
+        Commands::Start { .. } | Commands::Stop { .. } | Commands::Attach | Commands::Webhooks { .. } => unreachable!(),
     };
 
     handle_result(&cli, result);

@@ -21,6 +21,14 @@ pub enum Response {
     /// Stop hook decision for Claude Code
     /// When decision is "block", Claude Code will prevent stopping and continue
     StopHookDecision { decision: String, reason: String },
+    /// Webhook forwarding status
+    WebhookStatus {
+        active: bool,
+        repo: Option<String>,
+        port: u16,
+        pid: Option<u32>,
+        message: String,
+    },
 }
 
 /// Basic status response (legacy)
@@ -271,6 +279,22 @@ impl Response {
                 } else {
                     format!("STOP: {}", reason)
                 }
+            }
+            Response::WebhookStatus { active, repo, port, pid, message: _ } => {
+                let status_str = if *active {
+                    format!("active (PID {})", pid.unwrap_or(0))
+                } else {
+                    "inactive".to_string()
+                };
+                let repo_str = repo.as_deref().unwrap_or("not configured");
+                format!(
+                    "Webhook Forwarding\n\
+                     ─────────────────────────────\n\
+                     Status:     {}\n\
+                     Repository: {}\n\
+                     Endpoint:   http://localhost:{}/webhook",
+                    status_str, repo_str, port
+                )
             }
         }
     }

@@ -4,6 +4,7 @@ mod daemon;
 mod pr;
 mod response;
 mod task;
+mod webhooks;
 
 pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
@@ -45,8 +46,13 @@ pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, Str
 }
 
 /// Handle start command (no daemon required - it starts the daemon)
-pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
-    daemon::handle_start(daemon_only)
+pub fn handle_start(daemon_only: bool, repo: Option<&str>) -> Result<Response, String> {
+    daemon::handle_start(daemon_only, repo)
+}
+
+/// Handle webhooks status command (no daemon required)
+pub fn handle_webhooks_status() -> Result<Response, String> {
+    webhooks::handle_status()
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)

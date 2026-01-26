@@ -101,9 +101,10 @@ midtown channel post "msg"   # Post to team channel
 /// Handle `midtown start` command.
 ///
 /// 1. Starts the daemon (if not running)
-/// 2. Creates tmux session 'midtown-lead'
-/// 3. Launches Claude Code with Lead plugin/config in that session
-pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
+/// 2. Starts webhook forwarding (if repo configured)
+/// 3. Creates tmux session 'midtown-lead'
+/// 4. Launches Claude Code with Lead plugin/config in that session
+pub fn handle_start(daemon_only: bool, repo: Option<&str>) -> Result<Response, String> {
     let mut messages = Vec::new();
 
     // Step 1: Start daemon if not running
@@ -137,7 +138,42 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         }
     }
 
-    // Step 2: Launch Lead session (unless --daemon-only)
+    // Step 2: Start webhook forwarding if repo is configured
+    // Priority: CLI arg > saved config
+    let effective_repo = repo
+        .map(|r| r.to_string())
+        .or_else(super::webhooks::get_configured_repo);
+
+    if let Some(ref repo_name) = effective_repo {
+        // Save repo to config if provided via CLI
+        if repo.is_some() {
+            if let Err(e) = super::webhooks::save_repo_config(repo_name) {
+                messages.push(format!("Warning: Failed to save repo config: {}", e));
+            }
+        }
+
+        // Check if already running
+        if !super::webhooks::handle_status()
+            .map(|r| matches!(r, Response::WebhookStatus { active: true, .. }))
+            .unwrap_or(false)
+        {
+            match super::webhooks::start_webhook_forward(repo_name) {
+                Ok(pid) => {
+                    messages.push(format!(
+                        "Started webhook forwarding for {} (PID {})",
+                        repo_name, pid
+                    ));
+                }
+                Err(e) => {
+                    messages.push(format!("Warning: Failed to start webhook forwarding: {}", e));
+                }
+            }
+        } else {
+            messages.push(format!("Webhook forwarding already active for {}", repo_name));
+        }
+    }
+
+    // Step 3: Launch Lead session (unless --daemon-only)
     if daemon_only {
         messages.push("Skipping Lead session (--daemon-only)".to_string());
     } else if lead_session_exists() {
@@ -199,11 +235,18 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
 
 /// Handle `midtown stop` command.
 ///
-/// Stops the daemon and optionally the Lead session.
+/// Stops the daemon, webhook forwarding, and optionally the Lead session.
 pub fn handle_stop(keep_lead: bool) -> Result<Response, String> {
     let mut messages = Vec::new();
 
-    // Step 1: Stop Lead session (unless --keep-lead)
+    // Step 1: Stop webhook forwarding
+    if let Err(e) = super::webhooks::stop_webhook_forward() {
+        messages.push(format!("Warning: Failed to stop webhook forwarding: {}", e));
+    } else {
+        messages.push("Stopped webhook forwarding".to_string());
+    }
+
+    // Step 2: Stop Lead session (unless --keep-lead)
     if !keep_lead && lead_session_exists() {
         let status = Command::new("tmux")
             .args(["kill-session", "-t", LEAD_SESSION])
@@ -219,7 +262,7 @@ pub fn handle_stop(keep_lead: bool) -> Result<Response, String> {
         messages.push(format!("Keeping Lead session '{}' (use without --keep-lead to stop)", LEAD_SESSION));
     }
 
-    // Step 2: Stop daemon
+    // Step 3: Stop daemon
     if daemon_is_running() {
         // Remove the socket file - daemon will detect this and exit
         let path = socket_path();

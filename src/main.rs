@@ -13,8 +13,10 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
+use midtown::Channel;
 use midtown::coworker::CoworkerManager;
 use midtown::rpc::{Request, Response, RpcError};
+use midtown::webhook::{start_webhook_server, WebhookConfig};
 // WorktreeManager available for future worktree+session integration
 #[allow(unused_imports)]
 use midtown::WorktreeManager;
@@ -31,6 +33,10 @@ struct Args {
     #[arg(short, long)]
     workdir: Option<PathBuf>,
 
+    /// Port for webhook HTTP server
+    #[arg(long, default_value = "8787")]
+    webhook_port: u16,
+
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
@@ -40,13 +46,24 @@ struct Args {
 struct DaemonState {
     coworkers: CoworkerManager,
     socket_path: PathBuf,
+    channel: Channel,
+    webhook_active: std::sync::atomic::AtomicBool,
 }
 
 impl DaemonState {
     fn new(socket_path: PathBuf, workdir: PathBuf) -> Self {
+        // Create channel in the workdir
+        let channel_dir = workdir.join(".midtown").join("default");
+        let channel = Channel::new(channel_dir).unwrap_or_else(|e| {
+            warn!("Failed to create channel, using temp: {}", e);
+            Channel::new(std::env::temp_dir().join("midtown-channel")).unwrap()
+        });
+
         Self {
             coworkers: CoworkerManager::new(workdir.to_string_lossy().to_string()),
             socket_path,
+            channel,
+            webhook_active: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -87,6 +104,35 @@ async fn main() -> midtown::Result<()> {
 
     // Create daemon state
     let state = Arc::new(DaemonState::new(socket_path.clone(), workdir));
+
+    // Start webhook HTTP server
+    let webhook_config = WebhookConfig {
+        port: args.webhook_port,
+        secret: std::env::var("MIDTOWN_WEBHOOK_SECRET").ok(),
+        repo: "default".to_string(),
+    };
+
+    match start_webhook_server(webhook_config).await {
+        Ok(mut webhook_rx) => {
+            state.webhook_active.store(true, std::sync::atomic::Ordering::SeqCst);
+            info!("Webhook server started on port {}", args.webhook_port);
+
+            // Spawn task to forward webhook messages to channel
+            let channel = state.channel.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = webhook_rx.recv().await {
+                    if let Err(e) = channel.send(&msg) {
+                        error!("Failed to forward webhook message to channel: {}", e);
+                    } else {
+                        debug!("Forwarded webhook message: {}", msg.content);
+                    }
+                }
+            });
+        }
+        Err(e) => {
+            warn!("Failed to start webhook server: {}", e);
+        }
+    }
 
     // Remove existing socket file if present
     if socket_path.exists() {

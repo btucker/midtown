@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Channels use an append-only JSONL file for messages and per-agent cursor
 /// tracking for read positions. File locking ensures thread-safe concurrent access.
+#[derive(Clone)]
 pub struct Channel {
     /// Base directory for this channel (~/.midtown/<repo>/)
     base_dir: PathBuf,
