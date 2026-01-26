@@ -13,6 +13,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 use midtown::rpc::{Request, Response, RpcError};
+use midtown::WorktreeManager;
 
 /// Midtown daemon - multi-agent workspace manager.
 #[derive(Parser, Debug)]
@@ -181,9 +182,199 @@ fn handle_request(line: &str) -> Response {
             info!("Shutdown requested via RPC");
             Response::success(request.id, serde_json::json!({"status": "shutting_down"}))
         }
+        "coworker.spawn" => handle_coworker_spawn(&request),
+        "coworker.shutdown" => handle_coworker_shutdown(&request),
+        "coworker.list" => handle_coworker_list(&request),
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
         }
     }
+}
+
+/// Handle coworker.spawn RPC request.
+///
+/// Creates a new worktree for a coworker and returns the coworker info.
+fn handle_coworker_spawn(request: &Request) -> Response {
+    // Extract coworker name from params, or generate one
+    let name = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(generate_coworker_name);
+
+    info!("Spawning coworker: {}", name);
+
+    // Create the worktree manager
+    let manager = match WorktreeManager::from_current_dir() {
+        Ok(m) => m,
+        Err(e) => {
+            error!("Failed to create worktree manager: {}", e);
+            return Response::error(
+                request.id.clone(),
+                RpcError::with_data(-32000, "Failed to detect repository", serde_json::json!({
+                    "error": e.to_string()
+                })),
+            );
+        }
+    };
+
+    // Create the worktree
+    match manager.create(&name) {
+        Ok(worktree_path) => {
+            info!("Created worktree at: {}", worktree_path.display());
+            Response::success(
+                request.id.clone(),
+                serde_json::json!({
+                    "name": name,
+                    "worktree_path": worktree_path.to_string_lossy(),
+                    "branch": manager.branch_name(&name),
+                    "repo": manager.repo_name(),
+                }),
+            )
+        }
+        Err(e) => {
+            error!("Failed to create worktree: {}", e);
+            Response::error(
+                request.id.clone(),
+                RpcError::with_data(-32001, "Failed to create worktree", serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
+        }
+    }
+}
+
+/// Handle coworker.shutdown RPC request.
+///
+/// Removes the coworker's worktree and cleans up the branch if merged.
+fn handle_coworker_shutdown(request: &Request) -> Response {
+    // Extract coworker name from params (required)
+    let name = match request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+    {
+        Some(n) => n,
+        None => {
+            return Response::error(
+                request.id.clone(),
+                RpcError::invalid_params(),
+            );
+        }
+    };
+
+    let force = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("force"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    info!("Shutting down coworker: {} (force={})", name, force);
+
+    // Create the worktree manager
+    let manager = match WorktreeManager::from_current_dir() {
+        Ok(m) => m,
+        Err(e) => {
+            error!("Failed to create worktree manager: {}", e);
+            return Response::error(
+                request.id.clone(),
+                RpcError::with_data(-32000, "Failed to detect repository", serde_json::json!({
+                    "error": e.to_string()
+                })),
+            );
+        }
+    };
+
+    // Remove the worktree
+    match manager.remove(name, force) {
+        Ok(()) => {
+            info!("Removed worktree for coworker: {}", name);
+            Response::success(
+                request.id.clone(),
+                serde_json::json!({
+                    "name": name,
+                    "status": "removed",
+                }),
+            )
+        }
+        Err(e) => {
+            error!("Failed to remove worktree: {}", e);
+            Response::error(
+                request.id.clone(),
+                RpcError::with_data(-32002, "Failed to remove worktree", serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
+        }
+    }
+}
+
+/// Handle coworker.list RPC request.
+///
+/// Lists all coworker worktrees managed by this daemon.
+fn handle_coworker_list(request: &Request) -> Response {
+    // Create the worktree manager
+    let manager = match WorktreeManager::from_current_dir() {
+        Ok(m) => m,
+        Err(e) => {
+            error!("Failed to create worktree manager: {}", e);
+            return Response::error(
+                request.id.clone(),
+                RpcError::with_data(-32000, "Failed to detect repository", serde_json::json!({
+                    "error": e.to_string()
+                })),
+            );
+        }
+    };
+
+    // List all worktrees
+    match manager.list() {
+        Ok(worktrees) => {
+            let coworkers: Vec<_> = worktrees
+                .iter()
+                .filter(|w| w.is_coworker)
+                .map(|w| {
+                    serde_json::json!({
+                        "name": w.coworker_name,
+                        "path": w.path.to_string_lossy(),
+                        "branch": w.branch,
+                    })
+                })
+                .collect();
+
+            Response::success(
+                request.id.clone(),
+                serde_json::json!({
+                    "coworkers": coworkers,
+                    "count": coworkers.len(),
+                }),
+            )
+        }
+        Err(e) => {
+            error!("Failed to list worktrees: {}", e);
+            Response::error(
+                request.id.clone(),
+                RpcError::with_data(-32003, "Failed to list worktrees", serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
+        }
+    }
+}
+
+/// Generate a unique coworker name.
+fn generate_coworker_name() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    format!("coworker-{}", timestamp % 100000)
 }

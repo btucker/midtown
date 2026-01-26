@@ -13,6 +13,9 @@
 // RPC subsystem (furiosa)
 pub mod rpc;
 
+// Worktree management for coworker isolation
+pub mod worktree;
+
 // Channel management subsystem (nux)
 mod channel;
 mod cursor;
@@ -21,6 +24,7 @@ mod message;
 pub use channel::Channel;
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};
+pub use worktree::{WorktreeManager, WorktreeInfo, WorktreeError};
 
 use thiserror::Error;
 
