@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use midtown::{Channel, Message, MessageType};
 
+use crate::client::DaemonClient;
+
 /// Coworker information for the team panel
 #[derive(Debug, Clone)]
 pub struct CoworkerInfo {
@@ -23,6 +25,9 @@ pub struct App {
     pub coworkers: Vec<CoworkerInfo>,
     /// Channel for reading messages
     channel: Option<Channel>,
+    /// Daemon client for querying coworker status
+    #[allow(dead_code)] // TODO: Use for querying active coworkers
+    daemon: Option<DaemonClient>,
     /// Last known message count (for detecting new messages)
     last_count: usize,
     /// Cache of last actions by coworker name
@@ -38,12 +43,15 @@ impl App {
             .unwrap_or_else(|| "default".to_string());
 
         let channel = Channel::for_repo(&repo_name).ok();
+        let daemon = DaemonClient::connect().ok();
+
         let mut app = Self {
             messages: Vec::new(),
             scroll_offset: 0,
             visible_height: 20,
             coworkers: Vec::new(),
             channel,
+            daemon,
             last_count: 0,
             last_actions: HashMap::new(),
         };

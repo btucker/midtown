@@ -335,7 +335,7 @@ Your `/me` status appears in the team sidebar, so keep it current.
 Post when:
 - Starting work: `/me claiming task 5`
 - Making progress: `/me found the issue in auth.rs`
-- Finishing: `/me opened PR #42 for review`
+- PR ready: `/me requesting review of PR #42` (GitHub already announces the PR, just request review)
 - Blocked: `blocked on task 3, need API spec clarified`
 - Questions: `@Lead should this handle the edge case?`
 
