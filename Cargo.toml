@@ -59,11 +59,6 @@ features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"]
 name = "midtown"
 path = "src/bin/midtown/main.rs"
 
-# Chat TUI binary
-[[bin]]
-name = "midtown-chat"
-path = "src/bin/midtown-chat/main.rs"
-
 [lib]
 name = "midtown"
 path = "src/lib.rs"

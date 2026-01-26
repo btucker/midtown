@@ -348,8 +348,10 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
 
         // Start chat TUI in the new pane (pane .1)
         let chat_pane = format!("{}:Lead.1", session);
+        let bin_command = midtown::config::get_bin_command();
+        let chat_cmd = format!("{} chat", bin_command);
         let _ = Command::new("tmux")
-            .args(["send-keys", "-t", &chat_pane, "midtown-chat", "Enter"])
+            .args(["send-keys", "-t", &chat_pane, &chat_cmd, "Enter"])
             .status();
 
         // Keep focus on the main pane (Claude Code, pane .0)

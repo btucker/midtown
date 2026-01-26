@@ -1,6 +1,6 @@
-//! midtown-chat - IRC-style TUI for team communication
+//! Chat TUI subcommand - IRC-style interface for team communication
 //!
-//! This binary provides a read-only chat interface showing team activity
+//! This module provides a read-only chat interface showing team activity
 //! and coworker status in a split-pane layout.
 
 mod app;
@@ -18,13 +18,16 @@ use ratatui::{Terminal, prelude::CrosstermBackend};
 
 use app::App;
 
-fn main() -> io::Result<()> {
+/// Run the chat TUI
+pub fn run() -> Result<(), String> {
     // Setup terminal
-    enable_raw_mode()?;
+    enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .map_err(|e| format!("Failed to enter alternate screen: {}", e))?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal =
+        Terminal::new(backend).map_err(|e| format!("Failed to create terminal: {}", e))?;
 
     // Create app state
     let mut app = App::new();
@@ -32,21 +35,16 @@ fn main() -> io::Result<()> {
     // Run the main loop
     let result = run_app(&mut terminal, &mut app);
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
+    // Restore terminal (always attempt cleanup)
+    let _ = disable_raw_mode();
+    let _ = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    );
+    let _ = terminal.show_cursor();
 
-    if let Err(e) = result {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
-    }
-
-    Ok(())
+    result.map_err(|e| format!("TUI error: {}", e))
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
