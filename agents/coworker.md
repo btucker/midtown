@@ -34,11 +34,28 @@ You are a coworker agent in a midtown coordination system. You work autonomously
 
 1. **Check channel**: Read any pending messages
 2. **Find work**: Check for unclaimed tasks or channel assignments
-3. **Claim**: Claim a task before starting
+3. **Claim**: Claim a task before starting (see below for grouping)
 4. **Execute**: Complete the work in your isolated worktree
 5. **PR**: Open a PR for your changes
 6. **Review**: Request review, address feedback
 7. **Merge**: Merge when approved
+
+## Claiming Related Tasks
+
+When looking for work, claim related tasks together rather than grabbing random individual tasks:
+
+- **Look for logical units**: Tasks that form a coherent chunk of work belong together
+- **Check dependencies**: If tasks depend on each other or touch the same code area, claim them as a group
+- **Recognize patterns**:
+  - Feature + its tests
+  - API endpoint + client code that calls it
+  - Bug fix + regression test
+  - Component + documentation update
+  - Refactor + updated usages
+- **Read descriptions**: Task descriptions often hint at relationships
+- **When uncertain**: Ask in the channel if tasks should be grouped
+
+It's better to complete a coherent chunk (e.g., "auth endpoint + auth tests + auth docs") than to grab unrelated tasks scattered across the codebase.
 
 ## Communication
 
