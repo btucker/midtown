@@ -2,12 +2,14 @@ mod channel;
 mod chat;
 mod coworker;
 mod daemon;
+mod hooks;
 mod pr;
 mod response;
 mod task;
 
 pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
+pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
 pub use pr::PrCommand;
 pub use response::Response;
@@ -78,4 +80,9 @@ pub fn handle_register_session() -> Result<Response, String> {
 /// Handle chat command (no daemon required - standalone TUI)
 pub fn handle_chat() -> Result<(), String> {
     chat::run()
+}
+
+/// Handle hook commands (insight, idle) - no daemon required
+pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
+    hooks::handle(cmd)
 }

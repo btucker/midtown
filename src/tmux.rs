@@ -264,6 +264,8 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
 /// Configures hooks for:
 /// - Stop: Sync channel, check for unclaimed tasks, block if more work available
 /// - PostToolUse: Broadcast task operations (claim, complete, create) to channel
+/// - PostToolUse: Post insights to channel
+/// - Notification: Post idle status when waiting for input
 fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
     serde_json::json!({
         "editorMode": "normal",
@@ -285,6 +287,19 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                 "hooks": [{
                     "type": "command",
                     "command": format!("{} coworker task-hook", bin_command)
+                }]
+            }, {
+                // No matcher = runs on every tool use
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} hook insight", bin_command)
+                }]
+            }],
+            "Notification": [{
+                "matcher": "idle_prompt",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} hook idle", bin_command)
                 }]
             }]
         }
@@ -552,10 +567,10 @@ mod tests {
             "midtown --format json coworker stop-hook"
         );
 
-        // Verify PostToolUse hooks for task operations
+        // Verify PostToolUse hooks for task operations and insights
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
         assert!(post_tool_hooks.is_array());
-        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 2);
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 3);
 
         // TaskUpdate hook
         assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
@@ -569,6 +584,22 @@ mod tests {
         assert_eq!(
             post_tool_hooks[1]["hooks"][0]["command"],
             "midtown coworker task-hook"
+        );
+
+        // Insight hook (no matcher)
+        assert!(post_tool_hooks[2]["matcher"].is_null());
+        assert_eq!(
+            post_tool_hooks[2]["hooks"][0]["command"],
+            "midtown hook insight"
+        );
+
+        // Verify Notification hook for idle
+        let notification_hooks = &settings["hooks"]["Notification"];
+        assert!(notification_hooks.is_array());
+        assert_eq!(notification_hooks[0]["matcher"], "idle_prompt");
+        assert_eq!(
+            notification_hooks[0]["hooks"][0]["command"],
+            "midtown hook idle"
         );
     }
 
