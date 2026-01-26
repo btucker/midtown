@@ -33,10 +33,10 @@ Use Claude Code's built-in task tools to manage tasks:
 - `TaskGet` - Get task details
 - `TaskUpdate` - Update task status (in_progress, completed)
 
-After updating a task, announce it to the team:
+After updating a task status, announce it to the team via the channel:
 ```bash
-midtown task claim <id>     # Announce you're working on a task
-midtown task done <id>      # Announce task completion
+midtown channel post "/me claiming task 5"      # When starting work
+midtown channel post "/me completed task 5"     # When finishing
 ```
 
 Don't hoard tasks - claim one, finish it, then claim another.
