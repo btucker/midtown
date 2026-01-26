@@ -4,7 +4,7 @@
 
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::cli::Response;
@@ -146,6 +146,11 @@ midtown channel post "msg"   # Post to team channel
 - Answer human questions about the project
 - Delegate tasks to coworkers when appropriate
 - Monitor overall progress via `midtown status`
+
+## Plans
+- Always save plans to `~/.claude/plans/`
+- Use descriptive filenames: `YYYY-MM-DD-<topic>.md`
+- Plans persist across sessions and are shared with coworkers
 "#
 }
 
@@ -160,6 +165,52 @@ fn write_lead_prompt_file() -> Result<PathBuf, String> {
         .map_err(|e| format!("Failed to write lead prompt file: {}", e))?;
 
     Ok(path)
+}
+
+/// Get the path to the Lead session ID file for a project.
+fn lead_session_file(repo: &Path) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let repo_name = repo
+        .file_name()
+        .map(|s: &std::ffi::OsStr| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    PathBuf::from(home)
+        .join(".midtown")
+        .join(&repo_name)
+        .join("lead-session-id")
+}
+
+/// Get or create the Lead session ID for a project.
+///
+/// If a session ID exists, returns it. Otherwise generates a new UUID and stores it.
+fn get_or_create_lead_session_id(repo: &Path) -> Result<(String, bool), String> {
+    let session_file = lead_session_file(repo);
+
+    // Try to read existing session ID
+    if session_file.exists() {
+        let session_id = std::fs::read_to_string(&session_file)
+            .map_err(|e| format!("Failed to read session ID: {}", e))?
+            .trim()
+            .to_string();
+        if !session_id.is_empty() {
+            return Ok((session_id, true)); // true = existing session
+        }
+    }
+
+    // Generate new session ID
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    // Ensure directory exists
+    if let Some(parent) = session_file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create session directory: {}", e))?;
+    }
+
+    // Store the session ID
+    std::fs::write(&session_file, &session_id)
+        .map_err(|e| format!("Failed to write session ID: {}", e))?;
+
+    Ok((session_id, false)) // false = new session
 }
 
 /// Handle `midtown start` command.
@@ -211,14 +262,25 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
     } else if session_exists(&session) {
         messages.push(format!("Session '{}' already exists", session));
     } else {
-        // Write the system prompt to a file
-        let prompt_file = write_lead_prompt_file()?;
+        // Get or create the Lead's persistent session ID
+        let (lead_session_id, is_existing) = get_or_create_lead_session_id(&repo)?;
 
-        // Build the claude command
-        let claude_cmd = format!(
-            "claude --dangerously-skip-permissions --append-system-prompt \"$(cat {})\"",
-            prompt_file.display()
-        );
+        // Build the claude command based on whether we're resuming or starting fresh
+        let claude_cmd = if is_existing {
+            // Resume existing session
+            format!(
+                "claude --dangerously-skip-permissions --resume {}",
+                lead_session_id
+            )
+        } else {
+            // New session: use specific session ID and inject system prompt
+            let prompt_file = write_lead_prompt_file()?;
+            format!(
+                "claude --dangerously-skip-permissions --session-id {} --append-system-prompt \"$(cat {})\"",
+                lead_session_id,
+                prompt_file.display()
+            )
+        };
 
         // Get project name for status bar (uppercase)
         let project_name = repo
@@ -260,7 +322,11 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             ])
             .status();
 
-        messages.push(format!("Started session '{}'", session));
+        if is_existing {
+            messages.push(format!("Resumed Lead session in '{}'", session));
+        } else {
+            messages.push(format!("Started new Lead session in '{}'", session));
+        }
     }
 
     // Build response message
@@ -577,8 +643,77 @@ mod tests {
     }
 
     #[test]
+    fn test_lead_system_prompt_contains_plans_section() {
+        let prompt = lead_system_prompt();
+        assert!(prompt.contains("## Plans"));
+        assert!(prompt.contains("~/.claude/plans/"));
+    }
+
+    #[test]
     fn test_session_exists_nonexistent() {
         // Random session name that definitely doesn't exist
         assert!(!session_exists("midtown-nonexistent-test-session-12345"));
+    }
+
+    #[test]
+    fn test_get_or_create_lead_session_id_creates_new() {
+        let temp = TempDir::new().unwrap();
+        // Use a unique name with UUID to avoid conflicts between parallel tests
+        let unique_name = format!("test-project-{}", uuid::Uuid::new_v4());
+        let repo_path = temp.path().join(&unique_name);
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        // First call should create a new session ID
+        let (session_id, is_existing) = get_or_create_lead_session_id(&repo_path).unwrap();
+
+        // Clean up the session file we created in ~/.midtown/
+        let session_file = lead_session_file(&repo_path);
+        let _ = std::fs::remove_file(&session_file);
+        if let Some(parent) = session_file.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+
+        assert!(!is_existing);
+        assert!(!session_id.is_empty());
+
+        // Verify it's a valid UUID format (36 chars with hyphens)
+        assert_eq!(session_id.len(), 36);
+        assert!(session_id.contains('-'));
+    }
+
+    #[test]
+    fn test_get_or_create_lead_session_id_returns_existing() {
+        let temp = TempDir::new().unwrap();
+        // Use a unique name with UUID to avoid conflicts between parallel tests
+        let unique_name = format!("test-project-{}", uuid::Uuid::new_v4());
+        let repo_path = temp.path().join(&unique_name);
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        // First call creates
+        let (session_id_1, is_existing_1) = get_or_create_lead_session_id(&repo_path).unwrap();
+        assert!(!is_existing_1);
+
+        // Second call should return the same ID
+        let (session_id_2, is_existing_2) = get_or_create_lead_session_id(&repo_path).unwrap();
+
+        // Clean up the session file we created in ~/.midtown/
+        let session_file = lead_session_file(&repo_path);
+        let _ = std::fs::remove_file(&session_file);
+        if let Some(parent) = session_file.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+
+        assert!(is_existing_2);
+        assert_eq!(session_id_1, session_id_2);
+    }
+
+    #[test]
+    fn test_lead_session_file_path() {
+        let repo_path = PathBuf::from("/tmp/my-project");
+        let session_file = lead_session_file(&repo_path);
+
+        assert!(session_file.to_string_lossy().contains(".midtown"));
+        assert!(session_file.to_string_lossy().contains("my-project"));
+        assert!(session_file.to_string_lossy().ends_with("lead-session-id"));
     }
 }
