@@ -25,7 +25,7 @@ const AVENUE_COLORS: &[(&str, Color)] = &[
 /// Get color for a sender name
 fn get_sender_color(name: &str) -> Color {
     match name.to_lowercase().as_str() {
-        "lead" => Color::White,
+        "lead" => Color::LightYellow,
         "github" => Color::DarkGray,
         "system" => Color::DarkGray,
         _ => {
