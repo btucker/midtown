@@ -132,6 +132,31 @@ fn lead_system_prompt() -> &'static str {
 - You are the human-facing Claude Code instance
 - You coordinate direction and can spawn coworkers
 
+## Delegation First
+**IMPORTANT**: Your primary job is coordination, not implementation.
+
+When the user requests work:
+1. **Simple tasks** (typos, one-line fixes): Do them yourself
+2. **Everything else**: Create a task and spawn a coworker
+
+Benefits of delegation:
+- Coworkers work in isolated worktrees (no conflicts)
+- Multiple coworkers can work in parallel
+- You stay available to answer questions and review
+
+Example workflow:
+```bash
+# User asks for a feature
+# 1. Create a task
+TaskCreate with subject and description
+
+# 2. Spawn a coworker
+midtown coworker spawn
+
+# 3. Nudge them with context
+midtown coworker nudge <name> -m "Work on task #X: <brief description>"
+```
+
 ## Commands
 ```bash
 midtown status               # Check daemon and coworker status
@@ -139,6 +164,7 @@ midtown coworker spawn       # Spawn a new coworker
 midtown coworker shutdown <name>  # Shutdown a coworker
 midtown coworker nudge <name>     # Send message to coworker
 midtown channel post "msg"   # Post to team channel
+midtown channel read         # Read recent channel messages
 ```
 
 ## Spawning Coworkers
@@ -152,8 +178,9 @@ Coworkers start with no context - they need a nudge to know what to do.
 ## Coordination
 - Review work from coworkers
 - Answer human questions about the project
-- Delegate tasks to coworkers when appropriate
+- Create tasks and delegate to coworkers
 - Monitor overall progress via `midtown status`
+- Check channel for updates: `midtown channel read`
 
 ## Plans
 - Always save plans to `~/.claude/plans/`
@@ -175,6 +202,35 @@ fn write_lead_prompt_file() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Generate Lead settings JSON with stop hook for channel sync.
+fn lead_settings_json() -> serde_json::Value {
+    let bin_command = midtown::config::get_bin_command();
+    serde_json::json!({
+        "hooks": {
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} channel read", bin_command)
+                }]
+            }]
+        }
+    })
+}
+
+/// Write Lead settings to a file and return the path.
+fn write_lead_settings_file() -> Result<PathBuf, String> {
+    let dir = state_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create state directory: {}", e))?;
+
+    let path = dir.join("lead-settings.json");
+    let settings = lead_settings_json();
+    std::fs::write(&path, settings.to_string())
+        .map_err(|e| format!("Failed to write lead settings file: {}", e))?;
+
+    Ok(path)
+}
+
 /// Get the path to the Lead session ID file for a project.
 fn lead_session_file(repo: &Path) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -192,21 +248,25 @@ fn lead_session_file(repo: &Path) -> PathBuf {
 ///
 /// Returns the full command string to launch Claude Code with appropriate flags.
 /// Always includes the system prompt via --append-system-prompt, whether new or resuming.
+/// Also includes settings file with stop hook for channel sync.
 fn build_lead_claude_command(session_id: &str, is_existing: bool) -> Result<String, String> {
     let prompt_file = write_lead_prompt_file()?;
+    let settings_file = write_lead_settings_file()?;
 
     if is_existing {
-        // Resume existing session, but still inject system prompt
+        // Resume existing session, but still inject system prompt and settings
         Ok(format!(
-            "claude --dangerously-skip-permissions --resume {} --append-system-prompt \"$(cat {})\"",
+            "claude --dangerously-skip-permissions --resume {} --settings {} --append-system-prompt \"$(cat {})\"",
             session_id,
+            settings_file.display(),
             prompt_file.display()
         ))
     } else {
-        // New session: use specific session ID and inject system prompt
+        // New session: use specific session ID, settings, and inject system prompt
         Ok(format!(
-            "claude --dangerously-skip-permissions --session-id {} --append-system-prompt \"$(cat {})\"",
+            "claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
             session_id,
+            settings_file.display(),
             prompt_file.display()
         ))
     }
