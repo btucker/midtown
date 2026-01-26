@@ -1,18 +1,18 @@
 # Midtown
 
-Coordinate multiple **Claude Code** instances working on the same codebase.
+Coordinate multiple **Claude Code** instances working on the same codebase using native Claude Code tasks.
 
 ## Why Midtown?
 
-Midtown is inspired by [Gastown](https://github.com/anthropics/claude-code/tree/main/.claude/docs/gastown.md), but a bit simpler, less exciting, and more mid.
+Midtown is inspired by [Gastown](https://github.com/anthropics/claude-code/tree/main/.claude/docs/gastown.md), but a bit simpler, less exciting, and, well, more mid.
 
 At its core, Midtown is built around an IRC-like messaging model: a shared channel where team members (both the human-facing Lead and autonomous Coworkers) post updates, coordinate handoffs, and stay in sync. This append-only message stream is the backbone of multi-agent collaboration—each Claude Code instance reads the channel at natural pause points, just like checking a team chat.
 
 When you're working with Claude Code on a complex project, you might want to parallelize work:
 
-- The Lead collaborates with the human to create a plan
+- The Lead collaborates with the human to create a plan & split up the work into tasks & depedendencies.
 - Multiple Coworkers implement independent components simultaneously
-- A Coworker reviews PRs while the Lead & human collaborate on what's next
+- The Coworker review & merge PRs while the Lead & human collaborate on what's next
 
 Midtown provides the infrastructure for this coordination:
 
