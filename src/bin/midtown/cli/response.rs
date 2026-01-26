@@ -365,6 +365,37 @@ mod tests {
     }
 
     #[test]
+    fn test_coworkers_response_parsing() {
+        let json = r#"{"coworkers": [{"name": "lexington", "status": "running", "current_task": null, "started_at": "2026-01-26T20:52:06.779326+00:00"}]}"#;
+        let response: Response = serde_json::from_str(json).expect("Should parse");
+
+        match response {
+            Response::Coworkers { coworkers } => {
+                assert_eq!(coworkers.len(), 1);
+                assert_eq!(coworkers[0].name, "lexington");
+                assert_eq!(coworkers[0].status, "running");
+            }
+            other => panic!("Expected Coworkers, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_coworkers_response_with_success_field() {
+        // Daemon returns "success": true along with coworkers
+        let json = r#"{"success": true, "coworkers": [{"name": "lexington", "status": "running", "current_task": null, "started_at": "2026-01-26T20:52:06.779326+00:00"}]}"#;
+        let response: Response =
+            serde_json::from_str(json).expect("Should parse with extra fields");
+
+        match response {
+            Response::Coworkers { coworkers } => {
+                assert_eq!(coworkers.len(), 1);
+                assert_eq!(coworkers[0].name, "lexington");
+            }
+            other => panic!("Expected Coworkers, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_status_pretty_format() {
         let status = StatusResponse {
             daemon_running: true,
