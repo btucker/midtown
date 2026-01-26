@@ -12,6 +12,7 @@
 //! - **Worktrees**: Git worktree isolation for coworkers
 //! - **Coworkers**: Agent session management via tmux
 //! - **Tmux**: Low-level tmux session operations
+//! - **Nudge**: Periodic and event-driven nudging for coworkers
 
 // RPC subsystem (furiosa)
 pub mod rpc;
@@ -30,6 +31,9 @@ pub mod tmux;
 
 // GitHub webhook integration (rictus)
 pub mod webhook;
+
+// Agent nudging subsystem (dementus)
+pub mod nudge;
 
 pub use channel::Channel;
 pub use cursor::Cursor;
@@ -61,6 +65,10 @@ pub enum Error {
     /// Invalid message format
     #[error("Invalid message format: {0}")]
     InvalidMessage(String),
+
+    /// Nudge operation failed
+    #[error("Nudge error: {0}")]
+    Nudge(#[from] nudge::NudgeError),
 }
 
 /// Result type alias for Midtown operations.
