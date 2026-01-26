@@ -19,8 +19,12 @@ struct Cli {
     #[arg(long, default_value = "pretty")]
     format: OutputFormat,
 
+    /// Path to git repository (defaults to current directory)
+    #[arg(long, short = 'C', global = true)]
+    repo: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -29,21 +33,38 @@ enum OutputFormat {
     Pretty,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Commands {
-    /// Start midtown (daemon + Lead session)
+    /// Run the daemon server (internal - use 'start' instead)
+    #[command(hide = true)]
+    Daemon {
+        /// Path to the Unix socket
+        #[arg(short, long)]
+        socket: Option<std::path::PathBuf>,
+
+        /// Working directory for spawned coworkers
+        #[arg(short, long)]
+        workdir: Option<std::path::PathBuf>,
+
+        /// Enable verbose logging
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Start midtown (daemon + tmux session)
     Start {
-        /// Start daemon only, without Lead session
+        /// Start daemon only, without tmux session
         #[arg(long)]
         daemon_only: bool,
     },
-    /// Stop midtown (daemon + Lead session)
+    /// Stop midtown (daemon + tmux session)
     Stop {
-        /// Keep the Lead session running
+        /// Keep the tmux session running
         #[arg(long)]
-        keep_lead: bool,
+        keep_session: bool,
     },
-    /// Attach to the Lead session (shortcut for tmux attach -t midtown-lead)
+    /// Restart midtown (stop + start)
+    Restart,
+    /// Attach to the project's tmux session
     Attach,
     /// Channel messaging commands
     Channel {
@@ -71,39 +92,78 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+    let format = cli.format;
+
+    // Handle --repo option: change to specified directory
+    if let Some(repo_path) = &cli.repo {
+        if let Err(e) = std::env::set_current_dir(repo_path) {
+            eprintln!("Error: Failed to change to repo directory '{}': {}", repo_path.display(), e);
+            std::process::exit(1);
+        }
+    }
+
+    // Default to Start if no command provided
+    let command = cli.command.unwrap_or(Commands::Start { daemon_only: false });
 
     // Handle commands that don't require daemon connection
-    if let Commands::Task { command: TaskCommand::Hook { event } } = &cli.command {
+    if let Commands::Task { command: TaskCommand::Hook { event } } = &command {
         let result = cli::handle_task_hook(event);
-        handle_result(&cli, result);
+        handle_result(format, result);
         return;
     }
 
     // Stop hook also works standalone (no daemon required)
-    if let Commands::Coworker { command: CoworkerCommand::StopHook } = &cli.command {
+    if let Commands::Coworker { command: CoworkerCommand::StopHook } = &command {
         let result = cli::handle_coworker_stop_hook();
-        handle_result(&cli, result);
+        handle_result(format, result);
+        return;
+    }
+
+    // Daemon command (runs the daemon server - internal use)
+    if let Commands::Daemon { socket, workdir, verbose } = &command {
+        let mut config = midtown::daemon::DaemonConfig::default();
+        if let Some(s) = socket {
+            config.socket_path = s.clone();
+        }
+        if let Some(w) = workdir {
+            config.workdir = w.clone();
+        }
+        config.verbose = *verbose;
+
+        // Run the daemon (this blocks until shutdown)
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        if let Err(e) = rt.block_on(midtown::daemon::run(config)) {
+            eprintln!("Daemon error: {}", e);
+            std::process::exit(1);
+        }
         return;
     }
 
     // Start command (starts daemon, doesn't need existing connection)
-    if let Commands::Start { daemon_only } = &cli.command {
+    if let Commands::Start { daemon_only } = &command {
         let result = cli::handle_start(*daemon_only);
-        handle_result(&cli, result);
+        handle_result(format, result);
         return;
     }
 
     // Stop command (stops daemon, doesn't need existing connection)
-    if let Commands::Stop { keep_lead } = &cli.command {
-        let result = cli::handle_stop(*keep_lead);
-        handle_result(&cli, result);
+    if let Commands::Stop { keep_session } = &command {
+        let result = cli::handle_stop(*keep_session);
+        handle_result(format, result);
+        return;
+    }
+
+    // Restart command (stop + start)
+    if let Commands::Restart = &command {
+        let result = cli::handle_restart();
+        handle_result(format, result);
         return;
     }
 
     // Attach command (just tmux, doesn't need daemon)
-    if let Commands::Attach = &cli.command {
+    if let Commands::Attach = &command {
         let result = cli::handle_attach();
-        handle_result(&cli, result);
+        handle_result(format, result);
         return;
     }
 
@@ -112,28 +172,32 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: Failed to connect to midtown daemon: {}", e);
-            eprintln!("Is the daemon running? Try: midtown start");
+            eprintln!("Is the daemon running? Try: midtown");
             std::process::exit(1);
         }
     };
 
-    let result = match &cli.command {
+    let result = match &command {
         Commands::Channel { command } => cli::handle_channel(command, &client),
         Commands::Coworker { command } => cli::handle_coworker(command, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
         // These are handled before daemon connection, so unreachable
-        Commands::Start { .. } | Commands::Stop { .. } | Commands::Attach => unreachable!(),
+        Commands::Daemon { .. }
+        | Commands::Start { .. }
+        | Commands::Stop { .. }
+        | Commands::Restart
+        | Commands::Attach => unreachable!(),
     };
 
-    handle_result(&cli, result);
+    handle_result(format, result);
 }
 
-fn handle_result(cli: &Cli, result: Result<cli::Response, String>) {
+fn handle_result(format: OutputFormat, result: Result<cli::Response, String>) {
     match result {
         Ok(response) => {
-            let output = match cli.format {
+            let output = match format {
                 OutputFormat::Json => response.to_json(),
                 OutputFormat::Pretty => response.to_pretty(),
             };

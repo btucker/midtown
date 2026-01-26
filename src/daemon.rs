@@ -1,39 +1,48 @@
-//! Midtown daemon entry point.
+//! Midtown daemon server.
 //!
-//! The daemon listens on a Unix socket and handles JSON-RPC requests for
-//! workspace management operations.
+//! This module provides the daemon server that listens on a Unix socket and
+//! handles JSON-RPC requests for workspace management operations.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::Parser;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
-use midtown::coworker::CoworkerManager;
-use midtown::rpc::{Request, Response, RpcError};
-// WorktreeManager available for future worktree+session integration
-#[allow(unused_imports)]
-use midtown::WorktreeManager;
+use crate::coworker::CoworkerManager;
+use crate::rpc::{Request, RequestId, Response, RpcError};
 
-/// Midtown daemon - multi-agent workspace manager.
-#[derive(Parser, Debug)]
-#[command(name = "midtownd", version, about)]
-struct Args {
-    /// Path to the Unix socket
-    #[arg(short, long)]
-    socket: Option<PathBuf>,
+/// Configuration for the daemon server.
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    /// Path to the Unix socket.
+    pub socket_path: PathBuf,
+    /// Working directory for spawned coworkers.
+    pub workdir: PathBuf,
+    /// Enable verbose logging.
+    pub verbose: bool,
+}
 
-    /// Working directory for spawned coworkers
-    #[arg(short, long)]
-    workdir: Option<PathBuf>,
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        let state_dir = std::env::var("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".local")
+                    .join("state")
+            });
 
-    /// Enable verbose logging
-    #[arg(short, long)]
-    verbose: bool,
+        Self {
+            socket_path: state_dir.join("midtown").join("daemon.sock"),
+            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            verbose: false,
+        }
+    }
 }
 
 /// Shared daemon state.
@@ -51,51 +60,37 @@ impl DaemonState {
     }
 }
 
-#[tokio::main]
-async fn main() -> midtown::Result<()> {
-    let args = Args::parse();
-
+/// Run the daemon server with the given configuration.
+///
+/// This function will block until the daemon receives a shutdown signal
+/// (SIGTERM or SIGINT) or the socket is removed.
+pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Initialize logging
-    let filter = if args.verbose { "debug" } else { "info" };
+    let filter = if config.verbose { "debug" } else { "info" };
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .init();
 
-    // Determine socket path: CLI arg > XDG_STATE_HOME > ~/.local/state
-    let socket_path = args.socket.unwrap_or_else(|| {
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".local")
-                    .join("state")
-            });
-        state_dir.join("midtown").join("daemon.sock")
-    });
-
     // Ensure parent directory exists
-    if let Some(parent) = socket_path.parent() {
+    if let Some(parent) = config.socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Determine working directory for coworkers
-    let workdir = args.workdir.unwrap_or_else(|| {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    });
-
     // Create daemon state
-    let state = Arc::new(DaemonState::new(socket_path.clone(), workdir));
+    let state = Arc::new(DaemonState::new(
+        config.socket_path.clone(),
+        config.workdir,
+    ));
 
     // Remove existing socket file if present
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
+    if config.socket_path.exists() {
+        std::fs::remove_file(&config.socket_path)?;
     }
 
     // Bind to Unix socket
-    let listener = UnixListener::bind(&socket_path)?;
-    info!("Listening on {}", socket_path.display());
+    let listener = UnixListener::bind(&config.socket_path)?;
+    info!("Listening on {}", config.socket_path.display());
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -144,8 +139,8 @@ async fn main() -> midtown::Result<()> {
     }
 
     // Clean up socket file
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
+    if config.socket_path.exists() {
+        std::fs::remove_file(&config.socket_path)?;
     }
 
     info!("Daemon stopped");
@@ -215,10 +210,7 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
         Ok(req) => req,
         Err(e) => {
             warn!("Failed to parse request: {}", e);
-            return Response::error(
-                midtown::rpc::RequestId::Null,
-                RpcError::parse_error(),
-            );
+            return Response::error(RequestId::Null, RpcError::parse_error());
         }
     };
 
@@ -231,7 +223,7 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
         "version" => Response::success(
             request.id,
             serde_json::json!({
-                "name": "midtownd",
+                "name": "midtown",
                 "version": env!("CARGO_PKG_VERSION"),
             }),
         ),
@@ -266,7 +258,9 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|v| v.as_str());
 
             match (name, message) {
-                (Some(name), Some(message)) => handle_coworker_nudge(request.id, name, message, state),
+                (Some(name), Some(message)) => {
+                    handle_coworker_nudge(request.id, name, message, state)
+                }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -281,7 +275,7 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
 }
 
 /// Handle coworker.spawn RPC method.
-fn handle_coworker_spawn(id: midtown::rpc::RequestId, state: &DaemonState) -> Response {
+fn handle_coworker_spawn(id: RequestId, state: &DaemonState) -> Response {
     match state.coworkers.spawn() {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
@@ -307,11 +301,7 @@ fn handle_coworker_spawn(id: midtown::rpc::RequestId, state: &DaemonState) -> Re
 }
 
 /// Handle coworker.shutdown RPC method.
-fn handle_coworker_shutdown(
-    id: midtown::rpc::RequestId,
-    name: &str,
-    state: &DaemonState,
-) -> Response {
+fn handle_coworker_shutdown(id: RequestId, name: &str, state: &DaemonState) -> Response {
     match state.coworkers.shutdown(name) {
         Ok(()) => {
             info!("Shutdown coworker: {}", name);
@@ -331,7 +321,7 @@ fn handle_coworker_shutdown(
 }
 
 /// Handle coworker.list RPC method.
-fn handle_coworker_list(id: midtown::rpc::RequestId, state: &DaemonState) -> Response {
+fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
     let coworkers: Vec<serde_json::Value> = state
         .coworkers
         .list()
@@ -356,12 +346,7 @@ fn handle_coworker_list(id: midtown::rpc::RequestId, state: &DaemonState) -> Res
 }
 
 /// Handle coworker.nudge RPC method.
-fn handle_coworker_nudge(
-    id: midtown::rpc::RequestId,
-    name: &str,
-    message: &str,
-    state: &DaemonState,
-) -> Response {
+fn handle_coworker_nudge(id: RequestId, name: &str, message: &str, state: &DaemonState) -> Response {
     match state.coworkers.nudge(name, message) {
         Ok(()) => {
             info!("Nudged coworker {}: {}", name, message);
@@ -381,7 +366,7 @@ fn handle_coworker_nudge(
 }
 
 /// Handle status RPC method.
-fn handle_status(id: midtown::rpc::RequestId, state: &DaemonState) -> Response {
+fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     // Get coworkers with their details
     let coworkers: Vec<serde_json::Value> = state
         .coworkers
@@ -425,7 +410,12 @@ fn handle_status(id: midtown::rpc::RequestId, state: &DaemonState) -> Response {
 /// Get open PRs from GitHub using gh CLI.
 fn get_open_prs() -> Vec<serde_json::Value> {
     let output = std::process::Command::new("gh")
-        .args(["pr", "list", "--json", "number,title,author,state,isDraft,reviewDecision"])
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,title,author,state,isDraft,reviewDecision",
+        ])
         .output();
 
     match output {

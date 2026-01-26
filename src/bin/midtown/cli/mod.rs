@@ -50,8 +50,13 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)
-pub fn handle_stop(keep_lead: bool) -> Result<Response, String> {
-    daemon::handle_stop(keep_lead)
+pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
+    daemon::handle_stop(keep_session)
+}
+
+/// Handle restart command (stop + start)
+pub fn handle_restart() -> Result<Response, String> {
+    daemon::handle_restart()
 }
 
 /// Handle attach command (no daemon required - just attaches to tmux)

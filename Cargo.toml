@@ -43,12 +43,7 @@ dirs = "6.0"
 [dev-dependencies]
 tempfile = "3.0"
 
-# Daemon binary
-[[bin]]
-name = "midtownd"
-path = "src/main.rs"
-
-# CLI binary
+# Single unified binary
 [[bin]]
 name = "midtown"
 path = "src/bin/midtown/main.rs"

@@ -14,6 +14,9 @@
 //! - **Tmux**: Low-level tmux session operations
 //! - **Nudge**: Periodic and event-driven nudging for coworkers
 
+// Daemon server
+pub mod daemon;
+
 // RPC subsystem (furiosa)
 pub mod rpc;
 
