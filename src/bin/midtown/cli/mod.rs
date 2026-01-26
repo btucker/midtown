@@ -36,6 +36,11 @@ pub fn handle_coworker_stop_hook() -> Result<Response, String> {
     coworker::handle_stop_hook_standalone()
 }
 
+/// Handle coworker link-tasks directly (no daemon required)
+pub fn handle_coworker_link_tasks() -> Result<Response, String> {
+    coworker::handle_link_tasks_standalone()
+}
+
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
     client.status()
 }
@@ -62,4 +67,9 @@ pub fn handle_restart() -> Result<Response, String> {
 /// Handle attach command (no daemon required - just attaches to tmux)
 pub fn handle_attach() -> Result<Response, String> {
     daemon::handle_attach()
+}
+
+/// Handle lead register-session command (no daemon required)
+pub fn handle_register_session() -> Result<Response, String> {
+    daemon::handle_register_session()
 }

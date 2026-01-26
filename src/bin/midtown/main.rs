@@ -92,6 +92,17 @@ enum Commands {
         #[command(subcommand)]
         command: PrCommand,
     },
+    /// Lead-specific commands
+    Lead {
+        #[command(subcommand)]
+        command: LeadCommand,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum LeadCommand {
+    /// Register this session for task sharing with coworkers
+    RegisterSession,
 }
 
 fn main() {
@@ -131,6 +142,16 @@ fn main() {
     } = &command
     {
         let result = cli::handle_coworker_stop_hook();
+        handle_result(format, result);
+        return;
+    }
+
+    // Link tasks also works standalone (SessionStart hook)
+    if let Commands::Coworker {
+        command: CoworkerCommand::LinkTasks,
+    } = &command
+    {
+        let result = cli::handle_coworker_link_tasks();
         handle_result(format, result);
         return;
     }
@@ -193,6 +214,15 @@ fn main() {
         return;
     }
 
+    // Lead commands (no daemon required)
+    if let Commands::Lead { command } = &command {
+        let result = match command {
+            LeadCommand::RegisterSession => cli::handle_register_session(),
+        };
+        handle_result(format, result);
+        return;
+    }
+
     // All other commands require daemon connection
     let client = match DaemonClient::connect() {
         Ok(c) => c,
@@ -214,7 +244,8 @@ fn main() {
         | Commands::Start { .. }
         | Commands::Stop { .. }
         | Commands::Restart
-        | Commands::Attach => unreachable!(),
+        | Commands::Attach
+        | Commands::Lead { .. } => unreachable!(),
     };
 
     handle_result(format, result);

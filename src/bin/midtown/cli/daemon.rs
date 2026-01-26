@@ -358,6 +358,67 @@ pub fn get_session_status() -> (bool, bool) {
     (daemon_is_running(), exists)
 }
 
+/// Handle `midtown lead register-session` command.
+///
+/// Detects the Lead's Claude Code session UUID and saves it so coworkers
+/// can link their task directories to share tasks.
+pub fn handle_register_session() -> Result<Response, String> {
+    use std::fs;
+
+    let repo = repo_root()?;
+    let repo_name = repo
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "default".to_string());
+
+    // Find the Lead's session UUID (most recently modified task directory)
+    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
+    let tasks_dir = home.join(".claude").join("tasks");
+
+    if !tasks_dir.exists() {
+        return Err(
+            "No Claude Code task directories found. Create a task first with TaskCreate."
+                .to_string(),
+        );
+    }
+
+    let lead_uuid = find_newest_dir(&tasks_dir)?;
+
+    // Save to ~/.midtown/<repo>/lead-session
+    let midtown_dir = home.join(".midtown").join(&repo_name);
+    fs::create_dir_all(&midtown_dir)
+        .map_err(|e| format!("Failed to create midtown directory: {}", e))?;
+
+    let session_file = midtown_dir.join("lead-session");
+    fs::write(&session_file, &lead_uuid)
+        .map_err(|e| format!("Failed to write session file: {}", e))?;
+
+    Ok(Response::Message {
+        message: format!("Registered Lead session: {}", lead_uuid),
+    })
+}
+
+/// Find the most recently modified directory in the given path.
+fn find_newest_dir(dir: &std::path::Path) -> Result<String, String> {
+    use std::fs;
+
+    let entries: Vec<_> = fs::read_dir(dir)
+        .map_err(|e| format!("Cannot read directory: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir() && !e.path().is_symlink())
+        .collect();
+
+    if entries.is_empty() {
+        return Err("No directories found".to_string());
+    }
+
+    entries
+        .iter()
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .and_then(|e| e.file_name().to_str().map(|s| s.to_string()))
+        .ok_or_else(|| "Failed to determine newest directory".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
