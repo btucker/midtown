@@ -145,7 +145,9 @@ impl CoworkerManager {
             .to_string();
 
         // Create the tmux window and spawn claude in the worktree
-        tmux::spawn_claude(&self.session_name, &name, &working_dir)?;
+        // Pass repo_name so the coworker's tasks can be symlinked to the Lead's tasks
+        let repo_name = self.worktree_manager.repo_name();
+        tmux::spawn_claude(&self.session_name, &name, &working_dir, Some(repo_name))?;
 
         // Record the coworker
         let coworker = Coworker {
