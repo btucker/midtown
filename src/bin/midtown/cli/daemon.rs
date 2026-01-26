@@ -202,7 +202,7 @@ fn write_lead_prompt_file() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Generate Lead settings JSON with stop hook for channel sync.
+/// Generate Lead settings JSON with hooks for channel sync, insights, and orphan detection.
 fn lead_settings_json() -> serde_json::Value {
     let bin_command = midtown::config::get_bin_command();
     serde_json::json!({
@@ -210,7 +210,14 @@ fn lead_settings_json() -> serde_json::Value {
             "Stop": [{
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{} channel read", bin_command)
+                    "command": format!("{} hook lead-stop", bin_command)
+                }]
+            }],
+            "PostToolUse": [{
+                // No matcher = runs on every tool use for insight posting
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} hook insight", bin_command)
                 }]
             }]
         }

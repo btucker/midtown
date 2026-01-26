@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 mod cli;
 mod client;
 
-use cli::{ChannelCommand, CoworkerCommand, PrCommand, TaskCommand};
+use cli::{ChannelCommand, CoworkerCommand, HookCommand, PrCommand, TaskCommand};
 use client::DaemonClient;
 
 #[derive(Parser)]
@@ -99,6 +99,11 @@ enum Commands {
     },
     /// Open IRC-style chat TUI
     Chat,
+    /// Hook handlers (insight, idle) - called by Claude Code hooks
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -234,6 +239,13 @@ fn main() {
         return;
     }
 
+    // Hook commands (no daemon required - called by Claude Code hooks)
+    if let Commands::Hook { command } = &command {
+        let result = cli::handle_hook(command);
+        handle_result(format, result);
+        return;
+    }
+
     // All other commands require daemon connection
     let client = match DaemonClient::connect() {
         Ok(c) => c,
@@ -257,7 +269,8 @@ fn main() {
         | Commands::Restart
         | Commands::Attach
         | Commands::Lead { .. }
-        | Commands::Chat => unreachable!(),
+        | Commands::Chat
+        | Commands::Hook { .. } => unreachable!(),
     };
 
     handle_result(format, result);
