@@ -320,29 +320,26 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error
 
     let content = match event.action.as_str() {
         "opened" => format!(
-            "GitHub: {} opened PR #{}: {}",
+            "{} opened PR #{}: {}",
             event.pull_request.user.login, event.number, event.pull_request.title
         ),
         "closed" => {
             if event.pull_request.merged.unwrap_or(false) {
-                format!(
-                    "GitHub: PR #{} merged: {}",
-                    event.number, event.pull_request.title
-                )
+                format!("PR #{} merged: {}", event.number, event.pull_request.title)
             } else {
                 format!(
-                    "GitHub: PR #{} closed (not merged): {}",
+                    "PR #{} closed (not merged): {}",
                     event.number, event.pull_request.title
                 )
             }
         }
         "reopened" => format!(
-            "GitHub: {} reopened PR #{}: {}",
+            "{} reopened PR #{}: {}",
             event.pull_request.user.login, event.number, event.pull_request.title
         ),
-        "synchronize" => format!("GitHub: PR #{} updated with new commits", event.number),
+        "synchronize" => format!("PR #{} updated with new commits", event.number),
         "ready_for_review" => format!(
-            "GitHub: PR #{} is ready for review: {}",
+            "PR #{} is ready for review: {}",
             event.number, event.pull_request.title
         ),
         _ => return Ok(None),
@@ -360,15 +357,15 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json
 
     let content = match event.review.state.to_lowercase().as_str() {
         "approved" => format!(
-            "GitHub: {} approved PR #{}",
+            "{} approved PR #{}",
             event.review.user.login, event.pull_request.number
         ),
         "changes_requested" => format!(
-            "GitHub: {} requested changes on PR #{}",
+            "{} requested changes on PR #{}",
             event.review.user.login, event.pull_request.number
         ),
         "commented" => format!(
-            "GitHub: {} commented on PR #{}",
+            "{} commented on PR #{}",
             event.review.user.login, event.pull_request.number
         ),
         _ => return Ok(None),
@@ -391,7 +388,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Erro
 
     let preview = truncate_comment(&event.comment.body, 50);
     let content = format!(
-        "GitHub: {} commented on PR #{}: {}",
+        "{} commented on PR #{}: {}",
         event.comment.user.login, event.issue.number, preview
     );
 
@@ -407,7 +404,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Err
 
     let preview = truncate_comment(&event.comment.body, 50);
     let content = format!(
-        "GitHub: {} left review comment on PR #{}: {}",
+        "{} left review comment on PR #{}: {}",
         event.comment.user.login, event.pull_request.number, preview
     );
 
@@ -419,17 +416,17 @@ fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
 
     let content = match event.state.as_str() {
         "success" => format!(
-            "GitHub: CI passed ({}): {}",
+            "CI passed ({}): {}",
             event.context,
             event.description.as_deref().unwrap_or("No description")
         ),
         "failure" => format!(
-            "GitHub: CI failed ({}): {}",
+            "CI failed ({}): {}",
             event.context,
             event.description.as_deref().unwrap_or("No description")
         ),
         "error" => format!(
-            "GitHub: CI error ({}): {}",
+            "CI error ({}): {}",
             event.context,
             event.description.as_deref().unwrap_or("No description")
         ),
@@ -457,16 +454,10 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         .unwrap_or_default();
 
     let content = match event.check_run.conclusion.as_deref() {
-        Some("success") => format!("GitHub: Check '{}' passed{}", event.check_run.name, pr_info),
-        Some("failure") => format!("GitHub: Check '{}' failed{}", event.check_run.name, pr_info),
-        Some("cancelled") => format!(
-            "GitHub: Check '{}' cancelled{}",
-            event.check_run.name, pr_info
-        ),
-        Some("timed_out") => format!(
-            "GitHub: Check '{}' timed out{}",
-            event.check_run.name, pr_info
-        ),
+        Some("success") => format!("Check '{}' passed{}", event.check_run.name, pr_info),
+        Some("failure") => format!("Check '{}' failed{}", event.check_run.name, pr_info),
+        Some("cancelled") => format!("Check '{}' cancelled{}", event.check_run.name, pr_info),
+        Some("timed_out") => format!("Check '{}' timed out{}", event.check_run.name, pr_info),
         _ => return Ok(None),
     };
 
@@ -546,10 +537,7 @@ mod tests {
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(
-            msg.content,
-            "GitHub: lexington opened PR #42: Add auth endpoint"
-        );
+        assert_eq!(msg.content, "lexington opened PR #42: Add auth endpoint");
         assert_eq!(msg.from, "github");
     }
 
@@ -567,7 +555,7 @@ mod tests {
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "GitHub: PR #42 merged: Add auth endpoint");
+        assert_eq!(msg.content, "PR #42 merged: Add auth endpoint");
     }
 
     #[test]
@@ -585,7 +573,7 @@ mod tests {
         let msg = handle_pull_request_review(payload.as_bytes())
             .unwrap()
             .unwrap();
-        assert_eq!(msg.content, "GitHub: madison approved PR #42");
+        assert_eq!(msg.content, "madison approved PR #42");
     }
 
     #[test]
@@ -599,10 +587,7 @@ mod tests {
         }"#;
 
         let msg = handle_status(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(
-            msg.content,
-            "GitHub: CI passed (ci/tests): All tests passed"
-        );
+        assert_eq!(msg.content, "CI passed (ci/tests): All tests passed");
     }
 
     #[test]
