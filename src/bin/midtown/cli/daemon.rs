@@ -427,6 +427,13 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             .args(["select-pane", "-t", &main_pane])
             .status();
 
+        // Write marker file indicating Lead was initialized by midtown
+        let marker_path = lead_initialized_marker(&repo);
+        if let Some(parent) = marker_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
+
         if is_existing {
             messages.push(format!("Resumed Lead session in '{}'", session));
         } else {
@@ -506,8 +513,10 @@ pub fn handle_restart() -> Result<Response, String> {
 ///
 /// Attaches to the project's tmux session.
 /// If the session doesn't exist, it is automatically created first.
+/// If the session exists but Lead wasn't started with midtown settings, reinitialize it.
 pub fn handle_attach() -> Result<Response, String> {
     let session = session_name()?;
+    let repo = repo_root()?;
 
     // Auto-create session if it doesn't exist
     if !session_exists(&session) {
@@ -516,6 +525,9 @@ pub fn handle_attach() -> Result<Response, String> {
 
         // Wait briefly for the session to be ready
         std::thread::sleep(std::time::Duration::from_millis(200));
+    } else {
+        // Session exists - ensure Lead has proper settings
+        ensure_lead_has_settings(&session, &repo)?;
     }
 
     // Execute tmux attach - this replaces the current process
@@ -523,6 +535,79 @@ pub fn handle_attach() -> Result<Response, String> {
 
     // If we get here, exec failed
     Err(format!("Failed to attach to session: {}", err))
+}
+
+/// Ensure the Lead pane has proper midtown settings.
+/// Checks for a marker file; if missing, restarts Claude with settings.
+fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
+    let marker_path = lead_initialized_marker(repo);
+
+    // Check if Lead was properly initialized
+    if marker_path.exists() {
+        // Check marker version matches current
+        let marker_version = std::fs::read_to_string(&marker_path).unwrap_or_default();
+        if marker_version.trim() == env!("CARGO_PKG_VERSION") {
+            return Ok(()); // Already initialized with current version
+        }
+    }
+
+    // Need to reinitialize Lead with proper settings
+    eprintln!("Reinitializing Lead with midtown settings...");
+
+    // Get the Lead session ID
+    let (lead_session_id, is_existing) = get_or_create_lead_session_id(repo)?;
+
+    // Build the claude command with settings
+    let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing)?;
+
+    // Kill the current Lead pane content and restart with proper settings
+    let lead_pane = format!("{}:Lead.0", session);
+
+    // Send Ctrl-C to interrupt any running process, then exit
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &lead_pane, "C-c"])
+        .status();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Send exit command to close any shell
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &lead_pane, "exit", "Enter"])
+        .status();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Respawn the pane with the proper claude command
+    let _ = Command::new("tmux")
+        .args([
+            "respawn-pane",
+            "-k",
+            "-t",
+            &lead_pane,
+            "sh",
+            "-c",
+            &claude_cmd,
+        ])
+        .status();
+
+    // Write the marker file
+    if let Some(parent) = marker_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
+
+    Ok(())
+}
+
+/// Path to the marker file indicating Lead was initialized by midtown.
+fn lead_initialized_marker(repo: &Path) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let repo_name = repo
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    PathBuf::from(home)
+        .join(".midtown")
+        .join(&repo_name)
+        .join("lead-initialized")
 }
 
 /// Get session status for status command enhancement.
