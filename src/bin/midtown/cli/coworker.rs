@@ -76,36 +76,158 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
 /// This command is designed to be used as a Claude Code stop hook. It:
 /// 1. Reads channel messages (syncs any pending messages)
 /// 2. Checks for unclaimed tasks via `bd ready`
-/// 3. Returns JSON to indicate whether Claude should continue or stop
+/// 3. Checks for PRs needing review (that this coworker didn't create)
+/// 4. Checks if this coworker's PRs have been approved and can be merged
+/// 5. Returns JSON to indicate whether Claude should continue or stop
 ///
-/// If unclaimed tasks exist, returns `{"decision": "block", "reason": "..."}` to
-/// prevent stopping and allow the coworker to pick up the next task.
+/// If work is available, returns `{"decision": "block", "reason": "..."}` to
+/// prevent stopping and allow the coworker to continue working.
 pub fn handle_stop_hook_standalone() -> Result<Response, String> {
     // First, read channel messages to sync any pending updates
-    // We do this silently - errors here shouldn't block the stop hook
     let _ = read_channel_messages();
+
+    // Get coworker name from environment
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
+
+    // Collect all available work
+    let mut work_items: Vec<String> = Vec::new();
 
     // Check for unclaimed tasks
     let unclaimed_count = count_unclaimed_tasks();
-
     if unclaimed_count > 0 {
-        // There are unclaimed tasks - block stopping so coworker continues
-        let reason = if unclaimed_count == 1 {
-            "1 unclaimed task available".to_string()
-        } else {
-            format!("{} unclaimed tasks available", unclaimed_count)
-        };
+        work_items.push(format!(
+            "{} unclaimed task{}",
+            unclaimed_count,
+            if unclaimed_count == 1 { "" } else { "s" }
+        ));
+    }
 
+    // Check for PRs needing review (not created by this coworker)
+    let prs_needing_review = get_prs_needing_review(&agent);
+    if !prs_needing_review.is_empty() {
+        work_items.push(format!(
+            "{} PR{} needing review (use /code-review): {}",
+            prs_needing_review.len(),
+            if prs_needing_review.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            prs_needing_review.join(", ")
+        ));
+    }
+
+    // Check for approved PRs that can be merged
+    let approved_prs = get_approved_prs_by_coworker(&agent);
+    if !approved_prs.is_empty() {
+        work_items.push(format!(
+            "{} approved PR{} ready to merge: {}",
+            approved_prs.len(),
+            if approved_prs.len() == 1 { "" } else { "s" },
+            approved_prs.join(", ")
+        ));
+    }
+
+    if !work_items.is_empty() {
         Ok(Response::StopHookDecision {
             decision: "block".to_string(),
-            reason,
+            reason: work_items.join("; "),
         })
     } else {
-        // No unclaimed tasks - allow stopping
         Ok(Response::StopHookDecision {
             decision: "approve".to_string(),
-            reason: "No unclaimed tasks".to_string(),
+            reason: "No pending work".to_string(),
         })
+    }
+}
+
+/// Get PRs that need review and weren't created by this coworker.
+fn get_prs_needing_review(agent: &str) -> Vec<String> {
+    let output = std::process::Command::new("gh")
+        .args(["pr", "list", "--json", "number,author,reviewRequests,title"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return prs
+                    .iter()
+                    .filter(|pr| {
+                        // Skip PRs created by this coworker (check branch prefix)
+                        let author = pr
+                            .get("author")
+                            .and_then(|a| a.get("login"))
+                            .and_then(|l| l.as_str())
+                            .unwrap_or("");
+
+                        // Check if PR has review requests or is waiting for review
+                        let has_review_requests = pr
+                            .get("reviewRequests")
+                            .and_then(|r| r.as_array())
+                            .map(|a| !a.is_empty())
+                            .unwrap_or(false);
+
+                        // Don't review own PRs (check by branch name convention)
+                        // Coworkers create branches like "lexington/feature-name"
+                        !author.eq_ignore_ascii_case(agent) && has_review_requests
+                    })
+                    .map(|pr| {
+                        let number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+                        format!("#{}", number)
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Get PRs created by this coworker that have been approved.
+fn get_approved_prs_by_coworker(agent: &str) -> Vec<String> {
+    // Get PRs from branches matching coworker's naming convention
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,headRefName,reviewDecision,title",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return prs
+                    .iter()
+                    .filter(|pr| {
+                        // Check if branch starts with coworker name (e.g., "lexington/...")
+                        let branch = pr.get("headRefName").and_then(|b| b.as_str()).unwrap_or("");
+                        let is_coworker_pr = branch
+                            .split('/')
+                            .next()
+                            .map(|prefix| prefix.eq_ignore_ascii_case(agent))
+                            .unwrap_or(false);
+
+                        // Check if approved
+                        let review_decision = pr
+                            .get("reviewDecision")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("");
+
+                        is_coworker_pr && review_decision == "APPROVED"
+                    })
+                    .map(|pr| {
+                        let number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+                        format!("#{}", number)
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
     }
 }
 
