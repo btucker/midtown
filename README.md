@@ -20,38 +20,122 @@ Midtown provides the infrastructure for this coordination:
 - **Coworker spawning** - Launch Claude Code instances in isolated git worktrees
 - **Task coordination** - Coworkers claim tasks via Claude Code's native task system
 
+## Architecture
+
+Midtown consists of two components:
+
+1. **The Daemon** (`midtownd`) - A Rust-based background service that manages:
+   - Channel message storage and delivery
+   - Coworker lifecycle (spawn, track, shutdown)
+   - Git worktree management
+   - Task coordination
+
+2. **The Claude Code Plugin** - A native plugin that provides:
+   - Tools for Lead and Coworker agents
+   - Stop hooks for automatic channel synchronization
+   - Commands for status and channel interaction
+   - Agent definitions with role-specific capabilities
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Human Developer                      │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                   Lead (Claude Code)                     │
+│                   main git worktree                      │
+│                   + midtown plugin                       │
+└─────────────────────────┬───────────────────────────────┘
+                          │ midtown CLI
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                   Midtown Daemon                         │
+│              (Unix socket: ~/.local/state/midtown/)      │
+├─────────────────────────┬───────────────────────────────┤
+│     Channel             │         Coworker Manager       │
+│  (append-only log)      │      (spawn/track/shutdown)    │
+└─────────────────────────┴───────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+│   Madison   │   │  Lexington  │   │    Park     │
+│ (worktree)  │   │ (worktree)  │   │ (worktree)  │
+│ Claude Code │   │ Claude Code │   │ Claude Code │
+│ + plugin    │   │ + plugin    │   │ + plugin    │
+└─────────────┘   └─────────────┘   └─────────────┘
+```
+
 ## Key Concepts
 
 ### Lead
 
-The **Lead** is your primary, human-facing Claude Code instance. This is like the "Mayor" in Gastown. It:
+The **Lead** is your primary, human-facing Claude Code instance. It:
 - Collaborates with you to plan & design what to build
-- Give you insight into the process
+- Gives you insight into the process
 - Spawns coworkers when parallel work is needed
 - Coordinates the team via the channel
 - Reviews work from coworkers
+
+The Lead has access to tools like `spawn_coworker`, `shutdown_coworker`, and `broadcast`.
 
 ### Coworkers
 
 **Coworkers** are additional Claude Code instances, each running in:
 - Their own isolated git worktree (no merge conflicts during development)
 - Their own terminal session
-- With automatic channel synchronization via Claude Code hooks
+- With automatic channel synchronization via the Stop hook
 
 Coworkers:
-- Grab open tasks & work them to completion, keeping an eye on the channel for coordination with other coworkers
+- Grab open tasks & work them to completion
+- Keep an eye on the channel for coordination
 - Review open PRs when needed
-- Merge their own PRs once they have been approved by another coworker
+- Merge their own PRs once approved
+
+Coworkers have access to tools like `post_message`, `read_channel`, `claim_task`, and `request_review`.
 
 Coworkers are named after Manhattan avenues (Madison, Lexington, Park, etc.) for easy reference.
 
 ### Channel
 
-The **Channel** is an append-only message log where the team coordinates. Messages persist across sessions, so coworkers can catch up on what happened while they were offline. In the future midtown may introduce multiple "public" channels.
+The **Channel** is an append-only message log where the team coordinates. Messages persist across sessions, so coworkers can catch up on what happened while they were offline.
+
+The Stop hook automatically reads the channel at natural pause points, keeping coworkers in sync without explicit polling.
 
 ### Tasks
 
 Midtown uses Claude Code's built-in task system (`TaskCreate`, `TaskList`, `TaskUpdate`). The Lead creates tasks, coworkers claim and complete them.
+
+## Installation
+
+### 1. Build and install the daemon
+
+```bash
+cargo build --release
+cargo install --path .
+```
+
+### 2. Install the Claude Code plugin
+
+The plugin is included in this repository. To use it:
+
+```bash
+# Option 1: Symlink to your plugins directory
+ln -s $(pwd) ~/.claude/plugins/midtown
+
+# Option 2: Copy the plugin
+cp -r . ~/.claude/plugins/midtown
+```
+
+### 3. Enable the plugin in Claude Code
+
+Add to your Claude Code settings:
+```json
+{
+  "plugins": ["midtown"]
+}
+```
 
 ## Quick Start
 
@@ -66,24 +150,28 @@ midtown start --verbose
 
 ### 2. Check status
 
+Use the `/status` command in Claude Code, or:
+
 ```bash
 midtown status
 ```
 
 ### 3. Spawn a coworker
 
+The Lead can use the `spawn_coworker` tool, or via CLI:
+
 ```bash
 midtown coworker spawn
 # => Spawned coworker: madison
 ```
 
-### 4. Send messages
+### 4. Coordinate via channel
 
 ```bash
-# Lead posts to the channel
-midtown channel post "Starting work on auth feature - Madison, please handle tests"
+# Post a message
+midtown channel post "Madison, please work on the auth tests"
 
-# Check what coworkers are seeing
+# Read messages
 midtown channel read
 ```
 
@@ -97,84 +185,35 @@ midtown coworker shutdown madison
 midtown stop
 ```
 
-## Lead Walkthrough
+## Plugin Structure
 
-Here's a typical workflow from the Lead's perspective:
-
-### Starting a session
-
-```bash
-# Start the midtown daemon
-midtown start
-
-# Check system status
-midtown status
-# Shows: daemon running, no active coworkers, pending tasks
 ```
-
-### Spawning coworkers
-
-When you have parallel work, spawn coworkers:
-
-```bash
-# Spawn a coworker for implementing feature X
-midtown coworker spawn
-# => Spawned coworker: madison (worktree: ~/.midtown/worktrees/madison)
-
-# Spawn another for writing tests
-midtown coworker spawn
-# => Spawned coworker: lexington (worktree: ~/.midtown/worktrees/lexington)
-```
-
-Each coworker gets:
-- A fresh git worktree branched from your current commit
-- A Claude Code session with channel sync hooks configured
-- Access to the shared task list
-
-### Coordinating via channel
-
-Post messages to coordinate:
-
-```bash
-midtown channel post "Madison: implement the login endpoint. Lexington: write integration tests for auth."
-```
-
-Coworkers automatically see channel messages at their natural pause points (via Claude Code's Stop hook).
-
-### Monitoring progress
-
-```bash
-# See all coworkers and their status
-midtown coworker list
-
-# Check recent channel activity
-midtown channel read
-
-# Full system overview
-midtown status
-```
-
-### Reviewing work
-
-Coworkers push their work to feature branches. When ready:
-
-```bash
-# List PRs from coworkers
-midtown pr list
-
-# Review a specific PR
-midtown pr review madison
-```
-
-### Wrapping up
-
-```bash
-# Shutdown specific coworkers
-midtown coworker shutdown madison
-midtown coworker shutdown lexington
-
-# Or shutdown all coworkers and stop the daemon
-midtown stop
+midtown/
+├── .claude-plugin/
+│   └── plugin.json          # Plugin manifest
+├── tools/
+│   ├── lead/                # Lead-only tools
+│   │   ├── spawn_coworker.md
+│   │   ├── shutdown_coworker.md
+│   │   └── broadcast.md
+│   ├── coworker/            # Coworker-only tools
+│   │   ├── post_message.md
+│   │   ├── read_channel.md
+│   │   ├── claim_task.md
+│   │   └── request_review.md
+│   └── shared/              # Tools for both roles
+│       ├── list_coworkers.md
+│       └── check_pr_status.md
+├── hooks/
+│   ├── hooks.json           # Hook configuration
+│   └── scripts/
+│       └── channel-sync.sh  # Stop hook for channel sync
+├── commands/
+│   ├── status.md            # /status command
+│   └── channel.md           # /channel command
+└── agents/
+    ├── lead.md              # Lead agent definition
+    └── coworker.md          # Coworker agent definition
 ```
 
 ## CLI Reference
@@ -208,7 +247,7 @@ midtown status                # System overview
 ```bash
 midtown channel post <MESSAGE>        # Send a message
 midtown channel read                  # Read new messages (advances cursor)
-midtown channel read-all              # Read all messages
+midtown channel read --all            # Read all messages
 midtown channel reset                 # Reset read cursor to beginning
 ```
 
@@ -239,51 +278,22 @@ midtown pr review <COWORKER>          # Review PR from coworker
 
 ## How Coworker Sync Works
 
-Coworkers stay synchronized via Claude Code's hook system. When spawned, each coworker is configured with a **Stop hook** that reads the channel whenever Claude Code pauses:
+Coworkers stay synchronized via the Claude Code plugin's Stop hook. When Claude Code pauses, the hook automatically reads the channel:
 
 ```json
 {
-  "hooks": {
-    "Stop": [{
+  "Stop": [{
+    "matcher": "*",
+    "hooks": [{
       "type": "command",
-      "command": "midtown channel read"
+      "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/channel-sync.sh",
+      "timeout": 30
     }]
-  }
+  }]
 }
 ```
 
-This means coworkers automatically receive team messages at natural pause points—no explicit polling required.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Human Developer                      │
-└─────────────────────────┬───────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Lead (Claude Code)                     │
-│                   main git worktree                      │
-└─────────────────────────┬───────────────────────────────┘
-                          │ midtown CLI
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Midtown Daemon                         │
-│              (Unix socket: ~/.local/state/midtown/)      │
-├─────────────────────────┬───────────────────────────────┤
-│     Channel             │         Coworker Manager       │
-│  (append-only log)      │      (spawn/track/shutdown)    │
-└─────────────────────────┴───────────────────────────────┘
-                          │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│   Madison   │   │  Lexington  │   │    Park     │
-│ (worktree)  │   │ (worktree)  │   │ (worktree)  │
-│ Claude Code │   │ Claude Code │   │ Claude Code │
-└─────────────┘   └─────────────┘   └─────────────┘
-```
+This means coworkers automatically receive team messages at natural pause points—no explicit polling required. The hook also checks for unclaimed tasks.
 
 ## Development
 
