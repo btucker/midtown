@@ -340,6 +340,24 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             ])
             .status();
 
+        // Split Lead window with chat TUI on the right (30% width)
+        let lead_target = format!("{}:Lead", session);
+        let _ = Command::new("tmux")
+            .args(["split-window", "-h", "-t", &lead_target, "-p", "30"])
+            .status();
+
+        // Start chat TUI in the new pane (pane .1)
+        let chat_pane = format!("{}:Lead.1", session);
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &chat_pane, "midtown-chat", "Enter"])
+            .status();
+
+        // Keep focus on the main pane (Claude Code, pane .0)
+        let main_pane = format!("{}:Lead.0", session);
+        let _ = Command::new("tmux")
+            .args(["select-pane", "-t", &main_pane])
+            .status();
+
         if is_existing {
             messages.push(format!("Resumed Lead session in '{}'", session));
         } else {
