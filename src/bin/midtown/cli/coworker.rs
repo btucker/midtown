@@ -29,6 +29,11 @@ pub enum CoworkerCommand {
     },
     /// Handle Claude Code stop hook (checks for unclaimed tasks)
     StopHook,
+    /// Handle Claude Code PostToolUse hook for task operations
+    ///
+    /// Reads tool use context from stdin and posts task activity to channel.
+    /// Called automatically by Claude Code when TaskUpdate or TaskCreate tools are used.
+    TaskHook,
     /// Link this session's tasks to the Lead's task directory (SessionStart hook)
     LinkTasks,
 }
@@ -61,6 +66,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
         CoworkerCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),
         CoworkerCommand::NudgeConfig { command } => handle_nudge_config(command, client),
         CoworkerCommand::StopHook => handle_stop_hook_standalone(),
+        CoworkerCommand::TaskHook => handle_task_hook_standalone(),
         CoworkerCommand::LinkTasks => handle_link_tasks_standalone(),
     }
 }
@@ -101,6 +107,97 @@ pub fn handle_stop_hook_standalone() -> Result<Response, String> {
             reason: "No unclaimed tasks".to_string(),
         })
     }
+}
+
+/// Handle the PostToolUse hook for task operations.
+///
+/// This command is designed to be used as a Claude Code PostToolUse hook
+/// for TaskUpdate and TaskCreate tools. It:
+/// 1. Reads tool use context from stdin (JSON)
+/// 2. Parses the task operation (claim, complete, create)
+/// 3. Posts appropriate action message to channel
+///
+/// Example outputs:
+/// - `* lexington claimed task 5: Fix auth middleware`
+/// - `* lexington completed task 5`
+/// - `* Lead created task 7: Add unit tests`
+pub fn handle_task_hook_standalone() -> Result<Response, String> {
+    use std::io::Read;
+
+    // Read stdin for tool context
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| format!("Failed to read stdin: {}", e))?;
+
+    // Parse the JSON input
+    let context: serde_json::Value =
+        serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+    // Get agent name from environment or use "coworker"
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
+
+    // Detect repo and open channel
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+    let channel =
+        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    // Parse tool input to determine the operation
+    let tool_name = context["tool_name"]
+        .as_str()
+        .or_else(|| context["toolName"].as_str())
+        .unwrap_or("");
+    let tool_input = &context["tool_input"];
+
+    let action_message = match tool_name {
+        "TaskCreate" => {
+            // Extract subject from tool input
+            let subject = tool_input["subject"].as_str().unwrap_or("new task");
+            format!("created task: {}", subject)
+        }
+        "TaskUpdate" => {
+            // Parse task update - check for status changes
+            let task_id = tool_input["taskId"]
+                .as_str()
+                .unwrap_or(tool_input["task_id"].as_str().unwrap_or("?"));
+
+            if let Some(new_status) = tool_input["status"].as_str() {
+                match new_status {
+                    "in_progress" => {
+                        // Check if owner was also set (claiming)
+                        if tool_input.get("owner").is_some() {
+                            format!("claimed task {}", task_id)
+                        } else {
+                            format!("started task {}", task_id)
+                        }
+                    }
+                    "completed" => format!("completed task {}", task_id),
+                    _ => format!("updated task {} to {}", task_id, new_status),
+                }
+            } else if tool_input.get("owner").is_some() {
+                format!("claimed task {}", task_id)
+            } else {
+                // Generic update
+                format!("updated task {}", task_id)
+            }
+        }
+        _ => {
+            // Unknown tool - silently succeed
+            return Ok(Response::Message {
+                message: "OK".to_string(),
+            });
+        }
+    };
+
+    // Post action message to channel
+    let message = midtown::Message::action(&agent, &action_message);
+    channel
+        .send(&message)
+        .map_err(|e| format!("Failed to post to channel: {}", e))?;
+
+    Ok(Response::Message {
+        message: format!("Posted: * {} {}", agent, action_message),
+    })
 }
 
 /// Read channel messages silently (for stop hook sync).

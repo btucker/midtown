@@ -261,10 +261,9 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
 
 /// JSON settings for coworker Claude Code sessions.
 ///
-/// Configures the Stop hook to:
-/// 1. Read channel messages (sync pending updates)
-/// 2. Check for unclaimed tasks
-/// 3. Block stopping if unclaimed tasks exist (keeps coworker working)
+/// Configures hooks for:
+/// - Stop: Sync channel, check for unclaimed tasks, block if more work available
+/// - PostToolUse: Broadcast task operations (claim, complete, create) to channel
 fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
     serde_json::json!({
         "editorMode": "normal",
@@ -273,6 +272,19 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                 "hooks": [{
                     "type": "command",
                     "command": format!("{} --format json coworker stop-hook", bin_command)
+                }]
+            }],
+            "PostToolUse": [{
+                "matcher": {"toolName": "TaskUpdate"},
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} coworker task-hook", bin_command)
+                }]
+            }, {
+                "matcher": {"toolName": "TaskCreate"},
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} coworker task-hook", bin_command)
                 }]
             }]
         }
@@ -295,7 +307,7 @@ fn write_coworker_settings_file(bin_command: &str) -> crate::Result<PathBuf> {
 /// Generate the system prompt for a coworker.
 ///
 /// This prompt gives the coworker instructions for operating in the midtown
-/// environment, including channel usage, task workflow, and coordination.
+/// environment, including IRC-style channel usage, task workflow, and coordination.
 fn coworker_system_prompt(name: &str) -> String {
     format!(
         r#"# Coworker System Prompt
@@ -306,16 +318,26 @@ fn coworker_system_prompt(name: &str) -> String {
 - You work in your own git worktree
 
 ## Channel Usage
-Post updates to the team channel:
+The channel works like IRC. Post updates to keep the team informed:
 ```bash
 midtown channel post "your message here"
 ```
 
-The channel is like Slack - keep teammates informed. Post when:
-- Starting work on a task
-- Hitting blockers
-- Finishing tasks
-- Needing review
+Use `/me` to indicate what you're currently doing:
+```bash
+midtown channel post "/me investigating the auth bug"
+midtown channel post "/me running test suite"
+midtown channel post "/me opening PR for task 3"
+```
+
+Your `/me` status appears in the team sidebar, so keep it current.
+
+Post when:
+- Starting work: `/me claiming task 5`
+- Making progress: `/me found the issue in auth.rs`
+- Finishing: `/me opened PR #42 for review`
+- Blocked: `blocked on task 3, need API spec clarified`
+- Questions: `@Lead should this handle the edge case?`
 
 ## Task Workflow
 Use Claude Code's built-in task tools to manage tasks:
@@ -500,7 +522,7 @@ mod tests {
         // Verify editorMode is normal (not vim)
         assert_eq!(settings["editorMode"], "normal");
 
-        // Verify hook structure
+        // Verify Stop hook structure
         assert!(settings["hooks"]["Stop"].is_array());
         let stop_hooks = &settings["hooks"]["Stop"][0]["hooks"];
         assert!(stop_hooks.is_array());
@@ -508,6 +530,25 @@ mod tests {
         assert_eq!(
             stop_hooks[0]["command"],
             "midtown --format json coworker stop-hook"
+        );
+
+        // Verify PostToolUse hooks for task operations
+        let post_tool_hooks = &settings["hooks"]["PostToolUse"];
+        assert!(post_tool_hooks.is_array());
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 2);
+
+        // TaskUpdate hook
+        assert_eq!(post_tool_hooks[0]["matcher"]["toolName"], "TaskUpdate");
+        assert_eq!(
+            post_tool_hooks[0]["hooks"][0]["command"],
+            "midtown coworker task-hook"
+        );
+
+        // TaskCreate hook
+        assert_eq!(post_tool_hooks[1]["matcher"]["toolName"], "TaskCreate");
+        assert_eq!(
+            post_tool_hooks[1]["hooks"][0]["command"],
+            "midtown coworker task-hook"
         );
     }
 
@@ -554,6 +595,17 @@ mod tests {
         // Verify Claude Code task tools are mentioned
         assert!(prompt.contains("TaskList"));
         assert!(prompt.contains("TaskUpdate"));
+    }
+
+    #[test]
+    fn test_coworker_system_prompt_contains_irc_style_guidance() {
+        let prompt = coworker_system_prompt("lexington");
+
+        // Verify IRC-style /me usage is documented
+        assert!(prompt.contains("/me"));
+        assert!(prompt.contains("works like IRC"));
+        assert!(prompt.contains("/me investigating"));
+        assert!(prompt.contains("team sidebar"));
     }
 
     #[test]
