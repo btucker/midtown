@@ -257,6 +257,51 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     Ok(())
 }
 
+/// Rename a tmux window to show coworker status.
+///
+/// Updates the window name to include the coworker's current status,
+/// providing visibility even when the chat TUI is not in focus.
+///
+/// # Arguments
+/// * `session` - The tmux session name
+/// * `name` - The coworker name (window name)
+/// * `status` - The status to display (e.g., "investigating auth bug")
+///
+/// # Window Name Format
+/// - With status: "lexington: investigating..."
+/// - Without status (idle): "lexington"
+///
+/// Status is truncated to keep the tab readable (max 20 chars).
+pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::Result<()> {
+    let target = format!("{}:{}", session, name);
+
+    // Build the new window name
+    let new_name = match status {
+        Some(s) if !s.is_empty() => {
+            // Truncate status to keep tab readable
+            let truncated = if s.len() > 20 {
+                format!("{}...", &s[..17])
+            } else {
+                s.to_string()
+            };
+            format!("{}: {}", name, truncated)
+        }
+        _ => name.to_string(),
+    };
+
+    let status = Command::new("tmux")
+        .args(["rename-window", "-t", &target, &new_name])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        // Non-fatal - window might not exist yet
+        tracing::debug!("Failed to rename tmux window {} to {}", target, new_name);
+    }
+
+    Ok(())
+}
+
 /// Send raw keys without appending Enter.
 pub fn send_keys_raw(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     let target = format!("{}:{}", session, name);

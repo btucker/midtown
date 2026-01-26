@@ -645,6 +645,7 @@ fn handle_coworker_nudge(
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
 /// the prefix is stripped and the message is stored as an Action type.
+/// For coworkers, the action text is also reflected in their tmux tab name.
 fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonState) -> Response {
     // Check for /me prefix (IRC-style action)
     let (content, msg_type) = if let Some(action) = message.strip_prefix("/me ") {
@@ -653,11 +654,20 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
         (message.to_string(), MessageType::Text)
     };
 
-    let msg = Message::new(from, content, msg_type);
+    let msg = Message::new(from, content.clone(), msg_type.clone());
 
     match state.channel.send(&msg) {
         Ok(()) => {
             info!("Channel post from {}: {}", from, message);
+
+            // Update tmux tab for coworkers when they post /me actions
+            if msg_type == MessageType::Action {
+                // Update the coworker's tmux tab to show their status
+                if let Err(e) = state.coworkers.update_status_display(from, Some(&content)) {
+                    debug!("Failed to update tmux tab for {}: {}", from, e);
+                }
+            }
+
             Response::success(
                 id,
                 serde_json::json!({
