@@ -1,7 +1,8 @@
 //! Midtown daemon server.
 //!
 //! This module provides the daemon server that listens on a Unix socket and
-//! handles JSON-RPC requests for workspace management operations.
+//! handles JSON-RPC requests for workspace management operations. It also
+//! runs a webhook server to receive GitHub events.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,8 +13,11 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
+use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
 use crate::rpc::{Request, RequestId, Response, RpcError};
+use crate::webhook::{WebhookConfig, start_webhook_server};
+use crate::worktree::WorktreeManager;
 
 /// Configuration for the daemon server.
 #[derive(Debug, Clone)]
@@ -24,7 +28,14 @@ pub struct DaemonConfig {
     pub workdir: PathBuf,
     /// Enable verbose logging.
     pub verbose: bool,
+    /// Port for the webhook server (None to disable).
+    pub webhook_port: Option<u16>,
+    /// GitHub webhook secret for signature verification.
+    pub webhook_secret: Option<String>,
 }
+
+/// Default port for the webhook server (obscure to avoid conflicts)
+pub const DEFAULT_WEBHOOK_PORT: u16 = 47022;
 
 impl Default for DaemonConfig {
     fn default() -> Self {
@@ -37,10 +48,20 @@ impl Default for DaemonConfig {
                     .join("state")
             });
 
+        // Check env vars for webhook config (can override or disable with MIDTOWN_WEBHOOK_PORT=0)
+        let webhook_port = std::env::var("MIDTOWN_WEBHOOK_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map(|p| if p == 0 { None } else { Some(p) })
+            .unwrap_or(Some(DEFAULT_WEBHOOK_PORT));
+        let webhook_secret = std::env::var("MIDTOWN_WEBHOOK_SECRET").ok();
+
         Self {
             socket_path: state_dir.join("midtown").join("daemon.sock"),
             workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             verbose: false,
+            webhook_port,
+            webhook_secret,
         }
     }
 }
@@ -52,11 +73,24 @@ struct DaemonState {
 }
 
 impl DaemonState {
-    fn new(socket_path: PathBuf, workdir: PathBuf) -> Self {
-        Self {
-            coworkers: CoworkerManager::new(workdir.to_string_lossy().to_string()),
+    fn new(socket_path: PathBuf, workdir: PathBuf) -> crate::Result<Self> {
+        // Derive the tmux session name from the workdir (repo name)
+        let repo_name = workdir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".to_string());
+        let session_name = format!("midtown-{}", repo_name);
+
+        // Create worktree manager for coworker isolation
+        let worktree_manager = WorktreeManager::new(workdir).map_err(|e| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Failed to initialize worktree manager: {}", e),
+        })?;
+
+        Ok(Self {
+            coworkers: CoworkerManager::new(session_name, worktree_manager),
             socket_path,
-        }
+        })
     }
 }
 
@@ -77,8 +111,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
+    // Derive repo name from workdir
+    let repo_name = config
+        .workdir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "default".to_string());
+
+    // Create channel for the repo
+    let channel = Channel::for_repo(&repo_name)?;
+    info!("Channel: {}", channel.base_dir().display());
+
     // Create daemon state
-    let state = Arc::new(DaemonState::new(config.socket_path.clone(), config.workdir));
+    let state = Arc::new(DaemonState::new(
+        config.socket_path.clone(),
+        config.workdir,
+    )?);
 
     // Remove existing socket file if present
     if config.socket_path.exists() {
@@ -88,6 +136,91 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Bind to Unix socket
     let listener = UnixListener::bind(&config.socket_path)?;
     info!("Listening on {}", config.socket_path.display());
+
+    // Start webhook server and gh forwarder if configured
+    let mut webhook_rx = None;
+    let mut gh_forward_process: Option<std::process::Child> = None;
+
+    if let Some(port) = config.webhook_port {
+        let webhook_config = WebhookConfig {
+            port,
+            secret: config.webhook_secret.clone(),
+            repo: repo_name.clone(),
+        };
+        match start_webhook_server(webhook_config).await {
+            Ok(rx) => {
+                info!("Webhook server started on port {}", port);
+                webhook_rx = Some(rx);
+
+                // Get the GitHub repo name (owner/repo) for webhook forwarding
+                let gh_repo = std::process::Command::new("gh")
+                    .args([
+                        "repo",
+                        "view",
+                        "--json",
+                        "nameWithOwner",
+                        "-q",
+                        ".nameWithOwner",
+                    ])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+                if let Some(repo) = gh_repo {
+                    // Ensure gh-webhook extension is installed
+                    let extension_check = std::process::Command::new("gh")
+                        .args(["extension", "list"])
+                        .output()
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).contains("webhook"))
+                        .unwrap_or(false);
+
+                    if !extension_check {
+                        info!("Installing gh-webhook extension...");
+                        let install_result = std::process::Command::new("gh")
+                            .args(["extension", "install", "cli/gh-webhook"])
+                            .status();
+                        if let Err(e) = install_result {
+                            warn!("Failed to install gh-webhook extension: {}", e);
+                        }
+                    }
+                    // Start gh webhook forward to receive GitHub events
+                    let url = format!("http://localhost:{}/webhook", port);
+                    match std::process::Command::new("gh")
+                        .args([
+                            "webhook",
+                            "forward",
+                            "--events=pull_request,pull_request_review,check_run,status,issue_comment,pull_request_review_comment",
+                            &format!("--repo={}", repo),
+                            &format!("--url={}", url),
+                        ])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                    {
+                        Ok(child) => {
+                            info!("Started gh webhook forward for {} to {}", repo, url);
+                            gh_forward_process = Some(child);
+                        }
+                        Err(e) => {
+                            warn!("Failed to start gh webhook forward: {}", e);
+                        }
+                    }
+                } else {
+                    warn!(
+                        "Could not determine GitHub repo (gh repo view failed). Webhook forwarding disabled."
+                    );
+                    warn!("Webhooks will still work if configured manually in GitHub settings.");
+                }
+            }
+            Err(e) => {
+                error!("Failed to start webhook server: {}", e);
+            }
+        }
+    } else {
+        debug!("Webhook server disabled (no port configured)");
+    }
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -113,6 +246,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             }
 
+            // Forward webhook messages to channel
+            Some(msg) = async {
+                match webhook_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                debug!("Received webhook message: {}", msg.content);
+                if let Err(e) = channel.send(&msg) {
+                    error!("Failed to forward webhook message to channel: {}", e);
+                }
+            }
+
             // Handle SIGTERM
             _ = sigterm.recv() => {
                 info!("Received SIGTERM, shutting down...");
@@ -127,6 +273,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 break;
             }
         }
+    }
+
+    // Stop gh webhook forward if running
+    if let Some(mut child) = gh_forward_process {
+        info!("Stopping gh webhook forward...");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     // Shutdown all coworkers

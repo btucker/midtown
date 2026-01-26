@@ -49,6 +49,10 @@ enum Commands {
         /// Enable verbose logging
         #[arg(short, long)]
         verbose: bool,
+
+        /// Port for GitHub webhook server (disabled if not set)
+        #[arg(long)]
+        webhook_port: Option<u16>,
     },
     /// Start midtown (daemon + tmux session)
     Start {
@@ -136,6 +140,7 @@ fn main() {
         socket,
         workdir,
         verbose,
+        webhook_port,
     } = &command
     {
         let mut config = midtown::daemon::DaemonConfig::default();
@@ -146,6 +151,10 @@ fn main() {
             config.workdir = w.clone();
         }
         config.verbose = *verbose;
+        // CLI flag overrides env var
+        if webhook_port.is_some() {
+            config.webhook_port = *webhook_port;
+        }
 
         // Run the daemon (this blocks until shutdown)
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");

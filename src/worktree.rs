@@ -42,6 +42,7 @@ impl From<WorktreeError> for Error {
 }
 
 /// Manages git worktrees for coworker isolation
+#[derive(Debug)]
 pub struct WorktreeManager {
     /// Root repository path (the main checkout)
     repo_root: PathBuf,
@@ -82,18 +83,13 @@ impl WorktreeManager {
         self.worktrees_base.join(coworker_name)
     }
 
-    /// Get the branch name for a coworker
-    pub fn branch_name(&self, coworker_name: &str) -> String {
-        format!("{}/work", coworker_name)
-    }
-
     /// Create a worktree for a coworker.
     ///
     /// Creates a new worktree at `~/.midtown/<repo>/worktrees/<name>/`
-    /// with a new branch `<name>/work`.
+    /// detached at the current HEAD. The coworker should immediately create
+    /// a feature branch for their task.
     pub fn create(&self, coworker_name: &str) -> WorktreeResult<PathBuf> {
         let worktree_path = self.worktree_path(coworker_name);
-        let branch_name = self.branch_name(coworker_name);
 
         // Check if worktree already exists
         if worktree_path.exists() {
@@ -105,54 +101,32 @@ impl WorktreeManager {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Create the worktree with a new branch
+        // Create the worktree detached at HEAD
+        // Coworker will create their own feature branch for each task
         let output = Command::new("git")
             .current_dir(&self.repo_root)
             .args([
                 "worktree",
                 "add",
+                "--detach",
                 worktree_path.to_str().unwrap(),
-                "-b",
-                &branch_name,
             ])
             .output()?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            // Check if branch already exists (can reuse it)
-            if stderr.contains("already exists") {
-                // Try adding worktree using existing branch
-                let output = Command::new("git")
-                    .current_dir(&self.repo_root)
-                    .args([
-                        "worktree",
-                        "add",
-                        worktree_path.to_str().unwrap(),
-                        &branch_name,
-                    ])
-                    .output()?;
-
-                if !output.status.success() {
-                    return Err(WorktreeError::GitError(
-                        String::from_utf8_lossy(&output.stderr).to_string(),
-                    ));
-                }
-            } else {
-                return Err(WorktreeError::GitError(stderr.to_string()));
-            }
+            return Err(WorktreeError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
         }
 
         Ok(worktree_path)
     }
 
-    /// Remove a coworker's worktree and optionally clean up the branch.
+    /// Remove a coworker's worktree.
     ///
     /// If `force` is true, removes the worktree even if it has uncommitted changes.
-    /// If the branch has been merged to main, it will be deleted.
     pub fn remove(&self, coworker_name: &str, force: bool) -> WorktreeResult<()> {
         let worktree_path = self.worktree_path(coworker_name);
-        let branch_name = self.branch_name(coworker_name);
 
         // Check if worktree exists
         if !worktree_path.exists() {
@@ -175,49 +149,6 @@ impl WorktreeManager {
             return Err(WorktreeError::GitError(
                 String::from_utf8_lossy(&output.stderr).to_string(),
             ));
-        }
-
-        // Try to delete the branch if it's merged
-        self.cleanup_branch(&branch_name)?;
-
-        Ok(())
-    }
-
-    /// Check if a branch is merged to main and delete it if so.
-    fn cleanup_branch(&self, branch_name: &str) -> WorktreeResult<()> {
-        // Check if branch is merged to main
-        let output = Command::new("git")
-            .current_dir(&self.repo_root)
-            .args(["branch", "--merged", "main"])
-            .output()?;
-
-        if !output.status.success() {
-            // Can't determine merge status, leave branch alone
-            return Ok(());
-        }
-
-        let merged_branches = String::from_utf8_lossy(&output.stdout);
-        let is_merged = merged_branches
-            .lines()
-            .any(|line| line.trim().trim_start_matches("* ") == branch_name);
-
-        if is_merged {
-            // Delete the merged branch
-            let output = Command::new("git")
-                .current_dir(&self.repo_root)
-                .args(["branch", "-d", branch_name])
-                .output()?;
-
-            if !output.status.success() {
-                // Not critical, just log the failure
-                tracing::warn!(
-                    "Failed to delete merged branch {}: {}",
-                    branch_name,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-        } else {
-            tracing::info!("Branch {} is not merged to main, keeping it", branch_name);
         }
 
         Ok(())
@@ -359,18 +290,6 @@ fn check_coworker_worktree(path: &Path, worktrees_base: &Path) -> (bool, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_branch_name() {
-        let manager = WorktreeManager {
-            repo_root: PathBuf::from("/tmp/repo"),
-            repo_name: "myrepo".to_string(),
-            worktrees_base: PathBuf::from("/home/user/.midtown/myrepo/worktrees"),
-        };
-
-        assert_eq!(manager.branch_name("alice"), "alice/work");
-        assert_eq!(manager.branch_name("polecat-1"), "polecat-1/work");
-    }
 
     #[test]
     fn test_worktree_path() {

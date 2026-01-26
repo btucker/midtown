@@ -28,6 +28,8 @@ pub enum MessageType {
     Status,
     /// Error notification
     Error,
+    /// Action message (IRC-style /me)
+    Action,
 }
 
 /// A message in the channel log.
@@ -180,6 +182,25 @@ impl Message {
     pub fn error(from: impl Into<String>, content: impl Into<String>) -> Self {
         Self::new(from, content, MessageType::Error)
     }
+
+    /// Create an action message (IRC-style /me).
+    ///
+    /// Action messages are displayed as `* name action` in chat,
+    /// following IRC convention.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use midtown::{Message, MessageType};
+    ///
+    /// let msg = Message::action("lexington", "investigating the auth bug");
+    /// assert_eq!(msg.message_type, MessageType::Action);
+    /// assert_eq!(msg.from, "lexington");
+    /// // Displays as: * lexington investigating the auth bug
+    /// ```
+    pub fn action(from: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::new(from, content, MessageType::Action)
+    }
 }
 
 #[cfg(test)]
@@ -209,5 +230,13 @@ mod tests {
         let msg = Message::system("System initialized");
         assert_eq!(msg.from, "system");
         assert_eq!(msg.message_type, MessageType::System);
+    }
+
+    #[test]
+    fn test_action_message() {
+        let msg = Message::action("lexington", "investigating the auth bug");
+        assert_eq!(msg.from, "lexington");
+        assert_eq!(msg.content, "investigating the auth bug");
+        assert_eq!(msg.message_type, MessageType::Action);
     }
 }

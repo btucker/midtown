@@ -216,7 +216,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
 
         // Build the claude command
         let claude_cmd = format!(
-            "claude --append-system-prompt \"$(cat {})\"",
+            "claude --dangerously-skip-permissions --append-system-prompt \"$(cat {})\"",
             prompt_file.display()
         );
 

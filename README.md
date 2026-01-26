@@ -1,219 +1,203 @@
 # Midtown
 
-Coordinate multiple **Claude Code** instances working on the same codebase. Midtown lets a human-facing Claude Code session (the "Lead") spawn and orchestrate additional Claude Code instances (the "Coworkers"), each working in isolated git worktrees. The Coworkers collaborate, open PRs, review them, and merge them.
+Coordinate multiple **Claude Code** instances working on the same codebase. Midtown lets a human-facing Claude Code session (the "Lead") spawn and orchestrate additional Claude Code instances (the "Coworkers"), each working in isolated git worktrees.
 
-## Why Midtown?
+## The Workflow
 
-Midtown is inspired by [Gastown](https://github.com/steveyegge/gastown), but a bit simpler, less exciting, and more mid.
+Midtown is designed for a specific collaboration pattern:
 
-At its core, Midtown is built around a **Slack-like messaging model**: a shared channel where team members (both the human-facing Lead and autonomous Coworkers) post updates, coordinate handoffs, and stay in sync. This append-only message stream is the backbone of multi-agent collaboration—each Claude Code instance reads the channel at natural pause points, just like checking a team chat.
+1. **You and the Lead collaborate on design** - Talk through the problem, explore the codebase, sketch out an approach
+2. **The Lead creates a plan and tasks** - Breaks down the work into independent pieces using Claude Code's task system
+3. **Coworkers claim tasks and work autonomously** - Each coworker grabs a task, works it to completion, opens a PR
+4. **Coworkers review each other's PRs** - While waiting or between tasks, coworkers review open PRs
+5. **The Lead coordinates and merges** - Ensures quality, resolves conflicts, keeps work aligned with the plan
 
-When you're working with Claude Code on a complex project, you might want to parallelize work:
-
-- The Lead collaborates with the human to create a plan
-- Multiple Coworkers implement independent components simultaneously
-- A Coworker reviews PRs while the Lead & human collaborate on what's next
-
-Midtown provides the infrastructure for this coordination:
-
-- **Channel messaging** - Slack-like append-only message stream for team communication
-- **Coworker spawning** - Launch Claude Code instances in isolated git worktrees
-- **Task coordination** - Coworkers claim tasks via Claude Code's native task system
+The human stays focused on high-level decisions while the agents handle parallel implementation.
 
 ## Architecture
 
-Midtown consists of two components:
-
-1. **The Daemon** (`midtownd`) - A Rust-based background service that manages:
-   - Channel message storage and delivery
-   - Coworker lifecycle (spawn, track, shutdown)
-   - Git worktree management
-   - Task coordination
-
-2. **The Claude Code Plugin** - A native plugin that provides:
-   - Tools for Lead and Coworker agents
-   - Stop hooks for automatic channel synchronization
-   - Commands for status and channel interaction
-   - Agent definitions with role-specific capabilities
-
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Human Developer                      │
-└─────────────────────────┬───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Human Developer                         │
+└─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Lead (Claude Code)                     │
-│                   main git worktree                      │
-│                   + midtown plugin                       │
-└─────────────────────────┬───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    Lead (Claude Code)                        │
+│                    main git worktree                         │
+└─────────────────────────┬───────────────────────────────────┘
                           │ midtown CLI
                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Midtown Daemon                         │
-│              (Unix socket: ~/.local/state/midtown/)      │
-├─────────────────────────┬───────────────────────────────┤
-│     Channel             │         Coworker Manager       │
-│  (append-only log)      │      (spawn/track/shutdown)    │
-└─────────────────────────┴───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    Midtown Daemon                            │
+│               (Unix socket: ~/.local/state/midtown/)         │
+├─────────────────────────┬───────────────────────────────────┤
+│      Channel            │          Coworker Manager          │
+│   (append-only log)     │       (spawn/track/shutdown)       │
+└─────────────────────────┴───────────────────────────────────┘
                           │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│   Madison   │   │  Lexington  │   │    Park     │
-│ (worktree)  │   │ (worktree)  │   │ (worktree)  │
-│ Claude Code │   │ Claude Code │   │ Claude Code │
-│ + plugin    │   │ + plugin    │   │ + plugin    │
-└─────────────┘   └─────────────┘   └─────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│              tmux session: midtown-<project>                 │
+├─────────────┬─────────────┬─────────────┬───────────────────┤
+│    Lead     │  lexington  │    park     │     madison       │
+│  (window)   │  (window)   │  (window)   │    (window)       │
+│             │  worktree   │  worktree   │    worktree       │
+└─────────────┴─────────────┴─────────────┴───────────────────┘
 ```
+
+All agents run as windows within a single tmux session. Use `Ctrl-b w` to see everyone, `Ctrl-b n/p` to switch between them.
 
 ## Key Concepts
 
 ### Lead
 
-The **Lead** is your primary, human-facing Claude Code instance. It:
-- Collaborates with you to plan & design what to build
-- Gives you insight into the process
-- Spawns coworkers when parallel work is needed
-- Coordinates the team via the channel
-- Reviews work from coworkers
+The Lead is your primary Claude Code instance. It:
 
-The Lead has access to tools like `spawn_coworker`, `shutdown_coworker`, and `broadcast`.
+- Collaborates with you on design and planning
+- Creates tasks for the team
+- Spawns coworkers when parallel work is needed
+- Reviews work and coordinates merges
+- Has access to: `midtown coworker spawn`, `midtown coworker shutdown`, `midtown channel post`
 
 ### Coworkers
 
-**Coworkers** are additional Claude Code instances, each running in:
-- Their own isolated git worktree (no merge conflicts during development)
-- Their own terminal session
-- With automatic channel synchronization via the Stop hook
+Coworkers are additional Claude Code instances that work autonomously. Each runs in:
+
+- An isolated git worktree (no merge conflicts during development)
+- A tmux window within the project session
+- With a Stop hook that syncs the channel at natural pause points
 
 Coworkers:
-- Grab open tasks & work them to completion
-- Keep an eye on the channel for coordination
-- Review open PRs when needed
-- Merge their own PRs once approved
 
-Coworkers have access to tools like `post_message`, `read_channel`, `claim_task`, and `request_review`.
+- Check for unclaimed tasks and claim one
+- Work the task to completion and open a PR
+- Look for PRs to review when between tasks
+- Post updates to the channel
 
-Coworkers are named after Manhattan avenues (Madison, Lexington, Park, etc.) for easy reference.
+Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
+
+### Git Worktrees
+
+Each coworker runs in an isolated git worktree, preventing merge conflicts during parallel development:
+
+```
+~/.midtown/<repo>/worktrees/
+├── lexington/          # lexington's isolated checkout
+├── park/               # park's isolated checkout
+└── madison/            # madison's isolated checkout
+```
+
+When a coworker is spawned:
+
+1. A new worktree is created at `~/.midtown/<repo>/worktrees/<name>/`
+2. The worktree starts detached at the Lead's current HEAD
+3. The coworker creates a feature branch for their task
+
+**Branching workflow:**
+
+```
+main (or Lead's current branch)
+  └── lexington/fix-auth-bug      # lexington's feature branch
+  └── park/add-api-tests          # park's feature branch
+  └── madison/refactor-middleware # madison's feature branch
+```
+
+Coworkers branch directly from whatever the Lead has checked out, then open PRs back to main. This keeps work organized and ensures coworkers start from the same codebase state as the Lead.
 
 ### Channel
 
-The **Channel** is an append-only message log where the team coordinates. Messages persist across sessions, so coworkers can catch up on what happened while they were offline.
-
-The Stop hook automatically reads the channel at natural pause points, keeping coworkers in sync without explicit polling.
+The channel is an append-only message log where the team coordinates. It works like Slack - post updates, ask questions, share status. The Stop hook reads the channel automatically, so coworkers stay in sync without explicit polling.
 
 ### Tasks
 
-Midtown uses Claude Code's built-in task system (`TaskCreate`, `TaskList`, `TaskUpdate`). The Lead creates tasks, coworkers claim and complete them.
+Midtown uses Claude Code's built-in task system. The Lead creates tasks, coworkers claim and complete them. The Stop hook checks for unclaimed tasks, nudging idle coworkers to pick up work.
 
 ## Installation
 
-### 1. Build and install the daemon
+### 1. Build and install
 
 ```bash
 cargo build --release
 cargo install --path .
 ```
 
-### 2. Install the Claude Code plugin
-
-The plugin is included in this repository. To use it:
+### 2. Verify installation
 
 ```bash
-# Option 1: Symlink to your plugins directory
-ln -s $(pwd) ~/.claude/plugins/midtown
-
-# Option 2: Copy the plugin
-cp -r . ~/.claude/plugins/midtown
-```
-
-### 3. Enable the plugin in Claude Code
-
-Add to your Claude Code settings:
-```json
-{
-  "plugins": ["midtown"]
-}
+midtown --version
 ```
 
 ## Quick Start
 
-### 1. Start the daemon
+### 1. Start midtown
+
+From your project directory:
 
 ```bash
 midtown start
-
-# Or with verbose logging
-midtown start --verbose
 ```
 
-### 2. Check status
+This starts the daemon and creates a tmux session with the Lead window.
 
-Use the `/status` command in Claude Code, or:
+### 2. Attach to the session
+
+```bash
+midtown attach
+```
+
+You're now in the Lead's Claude Code instance.
+
+### 3. Collaborate with the Lead
+
+Work with the Lead to understand the problem and design a solution. Once you have a plan:
+
+```
+You: Let's break this into tasks for the team.
+
+Lead: I'll create tasks for each component:
+- Task 1: Implement the authentication middleware
+- Task 2: Add the user profile endpoints
+- Task 3: Write integration tests
+
+Now let me spawn some coworkers to help.
+```
+
+### 4. Spawn coworkers
+
+The Lead can spawn coworkers:
+
+```bash
+midtown coworker spawn
+# => Spawned coworker: lexington
+```
+
+Or via the channel:
+
+```bash
+midtown channel post "lexington, please claim task 1 and get started"
+```
+
+### 5. Monitor progress
+
+Check status anytime:
 
 ```bash
 midtown status
 ```
 
-### 3. Spawn a coworker
+Shows: active coworkers, open tasks, open PRs, recent channel activity.
 
-The Lead can use the `spawn_coworker` tool, or via CLI:
+### 6. Navigate the session
 
-```bash
-midtown coworker spawn
-# => Spawned coworker: madison
-```
+- `Ctrl-b w` - List all windows (Lead + coworkers)
+- `Ctrl-b n` - Next window
+- `Ctrl-b p` - Previous window
+- `Ctrl-b 0-9` - Jump to window by number
 
-### 4. Coordinate via channel
-
-```bash
-# Post a message
-midtown channel post "Madison, please work on the auth tests"
-
-# Read messages
-midtown channel read
-```
-
-### 5. Stop when done
+### 7. Stop when done
 
 ```bash
-# Shutdown a specific coworker
-midtown coworker shutdown madison
-
-# Or stop everything
 midtown stop
-```
-
-## Plugin Structure
-
-```
-midtown/
-├── .claude-plugin/
-│   └── plugin.json          # Plugin manifest
-├── tools/
-│   ├── lead/                # Lead-only tools
-│   │   ├── spawn_coworker.md
-│   │   ├── shutdown_coworker.md
-│   │   └── broadcast.md
-│   ├── coworker/            # Coworker-only tools
-│   │   ├── post_message.md
-│   │   ├── read_channel.md
-│   │   ├── claim_task.md
-│   │   └── request_review.md
-│   └── shared/              # Tools for both roles
-│       ├── list_coworkers.md
-│       └── check_pr_status.md
-├── hooks/
-│   ├── hooks.json           # Hook configuration
-│   └── scripts/
-│       └── channel-sync.sh  # Stop hook for channel sync
-├── commands/
-│   ├── status.md            # /status command
-│   └── channel.md           # /channel command
-└── agents/
-    ├── lead.md              # Lead agent definition
-    └── coworker.md          # Coworker agent definition
 ```
 
 ## CLI Reference
@@ -222,78 +206,82 @@ midtown/
 midtown <COMMAND>
 
 Commands:
-    start     Start the midtown daemon
-    stop      Stop the daemon and all coworkers
-    status    Show system status (daemon, coworkers, tasks, PRs)
-    channel   Channel messaging
-    coworker  Coworker management
-    task      Task operations
-    pr        Pull request operations
+  start       Start the daemon and tmux session
+  stop        Stop daemon and all coworkers
+  restart     Restart midtown
+  attach      Attach to the tmux session
+  status      Show system status
 
-Global Options:
-    --format <FORMAT>  Output format: json or pretty [default: pretty]
+  channel     Channel messaging
+    post <MSG>    Post a message
+    read          Read new messages
+    read --all    Read all messages
+
+  coworker    Coworker management
+    spawn         Spawn a new coworker
+    list          List active coworkers
+    shutdown <N>  Shutdown coworker by name
+    nudge <N>     Send reminder to coworker
+
+  task        Task operations
+    create <SUBJECT>  Create a task
+    claim <ID>        Claim a task
+    done <ID>         Mark complete
+
+Options:
+  --format <FORMAT>   Output: json or pretty [default: pretty]
 ```
 
-### Daemon Commands
+## How Sync Works
+
+Coworkers stay synchronized via the Claude Code Stop hook. When Claude pauses, the hook:
+
+1. Reads new channel messages
+2. Checks for unclaimed tasks
+3. Reports a summary
+
+This means coworkers automatically receive updates at natural pause points. If there are unclaimed tasks, they're reminded to grab one.
+
+## GitHub Webhook Integration
+
+Midtown automatically receives GitHub webhooks for PR events, CI status, and review comments. Events appear in the channel so coworkers see them at their next sync.
+
+This works out of the box - just be logged into `gh`:
 
 ```bash
-midtown start [--verbose]     # Start the daemon
-midtown stop                  # Stop daemon and all coworkers
-midtown status                # System overview
+gh auth login  # if not already logged in
+midtown start
 ```
 
-### Channel Commands
+Midtown detects the repo, installs the `gh-webhook` extension if needed, and starts forwarding events automatically.
+
+### Supported events
+
+- **Pull requests**: opened, merged, closed, ready for review
+- **Reviews**: approved, changes requested, commented
+- **CI status**: check runs completed (pass/fail)
+- **Comments**: PR comments and review comments
+
+### Configuration
 
 ```bash
-midtown channel post <MESSAGE>        # Send a message
-midtown channel read                  # Read new messages (advances cursor)
-midtown channel read --all            # Read all messages
-midtown channel reset                 # Reset read cursor to beginning
+# Disable webhooks
+export MIDTOWN_WEBHOOK_PORT=0
+
+# Use a different port (default: 47022)
+export MIDTOWN_WEBHOOK_PORT=8080
 ```
 
-### Coworker Commands
+### Server deployment
+
+For servers with a public IP, configure GitHub webhooks directly instead of using `gh webhook forward`:
 
 ```bash
-midtown coworker spawn                # Spawn a new coworker
-midtown coworker list                 # List active coworkers
-midtown coworker shutdown <NAME>      # Shutdown a coworker
-midtown coworker nudge <NAME> <MSG>   # Send urgent message to coworker
+export MIDTOWN_WEBHOOK_SECRET=$(openssl rand -hex 32)
+midtown start
 ```
 
-### Task Commands
-
-```bash
-midtown task list                     # List tasks
-midtown task create <SUBJECT>         # Create a task
-midtown task claim <ID>               # Claim a task
-midtown task complete <ID>            # Mark task complete
-```
-
-### PR Commands
-
-```bash
-midtown pr list                       # List open PRs
-midtown pr review <COWORKER>          # Review PR from coworker
-```
-
-## How Coworker Sync Works
-
-Coworkers stay synchronized via the Claude Code plugin's Stop hook. When Claude Code pauses, the hook automatically reads the channel:
-
-```json
-{
-  "Stop": [{
-    "matcher": "*",
-    "hooks": [{
-      "type": "command",
-      "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/channel-sync.sh",
-      "timeout": 30
-    }]
-  }]
-}
-```
-
-This means coworkers automatically receive team messages at natural pause points—no explicit polling required. The hook also checks for unclaimed tasks.
+Add a webhook in your repo's GitHub settings pointing to `http://your-server:47022/webhook` with the same secret.
 
 ## Development
 
@@ -304,31 +292,25 @@ cargo build
 # Run tests
 cargo test
 
-# Run daemon in development
-cargo run -- start --verbose
+# Start in development
+cargo run -- start
 ```
 
-### Project Structure
+## Project Structure
 
 ```
 src/
-├── main.rs               # Unified CLI entry point
-├── lib.rs                # Library exports
-├── daemon/               # Daemon implementation
-│   ├── mod.rs
-│   ├── server.rs         # Unix socket server
-│   └── handlers.rs       # RPC request handlers
-├── cli/                  # CLI subcommands
-│   ├── mod.rs
-│   ├── channel.rs
-│   ├── coworker.rs
-│   └── task.rs
-├── channel.rs            # Append-only message log
-├── coworker.rs           # Coworker lifecycle management
-├── cursor.rs             # Per-agent read position
-└── rpc.rs                # JSON-RPC 2.0 types
+├── lib.rs              # Library exports
+├── daemon.rs           # Unix socket server
+├── channel.rs          # Append-only message log
+├── coworker.rs         # Coworker lifecycle
+├── worktree.rs         # Git worktree management
+├── tmux.rs             # Tmux session/window management
+├── webhook.rs          # GitHub webhook handling
+├── nudge/              # Coworker reminder system
+└── bin/midtown/        # CLI implementation
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT

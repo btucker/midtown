@@ -1,4 +1,4 @@
-//! tmux integration for sending nudges to coworker sessions
+//! tmux integration for sending nudges to coworker windows
 
 use std::process::Command;
 use thiserror::Error;
@@ -18,16 +18,27 @@ pub enum NudgeError {
     #[error("tmux session not found: {0}")]
     SessionNotFound(String),
 
+    /// The target window does not exist
+    #[error("tmux window not found: {0}")]
+    WindowNotFound(String),
+
     /// I/O error
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
 
-/// Send a nudge message to a coworker's tmux session
+/// Send a nudge message to a coworker's tmux window
 ///
-/// Uses `tmux send-keys` to inject the message into the target session.
+/// Uses `tmux send-keys` to inject the message into the target window.
 /// The message is sent as literal text followed by Enter to execute.
-pub fn send_nudge(session: &str, message: &str) -> Result<(), NudgeError> {
+///
+/// # Arguments
+/// * `session` - The tmux session name (e.g., "midtown-projectname")
+/// * `window` - The window name (coworker name, e.g., "lexington")
+/// * `message` - The nudge message to send
+pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), NudgeError> {
+    let target = format!("{}:{}", session, window);
+
     // First check if the session exists
     if !session_exists(session)? {
         return Err(NudgeError::SessionNotFound(session.to_string()));
@@ -38,7 +49,7 @@ pub fn send_nudge(session: &str, message: &str) -> Result<(), NudgeError> {
     let comment_message = format!("# {}", message);
 
     let output = Command::new("tmux")
-        .args(["send-keys", "-t", session, &comment_message, "Enter"])
+        .args(["send-keys", "-t", &target, &comment_message, "Enter"])
         .output()?;
 
     if !output.status.success() {
@@ -56,6 +67,17 @@ pub fn session_exists(session: &str) -> Result<bool, NudgeError> {
         .output()?;
 
     // has-session returns 0 if session exists, non-zero otherwise
+    Ok(output.status.success())
+}
+
+/// Check if a tmux window exists within a session
+pub fn window_exists(session: &str, window: &str) -> Result<bool, NudgeError> {
+    let target = format!("{}:{}", session, window);
+
+    let output = Command::new("tmux")
+        .args(["has-session", "-t", &target])
+        .output()?;
+
     Ok(output.status.success())
 }
 
@@ -80,9 +102,35 @@ pub fn list_sessions() -> Result<Vec<String>, NudgeError> {
     Ok(sessions)
 }
 
-/// Send a nudge to a specific pane in a session
-pub fn send_nudge_to_pane(session: &str, pane: &str, message: &str) -> Result<(), NudgeError> {
-    let target = format!("{}:{}", session, pane);
+/// List all windows in a session
+pub fn list_windows(session: &str) -> Result<Vec<String>, NudgeError> {
+    let output = Command::new("tmux")
+        .args(["list-windows", "-t", session, "-F", "#{window_name}"])
+        .output()?;
+
+    if !output.status.success() {
+        // Session might not exist
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let windows: Vec<String> = stdout
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    Ok(windows)
+}
+
+/// Send a nudge to a specific pane in a window
+pub fn send_nudge_to_pane(
+    session: &str,
+    window: &str,
+    pane: &str,
+    message: &str,
+) -> Result<(), NudgeError> {
+    let target = format!("{}:{}.{}", session, window, pane);
 
     // First check if the session exists
     if !session_exists(session)? {
@@ -106,9 +154,11 @@ pub fn send_nudge_to_pane(session: &str, pane: &str, message: &str) -> Result<()
 /// Get the current pane content (for debugging/testing)
 #[cfg(test)]
 #[allow(dead_code)]
-pub fn capture_pane(session: &str) -> Result<String, NudgeError> {
+pub fn capture_pane(session: &str, window: &str) -> Result<String, NudgeError> {
+    let target = format!("{}:{}", session, window);
+
     let output = Command::new("tmux")
-        .args(["capture-pane", "-t", session, "-p"])
+        .args(["capture-pane", "-t", &target, "-p"])
         .output()?;
 
     if !output.status.success() {
@@ -147,7 +197,11 @@ mod tests {
 
     #[test]
     fn test_send_nudge_to_nonexistent_session() {
-        let result = send_nudge("__nonexistent_test_session_xyz123__", "test message");
+        let result = send_nudge(
+            "__nonexistent_test_session_xyz123__",
+            "window",
+            "test message",
+        );
         match result {
             Err(NudgeError::SessionNotFound(_)) => (),
             Err(NudgeError::Io(_)) => (), // tmux not available
