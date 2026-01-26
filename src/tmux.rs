@@ -272,7 +272,7 @@ fn coworker_settings_json() -> serde_json::Value {
             "Stop": [{
                 "hooks": [{
                     "type": "command",
-                    "command": "midtown --format json coworker stop-hook"
+                    "command": "cargo run --release -- --format json coworker stop-hook"
                 }]
             }]
         }
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(stop_hooks[0]["type"], "command");
         assert_eq!(
             stop_hooks[0]["command"],
-            "midtown --format json coworker stop-hook"
+            "cargo run --release -- --format json coworker stop-hook"
         );
     }
 
