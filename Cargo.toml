@@ -28,6 +28,15 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4"] }
 fs2 = "0.4"
 
+# Webhook HTTP server
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Webhook signature verification
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
 # CLI utilities
 dirs = "6.0"
 

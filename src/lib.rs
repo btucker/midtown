@@ -28,6 +28,9 @@ mod message;
 pub mod coworker;
 pub mod tmux;
 
+// GitHub webhook integration (rictus)
+pub mod webhook;
+
 pub use channel::Channel;
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};
