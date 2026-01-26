@@ -9,11 +9,14 @@
 //! - **RPC**: JSON-RPC 2.0 protocol for inter-process communication
 //! - **Channels**: Append-only message logs for agent coordination
 //! - **Cursors**: Per-agent position tracking in message streams
+//! - **Worktrees**: Git worktree isolation for coworkers
+//! - **Coworkers**: Agent session management via tmux
+//! - **Tmux**: Low-level tmux session operations
 
 // RPC subsystem (furiosa)
 pub mod rpc;
 
-// Worktree management for coworker isolation
+// Worktree management for coworker isolation (slit)
 pub mod worktree;
 
 // Channel management subsystem (nux)
@@ -21,10 +24,15 @@ mod channel;
 mod cursor;
 mod message;
 
+// Coworker management (nux)
+pub mod coworker;
+pub mod tmux;
+
 pub use channel::Channel;
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};
 pub use worktree::{WorktreeManager, WorktreeInfo, WorktreeError};
+pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 
 use thiserror::Error;
 

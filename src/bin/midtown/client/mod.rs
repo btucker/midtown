@@ -1,32 +1,65 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::cli::Response;
 
-/// Client for communicating with the midtown daemon over Unix socket
+/// Client for communicating with the midtown daemon over Unix socket using JSON-RPC 2.0.
 pub struct DaemonClient {
     socket_path: PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Request {
-    command: String,
-    args: serde_json::Value,
+/// Request ID counter for JSON-RPC correlation.
+static REQUEST_ID: AtomicI64 = AtomicI64::new(1);
+
+/// JSON-RPC 2.0 request.
+#[derive(Debug, Serialize)]
+struct JsonRpcRequest {
+    jsonrpc: &'static str,
+    method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<Value>,
+    id: i64,
 }
 
+impl JsonRpcRequest {
+    fn new(method: impl Into<String>, params: Option<Value>) -> Self {
+        Self {
+            jsonrpc: "2.0",
+            method: method.into(),
+            params,
+            id: REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+/// JSON-RPC 2.0 response.
 #[derive(Debug, Deserialize)]
-struct DaemonResponse {
-    success: bool,
-    #[serde(flatten)]
-    data: serde_json::Value,
-    error: Option<String>,
+struct JsonRpcResponse {
+    #[allow(dead_code)]
+    jsonrpc: String,
+    result: Option<Value>,
+    error: Option<JsonRpcError>,
+    #[allow(dead_code)]
+    id: Value,
+}
+
+/// JSON-RPC 2.0 error object.
+#[derive(Debug, Deserialize)]
+struct JsonRpcError {
+    #[allow(dead_code)]
+    code: i32,
+    message: String,
+    #[allow(dead_code)]
+    data: Option<Value>,
 }
 
 impl DaemonClient {
-    /// Connect to the daemon, returning a client handle
+    /// Connect to the daemon, returning a client handle.
     pub fn connect() -> Result<Self, String> {
         let socket_path = Self::socket_path();
 
@@ -41,7 +74,7 @@ impl DaemonClient {
         Ok(DaemonClient { socket_path })
     }
 
-    /// Get the default socket path
+    /// Get the default socket path.
     fn socket_path() -> PathBuf {
         // Try XDG_STATE_HOME first, then fall back to ~/.local/state
         let state_dir = std::env::var("XDG_STATE_HOME")
@@ -56,15 +89,12 @@ impl DaemonClient {
         state_dir.join("midtown").join("daemon.sock")
     }
 
-    /// Send a request to the daemon and get a response
-    fn send(&self, command: &str, args: serde_json::Value) -> Result<Response, String> {
+    /// Send a JSON-RPC request to the daemon and get a response.
+    fn send(&self, method: &str, params: Option<Value>) -> Result<Response, String> {
         let mut stream =
             UnixStream::connect(&self.socket_path).map_err(|e| format!("Connection failed: {}", e))?;
 
-        let request = Request {
-            command: command.to_string(),
-            args,
-        };
+        let request = JsonRpcRequest::new(method, params);
 
         let request_json =
             serde_json::to_string(&request).map_err(|e| format!("Serialization error: {}", e))?;
@@ -80,17 +110,19 @@ impl DaemonClient {
             .read_line(&mut response_line)
             .map_err(|e| format!("Read error: {}", e))?;
 
-        let daemon_response: DaemonResponse = serde_json::from_str(&response_line)
+        let rpc_response: JsonRpcResponse = serde_json::from_str(&response_line)
             .map_err(|e| format!("Parse error: {} (response: {})", e, response_line.trim()))?;
 
-        if !daemon_response.success {
-            return Err(daemon_response
-                .error
-                .unwrap_or_else(|| "Unknown error".to_string()));
+        // Check for RPC-level error
+        if let Some(error) = rpc_response.error {
+            return Err(error.message);
         }
 
-        // Parse the data into a Response
-        serde_json::from_value(daemon_response.data)
+        // Extract result
+        let result = rpc_response.result.ok_or("No result in response")?;
+
+        // Parse the result into a Response
+        serde_json::from_value(result)
             .map_err(|e| format!("Response parse error: {}", e))
     }
 
@@ -99,26 +131,26 @@ impl DaemonClient {
     pub fn channel_post(&self, message: &str) -> Result<Response, String> {
         self.send(
             "channel.post",
-            serde_json::json!({ "message": message }),
+            Some(serde_json::json!({ "message": message })),
         )
     }
 
     pub fn channel_read(&self, all: bool) -> Result<Response, String> {
-        self.send("channel.read", serde_json::json!({ "all": all }))
+        self.send("channel.read", Some(serde_json::json!({ "all": all })))
     }
 
     // Coworker commands
 
     pub fn coworker_spawn(&self) -> Result<Response, String> {
-        self.send("coworker.spawn", serde_json::json!({}))
+        self.send("coworker.spawn", None)
     }
 
     pub fn coworker_shutdown(&self, name: &str) -> Result<Response, String> {
-        self.send("coworker.shutdown", serde_json::json!({ "name": name }))
+        self.send("coworker.shutdown", Some(serde_json::json!({ "name": name })))
     }
 
     pub fn coworker_list(&self) -> Result<Response, String> {
-        self.send("coworker.list", serde_json::json!({}))
+        self.send("coworker.list", None)
     }
 
     // Task commands
@@ -126,30 +158,30 @@ impl DaemonClient {
     pub fn task_create(&self, subject: &str, description: &str) -> Result<Response, String> {
         self.send(
             "task.create",
-            serde_json::json!({
+            Some(serde_json::json!({
                 "subject": subject,
                 "description": description
-            }),
+            })),
         )
     }
 
     pub fn task_claim(&self, id: &str) -> Result<Response, String> {
-        self.send("task.claim", serde_json::json!({ "id": id }))
+        self.send("task.claim", Some(serde_json::json!({ "id": id })))
     }
 
     pub fn task_done(&self, id: &str) -> Result<Response, String> {
-        self.send("task.done", serde_json::json!({ "id": id }))
+        self.send("task.done", Some(serde_json::json!({ "id": id })))
     }
 
     // Status command
 
     pub fn status(&self) -> Result<Response, String> {
-        self.send("status", serde_json::json!({}))
+        self.send("status", None)
     }
 
     // PR commands
 
     pub fn pr_list(&self) -> Result<Response, String> {
-        self.send("pr.list", serde_json::json!({}))
+        self.send("pr.list", None)
     }
 }
