@@ -417,7 +417,12 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             return Err(format!("Failed to create session '{}'", session));
         }
 
-        // Configure status bar to show project name
+        // Configure status bar with dark gray background for visibility
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", &session, "status-style", "bg=colour236"])
+            .status();
+
+        // Set status-left with project name
         let _ = Command::new("tmux")
             .args([
                 "set-option",
@@ -425,6 +430,27 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
                 &session,
                 "status-left",
                 &format!(" {} ", project_name),
+            ])
+            .status();
+
+        // Set Lead window tab color (yellow to match chat TUI team panel)
+        let lead_window = format!("{}:Lead", session);
+        let _ = Command::new("tmux")
+            .args([
+                "set-window-option",
+                "-t",
+                &lead_window,
+                "window-status-style",
+                "fg=yellow",
+            ])
+            .status();
+        let _ = Command::new("tmux")
+            .args([
+                "set-window-option",
+                "-t",
+                &lead_window,
+                "window-status-current-style",
+                "fg=yellow,bold",
             ])
             .status();
 
