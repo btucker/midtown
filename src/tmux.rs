@@ -275,13 +275,13 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                 }]
             }],
             "PostToolUse": [{
-                "matcher": {"toolName": "TaskUpdate"},
+                "matcher": {"tools": ["TaskUpdate"]},
                 "hooks": [{
                     "type": "command",
                     "command": format!("{} coworker task-hook", bin_command)
                 }]
             }, {
-                "matcher": {"toolName": "TaskCreate"},
+                "matcher": {"tools": ["TaskCreate"]},
                 "hooks": [{
                     "type": "command",
                     "command": format!("{} coworker task-hook", bin_command)
