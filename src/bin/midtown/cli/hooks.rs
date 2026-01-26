@@ -67,8 +67,8 @@ fn handle_insight_hook() -> Result<Response, String> {
         });
     }
 
-    // Get previously posted insights
-    let posted = get_posted_insights(&transcript_path);
+    // Get previously posted insights (mutable to track in-memory too)
+    let mut posted = get_posted_insights(&transcript_path);
 
     // Post new insights to channel
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
@@ -89,7 +89,8 @@ fn handle_insight_hook() -> Result<Response, String> {
         let message = midtown::Message::text(&agent, format!("💡 {}", insight));
         if channel.send(&message).is_ok() {
             posted_count += 1;
-            // Record that we posted this insight
+            // Record that we posted this insight (both in-memory and to file)
+            posted.insert(hash.clone());
             record_posted_insight(&transcript_path, &hash);
         }
     }
