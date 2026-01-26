@@ -10,7 +10,7 @@ At its core, Midtown is built around a **Slack-like messaging model**: a shared 
 
 When you're working with Claude Code on a complex project, you might want to parallelize work:
 
-- The Lead works on the main feature while a Coworker handles tests
+- The Lead collaborates with the human to create a plan
 - Multiple Coworkers implement independent components simultaneously
 - A Coworker reviews PRs while the Lead & human collaborate on what's next
 
