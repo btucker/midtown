@@ -70,8 +70,19 @@ impl App {
 
             // Update messages if count changed
             if new_count != self.last_count {
+                let added = new_count.saturating_sub(self.last_count);
+                let was_at_bottom = self.scroll_offset == 0;
+
                 self.messages = messages;
                 self.last_count = new_count;
+
+                if was_at_bottom {
+                    // User was at bottom - stay at bottom (auto-scroll)
+                    self.scroll_offset = 0;
+                } else {
+                    // User had scrolled up - adjust offset to stay viewing same messages
+                    self.scroll_offset += added;
+                }
 
                 // Update last actions from Action messages
                 self.update_last_actions();

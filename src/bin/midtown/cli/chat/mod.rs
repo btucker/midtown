@@ -10,7 +10,9 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -53,18 +55,23 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         terminal.draw(|f| ui::draw(f, app))?;
 
         // Poll for events with a timeout to allow periodic updates
-        if event::poll(Duration::from_millis(250))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
-                KeyCode::PageUp => app.page_up(),
-                KeyCode::PageDown => app.page_down(),
-                KeyCode::Home | KeyCode::Char('g') => app.scroll_to_top(),
-                KeyCode::End | KeyCode::Char('G') => app.scroll_to_bottom(),
+        if event::poll(Duration::from_millis(250))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+                    KeyCode::PageUp => app.page_up(),
+                    KeyCode::PageDown => app.page_down(),
+                    KeyCode::Home | KeyCode::Char('g') => app.scroll_to_top(),
+                    KeyCode::End | KeyCode::Char('G') => app.scroll_to_bottom(),
+                    _ => {}
+                },
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => app.scroll_up(),
+                    MouseEventKind::ScrollDown => app.scroll_down(),
+                    _ => {}
+                },
                 _ => {}
             }
         }
