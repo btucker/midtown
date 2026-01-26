@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::tmux;
+use crate::worktree::WorktreeManager;
 
 /// Primary Manhattan avenue names used for coworker naming.
 const AVENUE_NAMES: &[&str] = &[
@@ -73,8 +74,8 @@ pub struct Coworker {
 pub struct CoworkerManager {
     /// Map of coworker name -> coworker info
     coworkers: Arc<RwLock<HashMap<String, Coworker>>>,
-    /// Default working directory for new coworkers
-    default_working_dir: String,
+    /// Worktree manager for creating isolated workspaces
+    worktree_manager: Arc<WorktreeManager>,
     /// The tmux session name for the project (e.g., "midtown-projectname")
     session_name: String,
 }
@@ -84,11 +85,11 @@ impl CoworkerManager {
     ///
     /// # Arguments
     /// * `session_name` - The tmux session name (e.g., "midtown-projectname")
-    /// * `default_working_dir` - Default working directory for spawned coworkers
-    pub fn new(session_name: impl Into<String>, default_working_dir: impl Into<String>) -> Self {
+    /// * `worktree_manager` - Manager for creating isolated git worktrees
+    pub fn new(session_name: impl Into<String>, worktree_manager: WorktreeManager) -> Self {
         Self {
             coworkers: Arc::new(RwLock::new(HashMap::new())),
-            default_working_dir: default_working_dir.into(),
+            worktree_manager: Arc::new(worktree_manager),
             session_name: session_name.into(),
         }
     }
@@ -118,6 +119,7 @@ impl CoworkerManager {
 
     /// Spawn a new coworker.
     ///
+    /// Creates an isolated git worktree for the coworker and spawns Claude Code in it.
     /// Returns the name of the spawned coworker.
     pub fn spawn(&self) -> crate::Result<String> {
         let name = self.next_name().ok_or_else(|| crate::Error::Rpc {
@@ -125,9 +127,24 @@ impl CoworkerManager {
             message: "No available coworker slots (all avenue names in use)".to_string(),
         })?;
 
-        let working_dir = self.default_working_dir.clone();
+        // Create an isolated worktree for this coworker
+        let worktree_path = self
+            .worktree_manager
+            .create(&name)
+            .map_err(|e| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Failed to create worktree for {}: {}", name, e),
+            })?;
 
-        // Create the tmux window and spawn claude
+        let working_dir = worktree_path
+            .to_str()
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32603,
+                message: "Worktree path is not valid UTF-8".to_string(),
+            })?
+            .to_string();
+
+        // Create the tmux window and spawn claude in the worktree
         tmux::spawn_claude(&self.session_name, &name, &working_dir)?;
 
         // Record the coworker
@@ -242,6 +259,33 @@ impl CoworkerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    /// Create a test CoworkerManager with a temporary git repo
+    fn test_manager() -> (CoworkerManager, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Initialize a git repo in the temp dir
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to init git repo");
+
+        // Create an initial commit (required for worktrees)
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to create initial commit");
+
+        let worktree_manager = WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("Failed to create worktree manager");
+        let manager = CoworkerManager::new("midtown-test", worktree_manager);
+
+        (manager, temp_dir)
+    }
 
     #[test]
     fn test_coworker_status_display() {
@@ -261,19 +305,19 @@ mod tests {
 
     #[test]
     fn test_coworker_manager_new() {
-        let manager = CoworkerManager::new("midtown-test", "/tmp");
+        let (manager, _temp_dir) = test_manager();
         assert_eq!(manager.count(), 0);
     }
 
     #[test]
     fn test_next_name_empty() {
-        let manager = CoworkerManager::new("midtown-test", "/tmp");
+        let (manager, _temp_dir) = test_manager();
         assert_eq!(manager.next_name(), Some("lexington".to_string()));
     }
 
     #[test]
     fn test_next_name_with_used_names() {
-        let manager = CoworkerManager::new("midtown-test", "/tmp");
+        let (manager, _temp_dir) = test_manager();
 
         // Manually insert a coworker to simulate "lexington" being in use
         {
@@ -296,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_next_name_overflow() {
-        let manager = CoworkerManager::new("midtown-test", "/tmp");
+        let (manager, _temp_dir) = test_manager();
 
         // Fill all primary avenue names
         {
@@ -321,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_next_name_exhausted() {
-        let manager = CoworkerManager::new("midtown-test", "/tmp");
+        let (manager, _temp_dir) = test_manager();
 
         // Fill all names (primary and overflow)
         {

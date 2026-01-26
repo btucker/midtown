@@ -17,6 +17,7 @@ use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
 use crate::rpc::{Request, RequestId, Response, RpcError};
 use crate::webhook::{WebhookConfig, start_webhook_server};
+use crate::worktree::WorktreeManager;
 
 /// Configuration for the daemon server.
 #[derive(Debug, Clone)]
@@ -72,7 +73,7 @@ struct DaemonState {
 }
 
 impl DaemonState {
-    fn new(socket_path: PathBuf, workdir: PathBuf) -> Self {
+    fn new(socket_path: PathBuf, workdir: PathBuf) -> crate::Result<Self> {
         // Derive the tmux session name from the workdir (repo name)
         let repo_name = workdir
             .file_name()
@@ -80,10 +81,16 @@ impl DaemonState {
             .unwrap_or_else(|| "default".to_string());
         let session_name = format!("midtown-{}", repo_name);
 
-        Self {
-            coworkers: CoworkerManager::new(session_name, workdir.to_string_lossy().to_string()),
+        // Create worktree manager for coworker isolation
+        let worktree_manager = WorktreeManager::new(workdir).map_err(|e| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Failed to initialize worktree manager: {}", e),
+        })?;
+
+        Ok(Self {
+            coworkers: CoworkerManager::new(session_name, worktree_manager),
             socket_path,
-        }
+        })
     }
 }
 
@@ -116,7 +123,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     info!("Channel: {}", channel.base_dir().display());
 
     // Create daemon state
-    let state = Arc::new(DaemonState::new(config.socket_path.clone(), config.workdir));
+    let state = Arc::new(DaemonState::new(
+        config.socket_path.clone(),
+        config.workdir,
+    )?);
 
     // Remove existing socket file if present
     if config.socket_path.exists() {

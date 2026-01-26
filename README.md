@@ -76,6 +76,34 @@ Coworkers:
 
 Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
 
+### Git Worktrees
+
+Each coworker runs in an isolated git worktree, preventing merge conflicts during parallel development:
+
+```
+~/.midtown/<repo>/worktrees/
+├── lexington/          # lexington's isolated checkout
+├── park/               # park's isolated checkout
+└── madison/            # madison's isolated checkout
+```
+
+When a coworker is spawned:
+
+1. A new worktree is created at `~/.midtown/<repo>/worktrees/<name>/`
+2. The worktree starts detached at the Lead's current HEAD
+3. The coworker creates a feature branch for their task
+
+**Branching workflow:**
+
+```
+main (or Lead's current branch)
+  └── lexington/fix-auth-bug      # lexington's feature branch
+  └── park/add-api-tests          # park's feature branch
+  └── madison/refactor-middleware # madison's feature branch
+```
+
+Coworkers branch directly from whatever the Lead has checked out, then open PRs back to main. This keeps work organized and ensures coworkers start from the same codebase state as the Lead.
+
 ### Channel
 
 The channel is an append-only message log where the team coordinates. It works like Slack - post updates, ask questions, share status. The Stop hook reads the channel automatically, so coworkers stay in sync without explicit polling.
@@ -276,6 +304,7 @@ src/
 ├── daemon.rs           # Unix socket server
 ├── channel.rs          # Append-only message log
 ├── coworker.rs         # Coworker lifecycle
+├── worktree.rs         # Git worktree management
 ├── tmux.rs             # Tmux session/window management
 ├── webhook.rs          # GitHub webhook handling
 ├── nudge/              # Coworker reminder system

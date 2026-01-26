@@ -4,9 +4,34 @@
 //! tmux windows that host coworker Claude Code processes within the
 //! project session.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::Error;
+
+/// Get the state directory for midtown.
+fn state_dir() -> PathBuf {
+    let state_dir = std::env::var("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("state")
+        });
+    state_dir.join("midtown")
+}
+
+/// Write a coworker's system prompt to a file and return the path.
+fn write_coworker_prompt_file(name: &str, prompt: &str) -> crate::Result<PathBuf> {
+    let dir = state_dir();
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+
+    let path = dir.join(format!("coworker-{}-prompt.md", name));
+    std::fs::write(&path, prompt).map_err(Error::Io)?;
+
+    Ok(path)
+}
 
 /// Prefix for all midtown tmux sessions.
 pub const SESSION_PREFIX: &str = "midtown-";
@@ -14,9 +39,31 @@ pub const SESSION_PREFIX: &str = "midtown-";
 /// Create a new tmux window for a coworker in the project session.
 ///
 /// Creates a window named `<name>` within the project session with the given working directory.
-pub fn create_window(session: &str, name: &str, working_dir: &str) -> crate::Result<()> {
+/// If `command` is provided, runs that command in the window instead of starting a shell.
+pub fn create_window(
+    session: &str,
+    name: &str,
+    working_dir: &str,
+    command: Option<&str>,
+) -> crate::Result<()> {
+    let mut args = vec![
+        "new-window",
+        "-d",
+        "-t",
+        session,
+        "-n",
+        name,
+        "-c",
+        working_dir,
+    ];
+
+    // If command provided, run it via sh -c
+    if let Some(cmd) = command {
+        args.extend(["sh", "-c", cmd]);
+    }
+
     let status = Command::new("tmux")
-        .args(["new-window", "-t", session, "-n", name, "-c", working_dir])
+        .args(&args)
         .status()
         .map_err(Error::Io)?;
 
@@ -142,7 +189,7 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
 /// 2. Check for unclaimed tasks
 /// 3. Block stopping if unclaimed tasks exist (keeps coworker working)
 fn coworker_settings_json() -> String {
-    r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"midtown --format json coworker stop-hook"}]}]}}"#.to_string()
+    r#"{"editorMode":"normal","hooks":{"Stop":[{"hooks":[{"type":"command","command":"midtown --format json coworker stop-hook"}]}]}}"#.to_string()
 }
 
 /// Generate the system prompt for a coworker.
@@ -180,8 +227,10 @@ midtown task done <id>      # Mark task complete
 Don't hoard tasks - claim one, finish it, then claim another.
 
 ## Git Workflow
-- You're in an isolated worktree - commit freely
-- Create PRs when work is ready for review
+- You're in an isolated worktree (detached HEAD at the Lead's current commit)
+- First thing: create a feature branch for your task: `git checkout -b {name}/<task-description>`
+- Commit frequently with clear messages
+- When done, push and create a PR: `gh pr create`
 - Request review from teammates via channel
 
 ## Coordination
@@ -200,24 +249,24 @@ Don't hoard tasks - claim one, finish it, then claim another.
 /// Also injects a system prompt that gives the coworker instructions for operating
 /// in the midtown environment.
 pub fn spawn_claude(session: &str, name: &str, working_dir: &str) -> crate::Result<()> {
-    // First create the window in the project session
-    create_window(session, name, working_dir)?;
-
     // Build the claude command with settings for channel synchronization
     // and a system prompt for coworker identity and instructions
     let settings = coworker_settings_json();
     let system_prompt = coworker_system_prompt(name);
 
-    // Escape single quotes in the system prompt for shell safety
-    let escaped_prompt = system_prompt.replace('\'', "'\\''");
+    // Write system prompt to a file (avoids send_keys issues with long prompts)
+    let prompt_file = write_coworker_prompt_file(name, &system_prompt)?;
 
+    // Build the claude command using $(cat file) for the system prompt
+    // This matches how the Lead is started
     let command = format!(
-        "claude --dangerously-skip-permissions --settings '{}' --append-system-prompt '{}'",
-        settings, escaped_prompt
+        "claude --dangerously-skip-permissions --settings '{}' --append-system-prompt \"$(cat {})\"",
+        settings,
+        prompt_file.display()
     );
 
-    // Then send the command to start claude with coworker settings
-    send_keys(session, name, &command)
+    // Create window with claude command running directly
+    create_window(session, name, working_dir, Some(&command))
 }
 
 // Legacy functions for backward compatibility during transition
@@ -320,7 +369,10 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&settings).expect("coworker settings should be valid JSON");
 
-        // Verify structure
+        // Verify editorMode is normal (not vim)
+        assert_eq!(parsed["editorMode"], "normal");
+
+        // Verify hook structure
         assert!(parsed["hooks"]["Stop"].is_array());
         let stop_hooks = &parsed["hooks"]["Stop"][0]["hooks"];
         assert!(stop_hooks.is_array());
