@@ -58,6 +58,14 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
+    // Handle commands that don't require daemon connection
+    if let Commands::Task { command: TaskCommand::Hook { event } } = &cli.command {
+        let result = cli::handle_task_hook(event);
+        handle_result(&cli, result);
+        return;
+    }
+
+    // All other commands require daemon connection
     let client = match DaemonClient::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -75,6 +83,10 @@ fn main() {
         Commands::Pr { command } => cli::handle_pr(command, &client),
     };
 
+    handle_result(&cli, result);
+}
+
+fn handle_result(cli: &Cli, result: Result<cli::Response, String>) {
     match result {
         Ok(response) => {
             let output = match cli.format {

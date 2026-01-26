@@ -8,7 +8,7 @@ pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
 pub use pr::PrCommand;
 pub use response::Response;
-pub use task::TaskCommand;
+pub use task::{HookEvent, TaskCommand};
 
 use crate::client::DaemonClient;
 
@@ -22,6 +22,11 @@ pub fn handle_coworker(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<R
 
 pub fn handle_task(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, String> {
     task::handle(cmd, client)
+}
+
+/// Handle task hook events directly (no daemon required)
+pub fn handle_task_hook(event: &HookEvent) -> Result<Response, String> {
+    task::handle_hook_standalone(event)
 }
 
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
