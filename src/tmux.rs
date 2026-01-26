@@ -145,15 +145,27 @@ pub fn session_exists(name: &str) -> crate::Result<bool> {
     Ok(status.success())
 }
 
+/// JSON settings for coworker Claude Code sessions.
+///
+/// Configures the Stop hook to read the channel whenever the agent pauses.
+fn coworker_settings_json() -> String {
+    r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"midtown channel read"}]}]}}"#.to_string()
+}
+
 /// Spawn Claude Code in a tmux session.
 ///
-/// This creates the session and starts `claude` in it.
+/// This creates the session and starts `claude` in it with coworker-specific
+/// settings, including a Stop hook that reads the channel whenever the agent pauses.
 pub fn spawn_claude(name: &str, working_dir: &str) -> crate::Result<()> {
     // First create the session
     create_session(name, working_dir)?;
 
-    // Then send the command to start claude
-    send_keys(name, "claude")
+    // Build the claude command with settings for channel synchronization
+    let settings = coworker_settings_json();
+    let command = format!("claude --settings '{}'", settings);
+
+    // Then send the command to start claude with coworker settings
+    send_keys(name, &command)
 }
 
 #[cfg(test)]
@@ -163,6 +175,21 @@ mod tests {
     #[test]
     fn test_session_prefix() {
         assert_eq!(SESSION_PREFIX, "midtown-");
+    }
+
+    #[test]
+    fn test_coworker_settings_json_is_valid() {
+        let settings = coworker_settings_json();
+        // Parse to verify it's valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&settings)
+            .expect("coworker settings should be valid JSON");
+
+        // Verify structure
+        assert!(parsed["hooks"]["Stop"].is_array());
+        let stop_hooks = &parsed["hooks"]["Stop"][0]["hooks"];
+        assert!(stop_hooks.is_array());
+        assert_eq!(stop_hooks[0]["type"], "command");
+        assert_eq!(stop_hooks[0]["command"], "midtown channel read");
     }
 
     // Integration tests would require actual tmux, so we keep unit tests minimal

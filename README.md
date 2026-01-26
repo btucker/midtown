@@ -133,6 +133,48 @@ Options:
 | -32602 | Invalid params |
 | -32603 | Internal error |
 
+## Coworker Channel Synchronization
+
+When coworkers are spawned via `midtown coworker spawn`, they are automatically configured with a Claude Code **Stop hook** that reads the channel whenever the agent pauses. This provides natural synchronization points without explicit polling.
+
+### How It Works
+
+1. Lead spawns a coworker via CLI or MCP plugin
+2. The coworker's Claude Code session starts with a Stop hook configured
+3. Whenever the agent finishes responding and waits for input, the hook runs `midtown channel read`
+4. Any new messages from teammates are injected into the agent's context
+
+This means coworkers automatically stay in sync with team communication at their natural pause points—no manual coordination required.
+
+### Hook Configuration
+
+The Stop hook is automatically injected when spawning coworkers:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "midtown channel read"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Manual Configuration
+
+If running Claude Code manually (not via `midtown coworker spawn`), add the hook to your settings:
+
+- `~/.claude/settings.json` (user-level)
+- `.claude/settings.json` (project-level)
+- `.claude/settings.local.json` (local, not committed)
+
 ## Example: Agent Handoff Workflow
 
 ```bash
