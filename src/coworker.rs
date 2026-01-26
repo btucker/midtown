@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::tmux;
-use crate::worktree::WorktreeManager;
+use crate::worktree::{WorktreeError, WorktreeManager};
 
 /// Primary Manhattan avenue names used for coworker naming.
 const AVENUE_NAMES: &[&str] = &[
@@ -121,20 +121,60 @@ impl CoworkerManager {
     ///
     /// Creates an isolated git worktree for the coworker and spawns Claude Code in it.
     /// Returns the name of the spawned coworker.
+    ///
+    /// If a worktree already exists but no tmux window is running (stale worktree),
+    /// the worktree is automatically cleaned up and the spawn is retried.
     pub fn spawn(&self) -> crate::Result<String> {
         let name = self.next_name().ok_or_else(|| crate::Error::Rpc {
             code: -32603,
             message: "No available coworker slots (all avenue names in use)".to_string(),
         })?;
 
-        // Create an isolated worktree for this coworker
-        let worktree_path = self
-            .worktree_manager
-            .create(&name)
-            .map_err(|e| crate::Error::Rpc {
-                code: -32603,
-                message: format!("Failed to create worktree for {}: {}", name, e),
-            })?;
+        // Try to create an isolated worktree for this coworker
+        let worktree_path = match self.worktree_manager.create(&name) {
+            Ok(path) => path,
+            Err(WorktreeError::AlreadyExists(_)) => {
+                // Worktree exists - check if there's a corresponding tmux window
+                let window_exists = tmux::window_exists(&self.session_name, &name).unwrap_or(false);
+
+                if window_exists {
+                    // There's an active window, so the coworker is actually running
+                    return Err(crate::Error::Rpc {
+                        code: -32603,
+                        message: format!(
+                            "Coworker {} is already running (worktree and window exist)",
+                            name
+                        ),
+                    });
+                }
+
+                // Stale worktree - clean it up and retry
+                tracing::info!("Cleaning up stale worktree for {}", name);
+                self.worktree_manager
+                    .force_cleanup(&name)
+                    .map_err(|e| crate::Error::Rpc {
+                        code: -32603,
+                        message: format!("Failed to cleanup stale worktree for {}: {}", name, e),
+                    })?;
+
+                // Retry creating the worktree
+                self.worktree_manager
+                    .create(&name)
+                    .map_err(|e| crate::Error::Rpc {
+                        code: -32603,
+                        message: format!(
+                            "Failed to create worktree for {} after cleanup: {}",
+                            name, e
+                        ),
+                    })?
+            }
+            Err(e) => {
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!("Failed to create worktree for {}: {}", name, e),
+                });
+            }
+        };
 
         let working_dir = worktree_path
             .to_str()
