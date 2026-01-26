@@ -94,24 +94,36 @@ impl CoworkerManager {
         }
     }
 
-    /// Get the next available avenue name.
+    /// Get a randomly selected available avenue name.
     ///
-    /// Tries primary avenue names first, then falls back to overflow names.
+    /// Randomly selects from available primary avenue names first.
+    /// Falls back to overflow names only when all primary names are in use.
     fn next_name(&self) -> Option<String> {
         let coworkers = self.coworkers.read().unwrap();
 
-        // Try primary avenue names first
-        for name in AVENUE_NAMES {
-            if !coworkers.contains_key(*name) {
-                return Some(name.to_string());
-            }
+        // Collect available primary avenue names
+        let available: Vec<&str> = AVENUE_NAMES
+            .iter()
+            .filter(|name| !coworkers.contains_key(**name))
+            .copied()
+            .collect();
+
+        if !available.is_empty() {
+            // Randomly select from available primary names
+            let idx = fastrand::usize(..available.len());
+            return Some(available[idx].to_string());
         }
 
-        // Fall back to overflow names
-        for name in OVERFLOW_NAMES {
-            if !coworkers.contains_key(*name) {
-                return Some(name.to_string());
-            }
+        // Fall back to overflow names (also randomized)
+        let overflow_available: Vec<&str> = OVERFLOW_NAMES
+            .iter()
+            .filter(|name| !coworkers.contains_key(**name))
+            .copied()
+            .collect();
+
+        if !overflow_available.is_empty() {
+            let idx = fastrand::usize(..overflow_available.len());
+            return Some(overflow_available[idx].to_string());
         }
 
         None
@@ -354,7 +366,10 @@ mod tests {
     #[test]
     fn test_next_name_empty() {
         let (manager, _temp_dir) = test_manager();
-        assert_eq!(manager.next_name(), Some("lexington".to_string()));
+        let name = manager.next_name();
+        assert!(name.is_some());
+        // Should be one of the primary avenue names
+        assert!(AVENUE_NAMES.contains(&name.as_ref().unwrap().as_str()));
     }
 
     #[test]
@@ -376,8 +391,13 @@ mod tests {
             );
         }
 
-        // Should return "park" (second in list)
-        assert_eq!(manager.next_name(), Some("park".to_string()));
+        // Should return a name that is NOT "lexington"
+        let name = manager.next_name();
+        assert!(name.is_some());
+        let name = name.unwrap();
+        assert_ne!(name, "lexington");
+        // Should still be from primary avenue names
+        assert!(AVENUE_NAMES.contains(&name.as_str()));
     }
 
     #[test]
@@ -401,8 +421,10 @@ mod tests {
             }
         }
 
-        // Should return first overflow name
-        assert_eq!(manager.next_name(), Some("bleecker".to_string()));
+        // Should return an overflow name (randomized)
+        let name = manager.next_name();
+        assert!(name.is_some());
+        assert!(OVERFLOW_NAMES.contains(&name.as_ref().unwrap().as_str()));
     }
 
     #[test]
