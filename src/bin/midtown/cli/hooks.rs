@@ -346,8 +346,13 @@ fn extract_insights(text: &str) -> Vec<String> {
     let mut insights = Vec::new();
 
     // Look for insight blocks: ★ Insight ... ─────
+    // The markers may optionally have backticks around them
     let start_marker = "★ Insight";
-    let end_marker = "─────────────────────────────────────────────────";
+    // End marker - look for a line of dashes (with optional backtick prefix)
+    let end_markers = [
+        "`─────────────────────────────────────────────────`",
+        "─────────────────────────────────────────────────",
+    ];
 
     let mut pos = 0;
     while let Some(start) = text[pos..].find(start_marker) {
@@ -355,8 +360,13 @@ fn extract_insights(text: &str) -> Vec<String> {
         // Find the content after the header line
         if let Some(header_end) = text[start_abs..].find('\n') {
             let content_start = start_abs + header_end + 1;
-            // Find the closing line
-            if let Some(end) = text[content_start..].find(end_marker) {
+            // Find the closing line - try both end marker variants
+            let end_pos = end_markers
+                .iter()
+                .filter_map(|marker| text[content_start..].find(marker))
+                .min();
+
+            if let Some(end) = end_pos {
                 let insight = text[content_start..content_start + end].trim().to_string();
                 if !insight.is_empty() {
                     insights.push(insight);
