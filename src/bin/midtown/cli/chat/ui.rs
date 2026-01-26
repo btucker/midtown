@@ -335,12 +335,14 @@ fn parse_markdown(text: &str, base_style: Style) -> Vec<Span<'static>> {
 
 /// Wrap a single line of text to fit within the given width
 ///
-/// Uses word boundaries when possible, falls back to character wrapping
+/// Uses word boundaries when possible, falls back to character wrapping.
+/// Handles UTF-8 multi-byte characters correctly by using character indices.
 fn wrap_line(text: &str, width: usize) -> Vec<&str> {
     if text.is_empty() {
         return vec![""];
     }
-    if text.len() <= width {
+    // Use character count, not byte length (UTF-8 chars can be multi-byte)
+    if text.chars().count() <= width {
         return vec![text];
     }
 
@@ -348,16 +350,24 @@ fn wrap_line(text: &str, width: usize) -> Vec<&str> {
     let mut remaining = text;
 
     while !remaining.is_empty() {
-        if remaining.len() <= width {
+        let char_count = remaining.chars().count();
+        if char_count <= width {
             result.push(remaining);
             break;
         }
 
+        // Find the byte position of the width-th character (safe boundary)
+        let byte_pos = remaining
+            .char_indices()
+            .nth(width)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+
         // Try to find a word boundary within the width limit
-        let break_at = remaining[..width]
+        let break_at = remaining[..byte_pos]
             .rfind(' ')
             .map(|pos| pos + 1) // Include the space in current line
-            .unwrap_or(width); // Fall back to hard break
+            .unwrap_or(byte_pos); // Fall back to hard break at char boundary
 
         let (line, rest) = remaining.split_at(break_at);
         result.push(line.trim_end()); // Remove trailing space from wrapped line
@@ -397,13 +407,30 @@ mod tests {
     fn test_wrap_line_multiple_wraps() {
         let text = "this is a longer message that needs multiple wraps";
         let wrapped = wrap_line(text, 15);
-        // Each line should be at most 15 chars
+        // Each line should be at most 15 characters (not bytes)
         for line in &wrapped {
-            assert!(line.len() <= 15, "Line too long: {}", line);
+            assert!(
+                line.chars().count() <= 15,
+                "Line too long: {} ({} chars)",
+                line,
+                line.chars().count()
+            );
         }
         // Reassembling should give us the original (minus spaces at wrap points)
         let rejoined: String = wrapped.join(" ");
         assert_eq!(rejoined.replace("  ", " "), text);
+    }
+
+    #[test]
+    fn test_wrap_line_utf8_box_drawing() {
+        // Box-drawing characters are 3 bytes each in UTF-8
+        let text = "┌─ Team ─────────────────────────────────────────┐";
+        // This should NOT panic - the bug was slicing at byte boundaries
+        let wrapped = wrap_line(text, 40);
+        // Verify we get valid UTF-8 strings back
+        for line in &wrapped {
+            assert!(line.chars().count() <= 40);
+        }
     }
 
     #[test]
