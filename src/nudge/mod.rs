@@ -12,7 +12,9 @@ mod tmux;
 
 pub use config::NudgeConfig;
 pub use state::{CoworkerNudgeState, NudgeTracker};
-pub use tmux::{NudgeError, list_sessions, send_nudge, send_nudge_to_pane};
+pub use tmux::{
+    NudgeError, list_sessions, list_windows, send_nudge, send_nudge_to_pane, window_exists,
+};
 
 use std::time::{Duration, SystemTime};
 
@@ -165,12 +167,17 @@ impl NudgeService {
     }
 
     /// Send a nudge immediately (for event-driven nudges)
+    ///
+    /// # Arguments
+    /// * `nudge` - The nudge to send
+    /// * `tmux_session` - The project tmux session name (e.g., "midtown-projectname")
     pub fn send_nudge(
         &mut self,
         nudge: &Nudge,
         tmux_session: &str,
     ) -> std::result::Result<(), NudgeError> {
-        send_nudge(tmux_session, &nudge.message)?;
+        // The coworker name is the tmux window name within the project session
+        send_nudge(tmux_session, &nudge.coworker, &nudge.message)?;
         self.tracker.record_nudge(&nudge.coworker);
         Ok(())
     }

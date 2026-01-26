@@ -1,6 +1,7 @@
 //! Coworker management for the midtown daemon.
 //!
-//! Tracks active coworkers and their state, coordinating with tmux sessions.
+//! Tracks active coworkers and their state, coordinating with tmux windows
+//! within the project session.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -74,14 +75,21 @@ pub struct CoworkerManager {
     coworkers: Arc<RwLock<HashMap<String, Coworker>>>,
     /// Default working directory for new coworkers
     default_working_dir: String,
+    /// The tmux session name for the project (e.g., "midtown-projectname")
+    session_name: String,
 }
 
 impl CoworkerManager {
     /// Create a new coworker manager.
-    pub fn new(default_working_dir: impl Into<String>) -> Self {
+    ///
+    /// # Arguments
+    /// * `session_name` - The tmux session name (e.g., "midtown-projectname")
+    /// * `default_working_dir` - Default working directory for spawned coworkers
+    pub fn new(session_name: impl Into<String>, default_working_dir: impl Into<String>) -> Self {
         Self {
             coworkers: Arc::new(RwLock::new(HashMap::new())),
             default_working_dir: default_working_dir.into(),
+            session_name: session_name.into(),
         }
     }
 
@@ -119,8 +127,8 @@ impl CoworkerManager {
 
         let working_dir = self.default_working_dir.clone();
 
-        // Create the tmux session and spawn claude
-        tmux::spawn_claude(&name, &working_dir)?;
+        // Create the tmux window and spawn claude
+        tmux::spawn_claude(&self.session_name, &name, &working_dir)?;
 
         // Record the coworker
         let coworker = Coworker {
@@ -154,8 +162,8 @@ impl CoworkerManager {
             }
         }
 
-        // Kill the tmux session
-        tmux::kill_session(name)?;
+        // Kill the tmux window
+        tmux::kill_window(&self.session_name, name)?;
 
         // Remove from tracking
         {
@@ -206,20 +214,20 @@ impl CoworkerManager {
             }
         }
 
-        // Send keys to the tmux session
-        tmux::send_keys(name, message)
+        // Send keys to the tmux window
+        tmux::send_keys(&self.session_name, name, message)
     }
 
-    /// Sync state with actual tmux sessions.
+    /// Sync state with actual tmux windows.
     ///
-    /// Removes coworkers whose tmux sessions no longer exist.
+    /// Removes coworkers whose tmux windows no longer exist.
     pub fn sync_with_tmux(&self) -> crate::Result<()> {
-        let active_sessions = tmux::list_sessions()?;
+        let active_windows = tmux::list_windows(&self.session_name)?;
 
         let mut coworkers = self.coworkers.write().unwrap();
 
-        // Remove coworkers whose sessions are gone
-        coworkers.retain(|name, _| active_sessions.contains(name));
+        // Remove coworkers whose windows are gone
+        coworkers.retain(|name, _| active_windows.contains(name));
 
         Ok(())
     }
@@ -253,19 +261,19 @@ mod tests {
 
     #[test]
     fn test_coworker_manager_new() {
-        let manager = CoworkerManager::new("/tmp");
+        let manager = CoworkerManager::new("midtown-test", "/tmp");
         assert_eq!(manager.count(), 0);
     }
 
     #[test]
     fn test_next_name_empty() {
-        let manager = CoworkerManager::new("/tmp");
+        let manager = CoworkerManager::new("midtown-test", "/tmp");
         assert_eq!(manager.next_name(), Some("lexington".to_string()));
     }
 
     #[test]
     fn test_next_name_with_used_names() {
-        let manager = CoworkerManager::new("/tmp");
+        let manager = CoworkerManager::new("midtown-test", "/tmp");
 
         // Manually insert a coworker to simulate "lexington" being in use
         {
@@ -288,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_next_name_overflow() {
-        let manager = CoworkerManager::new("/tmp");
+        let manager = CoworkerManager::new("midtown-test", "/tmp");
 
         // Fill all primary avenue names
         {
@@ -313,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_next_name_exhausted() {
-        let manager = CoworkerManager::new("/tmp");
+        let manager = CoworkerManager::new("midtown-test", "/tmp");
 
         // Fill all names (primary and overflow)
         {

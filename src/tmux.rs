@@ -1,7 +1,8 @@
 //! Tmux session management for coworker processes.
 //!
 //! Provides functions for creating, managing, and communicating with
-//! tmux sessions that host coworker Claude Code processes.
+//! tmux windows that host coworker Claude Code processes within the
+//! project session.
 
 use std::process::Command;
 
@@ -10,68 +11,59 @@ use crate::Error;
 /// Prefix for all midtown tmux sessions.
 pub const SESSION_PREFIX: &str = "midtown-";
 
-/// Create a new tmux session for a coworker.
+/// Create a new tmux window for a coworker in the project session.
 ///
-/// Creates a detached session named `midtown-<name>` with the given working directory.
-pub fn create_session(name: &str, working_dir: &str) -> crate::Result<()> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
-
+/// Creates a window named `<name>` within the project session with the given working directory.
+pub fn create_window(session: &str, name: &str, working_dir: &str) -> crate::Result<()> {
     let status = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d", // Detached
-            "-s",
-            &session_name,
-            "-c",
-            working_dir, // Starting directory
-        ])
+        .args(["new-window", "-t", session, "-n", name, "-c", working_dir])
         .status()
         .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
             code: -32603,
-            message: format!("Failed to create tmux session: {}", session_name),
+            message: format!("Failed to create tmux window: {}:{}", session, name),
         });
     }
 
     Ok(())
 }
 
-/// Kill a tmux session.
-pub fn kill_session(name: &str) -> crate::Result<()> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
+/// Kill a tmux window within the project session.
+pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
+    let target = format!("{}:{}", session, name);
 
     let status = Command::new("tmux")
-        .args(["kill-session", "-t", &session_name])
+        .args(["kill-window", "-t", &target])
         .status()
         .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
             code: -32603,
-            message: format!("Failed to kill tmux session: {}", session_name),
+            message: format!("Failed to kill tmux window: {}", target),
         });
     }
 
     Ok(())
 }
 
-/// Send keys (input) to a tmux session.
+/// Send keys (input) to a tmux window.
 ///
 /// This is used to "nudge" a coworker by sending keyboard input.
-pub fn send_keys(name: &str, keys: &str) -> crate::Result<()> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
+pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
+    let target = format!("{}:{}", session, name);
 
     let status = Command::new("tmux")
-        .args(["send-keys", "-t", &session_name, keys, "Enter"])
+        .args(["send-keys", "-t", &target, keys, "Enter"])
         .status()
         .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
             code: -32603,
-            message: format!("Failed to send keys to tmux session: {}", session_name),
+            message: format!("Failed to send keys to tmux window: {}", target),
         });
     }
 
@@ -79,62 +71,64 @@ pub fn send_keys(name: &str, keys: &str) -> crate::Result<()> {
 }
 
 /// Send raw keys without appending Enter.
-pub fn send_keys_raw(name: &str, keys: &str) -> crate::Result<()> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
+pub fn send_keys_raw(session: &str, name: &str, keys: &str) -> crate::Result<()> {
+    let target = format!("{}:{}", session, name);
 
     let status = Command::new("tmux")
-        .args(["send-keys", "-t", &session_name, keys])
+        .args(["send-keys", "-t", &target, keys])
         .status()
         .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
             code: -32603,
-            message: format!("Failed to send keys to tmux session: {}", session_name),
+            message: format!("Failed to send keys to tmux window: {}", target),
         });
     }
 
     Ok(())
 }
 
-/// List all midtown tmux sessions.
+/// List all coworker windows in the project session.
 ///
-/// Returns a vector of session names (without the `midtown-` prefix).
-pub fn list_sessions() -> crate::Result<Vec<String>> {
+/// Returns a vector of window names (excluding "Lead" which is the main window).
+pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
     let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
+        .args(["list-windows", "-t", session, "-F", "#{window_name}"])
         .output()
         .map_err(Error::Io)?;
 
-    // If tmux returns non-zero, it might mean no sessions exist
+    // If tmux returns non-zero, it might mean no session exists
     if !output.status.success() {
-        // Check if it's just "no sessions" error
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("no server running") || stderr.contains("no sessions") {
+        if stderr.contains("no server running")
+            || stderr.contains("session not found")
+            || stderr.contains("can't find session")
+        {
             return Ok(Vec::new());
         }
-        // Some other error
         return Err(Error::Rpc {
             code: -32603,
-            message: format!("Failed to list tmux sessions: {}", stderr),
+            message: format!("Failed to list tmux windows: {}", stderr),
         });
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let sessions: Vec<String> = stdout
+    let windows: Vec<String> = stdout
         .lines()
-        .filter_map(|line| line.strip_prefix(SESSION_PREFIX).map(|s| s.to_string()))
+        .filter(|name| *name != "Lead") // Exclude the Lead window
+        .map(|s| s.to_string())
         .collect();
 
-    Ok(sessions)
+    Ok(windows)
 }
 
-/// Check if a session exists.
-pub fn session_exists(name: &str) -> crate::Result<bool> {
-    let session_name = format!("{}{}", SESSION_PREFIX, name);
+/// Check if a window exists in the session.
+pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
+    let target = format!("{}:{}", session, name);
 
     let status = Command::new("tmux")
-        .args(["has-session", "-t", &session_name])
+        .args(["has-session", "-t", &target])
         .status()
         .map_err(Error::Io)?;
 
@@ -199,15 +193,15 @@ Don't hoard tasks - claim one, finish it, then claim another.
     )
 }
 
-/// Spawn Claude Code in a tmux session.
+/// Spawn Claude Code in a tmux window within the project session.
 ///
-/// This creates the session and starts `claude` in it with coworker-specific
+/// This creates a window and starts `claude` in it with coworker-specific
 /// settings, including a Stop hook that reads the channel whenever the agent pauses.
 /// Also injects a system prompt that gives the coworker instructions for operating
 /// in the midtown environment.
-pub fn spawn_claude(name: &str, working_dir: &str) -> crate::Result<()> {
-    // First create the session
-    create_session(name, working_dir)?;
+pub fn spawn_claude(session: &str, name: &str, working_dir: &str) -> crate::Result<()> {
+    // First create the window in the project session
+    create_window(session, name, working_dir)?;
 
     // Build the claude command with settings for channel synchronization
     // and a system prompt for coworker identity and instructions
@@ -218,12 +212,96 @@ pub fn spawn_claude(name: &str, working_dir: &str) -> crate::Result<()> {
     let escaped_prompt = system_prompt.replace('\'', "'\\''");
 
     let command = format!(
-        "claude --settings '{}' --append-system-prompt '{}'",
+        "claude --dangerously-skip-permissions --settings '{}' --append-system-prompt '{}'",
         settings, escaped_prompt
     );
 
     // Then send the command to start claude with coworker settings
-    send_keys(name, &command)
+    send_keys(session, name, &command)
+}
+
+// Legacy functions for backward compatibility during transition
+// These will be removed once all callers are updated
+
+/// Create a new tmux session (legacy - use create_window instead).
+#[deprecated(note = "Use create_window instead")]
+pub fn create_session(name: &str, working_dir: &str) -> crate::Result<()> {
+    let session_name = format!("{}{}", SESSION_PREFIX, name);
+
+    let status = Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session_name, "-c", working_dir])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to create tmux session: {}", session_name),
+        });
+    }
+
+    Ok(())
+}
+
+/// Kill a tmux session (legacy - use kill_window instead).
+#[deprecated(note = "Use kill_window instead")]
+pub fn kill_session(name: &str) -> crate::Result<()> {
+    let session_name = format!("{}{}", SESSION_PREFIX, name);
+
+    let status = Command::new("tmux")
+        .args(["kill-session", "-t", &session_name])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to kill tmux session: {}", session_name),
+        });
+    }
+
+    Ok(())
+}
+
+/// List all midtown tmux sessions (legacy - use list_windows instead).
+#[deprecated(note = "Use list_windows instead")]
+pub fn list_sessions() -> crate::Result<Vec<String>> {
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+        .map_err(Error::Io)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no server running") || stderr.contains("no sessions") {
+            return Ok(Vec::new());
+        }
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to list tmux sessions: {}", stderr),
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let sessions: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix(SESSION_PREFIX).map(|s| s.to_string()))
+        .collect();
+
+    Ok(sessions)
+}
+
+/// Check if a session exists (legacy - use window_exists instead).
+#[deprecated(note = "Use window_exists instead")]
+pub fn session_exists(name: &str) -> crate::Result<bool> {
+    let session_name = format!("{}{}", SESSION_PREFIX, name);
+
+    let status = Command::new("tmux")
+        .args(["has-session", "-t", &session_name])
+        .status()
+        .map_err(Error::Io)?;
+
+    Ok(status.success())
 }
 
 #[cfg(test)]
