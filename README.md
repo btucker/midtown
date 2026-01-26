@@ -1,53 +1,32 @@
 # Midtown
 
-Coordinate multiple **Claude Code** instances working on the same codebase. Midtown lets a human-facing Claude Code session (the "Lead") spawn and orchestrate additional Claude Code instances (the "Coworkers"), each working in isolated git worktrees.
+Coordinate multiple **Claude Code** instances working on the same codebase. Midtown lets a human-facing Claude Code session (the "Lead") spawn and orchestrate additional Claude Code instances (the "Coworkers"), each working in isolated git worktrees. The Coworkers collaborate, open PRs, review them, and merge them.
 
 ## Why Midtown?
 
-Midtown is inspired by [Gas Town](https://github.com/anthropics/gastown), Anthropic's full-featured multi-agent orchestration system. But where Gas Town is a sophisticated engine with beads, molecules, refineries, witnesses, mail systems, and complex workflows, Midtown takes a deliberately **simpler approach**.
+Midtown is inspired by [Gastown](https://github.com/steveyegge/gastown), but a bit simpler, less exciting, and more mid.
 
-### The "Mid" Philosophy
+At its core, Midtown is built around a **Slack-like messaging model**: a shared channel where team members (both the human-facing Lead and autonomous Coworkers) post updates, coordinate handoffs, and stay in sync. This append-only message stream is the backbone of multi-agent collaboration—each Claude Code instance reads the channel at natural pause points, just like checking a team chat.
 
-Midtown is intentionally "mid"—not trying to achieve everything Gas Town does. Instead, it:
-
-- **Leans into Claude Code's native features** - Tasks, hooks, and the agent system are already built into Claude Code. Midtown uses them rather than reinventing them.
-- **Keeps the coordination model simple** - One shared channel vs. Gas Town's complex mail routing and molecule orchestration.
-- **Minimizes moving parts** - Easier to understand, debug, and operate.
-
-### Slack-Like Messaging at the Core
-
-At its heart, Midtown is built around a **Slack-like channel**: a single shared message stream where team members (both the human-facing Lead and autonomous Coworkers) post updates, coordinate handoffs, and stay in sync. Each Claude Code instance reads the channel at natural pause points—just like checking a team chat.
-
-| Gas Town | Midtown |
-|----------|---------|
-| Beads (work items with complex lifecycle) | Claude Code's native Tasks |
-| Molecules (workflow templates) | Simple channel coordination |
-| Refineries (orchestration engines) | Daemon (spawn/track coworkers) |
-| Witnesses (supervisors) | Lead (human-facing session) |
-| Mail system (routed messaging) | Channel (shared message log) |
-
-### When to Use Midtown
-
-Choose Midtown when you want multi-agent coordination without the operational complexity of Gas Town:
+When you're working with Claude Code on a complex project, you might want to parallelize work:
 
 - The Lead works on the main feature while a Coworker handles tests
 - Multiple Coworkers implement independent components simultaneously
-- A Coworker reviews PRs while the Lead continues development
+- A Coworker reviews PRs while the Lead & human collaborate on what's next
 
-Midtown provides just enough infrastructure:
+Midtown provides the infrastructure for this coordination:
 
 - **Channel messaging** - Slack-like append-only message stream for team communication
 - **Coworker spawning** - Launch Claude Code instances in isolated git worktrees
 - **Task coordination** - Coworkers claim tasks via Claude Code's native task system
 
-For teams that need the full power of cross-repo orchestration, complex approval workflows, or enterprise-scale agent coordination, Gas Town remains the right tool.
-
 ## Key Concepts
 
 ### Lead
 
-The **Lead** is your primary, human-facing Claude Code instance. It:
-- Receives your instructions directly
+The **Lead** is your primary, human-facing Claude Code instance. This is like the "Mayor" in Gastown. It:
+- Collaborates with you to plan & design what to build
+- Give you insight into the process
 - Spawns coworkers when parallel work is needed
 - Coordinates the team via the channel
 - Reviews work from coworkers
@@ -59,11 +38,16 @@ The **Lead** is your primary, human-facing Claude Code instance. It:
 - Their own terminal session
 - With automatic channel synchronization via Claude Code hooks
 
+Coworkers:
+- Grab open tasks & work them to completion, keeping an eye on the channel for coordination with other coworkers
+- Review open PRs when needed
+- Merge their own PRs once they have been approved by another coworker
+
 Coworkers are named after Manhattan avenues (Madison, Lexington, Park, etc.) for easy reference.
 
 ### Channel
 
-The **Channel** is an append-only message log where the team coordinates. Messages persist across sessions, so coworkers can catch up on what happened while they were offline.
+The **Channel** is an append-only message log where the team coordinates. Messages persist across sessions, so coworkers can catch up on what happened while they were offline. In the future midtown may introduce multiple "public" channels.
 
 ### Tasks
 
