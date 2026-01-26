@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
@@ -33,7 +33,12 @@ pub struct DaemonConfig {
     pub webhook_port: Option<u16>,
     /// GitHub webhook secret for signature verification.
     pub webhook_secret: Option<String>,
+    /// Interval in seconds to restart webhook forwarder (for reliability).
+    pub webhook_restart_interval_secs: u64,
 }
+
+/// Default interval for restarting the webhook forwarder (5 minutes)
+pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
 
 /// Default port for the webhook server (obscure to avoid conflicts)
 pub const DEFAULT_WEBHOOK_PORT: u16 = 47022;
@@ -56,6 +61,10 @@ impl Default for DaemonConfig {
             .map(|p| if p == 0 { None } else { Some(p) })
             .unwrap_or(Some(DEFAULT_WEBHOOK_PORT));
         let webhook_secret = std::env::var("MIDTOWN_WEBHOOK_SECRET").ok();
+        let webhook_restart_interval_secs = std::env::var("MIDTOWN_WEBHOOK_RESTART_INTERVAL")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS);
 
         Self {
             socket_path: state_dir.join("midtown").join("daemon.sock"),
@@ -63,6 +72,7 @@ impl Default for DaemonConfig {
             verbose: false,
             webhook_port,
             webhook_secret,
+            webhook_restart_interval_secs,
         }
     }
 }
@@ -141,9 +151,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let listener = UnixListener::bind(&config.socket_path)?;
     info!("Listening on {}", config.socket_path.display());
 
-    // Start webhook server and gh forwarder if configured
+    // Start webhook server and gh forwarder watchdog if configured
     let mut webhook_rx = None;
-    let mut gh_forward_process: Option<std::process::Child> = None;
+    let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
     if let Some(port) = config.webhook_port {
         let webhook_config = WebhookConfig {
@@ -156,67 +166,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
 
-                // Get the GitHub repo name (owner/repo) for webhook forwarding
-                let gh_repo = std::process::Command::new("gh")
-                    .args([
-                        "repo",
-                        "view",
-                        "--json",
-                        "nameWithOwner",
-                        "-q",
-                        ".nameWithOwner",
-                    ])
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-
-                if let Some(repo) = gh_repo {
-                    // Ensure gh-webhook extension is installed
-                    let extension_check = std::process::Command::new("gh")
-                        .args(["extension", "list"])
-                        .output()
-                        .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).contains("webhook"))
-                        .unwrap_or(false);
-
-                    if !extension_check {
-                        info!("Installing gh-webhook extension...");
-                        let install_result = std::process::Command::new("gh")
-                            .args(["extension", "install", "cli/gh-webhook"])
-                            .status();
-                        if let Err(e) = install_result {
-                            warn!("Failed to install gh-webhook extension: {}", e);
-                        }
-                    }
-                    // Start gh webhook forward to receive GitHub events
-                    let url = format!("http://localhost:{}/webhook", port);
-                    match std::process::Command::new("gh")
-                        .args([
-                            "webhook",
-                            "forward",
-                            "--events=pull_request,pull_request_review,check_run,status,issue_comment,pull_request_review_comment",
-                            &format!("--repo={}", repo),
-                            &format!("--url={}", url),
-                        ])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::piped())
-                        .spawn()
-                    {
-                        Ok(child) => {
-                            info!("Started gh webhook forward for {} to {}", repo, url);
-                            gh_forward_process = Some(child);
-                        }
-                        Err(e) => {
-                            warn!("Failed to start gh webhook forward: {}", e);
-                        }
-                    }
-                } else {
-                    warn!(
-                        "Could not determine GitHub repo (gh repo view failed). Webhook forwarding disabled."
-                    );
-                    warn!("Webhooks will still work if configured manually in GitHub settings.");
-                }
+                // Spawn webhook forwarder watchdog task
+                let restart_interval = config.webhook_restart_interval_secs;
+                tokio::spawn(webhook_forwarder_watchdog(
+                    port,
+                    restart_interval,
+                    forwarder_shutdown_rx,
+                ));
             }
             Err(e) => {
                 error!("Failed to start webhook server: {}", e);
@@ -279,12 +235,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         }
     }
 
-    // Stop gh webhook forward if running
-    if let Some(mut child) = gh_forward_process {
-        info!("Stopping gh webhook forward...");
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    // Signal webhook forwarder watchdog to stop
+    info!("Stopping webhook forwarder watchdog...");
+    let _ = forwarder_shutdown_tx.send(true);
 
     // Shutdown all coworkers
     info!("Shutting down coworkers...");
@@ -299,6 +252,147 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     info!("Daemon stopped");
     Ok(())
+}
+
+/// Watchdog task that manages the gh webhook forward process with periodic restarts.
+///
+/// The `gh webhook forward` command can sometimes stop delivering events without
+/// terminating. This watchdog ensures reliability by:
+/// 1. Starting the forwarder process
+/// 2. Restarting it every `restart_interval_secs` seconds
+/// 3. Cleaning up on shutdown signal
+async fn webhook_forwarder_watchdog(
+    port: u16,
+    restart_interval_secs: u64,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    // Get the GitHub repo name (owner/repo) for webhook forwarding
+    let gh_repo = match get_github_repo_name() {
+        Some(repo) => repo,
+        None => {
+            warn!(
+                "Could not determine GitHub repo (gh repo view failed). Webhook forwarding disabled."
+            );
+            warn!("Webhooks will still work if configured manually in GitHub settings.");
+            return;
+        }
+    };
+
+    // Ensure gh-webhook extension is installed
+    if !ensure_gh_webhook_extension() {
+        warn!("gh-webhook extension not available, webhook forwarding disabled");
+        return;
+    }
+
+    let url = format!("http://localhost:{}/webhook", port);
+    info!(
+        "Starting webhook forwarder watchdog (restart every {}s)",
+        restart_interval_secs
+    );
+
+    let mut current_process: Option<std::process::Child> = None;
+
+    loop {
+        // Kill any existing process before starting a new one
+        if let Some(mut child) = current_process.take() {
+            debug!("Stopping previous webhook forwarder process");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        // Start new forwarder process
+        match start_gh_webhook_forward(&gh_repo, &url) {
+            Ok(child) => {
+                info!("Started gh webhook forward for {} to {}", gh_repo, url);
+                current_process = Some(child);
+            }
+            Err(e) => {
+                warn!("Failed to start gh webhook forward: {}", e);
+            }
+        }
+
+        // Wait for restart interval or shutdown signal
+        let restart_delay =
+            tokio::time::sleep(std::time::Duration::from_secs(restart_interval_secs));
+
+        tokio::select! {
+            _ = restart_delay => {
+                debug!("Webhook forwarder restart interval elapsed, restarting...");
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Webhook forwarder watchdog received shutdown signal");
+                    break;
+                }
+            }
+        }
+    }
+
+    // Clean up on exit
+    if let Some(mut child) = current_process {
+        info!("Stopping gh webhook forward...");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Get the GitHub repo name (owner/repo) from the current directory.
+fn get_github_repo_name() -> Option<String> {
+    std::process::Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "-q",
+            ".nameWithOwner",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Ensure the gh-webhook extension is installed.
+fn ensure_gh_webhook_extension() -> bool {
+    let extension_check = std::process::Command::new("gh")
+        .args(["extension", "list"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("webhook"))
+        .unwrap_or(false);
+
+    if extension_check {
+        return true;
+    }
+
+    info!("Installing gh-webhook extension...");
+    match std::process::Command::new("gh")
+        .args(["extension", "install", "cli/gh-webhook"])
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(e) => {
+            warn!("Failed to install gh-webhook extension: {}", e);
+            false
+        }
+    }
+}
+
+/// Start the gh webhook forward process.
+fn start_gh_webhook_forward(repo: &str, url: &str) -> std::io::Result<std::process::Child> {
+    std::process::Command::new("gh")
+        .args([
+            "webhook",
+            "forward",
+            "--events=pull_request,pull_request_review,check_run,status,issue_comment,pull_request_review_comment",
+            &format!("--repo={}", repo),
+            &format!("--url={}", url),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
 }
 
 /// Handle a single client connection.
