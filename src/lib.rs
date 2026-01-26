@@ -69,6 +69,9 @@ pub mod nudge;
 // Project configuration
 pub mod config;
 
+// Agent system prompts
+pub mod agents;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;
