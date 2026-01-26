@@ -4,6 +4,10 @@ Coordinate multiple **Claude Code** instances working on the same codebase. Midt
 
 ## Why Midtown?
 
+Midtown is part of [Gas Town](https://github.com/anthropics/gastown), Anthropic's agentic orchestration system. While Gas Town handles the broader workflow of spawning, coordinating, and managing AI agents across repositories, Midtown focuses specifically on **workspace isolation** and **team messaging** for multiple Claude Code instances working on the same codebase.
+
+At its core, Midtown is built around a **Slack-like messaging model**: a shared channel where team members (both the human-facing Lead and autonomous Coworkers) post updates, coordinate handoffs, and stay in sync. This append-only message stream is the backbone of multi-agent collaboration—each Claude Code instance reads the channel at natural pause points, just like checking a team chat.
+
 When you're working with Claude Code on a complex project, you might want to parallelize work:
 
 - The Lead works on the main feature while a Coworker handles tests
@@ -12,8 +16,8 @@ When you're working with Claude Code on a complex project, you might want to par
 
 Midtown provides the infrastructure for this coordination:
 
+- **Channel messaging** - Slack-like append-only message stream for team communication
 - **Coworker spawning** - Launch Claude Code instances in isolated git worktrees
-- **Channel messaging** - Shared append-only message stream for team communication
 - **Task coordination** - Coworkers claim tasks via Claude Code's native task system
 
 ## Key Concepts
