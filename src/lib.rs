@@ -72,6 +72,9 @@ pub mod config;
 // Agent system prompts
 pub mod agents;
 
+// Path utilities (socket paths, repo detection)
+pub mod paths;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;

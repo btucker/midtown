@@ -11,28 +11,28 @@ use crate::cli::Response;
 
 /// Get the tmux session name based on the repo name.
 /// Format: midtown-{repo_name}
+///
+/// Returns an error if not in a git repository, since a tmux session
+/// requires a valid project context.
 fn session_name() -> Result<String, String> {
-    let root = repo_root()?;
-    let repo_name = root
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "default".to_string());
+    let repo_name = midtown::paths::detect_repo_name().or_else(|| {
+        repo_root()
+            .ok()
+            .and_then(|r| r.file_name().map(|s| s.to_string_lossy().to_string()))
+    });
 
-    Ok(format!("midtown-{}", repo_name))
+    match repo_name {
+        Some(name) => Ok(format!("midtown-{}", name)),
+        None => Err(
+            "Not in a git repository. Run midtown from within a git repo or use --repo."
+                .to_string(),
+        ),
+    }
 }
 
 /// Get the socket path for the daemon.
 fn socket_path() -> PathBuf {
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("state")
-        });
-
-    state_dir.join("midtown").join("daemon.sock")
+    midtown::paths::daemon_socket()
 }
 
 /// Check if the daemon is running by attempting to connect to its socket.

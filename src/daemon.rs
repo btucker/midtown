@@ -45,15 +45,6 @@ pub const DEFAULT_WEBHOOK_PORT: u16 = 47022;
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".local")
-                    .join("state")
-            });
-
         // Check env vars for webhook config (can override or disable with MIDTOWN_WEBHOOK_PORT=0)
         let webhook_port = std::env::var("MIDTOWN_WEBHOOK_PORT")
             .ok()
@@ -67,7 +58,8 @@ impl Default for DaemonConfig {
             .unwrap_or(DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS);
 
         Self {
-            socket_path: state_dir.join("midtown").join("daemon.sock"),
+            // Use repo-specific socket path to isolate daemons per project
+            socket_path: crate::paths::daemon_socket(),
             workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             verbose: false,
             webhook_port,
@@ -86,11 +78,13 @@ struct DaemonState {
 
 impl DaemonState {
     fn new(socket_path: PathBuf, workdir: PathBuf, channel: Channel) -> crate::Result<Self> {
-        // Derive the tmux session name from the workdir (repo name)
-        let repo_name = workdir
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "default".to_string());
+        // Derive the tmux session name using git-aware repo detection
+        let repo_name = crate::paths::detect_repo_name().unwrap_or_else(|| {
+            workdir
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "default".to_string())
+        });
         let session_name = format!("midtown-{}", repo_name);
 
         // Create worktree manager for coworker isolation
@@ -124,12 +118,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Derive repo name from workdir
-    let repo_name = config
-        .workdir
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "default".to_string());
+    // Derive repo name using git-aware detection (handles worktrees correctly)
+    let repo_name = crate::paths::detect_repo_name().unwrap_or_else(|| {
+        // Fallback to workdir name if not in a git repo
+        config
+            .workdir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".to_string())
+    });
 
     // Create channel for the repo
     let channel = Channel::for_repo(&repo_name)?;
