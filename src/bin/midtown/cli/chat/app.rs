@@ -26,7 +26,6 @@ pub struct App {
     /// Channel for reading messages
     channel: Option<Channel>,
     /// Daemon client for querying coworker status
-    #[allow(dead_code)] // TODO: Use for querying active coworkers
     daemon: Option<DaemonClient>,
     /// Last known message count (for detecting new messages)
     last_count: usize,
@@ -95,9 +94,24 @@ impl App {
         }
     }
 
-    /// Update coworker list based on message senders
+    /// Update coworker list from daemon or message senders
     fn update_coworkers(&mut self) {
-        // Build coworker list from message senders (excluding system, github, Lead)
+        // Try to get coworker list from daemon first
+        if let Some(ref daemon) = self.daemon
+            && let Ok(crate::cli::Response::Coworkers { coworkers }) = daemon.coworker_list()
+        {
+            self.coworkers = coworkers
+                .into_iter()
+                .map(|cw| CoworkerInfo {
+                    name: cw.name.clone(),
+                    last_action: self.last_actions.get(&cw.name).cloned(),
+                })
+                .collect();
+            self.coworkers.sort_by(|a, b| a.name.cmp(&b.name));
+            return;
+        }
+
+        // Fall back to building coworker list from message senders
         let mut seen: HashMap<String, bool> = HashMap::new();
         let excluded = ["system", "github", "Lead"];
 
