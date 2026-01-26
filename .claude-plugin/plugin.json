@@ -1,0 +1,10 @@
+{
+  "name": "midtown",
+  "version": "0.1.0",
+  "description": "Coordinate multiple Claude Code instances working on the same codebase",
+  "author": {
+    "name": "Midtown Contributors"
+  },
+  "license": "MIT",
+  "keywords": ["coordination", "multi-agent", "collaboration", "worktrees"]
+}
