@@ -2,7 +2,7 @@
 name = "midtown"
 version = "0.1.0"
 edition = "2024"
-description = "Midtown daemon - multi-agent workspace manager"
+description = "Midtown daemon - multi-agent workspace manager for Gas Town"
 license = "Apache-2.0"
 
 [dependencies]
@@ -22,6 +22,14 @@ thiserror = "2"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Channel management (nux)
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4"] }
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3.0"
 
 [[bin]]
 name = "midtownd"

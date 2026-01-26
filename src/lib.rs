@@ -1,10 +1,26 @@
-//! Midtown - Multi-agent workspace management daemon.
+//! Midtown - Multi-agent workspace management daemon for Gas Town.
 //!
 //! This crate provides the core library for the Midtown daemon, which manages
 //! multiple agent workspaces (polecats, refineries, witnesses) in a Git-based
 //! workflow system.
+//!
+//! ## Core Components
+//!
+//! - **RPC**: JSON-RPC 2.0 protocol for inter-process communication
+//! - **Channels**: Append-only message logs for agent coordination
+//! - **Cursors**: Per-agent position tracking in message streams
 
+// RPC subsystem (furiosa)
 pub mod rpc;
+
+// Channel management subsystem (nux)
+mod channel;
+mod cursor;
+mod message;
+
+pub use channel::Channel;
+pub use cursor::Cursor;
+pub use message::{Message, MessageType};
 
 use thiserror::Error;
 
@@ -22,6 +38,14 @@ pub enum Error {
     /// RPC protocol error
     #[error("RPC error: {message} (code: {code})")]
     Rpc { code: i32, message: String },
+
+    /// Channel not found
+    #[error("Channel not found: {0}")]
+    ChannelNotFound(String),
+
+    /// Invalid message format
+    #[error("Invalid message format: {0}")]
+    InvalidMessage(String),
 }
 
 /// Result type alias for Midtown operations.
