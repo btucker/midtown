@@ -162,9 +162,11 @@ fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
 
     for (i, content) in content_lines.into_iter().enumerate() {
         // Determine base style for content based on message type
+        // For github/system senders, use DarkGray for both name and content
         let content_style = match msg.message_type {
             MessageType::Action => Style::default().fg(color),
             MessageType::System => Style::default().fg(Color::DarkGray),
+            _ if msg.from == "github" => Style::default().fg(Color::DarkGray),
             _ => Style::default().fg(Color::White),
         };
 
