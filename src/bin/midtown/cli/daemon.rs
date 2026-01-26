@@ -418,14 +418,17 @@ pub fn handle_restart() -> Result<Response, String> {
 /// Handle `midtown attach` command.
 ///
 /// Attaches to the project's tmux session.
+/// If the session doesn't exist, it is automatically created first.
 pub fn handle_attach() -> Result<Response, String> {
     let session = session_name()?;
 
+    // Auto-create session if it doesn't exist
     if !session_exists(&session) {
-        return Err(format!(
-            "Session '{}' not found. Run 'midtown' first.",
-            session
-        ));
+        // Start midtown (daemon + tmux session)
+        handle_start(false)?;
+
+        // Wait briefly for the session to be ready
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
     // Execute tmux attach - this replaces the current process
