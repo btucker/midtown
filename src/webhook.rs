@@ -206,8 +206,17 @@ struct PullRequestEvent {
 #[derive(Debug, Deserialize)]
 struct PullRequest {
     title: String,
+    #[allow(dead_code)]
     user: User,
     merged: Option<bool>,
+    head: Option<PullRequestHead>,
+    body: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestHead {
+    #[serde(rename = "ref")]
+    branch: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,40 +321,102 @@ struct Repository {
 }
 
 // ============================================================================
+// Coworker Attribution
+// ============================================================================
+
+/// Known coworker names (avenue names from Manhattan)
+const COWORKER_NAMES: &[&str] = &[
+    "lexington",
+    "park",
+    "madison",
+    "broadway",
+    "amsterdam",
+    "columbus",
+    "central",
+    "riverside",
+];
+
+/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington")
+fn coworker_from_branch(branch: &str) -> Option<&'static str> {
+    let prefix = branch.split('/').next()?;
+    COWORKER_NAMES
+        .iter()
+        .find(|&&name| name.eq_ignore_ascii_case(prefix))
+        .copied()
+}
+
+/// Extract coworker name from frontmatter in body (e.g., "<!-- midtown: lexington -->")
+fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
+    // Look for <!-- midtown: name --> pattern
+    let start = body.find("<!-- midtown:")?;
+    let after_start = &body[start + 13..];
+    let end = after_start.find("-->")?;
+    let name = after_start[..end].trim();
+
+    COWORKER_NAMES
+        .iter()
+        .find(|&&n| n.eq_ignore_ascii_case(name))
+        .copied()
+}
+
+/// Determine the sender for a PR-related event.
+/// Priority: frontmatter > branch prefix > "github"
+fn determine_pr_sender(branch: Option<&str>, body: Option<&str>) -> &'static str {
+    // Check frontmatter first (explicit attribution)
+    if let Some(body) = body
+        && let Some(name) = coworker_from_frontmatter(body)
+    {
+        return name;
+    }
+
+    // Check branch prefix
+    if let Some(branch) = branch
+        && let Some(name) = coworker_from_branch(branch)
+    {
+        return name;
+    }
+
+    // Default to github
+    "github"
+}
+
+// ============================================================================
 // Event Handlers
 // ============================================================================
 
 fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
     let event: PullRequestEvent = serde_json::from_slice(body)?;
 
+    // Determine sender from branch prefix or PR body frontmatter
+    let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
+    let pr_body = event.pull_request.body.as_deref();
+    let sender = determine_pr_sender(branch, pr_body);
+
     let content = match event.action.as_str() {
-        "opened" => format!(
-            "{} opened PR #{}: {}",
-            event.pull_request.user.login, event.number, event.pull_request.title
-        ),
+        "opened" => format!("opened PR #{}: {}", event.number, event.pull_request.title),
         "closed" => {
             if event.pull_request.merged.unwrap_or(false) {
-                format!("PR #{} merged: {}", event.number, event.pull_request.title)
+                format!("merged PR #{}: {}", event.number, event.pull_request.title)
             } else {
                 format!(
-                    "PR #{} closed (not merged): {}",
+                    "closed PR #{} (not merged): {}",
                     event.number, event.pull_request.title
                 )
             }
         }
         "reopened" => format!(
-            "{} reopened PR #{}: {}",
-            event.pull_request.user.login, event.number, event.pull_request.title
+            "reopened PR #{}: {}",
+            event.number, event.pull_request.title
         ),
-        "synchronize" => format!("PR #{} updated with new commits", event.number),
+        "synchronize" => format!("pushed to PR #{}", event.number),
         "ready_for_review" => format!(
-            "PR #{} is ready for review: {}",
+            "marked PR #{} ready for review: {}",
             event.number, event.pull_request.title
         ),
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(Message::new(sender, content, MessageType::Text)))
 }
 
 fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -530,15 +601,38 @@ mod tests {
             "number": 42,
             "pull_request": {
                 "title": "Add auth endpoint",
-                "user": {"login": "lexington"},
-                "merged": false
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {"ref": "lexington/add-auth"}
             },
             "repository": {"full_name": "org/repo"}
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "lexington opened PR #42: Add auth endpoint");
-        assert_eq!(msg.from, "github");
+        assert_eq!(msg.content, "opened PR #42: Add auth endpoint");
+        // Sender is determined from branch prefix
+        assert_eq!(msg.from, "lexington");
+    }
+
+    #[test]
+    fn test_handle_pull_request_opened_with_frontmatter() {
+        let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "Add auth endpoint",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {"ref": "feature/something"},
+                "body": "<!-- midtown: park -->\n\nSome description"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(msg.content, "opened PR #42: Add auth endpoint");
+        // Sender is determined from frontmatter (takes priority over branch)
+        assert_eq!(msg.from, "park");
     }
 
     #[test]
@@ -548,14 +642,35 @@ mod tests {
             "number": 42,
             "pull_request": {
                 "title": "Add auth endpoint",
-                "user": {"login": "lexington"},
-                "merged": true
+                "user": {"login": "btucker"},
+                "merged": true,
+                "head": {"ref": "lexington/add-auth"}
             },
             "repository": {"full_name": "org/repo"}
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "PR #42 merged: Add auth endpoint");
+        assert_eq!(msg.content, "merged PR #42: Add auth endpoint");
+        assert_eq!(msg.from, "lexington");
+    }
+
+    #[test]
+    fn test_handle_pull_request_no_coworker() {
+        // When branch doesn't match a coworker, sender is "github"
+        let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "Add auth endpoint",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {"ref": "feature/something"}
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(msg.from, "github");
     }
 
     #[test]

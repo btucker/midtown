@@ -357,7 +357,27 @@ Don't hoard tasks - claim one, finish it, then claim another.
 - You're in an isolated worktree (detached HEAD at the Lead's current commit)
 - First thing: create a feature branch for your task: `git checkout -b {name}/<task-description>`
 - Commit frequently with clear messages
-- When done, push and create a PR: `gh pr create`
+- When done, push and create a PR
+
+**IMPORTANT**: When creating PRs, add this frontmatter to the PR body so GitHub events are attributed to you:
+```
+<!-- midtown: {name} -->
+```
+
+Example PR creation:
+```bash
+gh pr create --title "feat: Add auth endpoint" --body "$(cat <<'EOF'
+<!-- midtown: {name} -->
+
+## Summary
+- Added authentication endpoint
+
+## Test plan
+- [x] Unit tests pass
+EOF
+)"
+```
+
 - Request review from teammates via channel
 
 ## Coordination
