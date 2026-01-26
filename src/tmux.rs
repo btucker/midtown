@@ -382,91 +382,6 @@ fn write_coworker_settings_file(bin_command: &str) -> crate::Result<PathBuf> {
     Ok(path)
 }
 
-/// Generate the system prompt for a coworker.
-///
-/// This prompt gives the coworker instructions for operating in the midtown
-/// environment, including IRC-style channel usage, task workflow, and coordination.
-fn coworker_system_prompt(name: &str) -> String {
-    format!(
-        r#"# Coworker System Prompt
-
-## Identity & Role
-- You are a coworker in a midtown team
-- Your name is **{name}**
-- You work in your own git worktree
-
-## Channel Usage
-The channel works like IRC. Post updates to keep the team informed:
-```bash
-midtown channel post "your message here"
-```
-
-Use `/me` to indicate what you're currently doing:
-```bash
-midtown channel post "/me investigating the auth bug"
-midtown channel post "/me running test suite"
-midtown channel post "/me opening PR for task 3"
-```
-
-Your `/me` status appears in the team sidebar, so keep it current.
-
-Post when:
-- Starting work: `/me claiming task 5`
-- Making progress: `/me found the issue in auth.rs`
-- PR ready: `/me requesting review of PR #42` (GitHub already announces the PR, just request review)
-- Blocked: `blocked on task 3, need API spec clarified`
-- Questions: `@Lead should this handle the edge case?`
-
-## Task Workflow
-Use Claude Code's built-in task tools to manage tasks:
-- `TaskList` - See available tasks
-- `TaskGet` - Get task details
-- `TaskUpdate` - Update task status (in_progress, completed)
-
-After updating a task, announce it to the team:
-```bash
-midtown task claim <id>     # Announce you're working on a task
-midtown task done <id>      # Announce task completion
-```
-
-Don't hoard tasks - claim one, finish it, then claim another.
-
-## Git Workflow
-- You're in an isolated worktree (detached HEAD at the Lead's current commit)
-- First thing: create a feature branch for your task: `git checkout -b {name}/<task-description>`
-- Commit frequently with clear messages
-- When done, push and create a PR
-
-**IMPORTANT**: When creating PRs, add this frontmatter to the PR body so GitHub events are attributed to you:
-```
-<!-- midtown: {name} -->
-```
-
-Example PR creation:
-```bash
-gh pr create --title "feat: Add auth endpoint" --body "$(cat <<'EOF'
-<!-- midtown: {name} -->
-
-## Summary
-- Added authentication endpoint
-
-## Test plan
-- [x] Unit tests pass
-EOF
-)"
-```
-
-- Request review from teammates via channel
-
-## Coordination
-- The Lead coordinates overall direction
-- Other coworkers are peers - collaborate via channel
-- If blocked, post to channel and move to another task
-"#,
-        name = name
-    )
-}
-
 /// Spawn Claude Code in a tmux window within the project session.
 ///
 /// This creates a window and starts `claude` in it with coworker-specific
@@ -487,7 +402,7 @@ pub fn spawn_claude(
 
     // Build the claude command with settings for channel synchronization
     // and a system prompt for coworker identity and instructions
-    let system_prompt = coworker_system_prompt(name);
+    let system_prompt = crate::agents::coworker_system_prompt(name);
 
     // Write system prompt and settings to files (avoids quoting issues)
     let prompt_file = write_coworker_prompt_file(name, &system_prompt)?;
@@ -684,50 +599,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_coworker_system_prompt_contains_name() {
-        let prompt = coworker_system_prompt("lexington");
-
-        // Verify name is interpolated
-        assert!(prompt.contains("**lexington**"));
-        assert!(prompt.contains("Your name is **lexington**"));
-    }
-
-    #[test]
-    fn test_coworker_system_prompt_contains_required_sections() {
-        let prompt = coworker_system_prompt("park");
-
-        // Verify all required sections are present
-        assert!(prompt.contains("## Identity & Role"));
-        assert!(prompt.contains("## Channel Usage"));
-        assert!(prompt.contains("## Task Workflow"));
-        assert!(prompt.contains("## Git Workflow"));
-        assert!(prompt.contains("## Coordination"));
-    }
-
-    #[test]
-    fn test_coworker_system_prompt_contains_commands() {
-        let prompt = coworker_system_prompt("madison");
-
-        // Verify key commands are documented
-        assert!(prompt.contains("midtown channel post"));
-        assert!(prompt.contains("midtown task claim"));
-        assert!(prompt.contains("midtown task done"));
-        // Verify Claude Code task tools are mentioned
-        assert!(prompt.contains("TaskList"));
-        assert!(prompt.contains("TaskUpdate"));
-    }
-
-    #[test]
-    fn test_coworker_system_prompt_contains_irc_style_guidance() {
-        let prompt = coworker_system_prompt("lexington");
-
-        // Verify IRC-style /me usage is documented
-        assert!(prompt.contains("/me"));
-        assert!(prompt.contains("works like IRC"));
-        assert!(prompt.contains("/me investigating"));
-        assert!(prompt.contains("team sidebar"));
-    }
+    // Note: coworker_system_prompt tests moved to src/agents.rs
 
     #[test]
     fn test_get_lead_session_id_returns_none_for_missing_repo() {
