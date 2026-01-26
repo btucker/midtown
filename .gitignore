@@ -20,8 +20,3 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Gas Town (added by gt)
-.runtime/
-.claude/
-.beads/
-.logs/

@@ -7,7 +7,32 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Cursor state for an agent's read position in a channel
+/// Cursor state for an agent's read position in a channel.
+///
+/// Each agent maintains a cursor that tracks where they've read up to
+/// in the channel log. This enables incremental reading where agents
+/// only receive new messages since their last read.
+///
+/// # Examples
+///
+/// Creating and updating a cursor:
+///
+/// ```
+/// use midtown::Cursor;
+///
+/// let mut cursor = Cursor::new("agent1");
+/// assert_eq!(cursor.position, 0);
+/// assert!(cursor.last_message_id.is_none());
+///
+/// // After reading some messages
+/// cursor.update(256, Some("msg-123".to_string()));
+/// assert_eq!(cursor.position, 256);
+/// assert_eq!(cursor.last_message_id, Some("msg-123".to_string()));
+///
+/// // Reset to re-read from beginning
+/// cursor.reset();
+/// assert_eq!(cursor.position, 0);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cursor {
     /// The agent this cursor belongs to
@@ -21,7 +46,17 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    /// Create a new cursor at position 0
+    /// Create a new cursor at position 0.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use midtown::Cursor;
+    ///
+    /// let cursor = Cursor::new("my-agent");
+    /// assert_eq!(cursor.agent, "my-agent");
+    /// assert_eq!(cursor.position, 0);
+    /// ```
     pub fn new(agent: impl Into<String>) -> Self {
         Self {
             agent: agent.into(),

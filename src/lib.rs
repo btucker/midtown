@@ -13,6 +13,34 @@
 //! - **Coworkers**: Agent session management via tmux
 //! - **Tmux**: Low-level tmux session operations
 //! - **Nudge**: Periodic and event-driven nudging for coworkers
+//!
+//! ## Quick Start
+//!
+//! The primary abstractions are [`Channel`] for communication and [`Message`]
+//! for individual messages:
+//!
+//! ```
+//! # use tempfile::TempDir;
+//! use midtown::{Channel, Message, MessageType};
+//!
+//! # let temp_dir = TempDir::new().unwrap();
+//! // Create a channel for agent communication
+//! let channel = Channel::new(temp_dir.path()).unwrap();
+//!
+//! // Agents send messages to the channel
+//! channel.send(&Message::text("lead", "Starting build")).unwrap();
+//! channel.send(&Message::status("worker1", "Compiling...")).unwrap();
+//! channel.send(&Message::text("worker1", "Build complete")).unwrap();
+//!
+//! // Each agent tracks their read position with cursors
+//! let messages = channel.read_since_cursor("worker2").unwrap();
+//! assert_eq!(messages.len(), 3);
+//!
+//! // Subsequent reads only return new messages
+//! channel.send(&Message::text("lead", "Deploy now")).unwrap();
+//! let new_messages = channel.read_since_cursor("worker2").unwrap();
+//! assert_eq!(new_messages.len(), 1);
+//! ```
 
 // Daemon server
 pub mod daemon;

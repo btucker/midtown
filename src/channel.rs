@@ -8,10 +8,55 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-/// A channel for agent communication
+/// A channel for agent communication.
 ///
 /// Channels use an append-only JSONL file for messages and per-agent cursor
 /// tracking for read positions. File locking ensures thread-safe concurrent access.
+///
+/// # Examples
+///
+/// Basic channel operations:
+///
+/// ```
+/// # use tempfile::TempDir;
+/// use midtown::{Channel, Message};
+///
+/// # let temp_dir = TempDir::new().unwrap();
+/// # let channel = Channel::new(temp_dir.path()).unwrap();
+/// // Send messages to the channel
+/// channel.send(&Message::text("alice", "Hello!")).unwrap();
+/// channel.send(&Message::text("bob", "Hi there!")).unwrap();
+///
+/// // Read all messages
+/// let messages = channel.read_all().unwrap();
+/// assert_eq!(messages.len(), 2);
+/// assert_eq!(messages[0].content, "Hello!");
+/// ```
+///
+/// Cursor-based reading for incremental updates:
+///
+/// ```
+/// # use tempfile::TempDir;
+/// use midtown::{Channel, Message};
+///
+/// # let temp_dir = TempDir::new().unwrap();
+/// # let channel = Channel::new(temp_dir.path()).unwrap();
+/// // Send initial messages
+/// channel.send(&Message::text("alice", "First")).unwrap();
+/// channel.send(&Message::text("bob", "Second")).unwrap();
+///
+/// // Agent reads all messages (moves cursor)
+/// let msgs = channel.read_since_cursor("agent1").unwrap();
+/// assert_eq!(msgs.len(), 2);
+///
+/// // New message arrives
+/// channel.send(&Message::text("alice", "Third")).unwrap();
+///
+/// // Agent only sees new message
+/// let new_msgs = channel.read_since_cursor("agent1").unwrap();
+/// assert_eq!(new_msgs.len(), 1);
+/// assert_eq!(new_msgs[0].content, "Third");
+/// ```
 pub struct Channel {
     /// Base directory for this channel (~/.midtown/<repo>/)
     base_dir: PathBuf,
