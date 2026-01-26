@@ -147,9 +147,12 @@ pub fn session_exists(name: &str) -> crate::Result<bool> {
 
 /// JSON settings for coworker Claude Code sessions.
 ///
-/// Configures the Stop hook to read the channel whenever the agent pauses.
+/// Configures the Stop hook to:
+/// 1. Read channel messages (sync pending updates)
+/// 2. Check for unclaimed tasks
+/// 3. Block stopping if unclaimed tasks exist (keeps coworker working)
 fn coworker_settings_json() -> String {
-    r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"midtown channel read"}]}]}}"#.to_string()
+    r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"midtown --format json coworker stop-hook"}]}]}}"#.to_string()
 }
 
 /// Spawn Claude Code in a tmux session.
@@ -189,7 +192,7 @@ mod tests {
         let stop_hooks = &parsed["hooks"]["Stop"][0]["hooks"];
         assert!(stop_hooks.is_array());
         assert_eq!(stop_hooks[0]["type"], "command");
-        assert_eq!(stop_hooks[0]["command"], "midtown channel read");
+        assert_eq!(stop_hooks[0]["command"], "midtown --format json coworker stop-hook");
     }
 
     // Integration tests would require actual tmux, so we keep unit tests minimal

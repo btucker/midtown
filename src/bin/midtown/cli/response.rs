@@ -18,6 +18,9 @@ pub enum Response {
     PullRequests { pull_requests: Vec<PrInfo> },
     /// Nudge configuration
     NudgeConfig(NudgeConfigResponse),
+    /// Stop hook decision for Claude Code
+    /// When decision is "block", Claude Code will prevent stopping and continue
+    StopHookDecision { decision: String, reason: String },
 }
 
 /// Basic status response (legacy)
@@ -249,6 +252,13 @@ impl Response {
                     config.message_template
                 )
             }
+            Response::StopHookDecision { decision, reason } => {
+                if decision == "block" {
+                    format!("CONTINUE: {}", reason)
+                } else {
+                    format!("STOP: {}", reason)
+                }
+            }
         }
     }
 }
@@ -256,6 +266,44 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stop_hook_decision_block() {
+        let response = Response::StopHookDecision {
+            decision: "block".to_string(),
+            reason: "3 unclaimed tasks available".to_string(),
+        };
+
+        // Verify JSON format matches Claude Code expectations
+        let json = response.to_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["decision"], "block");
+        assert_eq!(parsed["reason"], "3 unclaimed tasks available");
+
+        // Verify pretty format
+        let pretty = response.to_pretty();
+        assert!(pretty.contains("CONTINUE:"));
+        assert!(pretty.contains("3 unclaimed tasks available"));
+    }
+
+    #[test]
+    fn test_stop_hook_decision_allow() {
+        let response = Response::StopHookDecision {
+            decision: "".to_string(),
+            reason: "No unclaimed tasks".to_string(),
+        };
+
+        // Verify JSON format
+        let json = response.to_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["decision"], "");
+        assert_eq!(parsed["reason"], "No unclaimed tasks");
+
+        // Verify pretty format
+        let pretty = response.to_pretty();
+        assert!(pretty.contains("STOP:"));
+        assert!(pretty.contains("No unclaimed tasks"));
+    }
 
     #[test]
     fn test_status_response_with_full_info() {
