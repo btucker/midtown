@@ -141,6 +141,14 @@ midtown coworker nudge <name>     # Send message to coworker
 midtown channel post "msg"   # Post to team channel
 ```
 
+## Spawning Coworkers
+After spawning a coworker, immediately nudge them with context:
+```bash
+midtown coworker spawn
+midtown coworker nudge <name> -m "Work on task #X: <brief description>"
+```
+Coworkers start with no context - they need a nudge to know what to do.
+
 ## Coordination
 - Review work from coworkers
 - Answer human questions about the project
@@ -178,6 +186,30 @@ fn lead_session_file(repo: &Path) -> PathBuf {
         .join(".midtown")
         .join(&repo_name)
         .join("lead-session-id")
+}
+
+/// Build the claude command for the Lead session.
+///
+/// Returns the full command string to launch Claude Code with appropriate flags.
+/// Always includes the system prompt via --append-system-prompt, whether new or resuming.
+fn build_lead_claude_command(session_id: &str, is_existing: bool) -> Result<String, String> {
+    let prompt_file = write_lead_prompt_file()?;
+
+    if is_existing {
+        // Resume existing session, but still inject system prompt
+        Ok(format!(
+            "claude --dangerously-skip-permissions --resume {} --append-system-prompt \"$(cat {})\"",
+            session_id,
+            prompt_file.display()
+        ))
+    } else {
+        // New session: use specific session ID and inject system prompt
+        Ok(format!(
+            "claude --dangerously-skip-permissions --session-id {} --append-system-prompt \"$(cat {})\"",
+            session_id,
+            prompt_file.display()
+        ))
+    }
 }
 
 /// Get or create the Lead session ID for a project.
@@ -265,22 +297,8 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         // Get or create the Lead's persistent session ID
         let (lead_session_id, is_existing) = get_or_create_lead_session_id(&repo)?;
 
-        // Build the claude command based on whether we're resuming or starting fresh
-        let claude_cmd = if is_existing {
-            // Resume existing session
-            format!(
-                "claude --dangerously-skip-permissions --resume {}",
-                lead_session_id
-            )
-        } else {
-            // New session: use specific session ID and inject system prompt
-            let prompt_file = write_lead_prompt_file()?;
-            format!(
-                "claude --dangerously-skip-permissions --session-id {} --append-system-prompt \"$(cat {})\"",
-                lead_session_id,
-                prompt_file.display()
-            )
-        };
+        // Build the claude command (always includes system prompt)
+        let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing)?;
 
         // Get project name for status bar (uppercase)
         let project_name = repo
@@ -650,6 +668,16 @@ mod tests {
     }
 
     #[test]
+    fn test_lead_system_prompt_instructs_nudge_after_spawn() {
+        let prompt = lead_system_prompt();
+        // Lead should have a section explaining the spawn + nudge workflow
+        assert!(
+            prompt.contains("## Spawning Coworkers"),
+            "Lead prompt should have a 'Spawning Coworkers' section with nudge instructions"
+        );
+    }
+
+    #[test]
     fn test_session_exists_nonexistent() {
         // Random session name that definitely doesn't exist
         assert!(!session_exists("midtown-nonexistent-test-session-12345"));
@@ -715,5 +743,55 @@ mod tests {
         assert!(session_file.to_string_lossy().contains(".midtown"));
         assert!(session_file.to_string_lossy().contains("my-project"));
         assert!(session_file.to_string_lossy().ends_with("lead-session-id"));
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_resume_includes_system_prompt() {
+        // Bug: When resuming, the system prompt was not being included
+        // The command should ALWAYS include --append-system-prompt
+        let session_id = "test-session-123";
+        let is_existing = true; // Resuming an existing session
+
+        let cmd = build_lead_claude_command(session_id, is_existing).unwrap();
+
+        // Must include system prompt even when resuming
+        assert!(
+            cmd.contains("--append-system-prompt"),
+            "Resume command must include --append-system-prompt, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_new_includes_system_prompt() {
+        let session_id = "test-session-456";
+        let is_existing = false; // New session
+
+        let cmd = build_lead_claude_command(session_id, is_existing).unwrap();
+
+        assert!(
+            cmd.contains("--append-system-prompt"),
+            "New session command must include --append-system-prompt, got: {}",
+            cmd
+        );
+        assert!(
+            cmd.contains("--session-id"),
+            "New session command must include --session-id, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_resume_uses_resume_flag() {
+        let session_id = "test-session-789";
+        let is_existing = true;
+
+        let cmd = build_lead_claude_command(session_id, is_existing).unwrap();
+
+        assert!(
+            cmd.contains("--resume"),
+            "Resume command must include --resume flag, got: {}",
+            cmd
+        );
     }
 }
