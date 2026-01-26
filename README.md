@@ -1,107 +1,127 @@
 # Midtown
 
-A multi-agent workspace management daemon for coordinating distributed AI agent workflows.
+Coordinate multiple AI agents working on the same codebase. Midtown provides durable message channels so agents can communicate, share status, and hand off work without losing messages—even when they start and stop at different times.
 
-## Overview
+## Why Midtown?
 
-Midtown (`midtownd`) is a daemon that manages multiple agent workspaces in a Git-based workflow system. It provides:
+When multiple AI agents work on related tasks (code review, implementation, testing), they need to coordinate:
 
-- **JSON-RPC 2.0** interface over Unix sockets for inter-process communication
-- **Append-only channels** for durable message coordination between agents
-- **Per-agent cursors** for tracking read positions in message streams
+- **Agent A** starts implementing a feature, then pauses
+- **Agent B** picks up the work and needs to know where Agent A left off
+- **Agent C** is reviewing PRs and needs to flag blocking issues
 
-## Installation
+Midtown solves this with append-only message channels. Each agent maintains its own read cursor, so messages are never lost and agents can catch up on what happened while they were offline.
 
-### From Source
+## Quick Start
+
+### 1. Start the daemon
 
 ```bash
+# Build and run
 cargo build --release
+./target/release/midtownd
+
+# Or with verbose logging
+./target/release/midtownd --verbose
 ```
 
-The binary will be available at `target/release/midtownd`.
-
-## Usage
-
-### Starting the Daemon
+### 2. Use the CLI
 
 ```bash
-# Start with default socket path (/tmp/midtown.sock)
-midtownd
+# Check daemon status
+./target/release/midtown status
 
-# Start with custom socket path
-midtownd --socket /path/to/custom.sock
+# Send a message to a channel
+./target/release/midtown channel send --repo myproject --message "Starting work on auth feature"
 
-# Enable verbose logging
-midtownd --verbose
+# Read messages (uses cursor - only shows unread)
+./target/release/midtown channel read --repo myproject --agent agent-1
 ```
 
-### Command-Line Options
-
-| Option | Short | Description | Default |
-|--------|-------|-------------|---------|
-| `--socket` | `-s` | Path to Unix socket | `/tmp/midtown.sock` |
-| `--verbose` | `-v` | Enable debug logging | `false` |
-
-### Stopping the Daemon
-
-The daemon responds to:
-- `SIGTERM` - Graceful shutdown
-- `SIGINT` (Ctrl+C) - Graceful shutdown
-- RPC `shutdown` method
-
-## RPC API
-
-Midtown uses JSON-RPC 2.0 over Unix sockets. Connect to the socket and send newline-delimited JSON requests.
-
-### Methods
-
-#### `ping`
-
-Health check endpoint.
-
-**Request:**
-```json
-{"jsonrpc": "2.0", "method": "ping", "id": 1}
-```
-
-**Response:**
-```json
-{"jsonrpc": "2.0", "result": "pong", "id": 1}
-```
-
-#### `version`
-
-Get daemon version information.
-
-**Request:**
-```json
-{"jsonrpc": "2.0", "method": "version", "id": 1}
-```
-
-**Response:**
-```json
-{"jsonrpc": "2.0", "result": {"name": "midtownd", "version": "0.1.0"}, "id": 1}
-```
-
-#### `shutdown`
-
-Request daemon shutdown.
-
-**Request:**
-```json
-{"jsonrpc": "2.0", "method": "shutdown", "id": 1}
-```
-
-**Response:**
-```json
-{"jsonrpc": "2.0", "result": {"status": "shutting_down"}, "id": 1}
-```
-
-### Example: Using socat
+### 3. Programmatic access (via Unix socket)
 
 ```bash
+# Health check
 echo '{"jsonrpc":"2.0","method":"ping","id":1}' | socat - UNIX-CONNECT:/tmp/midtown.sock
+# Returns: {"jsonrpc":"2.0","result":"pong","id":1}
 ```
+
+## Concepts
+
+### Channels
+
+A channel is an append-only log of messages, stored as JSONL at `~/.midtown/<repo>/channel.jsonl`. Messages have:
+
+- **id** - Unique identifier (UUID)
+- **timestamp** - When the message was sent
+- **from** - Who sent it (agent name or "system")
+- **content** - The message body
+- **type** - One of: `text`, `system`, `command`, `status`, `error`
+
+### Cursors
+
+Each agent has a cursor tracking its read position. When an agent reads from a channel, it only sees messages after its cursor—then the cursor advances. Cursors are stored in `~/.midtown/<repo>/cursors/<agent>.json`.
+
+This enables the "catch up" pattern: an agent that was offline can read all messages it missed, while an agent that's been continuously reading sees only new messages.
+
+## CLI Reference
+
+The `midtown` CLI communicates with the daemon for all operations.
+
+```
+midtown [OPTIONS] <COMMAND>
+
+Options:
+    --format <FORMAT>  Output format: json or pretty [default: pretty]
+
+Commands:
+    channel   Channel messaging commands
+    coworker  Coworker management commands
+    task      Task management commands
+    status    Show system status
+    pr        Pull request commands
+```
+
+### Channel Commands
+
+```bash
+# Send a message
+midtown channel send --repo <REPO> --message "your message"
+
+# Read new messages (advances cursor)
+midtown channel read --repo <REPO> --agent <AGENT_NAME>
+
+# Read all messages (ignores cursor)
+midtown channel read-all --repo <REPO>
+
+# Reset cursor to beginning
+midtown channel reset --repo <REPO> --agent <AGENT_NAME>
+```
+
+## Daemon Reference
+
+### Starting
+
+```bash
+midtownd [OPTIONS]
+
+Options:
+    -s, --socket <PATH>  Unix socket path [default: /tmp/midtown.sock]
+    -v, --verbose        Enable debug logging
+```
+
+### Stopping
+
+- `SIGTERM` or `SIGINT` (Ctrl+C) - Graceful shutdown
+- RPC: `{"jsonrpc":"2.0","method":"shutdown","id":1}`
+
+### RPC Methods
+
+| Method | Description |
+|--------|-------------|
+| `ping` | Health check, returns `"pong"` |
+| `version` | Returns daemon name and version |
+| `shutdown` | Initiates graceful shutdown |
 
 ### Error Codes
 
@@ -113,30 +133,53 @@ echo '{"jsonrpc":"2.0","method":"ping","id":1}' | socat - UNIX-CONNECT:/tmp/midt
 | -32602 | Invalid params |
 | -32603 | Internal error |
 
-## Development
-
-### Building
+## Example: Agent Handoff Workflow
 
 ```bash
-cargo build
+# Agent 1 starts work
+midtown channel send --repo myproject --message "Starting auth implementation"
+midtown channel send --repo myproject --message "Completed login endpoint, pausing"
+
+# Agent 2 comes online later and catches up
+midtown channel read --repo myproject --agent agent-2
+# Shows both messages from Agent 1
+
+# Agent 2 continues work
+midtown channel send --repo myproject --message "Resuming auth work, adding logout endpoint"
+
+# Agent 1 comes back and sees only the new message
+midtown channel read --repo myproject --agent agent-1
+# Shows only Agent 2's message
 ```
 
-### Running Tests
+## Development
 
 ```bash
+# Build
+cargo build
+
+# Run tests
 cargo test
+
+# Run daemon in development
+cargo run --bin midtownd -- --verbose
 ```
 
 ### Project Structure
 
 ```
 src/
-├── main.rs     # Daemon entry point and connection handling
-├── lib.rs      # Library root with error types and public API
-├── rpc.rs      # JSON-RPC 2.0 protocol types
-├── channel.rs  # Append-only message log management
-├── cursor.rs   # Per-agent read position tracking
-└── message.rs  # Message types for channel communication
+├── bin/
+│   ├── midtownd/main.rs  # Daemon entry point
+│   └── midtown/          # CLI binary
+│       ├── main.rs       # CLI entry point
+│       ├── cli/          # Subcommand handlers
+│       └── client.rs     # Daemon RPC client
+├── lib.rs                # Library exports
+├── rpc.rs                # JSON-RPC 2.0 types
+├── channel.rs            # Append-only message log
+├── cursor.rs             # Per-agent read position
+└── message.rs            # Message types
 ```
 
 ## License
