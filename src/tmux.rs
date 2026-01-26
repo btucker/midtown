@@ -318,10 +318,15 @@ The channel is like Slack - keep teammates informed. Post when:
 - Needing review
 
 ## Task Workflow
+Use Claude Code's built-in task tools to manage tasks:
+- `TaskList` - See available tasks
+- `TaskGet` - Get task details
+- `TaskUpdate` - Update task status (in_progress, completed)
+
+After updating a task, announce it to the team:
 ```bash
-midtown task list           # Check available tasks
-midtown task claim <id>     # Claim a task
-midtown task done <id>      # Mark task complete
+midtown task claim <id>     # Announce you're working on a task
+midtown task done <id>      # Announce task completion
 ```
 
 Don't hoard tasks - claim one, finish it, then claim another.
@@ -530,9 +535,11 @@ mod tests {
 
         // Verify key commands are documented
         assert!(prompt.contains("midtown channel post"));
-        assert!(prompt.contains("midtown task list"));
         assert!(prompt.contains("midtown task claim"));
         assert!(prompt.contains("midtown task done"));
+        // Verify Claude Code task tools are mentioned
+        assert!(prompt.contains("TaskList"));
+        assert!(prompt.contains("TaskUpdate"));
     }
 
     #[test]
