@@ -127,11 +127,12 @@ impl DaemonClient {
 
     // Channel commands
 
-    pub fn channel_post(&self, message: &str) -> Result<Response, String> {
-        self.send(
-            "channel.post",
-            Some(serde_json::json!({ "message": message })),
-        )
+    pub fn channel_post(&self, message: &str, from: Option<&str>) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "message": message });
+        if let Some(sender) = from {
+            params["from"] = serde_json::json!(sender);
+        }
+        self.send("channel.post", Some(params))
     }
 
     pub fn channel_read(&self, all: bool) -> Result<Response, String> {

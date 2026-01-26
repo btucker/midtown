@@ -20,7 +20,11 @@ pub enum ChannelCommand {
 
 pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        ChannelCommand::Post { message } => client.channel_post(message),
+        ChannelCommand::Post { message } => {
+            // Get sender from MIDTOWN_AGENT env var (set for coworkers)
+            let from = std::env::var("MIDTOWN_AGENT").ok();
+            client.channel_post(message, from.as_deref())
+        }
         ChannelCommand::Read { all } => client.channel_read(*all),
     }
 }
