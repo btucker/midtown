@@ -103,7 +103,7 @@ pub fn handle_stop_hook_standalone() -> Result<Response, String> {
     } else {
         // No unclaimed tasks - allow stopping
         Ok(Response::StopHookDecision {
-            decision: "".to_string(),
+            decision: "approve".to_string(),
             reason: "No unclaimed tasks".to_string(),
         })
     }

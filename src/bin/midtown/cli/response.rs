@@ -305,14 +305,14 @@ mod tests {
     #[test]
     fn test_stop_hook_decision_allow() {
         let response = Response::StopHookDecision {
-            decision: "".to_string(),
+            decision: "approve".to_string(),
             reason: "No unclaimed tasks".to_string(),
         };
 
         // Verify JSON format
         let json = response.to_json();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["decision"], "");
+        assert_eq!(parsed["decision"], "approve");
         assert_eq!(parsed["reason"], "No unclaimed tasks");
 
         // Verify pretty format
