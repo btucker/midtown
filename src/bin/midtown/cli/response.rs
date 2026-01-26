@@ -135,7 +135,9 @@ impl Response {
                     }
 
                     // Tasks section
-                    let open_tasks: Vec<_> = full.tasks.iter()
+                    let open_tasks: Vec<_> = full
+                        .tasks
+                        .iter()
                         .filter(|t| t.status != "completed")
                         .collect();
                     out.push_str(&format!("\nTasks: {} open\n", open_tasks.len()));
@@ -221,7 +223,10 @@ impl Response {
                 }
                 let mut out = String::new();
                 for msg in messages {
-                    out.push_str(&format!("[{}] {}: {}\n", msg.timestamp, msg.from, msg.message));
+                    out.push_str(&format!(
+                        "[{}] {}: {}\n",
+                        msg.timestamp, msg.from, msg.message
+                    ));
                 }
                 out.trim_end().to_string()
             }
@@ -233,9 +238,7 @@ impl Response {
                 for task in tasks {
                     out.push_str(&format!(
                         "{:<10} {:10} {}\n",
-                        task.id,
-                        task.status,
-                        task.subject
+                        task.id, task.status, task.subject
                     ));
                 }
                 out.trim_end().to_string()
@@ -349,7 +352,10 @@ mod tests {
                 let full = status.full_status.unwrap();
                 assert_eq!(full.coworkers.len(), 2);
                 assert_eq!(full.coworkers[0].name, "lex");
-                assert_eq!(full.coworkers[0].current_task, Some("implement auth".to_string()));
+                assert_eq!(
+                    full.coworkers[0].current_task,
+                    Some("implement auth".to_string())
+                );
                 assert_eq!(full.coworkers[1].current_task, None);
                 assert_eq!(full.tasks.len(), 1);
                 assert_eq!(full.pull_requests.len(), 1);

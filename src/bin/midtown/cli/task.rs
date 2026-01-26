@@ -106,21 +106,19 @@ pub fn handle_hook_standalone(event: &HookEvent) -> Result<Response, String> {
 
     // Determine repo name
     let repo = match event {
-        HookEvent::Create { repo, .. } | HookEvent::Update { repo, .. } => {
-            repo.clone()
-                .or_else(|| std::env::var("MIDTOWN_REPO").ok())
-                .or_else(detect_git_repo)
-                .ok_or("Could not determine repository. Use --repo or set MIDTOWN_REPO")?
-        }
+        HookEvent::Create { repo, .. } | HookEvent::Update { repo, .. } => repo
+            .clone()
+            .or_else(|| std::env::var("MIDTOWN_REPO").ok())
+            .or_else(detect_git_repo)
+            .ok_or("Could not determine repository. Use --repo or set MIDTOWN_REPO")?,
     };
 
     // Determine agent name
     let agent = match event {
-        HookEvent::Create { agent, .. } | HookEvent::Update { agent, .. } => {
-            agent.clone()
-                .or_else(|| std::env::var("MIDTOWN_AGENT").ok())
-                .unwrap_or_else(|| "unknown".to_string())
-        }
+        HookEvent::Create { agent, .. } | HookEvent::Update { agent, .. } => agent
+            .clone()
+            .or_else(|| std::env::var("MIDTOWN_AGENT").ok())
+            .unwrap_or_else(|| "unknown".to_string()),
     };
 
     // Process based on event type
@@ -128,7 +126,12 @@ pub fn handle_hook_standalone(event: &HookEvent) -> Result<Response, String> {
         HookEvent::Create { .. } => {
             let task: TaskCreateInput = serde_json::from_str(&input)
                 .map_err(|e| format!("Failed to parse TaskCreate input: {}", e))?;
-            format!("{} created task: {}", agent, task.subject)
+            match &task.description {
+                Some(desc) if !desc.is_empty() => {
+                    format!("{} created task: {} - {}", agent, task.subject, desc)
+                }
+                _ => format!("{} created task: {}", agent, task.subject),
+            }
         }
         HookEvent::Update { .. } => {
             let task: TaskUpdateInput = serde_json::from_str(&input)
@@ -168,11 +171,12 @@ fn format_task_update(agent: &str, task: &TaskUpdateInput) -> String {
 
 /// Post a message to the channel
 fn post_to_channel(repo: &str, from: &str, content: &str) -> Result<(), String> {
-    let channel = midtown::Channel::for_repo(repo)
-        .map_err(|e| format!("Failed to open channel: {}", e))?;
+    let channel =
+        midtown::Channel::for_repo(repo).map_err(|e| format!("Failed to open channel: {}", e))?;
 
     let message = midtown::Message::status(from, content);
-    channel.send(&message)
+    channel
+        .send(&message)
         .map_err(|e| format!("Failed to send message: {}", e))?;
 
     Ok(())
@@ -206,7 +210,10 @@ mod tests {
         let json = r#"{"subject": "Implement auth endpoint", "description": "Add JWT-based authentication"}"#;
         let task: TaskCreateInput = serde_json::from_str(json).unwrap();
         assert_eq!(task.subject, "Implement auth endpoint");
-        assert_eq!(task.description, Some("Add JWT-based authentication".to_string()));
+        assert_eq!(
+            task.description,
+            Some("Add JWT-based authentication".to_string())
+        );
     }
 
     #[test]

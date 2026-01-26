@@ -15,11 +15,11 @@
 //! The signature is sent in the `X-Hub-Signature-256` header.
 
 use axum::{
+    Router,
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     routing::post,
-    Router,
 };
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
@@ -68,9 +68,7 @@ const GITHUB_SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 /// Start the webhook HTTP server
 ///
 /// Returns a channel receiver for translated messages.
-pub async fn start_webhook_server(
-    config: WebhookConfig,
-) -> crate::Result<mpsc::Receiver<Message>> {
+pub async fn start_webhook_server(config: WebhookConfig) -> crate::Result<mpsc::Receiver<Message>> {
     let (tx, rx) = mpsc::channel(100);
 
     let state = Arc::new(WebhookState {
@@ -342,10 +340,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error
             "GitHub: {} reopened PR #{}: {}",
             event.pull_request.user.login, event.number, event.pull_request.title
         ),
-        "synchronize" => format!(
-            "GitHub: PR #{} updated with new commits",
-            event.number
-        ),
+        "synchronize" => format!("GitHub: PR #{} updated with new commits", event.number),
         "ready_for_review" => format!(
             "GitHub: PR #{} is ready for review: {}",
             event.number, event.pull_request.title
@@ -462,14 +457,8 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         .unwrap_or_default();
 
     let content = match event.check_run.conclusion.as_deref() {
-        Some("success") => format!(
-            "GitHub: Check '{}' passed{}",
-            event.check_run.name, pr_info
-        ),
-        Some("failure") => format!(
-            "GitHub: Check '{}' failed{}",
-            event.check_run.name, pr_info
-        ),
+        Some("success") => format!("GitHub: Check '{}' passed{}", event.check_run.name, pr_info),
+        Some("failure") => format!("GitHub: Check '{}' failed{}", event.check_run.name, pr_info),
         Some("cancelled") => format!(
             "GitHub: Check '{}' cancelled{}",
             event.check_run.name, pr_info
@@ -527,13 +516,19 @@ mod tests {
     #[test]
     fn test_truncate_comment() {
         assert_eq!(truncate_comment("short", 10), "short");
-        assert_eq!(truncate_comment("this is a longer comment", 10), "this is a ...");
+        assert_eq!(
+            truncate_comment("this is a longer comment", 10),
+            "this is a ..."
+        );
         assert_eq!(
             truncate_comment("first line\nsecond line", 50),
             "first line"
         );
         // Test unicode safety - should not panic on multi-byte characters
-        assert_eq!(truncate_comment("Hello 世界! More text here", 8), "Hello 世界...");
+        assert_eq!(
+            truncate_comment("Hello 世界! More text here", 8),
+            "Hello 世界..."
+        );
         assert_eq!(truncate_comment("emoji 👍 test", 7), "emoji 👍...");
     }
 
@@ -550,10 +545,11 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request(payload.as_bytes())
-            .unwrap()
-            .unwrap();
-        assert_eq!(msg.content, "GitHub: lexington opened PR #42: Add auth endpoint");
+        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            msg.content,
+            "GitHub: lexington opened PR #42: Add auth endpoint"
+        );
         assert_eq!(msg.from, "github");
     }
 
@@ -570,9 +566,7 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request(payload.as_bytes())
-            .unwrap()
-            .unwrap();
+        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
         assert_eq!(msg.content, "GitHub: PR #42 merged: Add auth endpoint");
     }
 
@@ -605,7 +599,10 @@ mod tests {
         }"#;
 
         let msg = handle_status(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "GitHub: CI passed (ci/tests): All tests passed");
+        assert_eq!(
+            msg.content,
+            "GitHub: CI passed (ci/tests): All tests passed"
+        );
     }
 
     #[test]

@@ -105,9 +105,7 @@ fn repo_root() -> Result<PathBuf, String> {
         );
     }
 
-    let path = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     Ok(PathBuf::from(path))
 }
@@ -213,7 +211,6 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
     } else if session_exists(&session) {
         messages.push(format!("Session '{}' already exists", session));
     } else {
-
         // Write the system prompt to a file
         let prompt_file = write_lead_prompt_file()?;
 
@@ -228,9 +225,13 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             .args([
                 "new-session",
                 "-d",
-                "-s", &session,
-                "-c", &repo.to_string_lossy(),
-                "sh", "-c", &claude_cmd,
+                "-s",
+                &session,
+                "-c",
+                &repo.to_string_lossy(),
+                "sh",
+                "-c",
+                &claude_cmd,
             ])
             .status()
             .map_err(|e| format!("Failed to create session: {}", e))?;
@@ -243,7 +244,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
     }
 
     // Build response message
-    let attach_hint = format!("Attach with: midtown attach");
+    let attach_hint = "Attach with: midtown attach".to_string();
     messages.push(attach_hint);
 
     Ok(Response::Message {
@@ -324,9 +325,7 @@ pub fn handle_attach() -> Result<Response, String> {
     }
 
     // Execute tmux attach - this replaces the current process
-    let err = Command::new("tmux")
-        .args(["attach", "-t", &session])
-        .exec();
+    let err = Command::new("tmux").args(["attach", "-t", &session]).exec();
 
     // If we get here, exec failed
     Err(format!("Failed to attach to session: {}", err))
@@ -335,9 +334,7 @@ pub fn handle_attach() -> Result<Response, String> {
 /// Get session status for status command enhancement.
 #[allow(dead_code)]
 pub fn get_session_status() -> (bool, bool) {
-    let exists = session_name()
-        .map(|s| session_exists(&s))
-        .unwrap_or(false);
+    let exists = session_name().map(|s| session_exists(&s)).unwrap_or(false);
     (daemon_is_running(), exists)
 }
 

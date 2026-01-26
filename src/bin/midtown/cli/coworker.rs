@@ -161,7 +161,10 @@ fn detect_git_repo() -> Option<String> {
         })
 }
 
-fn handle_nudge_config(cmd: &NudgeConfigCommand, client: &DaemonClient) -> Result<Response, String> {
+fn handle_nudge_config(
+    cmd: &NudgeConfigCommand,
+    client: &DaemonClient,
+) -> Result<Response, String> {
     match cmd {
         NudgeConfigCommand::Show => client.nudge_config_show(),
         NudgeConfigCommand::Interval { seconds } => client.nudge_config_interval(*seconds),

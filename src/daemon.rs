@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
@@ -78,10 +78,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     }
 
     // Create daemon state
-    let state = Arc::new(DaemonState::new(
-        config.socket_path.clone(),
-        config.workdir,
-    ));
+    let state = Arc::new(DaemonState::new(config.socket_path.clone(), config.workdir));
 
     // Remove existing socket file if present
     if config.socket_path.exists() {
@@ -346,7 +343,12 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 }
 
 /// Handle coworker.nudge RPC method.
-fn handle_coworker_nudge(id: RequestId, name: &str, message: &str, state: &DaemonState) -> Response {
+fn handle_coworker_nudge(
+    id: RequestId,
+    name: &str,
+    message: &str,
+    state: &DaemonState,
+) -> Response {
     match state.coworkers.nudge(name, message) {
         Ok(()) => {
             info!("Nudged coworker {}: {}", name, message);

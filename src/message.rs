@@ -39,7 +39,11 @@ pub struct Message {
 
 impl Message {
     /// Create a new message with auto-generated ID and timestamp
-    pub fn new(from: impl Into<String>, content: impl Into<String>, message_type: MessageType) -> Self {
+    pub fn new(
+        from: impl Into<String>,
+        content: impl Into<String>,
+        message_type: MessageType,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             timestamp: Utc::now(),

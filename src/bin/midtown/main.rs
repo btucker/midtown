@@ -95,32 +95,49 @@ fn main() {
     let format = cli.format;
 
     // Handle --repo option: change to specified directory
-    if let Some(repo_path) = &cli.repo {
-        if let Err(e) = std::env::set_current_dir(repo_path) {
-            eprintln!("Error: Failed to change to repo directory '{}': {}", repo_path.display(), e);
-            std::process::exit(1);
-        }
+    if let Some(repo_path) = &cli.repo
+        && let Err(e) = std::env::set_current_dir(repo_path)
+    {
+        eprintln!(
+            "Error: Failed to change to repo directory '{}': {}",
+            repo_path.display(),
+            e
+        );
+        std::process::exit(1);
     }
 
     // Default to Start if no command provided
-    let command = cli.command.unwrap_or(Commands::Start { daemon_only: false });
+    let command = cli
+        .command
+        .unwrap_or(Commands::Start { daemon_only: false });
 
     // Handle commands that don't require daemon connection
-    if let Commands::Task { command: TaskCommand::Hook { event } } = &command {
+    if let Commands::Task {
+        command: TaskCommand::Hook { event },
+    } = &command
+    {
         let result = cli::handle_task_hook(event);
         handle_result(format, result);
         return;
     }
 
     // Stop hook also works standalone (no daemon required)
-    if let Commands::Coworker { command: CoworkerCommand::StopHook } = &command {
+    if let Commands::Coworker {
+        command: CoworkerCommand::StopHook,
+    } = &command
+    {
         let result = cli::handle_coworker_stop_hook();
         handle_result(format, result);
         return;
     }
 
     // Daemon command (runs the daemon server - internal use)
-    if let Commands::Daemon { socket, workdir, verbose } = &command {
+    if let Commands::Daemon {
+        socket,
+        workdir,
+        verbose,
+    } = &command
+    {
         let mut config = midtown::daemon::DaemonConfig::default();
         if let Some(s) = socket {
             config.socket_path = s.clone();

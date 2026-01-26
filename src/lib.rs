@@ -39,10 +39,10 @@ pub mod webhook;
 pub mod nudge;
 
 pub use channel::Channel;
+pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};
-pub use worktree::{WorktreeManager, WorktreeInfo, WorktreeError};
-pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
+pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};
 
 use thiserror::Error;
 

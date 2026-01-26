@@ -91,8 +91,8 @@ impl DaemonClient {
 
     /// Send a JSON-RPC request to the daemon and get a response.
     fn send(&self, method: &str, params: Option<Value>) -> Result<Response, String> {
-        let mut stream =
-            UnixStream::connect(&self.socket_path).map_err(|e| format!("Connection failed: {}", e))?;
+        let mut stream = UnixStream::connect(&self.socket_path)
+            .map_err(|e| format!("Connection failed: {}", e))?;
 
         let request = JsonRpcRequest::new(method, params);
 
@@ -122,8 +122,7 @@ impl DaemonClient {
         let result = rpc_response.result.ok_or("No result in response")?;
 
         // Parse the result into a Response
-        serde_json::from_value(result)
-            .map_err(|e| format!("Response parse error: {}", e))
+        serde_json::from_value(result).map_err(|e| format!("Response parse error: {}", e))
     }
 
     // Channel commands
@@ -146,7 +145,10 @@ impl DaemonClient {
     }
 
     pub fn coworker_shutdown(&self, name: &str) -> Result<Response, String> {
-        self.send("coworker.shutdown", Some(serde_json::json!({ "name": name })))
+        self.send(
+            "coworker.shutdown",
+            Some(serde_json::json!({ "name": name })),
+        )
     }
 
     pub fn coworker_list(&self) -> Result<Response, String> {
@@ -168,15 +170,24 @@ impl DaemonClient {
     }
 
     pub fn nudge_config_interval(&self, seconds: u64) -> Result<Response, String> {
-        self.send("nudge.config.interval", Some(serde_json::json!({ "seconds": seconds })))
+        self.send(
+            "nudge.config.interval",
+            Some(serde_json::json!({ "seconds": seconds })),
+        )
     }
 
     pub fn nudge_config_template(&self, template: &str) -> Result<Response, String> {
-        self.send("nudge.config.template", Some(serde_json::json!({ "template": template })))
+        self.send(
+            "nudge.config.template",
+            Some(serde_json::json!({ "template": template })),
+        )
     }
 
     pub fn nudge_config_enable(&self, enabled: bool) -> Result<Response, String> {
-        self.send("nudge.config.enable", Some(serde_json::json!({ "enabled": enabled })))
+        self.send(
+            "nudge.config.enable",
+            Some(serde_json::json!({ "enabled": enabled })),
+        )
     }
 
     // Task commands

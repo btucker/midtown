@@ -19,12 +19,14 @@ pub fn create_session(name: &str, working_dir: &str) -> crate::Result<()> {
     let status = Command::new("tmux")
         .args([
             "new-session",
-            "-d",              // Detached
-            "-s", &session_name,
-            "-c", working_dir, // Starting directory
+            "-d", // Detached
+            "-s",
+            &session_name,
+            "-c",
+            working_dir, // Starting directory
         ])
         .status()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
@@ -43,7 +45,7 @@ pub fn kill_session(name: &str) -> crate::Result<()> {
     let status = Command::new("tmux")
         .args(["kill-session", "-t", &session_name])
         .status()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
@@ -64,7 +66,7 @@ pub fn send_keys(name: &str, keys: &str) -> crate::Result<()> {
     let status = Command::new("tmux")
         .args(["send-keys", "-t", &session_name, keys, "Enter"])
         .status()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
@@ -83,7 +85,7 @@ pub fn send_keys_raw(name: &str, keys: &str) -> crate::Result<()> {
     let status = Command::new("tmux")
         .args(["send-keys", "-t", &session_name, keys])
         .status()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     if !status.success() {
         return Err(Error::Rpc {
@@ -102,7 +104,7 @@ pub fn list_sessions() -> crate::Result<Vec<String>> {
     let output = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
         .output()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     // If tmux returns non-zero, it might mean no sessions exist
     if !output.status.success() {
@@ -121,13 +123,7 @@ pub fn list_sessions() -> crate::Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let sessions: Vec<String> = stdout
         .lines()
-        .filter_map(|line| {
-            if line.starts_with(SESSION_PREFIX) {
-                Some(line[SESSION_PREFIX.len()..].to_string())
-            } else {
-                None
-            }
-        })
+        .filter_map(|line| line.strip_prefix(SESSION_PREFIX).map(|s| s.to_string()))
         .collect();
 
     Ok(sessions)
@@ -140,7 +136,7 @@ pub fn session_exists(name: &str) -> crate::Result<bool> {
     let status = Command::new("tmux")
         .args(["has-session", "-t", &session_name])
         .status()
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     Ok(status.success())
 }
@@ -243,15 +239,18 @@ mod tests {
     fn test_coworker_settings_json_is_valid() {
         let settings = coworker_settings_json();
         // Parse to verify it's valid JSON
-        let parsed: serde_json::Value = serde_json::from_str(&settings)
-            .expect("coworker settings should be valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&settings).expect("coworker settings should be valid JSON");
 
         // Verify structure
         assert!(parsed["hooks"]["Stop"].is_array());
         let stop_hooks = &parsed["hooks"]["Stop"][0]["hooks"];
         assert!(stop_hooks.is_array());
         assert_eq!(stop_hooks[0]["type"], "command");
-        assert_eq!(stop_hooks[0]["command"], "midtown --format json coworker stop-hook");
+        assert_eq!(
+            stop_hooks[0]["command"],
+            "midtown --format json coworker stop-hook"
+        );
     }
 
     #[test]

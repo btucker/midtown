@@ -12,7 +12,7 @@ mod tmux;
 
 pub use config::NudgeConfig;
 pub use state::{CoworkerNudgeState, NudgeTracker};
-pub use tmux::{list_sessions, send_nudge, send_nudge_to_pane, NudgeError};
+pub use tmux::{NudgeError, list_sessions, send_nudge, send_nudge_to_pane};
 
 use std::time::{Duration, SystemTime};
 
@@ -239,7 +239,11 @@ mod tests {
 
     #[test]
     fn test_nudge_creation() {
-        let nudge = Nudge::new("polecat1", Some("task-123".to_string()), NudgeReason::Heartbeat);
+        let nudge = Nudge::new(
+            "polecat1",
+            Some("task-123".to_string()),
+            NudgeReason::Heartbeat,
+        );
         assert_eq!(nudge.coworker, "polecat1");
         assert_eq!(nudge.task, Some("task-123".to_string()));
         assert!(nudge.message.contains("task-123"));

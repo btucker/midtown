@@ -81,11 +81,7 @@ pub fn list_sessions() -> Result<Vec<String>, NudgeError> {
 }
 
 /// Send a nudge to a specific pane in a session
-pub fn send_nudge_to_pane(
-    session: &str,
-    pane: &str,
-    message: &str,
-) -> Result<(), NudgeError> {
+pub fn send_nudge_to_pane(session: &str, pane: &str, message: &str) -> Result<(), NudgeError> {
     let target = format!("{}:{}", session, pane);
 
     // First check if the session exists

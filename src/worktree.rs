@@ -217,10 +217,7 @@ impl WorktreeManager {
                 );
             }
         } else {
-            tracing::info!(
-                "Branch {} is not merged to main, keeping it",
-                branch_name
-            );
+            tracing::info!("Branch {} is not merged to main, keeping it", branch_name);
         }
 
         Ok(())
@@ -297,8 +294,9 @@ fn repo_name_from_path(repo_path: &Path) -> WorktreeResult<String> {
 
 /// Get the base path for worktrees (~/.midtown/<repo>/worktrees/).
 fn worktrees_base_path(repo_name: &str) -> WorktreeResult<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| WorktreeError::RepoDetection("Could not determine home directory".to_string()))?;
+    let home = dirs::home_dir().ok_or_else(|| {
+        WorktreeError::RepoDetection("Could not determine home directory".to_string())
+    })?;
 
     Ok(home.join(".midtown").join(repo_name).join("worktrees"))
 }
@@ -323,9 +321,9 @@ fn parse_worktree_list(output: &str, worktrees_base: &Path) -> Vec<WorktreeInfo>
             }
             current_path = Some(PathBuf::from(line.strip_prefix("worktree ").unwrap()));
         } else if line.starts_with("branch ") {
-            let branch = line.strip_prefix("branch refs/heads/").unwrap_or(
-                line.strip_prefix("branch ").unwrap_or("")
-            );
+            let branch = line
+                .strip_prefix("branch refs/heads/")
+                .unwrap_or(line.strip_prefix("branch ").unwrap_or(""));
             current_branch = Some(branch.to_string());
         }
     }
@@ -432,8 +430,10 @@ branch refs/heads/bob/work
     fn test_check_coworker_worktree() {
         let base = PathBuf::from("/home/user/.midtown/myrepo/worktrees");
 
-        let (is_coworker, name) =
-            check_coworker_worktree(&PathBuf::from("/home/user/.midtown/myrepo/worktrees/alice"), &base);
+        let (is_coworker, name) = check_coworker_worktree(
+            &PathBuf::from("/home/user/.midtown/myrepo/worktrees/alice"),
+            &base,
+        );
         assert!(is_coworker);
         assert_eq!(name, Some("alice".to_string()));
 

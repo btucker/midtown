@@ -25,14 +25,7 @@ const AVENUE_NAMES: &[&str] = &[
 ];
 
 /// Overflow street names for when primary avenues are exhausted.
-const OVERFLOW_NAMES: &[&str] = &[
-    "bleecker",
-    "houston",
-    "canal",
-    "spring",
-    "prince",
-    "mercer",
-];
+const OVERFLOW_NAMES: &[&str] = &["bleecker", "houston", "canal", "spring", "prince", "mercer"];
 
 /// Status of a coworker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

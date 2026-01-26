@@ -43,6 +43,12 @@ dirs = "6.0"
 [dev-dependencies]
 tempfile = "3.0"
 
+# Git hooks - runs on cargo test
+[dev-dependencies.cargo-husky]
+version = "1"
+default-features = false
+features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"]
+
 # Single unified binary
 [[bin]]
 name = "midtown"

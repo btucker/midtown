@@ -1,8 +1,8 @@
 //! Channel management for append-only message logs
 
+use crate::Result;
 use crate::cursor::Cursor;
 use crate::message::Message;
-use crate::Result;
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
@@ -262,8 +262,12 @@ mod tests {
         let channel = Channel::new(temp_dir.path()).unwrap();
 
         channel.send(&Message::text("agent1", "text")).unwrap();
-        channel.send(&Message::system("system notification")).unwrap();
-        channel.send(&Message::command("agent1", "run test")).unwrap();
+        channel
+            .send(&Message::system("system notification"))
+            .unwrap();
+        channel
+            .send(&Message::command("agent1", "run test"))
+            .unwrap();
         channel.send(&Message::status("agent1", "working")).unwrap();
         channel.send(&Message::error("agent1", "failed")).unwrap();
 
