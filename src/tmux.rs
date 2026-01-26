@@ -148,11 +148,17 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
 /// Send keys (input) to a tmux window.
 ///
 /// This is used to "nudge" a coworker by sending keyboard input.
+/// Sends the text literally (with -l flag), waits for paste to process,
+/// then presses Enter. Based on gastown's NudgeSession implementation.
 pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+
     let target = format!("{}:{}", session, name);
 
+    // 1. Send the text literally (avoid tmux interpreting special key names)
     let status = Command::new("tmux")
-        .args(["send-keys", "-t", &target, keys, "Enter"])
+        .args(["send-keys", "-t", &target, "-l", keys])
         .status()
         .map_err(Error::Io)?;
 
@@ -160,6 +166,28 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
         return Err(Error::Rpc {
             code: -32603,
             message: format!("Failed to send keys to tmux window: {}", target),
+        });
+    }
+
+    // 2. Wait 500ms for paste to complete (critical - tested in gastown)
+    thread::sleep(Duration::from_millis(500));
+
+    // 3. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Escape"])
+        .status();
+    thread::sleep(Duration::from_millis(100));
+
+    // 4. Send Enter key
+    let status = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Enter"])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to send Enter to tmux window: {}", target),
         });
     }
 
@@ -237,8 +265,31 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
 /// 1. Read channel messages (sync pending updates)
 /// 2. Check for unclaimed tasks
 /// 3. Block stopping if unclaimed tasks exist (keeps coworker working)
-fn coworker_settings_json() -> String {
-    r#"{"editorMode":"normal","hooks":{"Stop":[{"hooks":[{"type":"command","command":"midtown --format json coworker stop-hook"}]}]}}"#.to_string()
+fn coworker_settings_json() -> serde_json::Value {
+    serde_json::json!({
+        "editorMode": "normal",
+        "hooks": {
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": "midtown --format json coworker stop-hook"
+                }]
+            }]
+        }
+    })
+}
+
+/// Write coworker settings to a shared file and return the path.
+/// All coworkers use the same settings file.
+fn write_coworker_settings_file() -> crate::Result<PathBuf> {
+    let dir = state_dir();
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+
+    let path = dir.join("coworker-settings.json");
+    let settings = coworker_settings_json();
+    std::fs::write(&path, settings.to_string()).map_err(Error::Io)?;
+
+    Ok(path)
 }
 
 /// Generate the system prompt for a coworker.
@@ -308,11 +359,11 @@ pub fn spawn_claude(
 ) -> crate::Result<()> {
     // Build the claude command with settings for channel synchronization
     // and a system prompt for coworker identity and instructions
-    let settings = coworker_settings_json();
     let system_prompt = coworker_system_prompt(name);
 
-    // Write system prompt to a file (avoids send_keys issues with long prompts)
+    // Write system prompt and settings to files (avoids quoting issues)
     let prompt_file = write_coworker_prompt_file(name, &system_prompt)?;
+    let settings_file = write_coworker_settings_file()?;
 
     // Generate a unique session ID for this coworker
     let coworker_session_id = uuid::Uuid::new_v4().to_string();
@@ -329,10 +380,11 @@ pub fn spawn_claude(
     }
 
     // Build the claude command with session ID for task persistence
+    // Use file paths for settings and prompt to avoid shell quoting issues
     let command = format!(
-        "claude --dangerously-skip-permissions --session-id {} --settings '{}' --append-system-prompt \"$(cat {})\"",
+        "claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
         coworker_session_id,
-        settings,
+        settings_file.display(),
         prompt_file.display()
     );
 
@@ -436,16 +488,13 @@ mod tests {
     #[test]
     fn test_coworker_settings_json_is_valid() {
         let settings = coworker_settings_json();
-        // Parse to verify it's valid JSON
-        let parsed: serde_json::Value =
-            serde_json::from_str(&settings).expect("coworker settings should be valid JSON");
 
         // Verify editorMode is normal (not vim)
-        assert_eq!(parsed["editorMode"], "normal");
+        assert_eq!(settings["editorMode"], "normal");
 
         // Verify hook structure
-        assert!(parsed["hooks"]["Stop"].is_array());
-        let stop_hooks = &parsed["hooks"]["Stop"][0]["hooks"];
+        assert!(settings["hooks"]["Stop"].is_array());
+        let stop_hooks = &settings["hooks"]["Stop"][0]["hooks"];
         assert!(stop_hooks.is_array());
         assert_eq!(stop_hooks[0]["type"], "command");
         assert_eq!(
