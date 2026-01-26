@@ -154,6 +154,46 @@ impl WorktreeManager {
         Ok(())
     }
 
+    /// Prune stale worktree references.
+    ///
+    /// Runs `git worktree prune` to clean up worktree administrative files
+    /// for worktrees that no longer exist on disk.
+    pub fn prune(&self) -> WorktreeResult<()> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(["worktree", "prune"])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(WorktreeError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Force remove a worktree directory and prune git references.
+    ///
+    /// This is useful for cleaning up stale worktrees that weren't properly
+    /// removed (e.g., after a crash or forced shutdown).
+    pub fn force_cleanup(&self, coworker_name: &str) -> WorktreeResult<()> {
+        let worktree_path = self.worktree_path(coworker_name);
+
+        // Try to remove via git first (handles lock files, etc.)
+        let _ = self.remove(coworker_name, true);
+
+        // If the directory still exists, remove it manually
+        if worktree_path.exists() {
+            std::fs::remove_dir_all(&worktree_path)?;
+        }
+
+        // Prune any stale git worktree references
+        self.prune()?;
+
+        Ok(())
+    }
+
     /// List all worktrees for this repository.
     pub fn list(&self) -> WorktreeResult<Vec<WorktreeInfo>> {
         let output = Command::new("git")
