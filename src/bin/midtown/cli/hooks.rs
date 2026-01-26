@@ -436,21 +436,48 @@ fn hash_insight(insight: &str) -> String {
 }
 
 /// Try to detect the current git repository name.
+/// Uses --git-common-dir to handle worktrees correctly (they share the main repo's .git).
 fn detect_git_repo() -> Option<String> {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
+    // First try git-common-dir which works correctly for worktrees
+    let common_dir = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
         .output()
         .ok()
         .and_then(|output| {
             if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout);
-                std::path::Path::new(path.trim())
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
+                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
             } else {
                 None
             }
-        })
+        });
+
+    if let Some(git_dir) = common_dir {
+        let git_path = std::path::Path::new(&git_dir);
+        // The git-common-dir is the .git folder - get its parent's name
+        if let Some(parent) = git_path.parent() {
+            // Handle relative ".git" by getting the actual toplevel
+            if git_dir == ".git" {
+                return std::process::Command::new("git")
+                    .args(["rev-parse", "--show-toplevel"])
+                    .output()
+                    .ok()
+                    .and_then(|output| {
+                        if output.status.success() {
+                            let path = String::from_utf8_lossy(&output.stdout);
+                            std::path::Path::new(path.trim())
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    });
+            }
+            // For worktrees, parent is the main repo directory
+            return parent.file_name().map(|s| s.to_string_lossy().to_string());
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
