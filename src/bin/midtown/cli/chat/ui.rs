@@ -10,7 +10,7 @@ use ratatui::{
 
 use midtown::MessageType;
 
-use crate::app::App;
+use super::app::App;
 
 /// Avenue names mapped to colors (position-based assignment)
 const AVENUE_COLORS: &[(&str, Color)] = &[

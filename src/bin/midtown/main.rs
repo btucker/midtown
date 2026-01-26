@@ -97,6 +97,8 @@ enum Commands {
         #[command(subcommand)]
         command: LeadCommand,
     },
+    /// Open IRC-style chat TUI
+    Chat,
 }
 
 #[derive(Subcommand, Clone)]
@@ -223,6 +225,15 @@ fn main() {
         return;
     }
 
+    // Chat command (no daemon required - standalone TUI)
+    if let Commands::Chat = &command {
+        if let Err(e) = cli::handle_chat() {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // All other commands require daemon connection
     let client = match DaemonClient::connect() {
         Ok(c) => c,
@@ -245,7 +256,8 @@ fn main() {
         | Commands::Stop { .. }
         | Commands::Restart
         | Commands::Attach
-        | Commands::Lead { .. } => unreachable!(),
+        | Commands::Lead { .. }
+        | Commands::Chat => unreachable!(),
     };
 
     handle_result(format, result);

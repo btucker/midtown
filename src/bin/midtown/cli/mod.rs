@@ -1,4 +1,5 @@
 mod channel;
+mod chat;
 mod coworker;
 mod daemon;
 mod pr;
@@ -72,4 +73,9 @@ pub fn handle_attach() -> Result<Response, String> {
 /// Handle lead register-session command (no daemon required)
 pub fn handle_register_session() -> Result<Response, String> {
     daemon::handle_register_session()
+}
+
+/// Handle chat command (no daemon required - standalone TUI)
+pub fn handle_chat() -> Result<(), String> {
+    chat::run()
 }
