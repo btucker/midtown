@@ -382,14 +382,189 @@ fn handle_coworker_nudge(
 
 /// Handle status RPC method.
 fn handle_status(id: midtown::rpc::RequestId, state: &DaemonState) -> Response {
+    // Get coworkers with their details
+    let coworkers: Vec<serde_json::Value> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|cw| {
+            serde_json::json!({
+                "name": cw.name,
+                "status": cw.status.to_string(),
+                "current_task": cw.current_task,
+                "started_at": cw.started_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    // Get open PRs from GitHub via gh CLI
+    let pull_requests = get_open_prs();
+
+    // Get open tasks from beads system
+    let tasks = get_open_tasks();
+
+    // Get recent channel activity
+    let recent_activity = get_recent_channel_activity();
+
     Response::success(
         id,
         serde_json::json!({
             "success": true,
             "daemon_running": true,
             "active_coworkers": state.coworkers.count(),
-            "pending_tasks": 0,  // TODO: implement task tracking
+            "pending_tasks": tasks.len(),
             "socket_path": state.socket_path.to_string_lossy(),
+            "coworkers": coworkers,
+            "tasks": tasks,
+            "pull_requests": pull_requests,
+            "recent_activity": recent_activity,
         }),
     )
+}
+
+/// Get open PRs from GitHub using gh CLI.
+fn get_open_prs() -> Vec<serde_json::Value> {
+    let output = std::process::Command::new("gh")
+        .args(["pr", "list", "--json", "number,title,author,state,isDraft,reviewDecision"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                prs.into_iter()
+                    .map(|pr| {
+                        let status = format_pr_status(&pr);
+                        serde_json::json!({
+                            "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
+                            "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                            "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                            "status": status,
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => {
+            debug!("Failed to get PRs from gh CLI");
+            Vec::new()
+        }
+    }
+}
+
+/// Format PR status from gh CLI JSON.
+fn format_pr_status(pr: &serde_json::Value) -> String {
+    let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+    if is_draft {
+        return "draft".to_string();
+    }
+
+    let review_decision = pr
+        .get("reviewDecision")
+        .and_then(|r| r.as_str())
+        .unwrap_or("");
+
+    match review_decision {
+        "APPROVED" => "approved".to_string(),
+        "CHANGES_REQUESTED" => "changes requested".to_string(),
+        "REVIEW_REQUIRED" => "awaiting review".to_string(),
+        _ => "open".to_string(),
+    }
+}
+
+/// Get open tasks from beads system.
+fn get_open_tasks() -> Vec<serde_json::Value> {
+    // Use bd ready to get tasks that are ready to work on
+    let output = std::process::Command::new("bd")
+        .args(["ready", "--json"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(beads) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                beads
+                    .into_iter()
+                    .map(|bead| {
+                        serde_json::json!({
+                            "id": bead.get("id").and_then(|i| i.as_str()).unwrap_or(""),
+                            "subject": bead.get("subject").and_then(|s| s.as_str()).unwrap_or(""),
+                            "status": bead.get("status").and_then(|s| s.as_str()).unwrap_or("pending"),
+                            "assignee": bead.get("owner").and_then(|o| o.as_str()),
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => {
+            debug!("Failed to get tasks from bd CLI");
+            Vec::new()
+        }
+    }
+}
+
+/// Get recent channel activity.
+fn get_recent_channel_activity() -> Vec<serde_json::Value> {
+    // Try to read from the default channel location
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let channel_file = std::path::PathBuf::from(&home)
+        .join(".midtown")
+        .join("default")
+        .join("channel.jsonl");
+
+    if !channel_file.exists() {
+        return Vec::new();
+    }
+
+    // Read the last few messages from the channel
+    match std::fs::read_to_string(&channel_file) {
+        Ok(content) => {
+            let messages: Vec<serde_json::Value> = content
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+
+            // Get the last 5 messages, most recent last
+            messages
+                .into_iter()
+                .rev()
+                .take(5)
+                .map(|msg| {
+                    serde_json::json!({
+                        "timestamp": msg.get("timestamp")
+                            .and_then(|t| t.as_str())
+                            .map(|t| {
+                                // Format timestamp for display (just time portion)
+                                if t.len() > 11 {
+                                    t[11..16].to_string()
+                                } else {
+                                    t.to_string()
+                                }
+                            })
+                            .unwrap_or_default(),
+                        "from": msg.get("from").and_then(|f| f.as_str()).unwrap_or("unknown"),
+                        "summary": truncate_message(
+                            msg.get("content").and_then(|c| c.as_str()).unwrap_or(""),
+                            60
+                        ),
+                    })
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Truncate a message for summary display.
+fn truncate_message(msg: &str, max_len: usize) -> String {
+    let first_line = msg.lines().next().unwrap_or(msg);
+    if first_line.len() <= max_len {
+        first_line.to_string()
+    } else {
+        format!("{}...", &first_line[..max_len])
+    }
 }
