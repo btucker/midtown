@@ -220,13 +220,22 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             prompt_file.display()
         );
 
+        // Get project name for status bar (uppercase)
+        let project_name = repo
+            .file_name()
+            .map(|s| s.to_string_lossy().to_uppercase())
+            .unwrap_or_else(|| "PROJECT".to_string());
+
         // Create tmux session with claude command directly
+        // -n sets the window name to "Lead"
         let status = Command::new("tmux")
             .args([
                 "new-session",
                 "-d",
                 "-s",
                 &session,
+                "-n",
+                "Lead",
                 "-c",
                 &repo.to_string_lossy(),
                 "sh",
@@ -239,6 +248,17 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         if !status.success() {
             return Err(format!("Failed to create session '{}'", session));
         }
+
+        // Configure status bar to show project name
+        let _ = Command::new("tmux")
+            .args([
+                "set-option",
+                "-t",
+                &session,
+                "status-left",
+                &format!(" {} ", project_name),
+            ])
+            .status();
 
         messages.push(format!("Started session '{}'", session));
     }
