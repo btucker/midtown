@@ -10,25 +10,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::tmux;
 
-/// Manhattan avenue names used for coworker naming.
-/// These are actual Manhattan avenues, ordered from east to west.
+/// Primary Manhattan avenue names used for coworker naming.
 const AVENUE_NAMES: &[&str] = &[
-    "york",      // York Avenue (far east)
-    "first",     // 1st Avenue
-    "second",    // 2nd Avenue
-    "third",     // 3rd Avenue
-    "lex",       // Lexington Avenue
-    "park",      // Park Avenue
-    "madison",   // Madison Avenue
-    "fifth",     // 5th Avenue
-    "sixth",     // 6th Avenue (Avenue of the Americas)
-    "seventh",   // 7th Avenue
-    "broadway",  // Broadway
-    "eighth",    // 8th Avenue
-    "ninth",     // 9th Avenue
-    "tenth",     // 10th Avenue
-    "eleventh",  // 11th Avenue
-    "twelfth",   // 12th Avenue (far west)
+    "lexington",
+    "park",
+    "madison",
+    "broadway",
+    "amsterdam",
+    "columbus",
+    "riverside",
+    "york",
+    "pleasant",
+    "vernon",
+];
+
+/// Overflow street names for when primary avenues are exhausted.
+const OVERFLOW_NAMES: &[&str] = &[
+    "bleecker",
+    "houston",
+    "canal",
+    "spring",
+    "prince",
+    "mercer",
 ];
 
 /// Status of a coworker.
@@ -90,13 +93,25 @@ impl CoworkerManager {
     }
 
     /// Get the next available avenue name.
+    ///
+    /// Tries primary avenue names first, then falls back to overflow names.
     fn next_name(&self) -> Option<String> {
         let coworkers = self.coworkers.read().unwrap();
+
+        // Try primary avenue names first
         for name in AVENUE_NAMES {
             if !coworkers.contains_key(*name) {
                 return Some(name.to_string());
             }
         }
+
+        // Fall back to overflow names
+        for name in OVERFLOW_NAMES {
+            if !coworkers.contains_key(*name) {
+                return Some(name.to_string());
+            }
+        }
+
         None
     }
 
@@ -238,7 +253,9 @@ mod tests {
     #[test]
     fn test_avenue_names_exist() {
         assert!(!AVENUE_NAMES.is_empty());
-        assert!(AVENUE_NAMES.len() >= 10);
+        assert_eq!(AVENUE_NAMES.len(), 10);
+        assert!(!OVERFLOW_NAMES.is_empty());
+        assert_eq!(OVERFLOW_NAMES.len(), 6);
     }
 
     #[test]
@@ -250,6 +267,79 @@ mod tests {
     #[test]
     fn test_next_name_empty() {
         let manager = CoworkerManager::new("/tmp");
-        assert_eq!(manager.next_name(), Some("york".to_string()));
+        assert_eq!(manager.next_name(), Some("lexington".to_string()));
+    }
+
+    #[test]
+    fn test_next_name_with_used_names() {
+        let manager = CoworkerManager::new("/tmp");
+
+        // Manually insert a coworker to simulate "lexington" being in use
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "lexington".to_string(),
+                Coworker {
+                    name: "lexington".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                },
+            );
+        }
+
+        // Should return "park" (second in list)
+        assert_eq!(manager.next_name(), Some("park".to_string()));
+    }
+
+    #[test]
+    fn test_next_name_overflow() {
+        let manager = CoworkerManager::new("/tmp");
+
+        // Fill all primary avenue names
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            for name in AVENUE_NAMES {
+                coworkers.insert(
+                    name.to_string(),
+                    Coworker {
+                        name: name.to_string(),
+                        status: CoworkerStatus::Running,
+                        working_dir: "/tmp".to_string(),
+                        started_at: Utc::now(),
+                        current_task: None,
+                    },
+                );
+            }
+        }
+
+        // Should return first overflow name
+        assert_eq!(manager.next_name(), Some("bleecker".to_string()));
+    }
+
+    #[test]
+    fn test_next_name_exhausted() {
+        let manager = CoworkerManager::new("/tmp");
+
+        // Fill all names (primary and overflow)
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            for name in AVENUE_NAMES.iter().chain(OVERFLOW_NAMES.iter()) {
+                coworkers.insert(
+                    name.to_string(),
+                    Coworker {
+                        name: name.to_string(),
+                        status: CoworkerStatus::Running,
+                        working_dir: "/tmp".to_string(),
+                        started_at: Utc::now(),
+                        current_task: None,
+                    },
+                );
+            }
+        }
+
+        // Should return None when all names exhausted
+        assert_eq!(manager.next_name(), None);
     }
 }
