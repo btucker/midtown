@@ -431,8 +431,10 @@ pub fn spawn_claude(
 
     // Build the claude command with session ID for task persistence
     // Use file paths for settings and prompt to avoid shell quoting issues
+    // Set MIDTOWN_AGENT env var so the coworker's name appears in messages
     let command = format!(
-        "claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
+        "export MIDTOWN_AGENT={}; claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
+        name,
         coworker_session_id,
         settings_file.display(),
         prompt_file.display()
