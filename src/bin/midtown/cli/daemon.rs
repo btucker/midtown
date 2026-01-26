@@ -90,6 +90,34 @@ midtown coworker nudge <name>     # Send message to coworker
 midtown channel post "msg"   # Post to team channel
 ```
 
+## Designing Evaluation Systems
+
+When planning work with the human, collaborate on how coworkers will verify their work:
+
+1. **Ask the human**: "How should coworkers know their work is correct?"
+2. **Design evaluation criteria together**:
+   - Test suites (unit, integration, e2e)
+   - Visual parity checks (screenshots, diffs)
+   - Linting and formatting checks
+   - Type checking
+   - Benchmark comparisons
+   - Manual checklists for subjective work
+3. **Create eval commands** coworkers can run (e.g., `cargo test`, `npm run lint`, custom scripts)
+4. **Document acceptance criteria** in task descriptions
+
+### Before Spawning Coworkers
+
+- Ensure an eval system exists or create one with the human
+- Include verification instructions in every task description
+- Example: "Verification: Run `make test-auth` - all tests should pass"
+
+### What "Done" Looks Like
+
+Help the human define success criteria:
+- What does correct behavior look like?
+- How do we measure success objectively?
+- What edge cases should be handled?
+
 ## Coordination
 - Review work from coworkers
 - Answer human questions about the project
@@ -260,4 +288,70 @@ pub fn handle_attach() -> Result<Response, String> {
 #[allow(dead_code)]
 pub fn get_lead_status() -> (bool, bool) {
     (daemon_is_running(), lead_session_exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lead_session_constant() {
+        assert_eq!(LEAD_SESSION, "midtown-lead");
+    }
+
+    #[test]
+    fn test_lead_system_prompt_contains_required_sections() {
+        let prompt = lead_system_prompt();
+
+        // Verify all required sections are present
+        assert!(prompt.contains("## Identity & Role"));
+        assert!(prompt.contains("## Commands"));
+        assert!(prompt.contains("## Designing Evaluation Systems"));
+        assert!(prompt.contains("## Coordination"));
+    }
+
+    #[test]
+    fn test_lead_system_prompt_contains_evaluation_guidance() {
+        let prompt = lead_system_prompt();
+
+        // Verify evaluation system design guidance
+        assert!(prompt.contains("How should coworkers know their work is correct"));
+        assert!(prompt.contains("Design evaluation criteria"));
+        assert!(prompt.contains("Create eval commands"));
+        assert!(prompt.contains("Document acceptance criteria"));
+    }
+
+    #[test]
+    fn test_lead_system_prompt_contains_eval_examples() {
+        let prompt = lead_system_prompt();
+
+        // Verify concrete eval examples are provided
+        assert!(prompt.contains("Test suites"));
+        assert!(prompt.contains("Visual parity"));
+        assert!(prompt.contains("Linting"));
+        assert!(prompt.contains("Type checking"));
+        assert!(prompt.contains("Benchmark"));
+    }
+
+    #[test]
+    fn test_lead_system_prompt_contains_pre_spawn_checklist() {
+        let prompt = lead_system_prompt();
+
+        // Verify pre-spawn checklist
+        assert!(prompt.contains("Before Spawning Coworkers"));
+        assert!(prompt.contains("Ensure an eval system exists"));
+        assert!(prompt.contains("Include verification instructions"));
+    }
+
+    #[test]
+    fn test_lead_system_prompt_contains_commands() {
+        let prompt = lead_system_prompt();
+
+        // Verify key commands are documented
+        assert!(prompt.contains("midtown status"));
+        assert!(prompt.contains("midtown coworker spawn"));
+        assert!(prompt.contains("midtown coworker shutdown"));
+        assert!(prompt.contains("midtown coworker nudge"));
+        assert!(prompt.contains("midtown channel post"));
+    }
 }
