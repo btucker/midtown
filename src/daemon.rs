@@ -608,11 +608,9 @@ fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Respons
         .iter()
         .map(|m| {
             serde_json::json!({
-                "id": m.id,
-                "timestamp": m.timestamp.to_rfc3339(),
                 "from": m.from,
-                "content": m.content,
-                "type": m.message_type,
+                "message": m.content,
+                "timestamp": m.timestamp.to_rfc3339(),
             })
         })
         .collect();
@@ -620,7 +618,6 @@ fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Respons
     Response::success(
         id,
         serde_json::json!({
-            "success": true,
             "messages": messages_json,
         }),
     )
