@@ -152,17 +152,76 @@ fn coworker_settings_json() -> String {
     r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"midtown channel read"}]}]}}"#.to_string()
 }
 
+/// Generate the system prompt for a coworker.
+///
+/// This prompt gives the coworker instructions for operating in the midtown
+/// environment, including channel usage, task workflow, and coordination.
+fn coworker_system_prompt(name: &str) -> String {
+    format!(
+        r#"# Coworker System Prompt
+
+## Identity & Role
+- You are a coworker in a midtown team
+- Your name is **{name}**
+- You work in your own git worktree
+
+## Channel Usage
+Post updates to the team channel:
+```bash
+midtown channel post "your message here"
+```
+
+The channel is like Slack - keep teammates informed. Post when:
+- Starting work on a task
+- Hitting blockers
+- Finishing tasks
+- Needing review
+
+## Task Workflow
+```bash
+midtown task list           # Check available tasks
+midtown task claim <id>     # Claim a task
+midtown task done <id>      # Mark task complete
+```
+
+Don't hoard tasks - claim one, finish it, then claim another.
+
+## Git Workflow
+- You're in an isolated worktree - commit freely
+- Create PRs when work is ready for review
+- Request review from teammates via channel
+
+## Coordination
+- The Lead coordinates overall direction
+- Other coworkers are peers - collaborate via channel
+- If blocked, post to channel and move to another task
+"#,
+        name = name
+    )
+}
+
 /// Spawn Claude Code in a tmux session.
 ///
 /// This creates the session and starts `claude` in it with coworker-specific
 /// settings, including a Stop hook that reads the channel whenever the agent pauses.
+/// Also injects a system prompt that gives the coworker instructions for operating
+/// in the midtown environment.
 pub fn spawn_claude(name: &str, working_dir: &str) -> crate::Result<()> {
     // First create the session
     create_session(name, working_dir)?;
 
     // Build the claude command with settings for channel synchronization
+    // and a system prompt for coworker identity and instructions
     let settings = coworker_settings_json();
-    let command = format!("claude --settings '{}'", settings);
+    let system_prompt = coworker_system_prompt(name);
+
+    // Escape single quotes in the system prompt for shell safety
+    let escaped_prompt = system_prompt.replace('\'', "'\\''");
+
+    let command = format!(
+        "claude --settings '{}' --append-system-prompt '{}'",
+        settings, escaped_prompt
+    );
 
     // Then send the command to start claude with coworker settings
     send_keys(name, &command)
@@ -190,6 +249,38 @@ mod tests {
         assert!(stop_hooks.is_array());
         assert_eq!(stop_hooks[0]["type"], "command");
         assert_eq!(stop_hooks[0]["command"], "midtown channel read");
+    }
+
+    #[test]
+    fn test_coworker_system_prompt_contains_name() {
+        let prompt = coworker_system_prompt("lexington");
+
+        // Verify name is interpolated
+        assert!(prompt.contains("**lexington**"));
+        assert!(prompt.contains("Your name is **lexington**"));
+    }
+
+    #[test]
+    fn test_coworker_system_prompt_contains_required_sections() {
+        let prompt = coworker_system_prompt("park");
+
+        // Verify all required sections are present
+        assert!(prompt.contains("## Identity & Role"));
+        assert!(prompt.contains("## Channel Usage"));
+        assert!(prompt.contains("## Task Workflow"));
+        assert!(prompt.contains("## Git Workflow"));
+        assert!(prompt.contains("## Coordination"));
+    }
+
+    #[test]
+    fn test_coworker_system_prompt_contains_commands() {
+        let prompt = coworker_system_prompt("madison");
+
+        // Verify key commands are documented
+        assert!(prompt.contains("midtown channel post"));
+        assert!(prompt.contains("midtown task list"));
+        assert!(prompt.contains("midtown task claim"));
+        assert!(prompt.contains("midtown task done"));
     }
 
     // Integration tests would require actual tmux, so we keep unit tests minimal
