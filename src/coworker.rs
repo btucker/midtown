@@ -260,6 +260,27 @@ impl CoworkerManager {
         coworkers.get(name).cloned()
     }
 
+    /// Update a coworker's status display in their tmux tab.
+    ///
+    /// This is called when a coworker posts a /me action to the channel,
+    /// updating their tmux window name to show their current activity.
+    ///
+    /// # Arguments
+    /// * `name` - The coworker name
+    /// * `status` - The status text (or None to clear/show idle)
+    pub fn update_status_display(&self, name: &str, status: Option<&str>) -> crate::Result<()> {
+        // Only update if this is a known coworker
+        {
+            let coworkers = self.coworkers.read().unwrap();
+            if !coworkers.contains_key(name) {
+                // Not a coworker we're managing - might be Lead or external
+                return Ok(());
+            }
+        }
+
+        tmux::rename_window(&self.session_name, name, status)
+    }
+
     /// Send a nudge (input) to a coworker.
     pub fn nudge(&self, name: &str, message: &str) -> crate::Result<()> {
         // Verify coworker exists

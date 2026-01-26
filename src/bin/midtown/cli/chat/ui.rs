@@ -2,10 +2,10 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use midtown::{Message, MessageType};
@@ -42,61 +42,13 @@ fn get_sender_color(name: &str) -> Color {
 }
 
 /// Draw the main UI
+///
+/// Note: The Team panel has been removed - coworker status is now shown
+/// in tmux tab names instead, providing better visibility even when the
+/// chat TUI is not in focus.
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Split into team panel (30%) and chat panel (70%)
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(f.area());
-
-    draw_team_panel(f, app, chunks[0]);
-    draw_chat_panel(f, app, chunks[1]);
-}
-
-/// Draw the team panel showing coworkers and their status
-fn draw_team_panel(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Team ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let inner = block.inner(area);
-
-    // Build list items for coworkers
-    let items: Vec<ListItem> = app
-        .coworkers
-        .iter()
-        .flat_map(|cw| {
-            let color = get_sender_color(&cw.name);
-            let name_line = Line::from(Span::styled(
-                &cw.name,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ));
-
-            let status_line = match &cw.last_action {
-                Some(action) => {
-                    // Truncate long actions
-                    let display = if action.len() > 25 {
-                        format!("  {}...", &action[..22])
-                    } else {
-                        format!("  {}", action)
-                    };
-                    Line::from(Span::styled(display, Style::default().fg(Color::DarkGray)))
-                }
-                None => Line::from(Span::styled(
-                    "  (idle)",
-                    Style::default().fg(Color::DarkGray),
-                )),
-            };
-
-            vec![ListItem::new(name_line), ListItem::new(status_line)]
-        })
-        .collect();
-
-    let list = List::new(items);
-
-    f.render_widget(block, area);
-    f.render_widget(list, inner);
+    // Full width for chat panel - team status shown in tmux tabs instead
+    draw_chat_panel(f, app, f.area());
 }
 
 /// Draw the chat panel showing messages

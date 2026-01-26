@@ -1,17 +1,6 @@
 //! Application state and logic for the chat TUI
 
-use std::collections::HashMap;
-
-use midtown::{Channel, Message, MessageType};
-
-use crate::client::DaemonClient;
-
-/// Coworker information for the team panel
-#[derive(Debug, Clone)]
-pub struct CoworkerInfo {
-    pub name: String,
-    pub last_action: Option<String>,
-}
+use midtown::{Channel, Message};
 
 /// Application state
 pub struct App {
@@ -21,16 +10,10 @@ pub struct App {
     pub scroll_offset: usize,
     /// Visible height for chat panel (updated during render)
     pub visible_height: usize,
-    /// Active coworkers with their last /me action
-    pub coworkers: Vec<CoworkerInfo>,
     /// Channel for reading messages
     channel: Option<Channel>,
-    /// Daemon client for querying coworker status
-    daemon: Option<DaemonClient>,
     /// Last known message count (for detecting new messages)
     last_count: usize,
-    /// Cache of last actions by coworker name
-    last_actions: HashMap<String, String>,
 }
 
 impl App {
@@ -42,17 +25,13 @@ impl App {
             .unwrap_or_else(|| "default".to_string());
 
         let channel = Channel::for_repo(&repo_name).ok();
-        let daemon = DaemonClient::connect().ok();
 
         let mut app = Self {
             messages: Vec::new(),
             scroll_offset: 0,
             visible_height: 20,
-            coworkers: Vec::new(),
             channel,
-            daemon,
             last_count: 0,
-            last_actions: HashMap::new(),
         };
 
         // Initial load
@@ -60,7 +39,7 @@ impl App {
         app
     }
 
-    /// Refresh messages and coworker state
+    /// Refresh messages from the channel
     pub fn refresh(&mut self) {
         // Read all messages from channel
         if let Some(ref channel) = self.channel
@@ -83,72 +62,8 @@ impl App {
                     // User had scrolled up - adjust offset to stay viewing same messages
                     self.scroll_offset += added;
                 }
-
-                // Update last actions from Action messages
-                self.update_last_actions();
             }
         }
-
-        // Update coworker list from daemon (could poll RPC, for now use channel data)
-        self.update_coworkers();
-    }
-
-    /// Extract last /me actions from messages
-    fn update_last_actions(&mut self) {
-        self.last_actions.clear();
-
-        for msg in &self.messages {
-            if msg.message_type == MessageType::Action {
-                self.last_actions
-                    .insert(msg.from.clone(), msg.content.clone());
-            }
-        }
-    }
-
-    /// Update team list (Lead + coworkers)
-    fn update_coworkers(&mut self) {
-        // Always include Lead at the top
-        self.coworkers = vec![CoworkerInfo {
-            name: "Lead".to_string(),
-            last_action: self.last_actions.get("Lead").cloned(),
-        }];
-
-        // Try to get coworker list from daemon
-        if let Some(ref daemon) = self.daemon
-            && let Ok(crate::cli::Response::Coworkers { coworkers }) = daemon.coworker_list()
-        {
-            let mut cw_list: Vec<CoworkerInfo> = coworkers
-                .into_iter()
-                .map(|cw| CoworkerInfo {
-                    name: cw.name.clone(),
-                    last_action: self.last_actions.get(&cw.name).cloned(),
-                })
-                .collect();
-            cw_list.sort_by(|a, b| a.name.cmp(&b.name));
-            self.coworkers.extend(cw_list);
-            return;
-        }
-
-        // Fall back to building coworker list from message senders
-        let mut seen: HashMap<String, bool> = HashMap::new();
-        let excluded = ["system", "github", "Lead"];
-
-        for msg in &self.messages {
-            if !excluded.contains(&msg.from.as_str()) && !seen.contains_key(&msg.from) {
-                seen.insert(msg.from.clone(), true);
-            }
-        }
-
-        // Add coworkers from messages
-        let mut cw_list: Vec<CoworkerInfo> = seen
-            .keys()
-            .map(|name| CoworkerInfo {
-                name: name.clone(),
-                last_action: self.last_actions.get(name).cloned(),
-            })
-            .collect();
-        cw_list.sort_by(|a, b| a.name.cmp(&b.name));
-        self.coworkers.extend(cw_list);
     }
 
     /// Scroll up one line
