@@ -74,19 +74,12 @@ impl DaemonClient {
         Ok(DaemonClient { socket_path })
     }
 
-    /// Get the default socket path.
+    /// Get the socket path for the current repository.
+    ///
+    /// Uses git-aware repo detection to ensure clients connect to the
+    /// correct daemon for their project.
     fn socket_path() -> PathBuf {
-        // Try XDG_STATE_HOME first, then fall back to ~/.local/state
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".local")
-                    .join("state")
-            });
-
-        state_dir.join("midtown").join("daemon.sock")
+        midtown::paths::daemon_socket()
     }
 
     /// Send a JSON-RPC request to the daemon and get a response.

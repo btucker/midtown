@@ -205,15 +205,9 @@ fn get_active_coworkers() -> Vec<String> {
     Vec::new()
 }
 
-/// Get daemon socket path.
+/// Get daemon socket path for the current repository.
 fn get_daemon_socket_path() -> PathBuf {
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".local").join("state")
-        });
-    state_dir.join("midtown").join("daemon.sock")
+    midtown::paths::daemon_socket()
 }
 
 /// Get list of in_progress tasks with their owners.
