@@ -45,8 +45,9 @@ pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), Nudg
     }
 
     // Send the message as a comment (prefixed with #) so it doesn't execute
-    // anything harmful, followed by a newline
-    let comment_message = format!("# {}", message);
+    // anything harmful, followed by a newline.
+    // Prefix with "i " to enter insert mode if coworker is in vim mode.
+    let comment_message = format!("i # {}", message);
 
     let output = Command::new("tmux")
         .args(["send-keys", "-t", &target, &comment_message, "Enter"])
