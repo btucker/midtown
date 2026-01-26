@@ -538,14 +538,14 @@ mod tests {
         assert_eq!(post_tool_hooks.as_array().unwrap().len(), 2);
 
         // TaskUpdate hook
-        assert_eq!(post_tool_hooks[0]["matcher"]["toolName"], "TaskUpdate");
+        assert_eq!(post_tool_hooks[0]["matcher"]["tools"][0], "TaskUpdate");
         assert_eq!(
             post_tool_hooks[0]["hooks"][0]["command"],
             "midtown coworker task-hook"
         );
 
         // TaskCreate hook
-        assert_eq!(post_tool_hooks[1]["matcher"]["toolName"], "TaskCreate");
+        assert_eq!(post_tool_hooks[1]["matcher"]["tools"][0], "TaskCreate");
         assert_eq!(
             post_tool_hooks[1]["hooks"][0]["command"],
             "midtown coworker task-hook"
