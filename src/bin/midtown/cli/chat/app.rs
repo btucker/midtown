@@ -94,20 +94,27 @@ impl App {
         }
     }
 
-    /// Update coworker list from daemon or message senders
+    /// Update team list (Lead + coworkers)
     fn update_coworkers(&mut self) {
-        // Try to get coworker list from daemon first
+        // Always include Lead at the top
+        self.coworkers = vec![CoworkerInfo {
+            name: "Lead".to_string(),
+            last_action: self.last_actions.get("Lead").cloned(),
+        }];
+
+        // Try to get coworker list from daemon
         if let Some(ref daemon) = self.daemon
             && let Ok(crate::cli::Response::Coworkers { coworkers }) = daemon.coworker_list()
         {
-            self.coworkers = coworkers
+            let mut cw_list: Vec<CoworkerInfo> = coworkers
                 .into_iter()
                 .map(|cw| CoworkerInfo {
                     name: cw.name.clone(),
                     last_action: self.last_actions.get(&cw.name).cloned(),
                 })
                 .collect();
-            self.coworkers.sort_by(|a, b| a.name.cmp(&b.name));
+            cw_list.sort_by(|a, b| a.name.cmp(&b.name));
+            self.coworkers.extend(cw_list);
             return;
         }
 
@@ -121,17 +128,16 @@ impl App {
             }
         }
 
-        // Convert to CoworkerInfo list
-        self.coworkers = seen
+        // Add coworkers from messages
+        let mut cw_list: Vec<CoworkerInfo> = seen
             .keys()
             .map(|name| CoworkerInfo {
                 name: name.clone(),
                 last_action: self.last_actions.get(name).cloned(),
             })
             .collect();
-
-        // Sort by name for consistent display
-        self.coworkers.sort_by(|a, b| a.name.cmp(&b.name));
+        cw_list.sort_by(|a, b| a.name.cmp(&b.name));
+        self.coworkers.extend(cw_list);
     }
 
     /// Scroll up one line
