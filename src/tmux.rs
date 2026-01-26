@@ -85,6 +85,69 @@ fn symlink_tasks_to_lead(coworker_session_id: &str, lead_session_id: &str) -> cr
 /// Prefix for all midtown tmux sessions.
 pub const SESSION_PREFIX: &str = "midtown-";
 
+/// Coworker name to tmux color mapping.
+/// These colors match the AVENUE_COLORS in cli/chat/ui.rs for visual consistency.
+const COWORKER_COLORS: &[(&str, &str)] = &[
+    ("lexington", "cyan"),
+    ("park", "green"),
+    ("madison", "yellow"),
+    ("broadway", "magenta"),
+    ("amsterdam", "blue"),
+    ("columbus", "red"),
+];
+
+/// Get the tmux color for a coworker name.
+fn get_coworker_color(name: &str) -> Option<&'static str> {
+    COWORKER_COLORS
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, color)| *color)
+}
+
+/// Set the tmux window tab color for a coworker.
+///
+/// This sets the window-status-style for the window to match the coworker's
+/// assigned color, providing visual consistency with the chat TUI team panel.
+fn set_window_color(session: &str, name: &str) -> crate::Result<()> {
+    let Some(color) = get_coworker_color(name) else {
+        return Ok(()); // Unknown coworker, skip color setting
+    };
+
+    let target = format!("{}:{}", session, name);
+    let style = format!("fg={}", color);
+
+    // Set the window-status-style for this specific window
+    let status = Command::new("tmux")
+        .args([
+            "set-window-option",
+            "-t",
+            &target,
+            "window-status-style",
+            &style,
+        ])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        // Non-fatal - log but don't fail
+        eprintln!("Warning: Failed to set window color for {}", name);
+    }
+
+    // Also set current-style for when the window is selected (brighter version)
+    let current_style = format!("fg={},bold", color);
+    let _ = Command::new("tmux")
+        .args([
+            "set-window-option",
+            "-t",
+            &target,
+            "window-status-current-style",
+            &current_style,
+        ])
+        .status();
+
+    Ok(())
+}
+
 /// Create a new tmux window for a coworker in the project session.
 ///
 /// Creates a window named `<name>` within the project session with the given working directory.
@@ -456,7 +519,12 @@ pub fn spawn_claude(
     );
 
     // Create window with claude command running directly
-    create_window(session, name, working_dir, Some(&command))
+    create_window(session, name, working_dir, Some(&command))?;
+
+    // Set window tab color to match chat TUI team panel
+    set_window_color(session, name)?;
+
+    Ok(())
 }
 
 // Legacy functions for backward compatibility during transition
@@ -695,6 +763,30 @@ mod tests {
 
         // Verify it's actually a symlink
         assert!(coworker_tasks.is_symlink());
+    }
+
+    #[test]
+    fn test_get_coworker_color_known_names() {
+        assert_eq!(get_coworker_color("lexington"), Some("cyan"));
+        assert_eq!(get_coworker_color("park"), Some("green"));
+        assert_eq!(get_coworker_color("madison"), Some("yellow"));
+        assert_eq!(get_coworker_color("broadway"), Some("magenta"));
+        assert_eq!(get_coworker_color("amsterdam"), Some("blue"));
+        assert_eq!(get_coworker_color("columbus"), Some("red"));
+    }
+
+    #[test]
+    fn test_get_coworker_color_case_insensitive() {
+        assert_eq!(get_coworker_color("LEXINGTON"), Some("cyan"));
+        assert_eq!(get_coworker_color("Lexington"), Some("cyan"));
+        assert_eq!(get_coworker_color("LeXiNgToN"), Some("cyan"));
+    }
+
+    #[test]
+    fn test_get_coworker_color_unknown_returns_none() {
+        assert_eq!(get_coworker_color("unknown"), None);
+        assert_eq!(get_coworker_color("lead"), None);
+        assert_eq!(get_coworker_color(""), None);
     }
 
     // Integration tests would require actual tmux, so we keep unit tests minimal
