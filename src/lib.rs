@@ -66,6 +66,9 @@ pub mod webhook;
 // Agent nudging subsystem (dementus)
 pub mod nudge;
 
+// Project configuration
+pub mod config;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;

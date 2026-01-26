@@ -265,14 +265,14 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
 /// 1. Read channel messages (sync pending updates)
 /// 2. Check for unclaimed tasks
 /// 3. Block stopping if unclaimed tasks exist (keeps coworker working)
-fn coworker_settings_json() -> serde_json::Value {
+fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
     serde_json::json!({
         "editorMode": "normal",
         "hooks": {
             "Stop": [{
                 "hooks": [{
                     "type": "command",
-                    "command": "cargo run --release -- --format json coworker stop-hook"
+                    "command": format!("{} --format json coworker stop-hook", bin_command)
                 }]
             }]
         }
@@ -281,12 +281,12 @@ fn coworker_settings_json() -> serde_json::Value {
 
 /// Write coworker settings to a shared file and return the path.
 /// All coworkers use the same settings file.
-fn write_coworker_settings_file() -> crate::Result<PathBuf> {
+fn write_coworker_settings_file(bin_command: &str) -> crate::Result<PathBuf> {
     let dir = state_dir();
     std::fs::create_dir_all(&dir).map_err(Error::Io)?;
 
     let path = dir.join("coworker-settings.json");
-    let settings = coworker_settings_json();
+    let settings = coworker_settings_json(bin_command);
     std::fs::write(&path, settings.to_string()).map_err(Error::Io)?;
 
     Ok(path)
@@ -362,13 +362,16 @@ pub fn spawn_claude(
     working_dir: &str,
     repo_name: Option<&str>,
 ) -> crate::Result<()> {
+    // Get bin_command from project config
+    let bin_command = crate::config::get_bin_command();
+
     // Build the claude command with settings for channel synchronization
     // and a system prompt for coworker identity and instructions
     let system_prompt = coworker_system_prompt(name);
 
     // Write system prompt and settings to files (avoids quoting issues)
     let prompt_file = write_coworker_prompt_file(name, &system_prompt)?;
-    let settings_file = write_coworker_settings_file()?;
+    let settings_file = write_coworker_settings_file(&bin_command)?;
 
     // Generate a unique session ID for this coworker
     let coworker_session_id = uuid::Uuid::new_v4().to_string();
@@ -492,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_coworker_settings_json_is_valid() {
-        let settings = coworker_settings_json();
+        let settings = coworker_settings_json("midtown");
 
         // Verify editorMode is normal (not vim)
         assert_eq!(settings["editorMode"], "normal");
@@ -502,6 +505,17 @@ mod tests {
         let stop_hooks = &settings["hooks"]["Stop"][0]["hooks"];
         assert!(stop_hooks.is_array());
         assert_eq!(stop_hooks[0]["type"], "command");
+        assert_eq!(
+            stop_hooks[0]["command"],
+            "midtown --format json coworker stop-hook"
+        );
+    }
+
+    #[test]
+    fn test_coworker_settings_json_custom_bin() {
+        let settings = coworker_settings_json("cargo run --release --");
+
+        let stop_hooks = &settings["hooks"]["Stop"][0]["hooks"];
         assert_eq!(
             stop_hooks[0]["command"],
             "cargo run --release -- --format json coworker stop-hook"
