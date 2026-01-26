@@ -39,6 +39,7 @@ hex = "0.4"
 
 # CLI utilities
 dirs = "6.0"
+toml = "0.9.11"
 
 [dev-dependencies]
 tempfile = "3.0"
