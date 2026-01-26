@@ -66,10 +66,8 @@ impl TaskSharingFixture {
         fs::create_dir_all(&lead_tasks).unwrap();
 
         // Remove existing symlink if present
-        if coworker_tasks.exists() || coworker_tasks.is_symlink() {
-            if coworker_tasks.is_symlink() {
-                fs::remove_file(&coworker_tasks).unwrap();
-            }
+        if coworker_tasks.is_symlink() {
+            fs::remove_file(&coworker_tasks).unwrap();
         }
 
         // Create symlink: coworker -> lead
