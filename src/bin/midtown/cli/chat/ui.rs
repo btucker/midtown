@@ -132,7 +132,8 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// This handles:
 /// - Multi-line content (explicit newlines in message)
 /// - Long lines that need wrapping to fit the panel width
-fn render_message(msg: &Message, width: usize) -> Vec<Line<'_>> {
+/// - Markdown formatting (**bold**, *italic*, `code`)
+fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
     let time = msg.timestamp.format("%H:%M").to_string();
     let color = get_sender_color(&msg.from);
 
@@ -160,21 +161,22 @@ fn render_message(msg: &Message, width: usize) -> Vec<Line<'_>> {
     let mut result = Vec::with_capacity(content_lines.len());
 
     for (i, content) in content_lines.into_iter().enumerate() {
+        // Determine base style for content based on message type
+        let content_style = match msg.message_type {
+            MessageType::Action => Style::default().fg(color),
+            MessageType::System => Style::default().fg(Color::DarkGray),
+            _ => Style::default().fg(Color::White),
+        };
+
         if i == 0 {
             // First line gets the full prefix
-            result.push(build_first_line(msg, &time, color, content));
+            result.push(build_first_line(msg, &time, color, content, content_style));
         } else {
-            // Continuation lines get indentation
+            // Continuation lines get indentation + markdown-parsed content
             let indent = " ".repeat(prefix_len);
-            let style = match msg.message_type {
-                MessageType::Action => Style::default().fg(color),
-                MessageType::System => Style::default().fg(Color::DarkGray),
-                _ => Style::default().fg(Color::White),
-            };
-            result.push(Line::from(vec![
-                Span::raw(indent),
-                Span::styled(content, style),
-            ]));
+            let mut spans = vec![Span::raw(indent)];
+            spans.extend(parse_markdown(content, content_style));
+            result.push(Line::from(spans));
         }
     }
 
@@ -182,42 +184,153 @@ fn render_message(msg: &Message, width: usize) -> Vec<Line<'_>> {
 }
 
 /// Build the first line of a message with its prefix
-fn build_first_line<'a>(msg: &'a Message, time: &str, color: Color, content: &'a str) -> Line<'a> {
-    match msg.message_type {
+fn build_first_line(
+    msg: &Message,
+    time: &str,
+    color: Color,
+    content: &str,
+    content_style: Style,
+) -> Line<'static> {
+    let mut spans = match msg.message_type {
         MessageType::Action => {
             // IRC-style action: HH:MM * name action
-            Line::from(vec![
+            vec![
                 Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
                 Span::styled("* ", Style::default().fg(color)),
                 Span::styled(
                     format!("{} ", msg.from),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(content, Style::default().fg(color)),
-            ])
+            ]
         }
         MessageType::System => {
             // System message: HH:MM <system> message
-            Line::from(vec![
+            vec![
                 Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
-                Span::styled("<system> ", Style::default().fg(Color::DarkGray)),
-                Span::styled(content, Style::default().fg(Color::DarkGray)),
-            ])
+                Span::styled(
+                    String::from("<system> "),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]
         }
         _ => {
             // Regular message: HH:MM <name> message
-            Line::from(vec![
+            vec![
                 Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
-                Span::styled("<", Style::default().fg(Color::DarkGray)),
+                Span::styled(String::from("<"), Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    &msg.from,
+                    msg.from.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("> ", Style::default().fg(Color::DarkGray)),
-                Span::styled(content, Style::default().fg(Color::White)),
-            ])
+                Span::styled(String::from("> "), Style::default().fg(Color::DarkGray)),
+            ]
+        }
+    };
+
+    // Add markdown-parsed content spans
+    spans.extend(parse_markdown(content, content_style));
+
+    Line::from(spans)
+}
+
+/// Parse markdown in text and return styled spans
+///
+/// Handles:
+/// - **bold** -> BOLD modifier
+/// - *italic* -> ITALIC modifier
+/// - `code` -> Cyan color
+fn parse_markdown(text: &str, base_style: Style) -> Vec<Span<'static>> {
+    if text.is_empty() {
+        return vec![Span::styled(String::new(), base_style)];
+    }
+
+    let mut spans = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    let mut current_pos = 0;
+
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '`' => {
+                // Code span - look for closing backtick
+                if let Some(end) = text[i + 1..].find('`') {
+                    // Add any text before this marker
+                    if i > current_pos {
+                        spans.push(Span::styled(text[current_pos..i].to_string(), base_style));
+                    }
+                    // Add the code span (without backticks)
+                    let code_text = &text[i + 1..i + 1 + end];
+                    spans.push(Span::styled(
+                        code_text.to_string(),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    // Skip past the closing backtick
+                    current_pos = i + 1 + end + 1;
+                    // Advance the iterator
+                    for _ in 0..end + 1 {
+                        chars.next();
+                    }
+                }
+            }
+            '*' => {
+                // Check for ** (bold) or single * (italic)
+                if chars.peek().is_some_and(|(_, next_c)| *next_c == '*') {
+                    // Bold: **text**
+                    chars.next(); // consume second *
+                    if let Some(end) = text[i + 2..].find("**") {
+                        if i > current_pos {
+                            spans.push(Span::styled(text[current_pos..i].to_string(), base_style));
+                        }
+                        let bold_text = &text[i + 2..i + 2 + end];
+                        spans.push(Span::styled(
+                            bold_text.to_string(),
+                            base_style.add_modifier(Modifier::BOLD),
+                        ));
+                        current_pos = i + 2 + end + 2;
+                        // Skip past closing **
+                        for _ in 0..end + 2 {
+                            chars.next();
+                        }
+                    }
+                } else {
+                    // Italic: *text*
+                    if let Some(end) = text[i + 1..].find('*') {
+                        // Make sure it's not ** (start of bold)
+                        if end > 0 && !text[i + 1..].starts_with('*') {
+                            if i > current_pos {
+                                spans.push(Span::styled(
+                                    text[current_pos..i].to_string(),
+                                    base_style,
+                                ));
+                            }
+                            let italic_text = &text[i + 1..i + 1 + end];
+                            spans.push(Span::styled(
+                                italic_text.to_string(),
+                                base_style.add_modifier(Modifier::ITALIC),
+                            ));
+                            current_pos = i + 1 + end + 1;
+                            // Skip past closing *
+                            for _ in 0..end + 1 {
+                                chars.next();
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
+
+    // Add any remaining text
+    if current_pos < text.len() {
+        spans.push(Span::styled(text[current_pos..].to_string(), base_style));
+    }
+
+    // If no spans were added (e.g., no markdown found), return the whole text
+    if spans.is_empty() {
+        return vec![Span::styled(text.to_string(), base_style)];
+    }
+
+    spans
 }
 
 /// Wrap a single line of text to fit within the given width
@@ -291,5 +404,58 @@ mod tests {
         // Reassembling should give us the original (minus spaces at wrap points)
         let rejoined: String = wrapped.join(" ");
         assert_eq!(rejoined.replace("  ", " "), text);
+    }
+
+    #[test]
+    fn test_parse_markdown_plain_text() {
+        let base = Style::default().fg(Color::White);
+        let spans = parse_markdown("hello world", base);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "hello world");
+    }
+
+    #[test]
+    fn test_parse_markdown_bold() {
+        let base = Style::default().fg(Color::White);
+        let spans = parse_markdown("hello **bold** world", base);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "hello ");
+        assert_eq!(spans[1].content, "bold");
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[2].content, " world");
+    }
+
+    #[test]
+    fn test_parse_markdown_italic() {
+        let base = Style::default().fg(Color::White);
+        let spans = parse_markdown("hello *italic* world", base);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "hello ");
+        assert_eq!(spans[1].content, "italic");
+        assert!(spans[1].style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(spans[2].content, " world");
+    }
+
+    #[test]
+    fn test_parse_markdown_code() {
+        let base = Style::default().fg(Color::White);
+        let spans = parse_markdown("run `cargo test` now", base);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "run ");
+        assert_eq!(spans[1].content, "cargo test");
+        assert_eq!(spans[1].style.fg, Some(Color::Cyan));
+        assert_eq!(spans[2].content, " now");
+    }
+
+    #[test]
+    fn test_parse_markdown_mixed() {
+        let base = Style::default().fg(Color::White);
+        let spans = parse_markdown("**bold** and `code`", base);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "bold");
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[1].content, " and ");
+        assert_eq!(spans[2].content, "code");
+        assert_eq!(spans[2].style.fg, Some(Color::Cyan));
     }
 }
