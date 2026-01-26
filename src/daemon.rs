@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
+use crate::message::{Message, MessageType};
 use crate::rpc::{Request, RequestId, Response, RpcError};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
@@ -69,11 +70,12 @@ impl Default for DaemonConfig {
 /// Shared daemon state.
 struct DaemonState {
     coworkers: CoworkerManager,
+    channel: Channel,
     socket_path: PathBuf,
 }
 
 impl DaemonState {
-    fn new(socket_path: PathBuf, workdir: PathBuf) -> crate::Result<Self> {
+    fn new(socket_path: PathBuf, workdir: PathBuf, channel: Channel) -> crate::Result<Self> {
         // Derive the tmux session name from the workdir (repo name)
         let repo_name = workdir
             .file_name()
@@ -89,6 +91,7 @@ impl DaemonState {
 
         Ok(Self {
             coworkers: CoworkerManager::new(session_name, worktree_manager),
+            channel,
             socket_path,
         })
     }
@@ -122,10 +125,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let channel = Channel::for_repo(&repo_name)?;
     info!("Channel: {}", channel.base_dir().display());
 
-    // Create daemon state
+    // Create daemon state (pass channel to state so RPC handlers can use it)
     let state = Arc::new(DaemonState::new(
         config.socket_path.clone(),
         config.workdir,
+        channel,
     )?);
 
     // Remove existing socket file if present
@@ -254,7 +258,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             } => {
                 debug!("Received webhook message: {}", msg.content);
-                if let Err(e) = channel.send(&msg) {
+                if let Err(e) = state.channel.send(&msg) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
             }
@@ -417,6 +421,32 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "status" => handle_status(request.id, state),
 
+        "channel.post" => {
+            let params = request.params.as_ref();
+            let message = params
+                .and_then(|p| p.get("message"))
+                .and_then(|v| v.as_str());
+            let from = params
+                .and_then(|p| p.get("from"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Lead");
+
+            match message {
+                Some(msg) => handle_channel_post(request.id, from, msg, state),
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
+        "channel.read" => {
+            let all = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("all"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            handle_channel_read(request.id, all, state)
+        }
+
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
@@ -518,6 +548,82 @@ fn handle_coworker_nudge(
             Response::error(id, RpcError::new(-32603, e.to_string()))
         }
     }
+}
+
+/// Handle channel.post RPC method.
+///
+/// Supports IRC-style `/me` actions. If the message starts with `/me `,
+/// the prefix is stripped and the message is stored as an Action type.
+fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonState) -> Response {
+    // Check for /me prefix (IRC-style action)
+    let (content, msg_type) = if let Some(action) = message.strip_prefix("/me ") {
+        (action.to_string(), MessageType::Action)
+    } else {
+        (message.to_string(), MessageType::Text)
+    };
+
+    let msg = Message::new(from, content, msg_type);
+
+    match state.channel.send(&msg) {
+        Ok(()) => {
+            info!("Channel post from {}: {}", from, message);
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": "Message posted to channel",
+                }),
+            )
+        }
+        Err(e) => {
+            error!("Failed to post to channel: {}", e);
+            Response::error(id, RpcError::new(-32603, e.to_string()))
+        }
+    }
+}
+
+/// Handle channel.read RPC method.
+fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Response {
+    let messages = if all {
+        // Read all messages
+        match state.channel.read_all() {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!("Failed to read channel: {}", e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        }
+    } else {
+        // Read recent messages (last 20)
+        match state.channel.read_all() {
+            Ok(msgs) => msgs.into_iter().rev().take(20).rev().collect(),
+            Err(e) => {
+                error!("Failed to read channel: {}", e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        }
+    };
+
+    let messages_json: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "timestamp": m.timestamp.to_rfc3339(),
+                "from": m.from,
+                "content": m.content,
+                "type": m.message_type,
+            })
+        })
+        .collect();
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "messages": messages_json,
+        }),
+    )
 }
 
 /// Handle status RPC method.

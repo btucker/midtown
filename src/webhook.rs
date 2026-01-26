@@ -348,7 +348,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::System)))
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -374,7 +374,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::System)))
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -395,7 +395,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Erro
         event.comment.user.login, event.issue.number, preview
     );
 
-    Ok(Some(Message::new("github", content, MessageType::System)))
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -411,7 +411,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Err
         event.comment.user.login, event.pull_request.number, preview
     );
 
-    Ok(Some(Message::new("github", content, MessageType::System)))
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -437,7 +437,7 @@ fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::System)))
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -470,7 +470,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::System)))
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
