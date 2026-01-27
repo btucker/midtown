@@ -224,20 +224,11 @@ fn test_kanban_column_minimum_width_rendering() {
 #[test]
 #[ignore] // Requires tmux
 fn test_pr_identifier_preserved_in_narrow_column() {
-    if !tmux_available() {
-        eprintln!("Skipping test: tmux not available");
-        return;
-    }
-
-    // This is a unit test we can run without tmux actually
-    // Testing the truncate_str function directly
-
+    // This test documents expected behavior for identifier-preserving truncation.
     // At width 4, "PR#97 Fix" should become "#97", not "PR#..."
-    // The fix should make truncate_str("PR#97 Fix bug", 4) return "#97"
-
-    // This test documents the expected behavior
-    // Actual implementation test is in ui.rs unit tests
-    // See test_truncate_str_identifier_behavior below for assertions
+    //
+    // Actual assertions are in test_truncate_str_identifier_behavior below.
+    // This test is kept as a placeholder for future tmux-based visual verification.
 }
 
 /// Test that messages appear in chat within reasonable time.
