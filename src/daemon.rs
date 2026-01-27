@@ -616,64 +616,9 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     }
 }
 
-/// Read tasks from Claude Code's task storage.
-///
-/// Reads from `~/.claude/tasks/<lead_session_id>/` where the lead session ID
-/// is stored in `~/.midtown/<repo>/lead-session`.
-fn read_claude_tasks(repo_name: &str) -> Vec<serde_json::Value> {
-    let home = match std::env::var("HOME").ok() {
-        Some(h) => std::path::PathBuf::from(h),
-        None => return Vec::new(),
-    };
-
-    // Read the lead session ID
-    let lead_session_id = match read_lead_session_id(repo_name) {
-        Some(id) => id,
-        None => return Vec::new(),
-    };
-
-    // Read tasks from ~/.claude/tasks/<lead_session_id>/
-    let tasks_dir = home.join(".claude").join("tasks").join(&lead_session_id);
-    let entries = match std::fs::read_dir(&tasks_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut tasks = Vec::new();
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json")
-            && let Ok(content) = std::fs::read_to_string(&path)
-            && let Ok(task_data) = serde_json::from_str::<serde_json::Value>(&content)
-        {
-            tasks.push(task_data);
-        }
-    }
-
-    tasks
-}
-
 /// Get list of coworker names who have in_progress tasks.
 fn get_busy_coworkers() -> Vec<String> {
-    // Get repo name for reading tasks
-    let repo_name = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let tasks = read_claude_tasks(&repo_name);
-
-    tasks
-        .iter()
-        .filter(|task| {
-            task.get("status")
-                .and_then(|s| s.as_str())
-                .map(|s| s == "in_progress")
-                .unwrap_or(false)
-        })
-        .filter_map(|task| {
-            task.get("owner")
-                .and_then(|o| o.as_str())
-                .filter(|o| !o.is_empty())
-                .map(|o| o.to_string())
-        })
-        .collect()
+    crate::tasks::get_busy_coworkers()
 }
 
 /// Get list of coworker names who have open PRs.
@@ -1605,7 +1550,7 @@ fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     // Get open PRs from GitHub via gh CLI
     let pull_requests = get_open_prs();
 
-    // Get open tasks from beads system
+    // Get pending tasks from Claude Code task storage
     let tasks = get_open_tasks();
 
     // Get recent channel activity
@@ -1684,27 +1629,16 @@ fn format_pr_status(pr: &serde_json::Value) -> String {
     }
 }
 
-/// Get open tasks from Claude Code task storage.
+/// Get pending tasks from Claude Code task storage.
 fn get_open_tasks() -> Vec<serde_json::Value> {
-    let repo_name = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let tasks = read_claude_tasks(&repo_name);
-
-    // Return tasks that are not completed (pending or in_progress)
-    tasks
+    crate::tasks::get_pending_tasks()
         .into_iter()
-        .filter(|task| {
-            let status = task
-                .get("status")
-                .and_then(|s| s.as_str())
-                .unwrap_or("pending");
-            status != "completed"
-        })
         .map(|task| {
             serde_json::json!({
-                "id": task.get("id").and_then(|i| i.as_str()).unwrap_or(""),
-                "subject": task.get("subject").and_then(|s| s.as_str()).unwrap_or(""),
-                "status": task.get("status").and_then(|s| s.as_str()).unwrap_or("pending"),
-                "assignee": task.get("owner").and_then(|o| o.as_str()),
+                "id": task.id,
+                "subject": task.subject,
+                "status": "pending",
+                "assignee": task.owner,
             })
         })
         .collect()
@@ -1950,39 +1884,7 @@ fn check_and_recover_orphans(state: &DaemonState) {
 
 /// Get list of in_progress tasks with their owners and subjects.
 fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
-    let repo_name = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let tasks = read_claude_tasks(&repo_name);
-
-    tasks
-        .iter()
-        .filter(|task| {
-            task.get("status")
-                .and_then(|s| s.as_str())
-                .map(|s| s == "in_progress")
-                .unwrap_or(false)
-        })
-        .map(|task| {
-            let id = task
-                .get("id")
-                .and_then(|i| {
-                    i.as_str()
-                        .map(|s| s.to_string())
-                        .or_else(|| i.as_u64().map(|n| n.to_string()))
-                })
-                .unwrap_or_else(|| "?".to_string());
-            let subject = task
-                .get("subject")
-                .and_then(|s| s.as_str())
-                .unwrap_or("Unknown task")
-                .to_string();
-            let owner = task
-                .get("owner")
-                .and_then(|o| o.as_str())
-                .unwrap_or("")
-                .to_string();
-            (id, subject, owner)
-        })
-        .collect()
+    crate::tasks::get_in_progress_tasks_with_subjects()
 }
 
 #[cfg(test)]

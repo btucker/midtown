@@ -81,7 +81,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
 ///
 /// This command is designed to be used as a Claude Code stop hook. It:
 /// 1. Reads channel messages (syncs any pending messages)
-/// 2. Checks for unclaimed tasks via `bd ready`
+/// 2. Checks for unclaimed tasks from Claude Code task storage
 /// 3. Checks for PRs needing review (that this coworker didn't create)
 /// 4. Checks if this coworker's PRs have been approved and can be merged
 /// 5. Returns JSON to indicate whether Claude should continue or stop
@@ -471,31 +471,9 @@ fn format_channel_messages(messages: &[midtown::Message]) -> String {
         .join("\n- ")
 }
 
-/// Count unclaimed tasks from the beads system.
+/// Count unclaimed tasks from Claude Code task storage.
 fn count_unclaimed_tasks() -> usize {
-    let output = std::process::Command::new("bd")
-        .args(["ready", "--json"])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                // Filter to tasks that don't have an owner/assignee
-                tasks
-                    .iter()
-                    .filter(|task| {
-                        let owner = task.get("owner").and_then(|o| o.as_str());
-                        let assignee = task.get("assignee").and_then(|a| a.as_str());
-                        owner.is_none() && assignee.is_none()
-                    })
-                    .count()
-            } else {
-                0
-            }
-        }
-        _ => 0,
-    }
+    midtown::tasks::count_unclaimed_tasks()
 }
 
 /// Try to detect the current git repository name.

@@ -354,45 +354,7 @@ fn get_daemon_socket_path() -> PathBuf {
 
 /// Get list of in_progress tasks with their owners.
 fn get_in_progress_tasks() -> Vec<(String, String)> {
-    // Use bd (beads) to get task list
-    let output = std::process::Command::new("bd")
-        .args(["list", "--json"])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                return tasks
-                    .iter()
-                    .filter(|task| {
-                        task.get("status")
-                            .and_then(|s| s.as_str())
-                            .map(|s| s == "in_progress")
-                            .unwrap_or(false)
-                    })
-                    .map(|task| {
-                        let id = task
-                            .get("id")
-                            .and_then(|i| {
-                                i.as_str()
-                                    .map(|s| s.to_string())
-                                    .or_else(|| i.as_u64().map(|n| n.to_string()))
-                            })
-                            .unwrap_or_else(|| "?".to_string());
-                        let owner = task
-                            .get("owner")
-                            .and_then(|o| o.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        (id, owner)
-                    })
-                    .collect();
-            }
-            Vec::new()
-        }
-        _ => Vec::new(),
-    }
+    midtown::tasks::get_in_progress_tasks()
 }
 
 /// Read channel messages and return them (for stop hook sync).

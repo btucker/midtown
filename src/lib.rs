@@ -72,6 +72,9 @@ pub mod config;
 // Agent system prompts
 pub mod agents;
 
+// Claude Code task storage integration
+pub mod tasks;
+
 // Path utilities (socket paths, repo detection)
 pub mod paths;
 
