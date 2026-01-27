@@ -135,8 +135,11 @@ impl DaemonClient {
 
     // Coworker commands
 
-    pub fn coworker_spawn(&self) -> Result<Response, String> {
-        self.send("coworker.spawn", None)
+    pub fn coworker_spawn(&self, resume: bool) -> Result<Response, String> {
+        self.send(
+            "coworker.spawn",
+            Some(serde_json::json!({ "resume": resume })),
+        )
     }
 
     pub fn coworker_shutdown(&self, name: &str) -> Result<Response, String> {

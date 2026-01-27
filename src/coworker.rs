@@ -138,7 +138,10 @@ impl CoworkerManager {
     ///
     /// If a worktree already exists but no tmux window is running (stale worktree),
     /// the worktree is automatically cleaned up and the spawn is retried.
-    pub fn spawn(&self) -> crate::Result<String> {
+    ///
+    /// If `resume` is true, passes `--continue` to claude to resume the previous
+    /// session from this worktree (useful for recovering orphaned tasks).
+    pub fn spawn(&self, resume: bool) -> crate::Result<String> {
         let name = self.next_name().ok_or_else(|| crate::Error::Rpc {
             code: -32603,
             message: "No available coworker slots (all avenue names in use)".to_string(),
@@ -201,8 +204,13 @@ impl CoworkerManager {
         // Create the tmux window and spawn claude in the worktree
         // Pass repo_name so the coworker's tasks can be symlinked to the Lead's tasks
         let repo_name = self.worktree_manager.repo_name();
-        let session_id =
-            tmux::spawn_claude(&self.session_name, &name, &working_dir, Some(repo_name))?;
+        let session_id = tmux::spawn_claude(
+            &self.session_name,
+            &name,
+            &working_dir,
+            Some(repo_name),
+            resume,
+        )?;
 
         // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
@@ -371,10 +379,16 @@ impl CoworkerManager {
             })?
             .to_string();
 
-        // Spawn Claude in the existing worktree
+        // Spawn Claude in the existing worktree, resuming the previous session
+        // so the coworker picks up where they left off
         let repo_name = self.worktree_manager.repo_name();
-        let session_id =
-            tmux::spawn_claude(&self.session_name, name, &working_dir, Some(repo_name))?;
+        let session_id = tmux::spawn_claude(
+            &self.session_name,
+            name,
+            &working_dir,
+            Some(repo_name),
+            true,
+        )?;
 
         // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
