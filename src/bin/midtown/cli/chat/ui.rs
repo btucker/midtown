@@ -1,5 +1,6 @@
 //! UI rendering for the chat TUI
 
+use chrono::Local;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -91,7 +92,8 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// - Long lines that need wrapping to fit the panel width
 /// - Markdown formatting (**bold**, *italic*, `code`)
 fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
-    let time = msg.timestamp.format("%H:%M").to_string();
+    let local_time = msg.timestamp.with_timezone(&Local);
+    let time = local_time.format("%H:%M").to_string();
     let color = get_sender_color(&msg.from);
 
     // Calculate the prefix length for continuation line indentation
