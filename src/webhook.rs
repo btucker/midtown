@@ -574,7 +574,10 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         .as_ref()
         .and_then(|cs| cs.pull_requests.first())
         .map(|pr| format!(" on PR #{}", pr.number))
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            // No PR - show branch name (e.g., "on main")
+            branch.map(|b| format!(" on {}", b)).unwrap_or_default()
+        });
 
     let action_text = match event.check_run.conclusion.as_deref() {
         Some("success") => format!("Check '{}' passed{}", event.check_run.name, pr_info),
@@ -868,6 +871,29 @@ mod tests {
         // Content includes @mention prefix for coworker from branch
         assert_eq!(msg.content, "@park Check 'build' passed on PR #99");
         // Sender is always "github"
+        assert_eq!(msg.from, "github");
+    }
+
+    #[test]
+    fn test_handle_check_run_on_main_branch() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "main",
+                    "pull_requests": []
+                }
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        // No PR, so shows branch name instead
+        assert_eq!(msg.content, "Check 'build' passed on main");
         assert_eq!(msg.from, "github");
     }
 
