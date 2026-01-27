@@ -681,6 +681,22 @@ pub fn spawn_claude(
     // Set window tab color to match chat TUI team panel
     set_window_color(session, name)?;
 
+    // Brief delay to let the window start up and potentially fail
+    // This is necessary because tmux new-window returns success immediately,
+    // even if the command inside fails and the window closes right away
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Verify the window actually exists (it may have died if the command failed)
+    if !window_exists(session, name)? {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!(
+                "Tmux window {}:{} was created but immediately closed (command likely failed)",
+                session, name
+            ),
+        });
+    }
+
     Ok(coworker_session_id)
 }
 
