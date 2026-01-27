@@ -481,6 +481,7 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use midtown::Message;
 
     #[test]
     fn test_task_status_from_string() {
@@ -571,6 +572,41 @@ mod tests {
         assert_eq!(pending[0].id, "1");
         assert_eq!(in_progress[0].id, "2");
         assert_eq!(completed[0].id, "3");
+    }
+
+    #[test]
+    fn test_initial_load_shows_most_recent_messages() {
+        // Simulate app state after loading 50 messages with visible_height of 10
+        // scroll_offset=0 should mean we see the LAST 10 messages (most recent)
+        let messages: Vec<Message> = (0..50)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "test".to_string(),
+                content: format!("message {}", i),
+                timestamp: chrono::Utc::now(),
+                message_type: midtown::MessageType::Text,
+            })
+            .collect();
+
+        let app = App {
+            messages,
+            scroll_offset: 0, // "at bottom" - should show most recent
+            visible_height: 10,
+            channel: None,
+            last_file_size: 0,
+            tasks: Vec::new(),
+            prs: Vec::new(),
+            merged_prs: Vec::new(),
+            repo_name: "test".to_string(),
+            kanban_last_refresh: Instant::now(),
+            kanban_receiver: None,
+        };
+
+        let visible = app.visible_messages();
+        assert_eq!(visible.len(), 10);
+        // Should show messages 40-49 (the last 10)
+        assert_eq!(visible[0].id, "40");
+        assert_eq!(visible[9].id, "49");
     }
 
     #[test]
