@@ -12,7 +12,7 @@ use ratatui::{
 
 use midtown::{Message, MessageType};
 
-use super::app::App;
+use super::app::{App, CiStatus};
 
 /// Format duration as (Xm) or (Xh) for display
 fn format_duration_minutes(since: DateTime<Utc>) -> String {
@@ -73,20 +73,117 @@ fn get_sender_color(name: &str) -> Color {
 /// Increased to accommodate 2-line items in In Progress and Review columns
 const KANBAN_HEIGHT: u16 = 9;
 
+/// Height of the repo status line
+const REPO_STATUS_HEIGHT: u16 = 1;
+
 /// Draw the main UI
 ///
 /// Note: The Team panel has been removed - coworker status is now shown
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Split into kanban (top) and chat (bottom) panels
+    // Split into repo status (top), kanban (middle), and chat (bottom) panels
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(KANBAN_HEIGHT), Constraint::Min(10)])
+        .constraints([
+            Constraint::Length(REPO_STATUS_HEIGHT),
+            Constraint::Length(KANBAN_HEIGHT),
+            Constraint::Min(10),
+        ])
         .split(f.area());
 
-    draw_kanban_panel(f, app, chunks[0]);
-    draw_chat_panel(f, app, chunks[1]);
+    draw_repo_status_line(f, app, chunks[0]);
+    draw_kanban_panel(f, app, chunks[1]);
+    draw_chat_panel(f, app, chunks[2]);
+}
+
+/// Format relative time (e.g., "3 minutes ago", "2 hours ago", "1 day ago")
+fn format_relative_time(time: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let duration = now.signed_duration_since(time);
+    let minutes = duration.num_minutes();
+    let hours = duration.num_hours();
+    let days = duration.num_days();
+
+    if days > 0 {
+        if days == 1 {
+            "1 day ago".to_string()
+        } else {
+            format!("{} days ago", days)
+        }
+    } else if hours > 0 {
+        if hours == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{} hours ago", hours)
+        }
+    } else if minutes > 0 {
+        if minutes == 1 {
+            "1 minute ago".to_string()
+        } else {
+            format!("{} minutes ago", minutes)
+        }
+    } else {
+        "just now".to_string()
+    }
+}
+
+/// Draw the repo status line showing commit, CI status, and release info
+fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
+    let status = &app.repo_status;
+
+    let mut spans = Vec::new();
+
+    // Repo name (dim)
+    spans.push(Span::styled(
+        format!(" {}  ", app.repo_name),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    // Commit hash and time
+    if !status.commit_hash.is_empty() {
+        spans.push(Span::styled(
+            status.commit_hash.clone(),
+            Style::default().fg(Color::Yellow),
+        ));
+        if let Some(commit_time) = status.commit_time {
+            spans.push(Span::styled(
+                format!("  {}  ", format_relative_time(commit_time)),
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            spans.push(Span::raw("  "));
+        }
+    }
+
+    // CI status dot
+    let (ci_char, ci_color) = match status.ci_status {
+        CiStatus::Passed => ("●", Color::Green),
+        CiStatus::Failed => ("●", Color::Red),
+        CiStatus::Running => ("●", Color::Yellow),
+        CiStatus::Unknown => ("○", Color::DarkGray),
+    };
+    spans.push(Span::styled(ci_char, Style::default().fg(ci_color)));
+    spans.push(Span::raw("  "));
+
+    // Release info
+    if let Some(ref tag) = status.release_tag {
+        spans.push(Span::styled(
+            "Releases: ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::styled(tag.clone(), Style::default().fg(Color::Cyan)));
+        if let Some(release_time) = status.release_time {
+            spans.push(Span::styled(
+                format!("  {}", format_relative_time(release_time)),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line);
+    f.render_widget(paragraph, area);
 }
 
 /// A kanban item that may span multiple lines
@@ -950,5 +1047,44 @@ mod tests {
 
         // Verify gray color (DarkGray)
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn test_format_relative_time() {
+        use chrono::{Duration, Utc};
+
+        let now = Utc::now();
+
+        // Just now (less than a minute ago)
+        assert_eq!(format_relative_time(now), "just now");
+
+        // Minutes ago
+        assert_eq!(
+            format_relative_time(now - Duration::minutes(1)),
+            "1 minute ago"
+        );
+        assert_eq!(
+            format_relative_time(now - Duration::minutes(30)),
+            "30 minutes ago"
+        );
+        assert_eq!(
+            format_relative_time(now - Duration::minutes(59)),
+            "59 minutes ago"
+        );
+
+        // Hours ago
+        assert_eq!(format_relative_time(now - Duration::hours(1)), "1 hour ago");
+        assert_eq!(
+            format_relative_time(now - Duration::hours(5)),
+            "5 hours ago"
+        );
+        assert_eq!(
+            format_relative_time(now - Duration::hours(23)),
+            "23 hours ago"
+        );
+
+        // Days ago
+        assert_eq!(format_relative_time(now - Duration::days(1)), "1 day ago");
+        assert_eq!(format_relative_time(now - Duration::days(7)), "7 days ago");
     }
 }
