@@ -394,8 +394,8 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         return render_action_message(msg, &time, color, content_style, width);
     }
 
-    // For system messages, render entire line in gray (no timestamp gutter)
-    if msg.message_type == MessageType::System {
+    // For system messages (or daemon messages), render entire line in gray (no timestamp gutter)
+    if msg.message_type == MessageType::System || msg.from == "daemon" {
         return render_system_message(&msg.content, width);
     }
 
