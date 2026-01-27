@@ -262,7 +262,7 @@ impl App {
 /// Fetch tasks from Claude Code's task storage.
 ///
 /// Reads tasks from `~/.claude/tasks/<lead_session_id>/` where the lead session ID
-/// is stored in `~/.midtown/<repo>/lead-session`.
+/// is stored in `~/.midtown/<repo>/lead-session-id`.
 fn fetch_tasks() -> Vec<KanbanTask> {
     let mut tasks = Vec::new();
 
@@ -275,8 +275,11 @@ fn fetch_tasks() -> Vec<KanbanTask> {
         None => return tasks,
     };
 
-    // Read the lead session ID from ~/.midtown/<repo>/lead-session
-    let lead_session_file = home.join(".midtown").join(&repo_name).join("lead-session");
+    // Read the lead session ID from ~/.midtown/<repo>/lead-session-id
+    let lead_session_file = home
+        .join(".midtown")
+        .join(&repo_name)
+        .join("lead-session-id");
     let lead_session_id = match std::fs::read_to_string(&lead_session_file) {
         Ok(id) => id.trim().to_string(),
         Err(_) => return tasks,

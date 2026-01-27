@@ -31,7 +31,7 @@ pub enum TaskStatus {
 
 /// Read all tasks from Claude Code's task storage for the current session.
 ///
-/// Looks up the lead session ID from `~/.midtown/<repo>/lead-session` and
+/// Looks up the lead session ID from `~/.midtown/<repo>/lead-session-id` and
 /// reads all task JSON files from `~/.claude/tasks/<session_id>/`.
 pub fn read_tasks() -> Vec<Task> {
     read_tasks_for_repo(None)
@@ -50,8 +50,8 @@ pub fn read_tasks_for_repo(repo_name: Option<&str>) -> Vec<Task> {
         return Vec::new();
     };
 
-    // Read the lead session ID from ~/.midtown/<repo>/lead-session
-    let lead_session_file = home.join(".midtown").join(&repo).join("lead-session");
+    // Read the lead session ID from ~/.midtown/<repo>/lead-session-id
+    let lead_session_file = home.join(".midtown").join(&repo).join("lead-session-id");
     let Ok(lead_session_id) = std::fs::read_to_string(&lead_session_file) else {
         return Vec::new();
     };

@@ -517,9 +517,9 @@ pub fn handle_link_tasks_standalone() -> Result<Response, String> {
     // Get repo name to find Lead's session file
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
 
-    // Read Lead's session UUID from ~/.midtown/<repo>/lead-session
+    // Read Lead's session UUID from ~/.midtown/<repo>/lead-session-id
     let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let lead_session_file = home.join(".midtown").join(&repo).join("lead-session");
+    let lead_session_file = home.join(".midtown").join(&repo).join("lead-session-id");
 
     let lead_uuid = fs::read_to_string(&lead_session_file)
         .map_err(|_| {
