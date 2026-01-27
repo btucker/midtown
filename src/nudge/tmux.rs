@@ -46,6 +46,10 @@ pub enum NudgeError {
     #[error("failed to send Enter key after retries")]
     EnterFailed,
 
+    /// Message was not received (not found in pane content)
+    #[error("message was not received by target")]
+    MessageNotReceived,
+
     /// I/O error
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -53,17 +57,12 @@ pub enum NudgeError {
 
 /// Send a nudge message to a coworker's tmux window
 ///
-/// Uses a reliable pattern to inject the message:
-/// 1. Send Escape to dismiss any dialogs or interruption prompts
-/// 2. Wait 200ms for state to clear
-/// 3. Send 'i' to enter INSERT mode
-/// 4. Wait 100ms for mode transition
-/// 5. Send message text with -l literal mode (prefixed with #)
-/// 6. Wait 100ms for text to be received
-/// 7. Send Enter with retry logic
+/// Uses a simple pattern to inject the message:
+/// 1. Send message text with -l literal mode (prefixed with #)
+/// 2. Wait 100ms for text to be received
+/// 3. Send Enter with retry logic
+/// 4. Verify the message appears in the pane content
 ///
-/// Key insight: Escape must come BEFORE the text (to clear state),
-/// not after (which would cancel the input).
 /// Uses a per-target mutex to prevent concurrent nudges from interleaving.
 ///
 /// # Arguments
@@ -82,23 +81,7 @@ pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), Nudg
     let lock = get_target_lock(&target);
     let _guard = lock.lock().unwrap();
 
-    // 1. Send Escape FIRST to dismiss any dialogs or interruption prompts
-    let _ = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Escape"])
-        .output()?;
-    thread::sleep(Duration::from_millis(200));
-
-    // 2. Send 'i' to enter INSERT mode
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "i"])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(NudgeError::TmuxError(stderr.into_owned()));
-    }
-    thread::sleep(Duration::from_millis(100));
-
-    // 3. Send message in literal mode (prefixed with # to make it a comment)
+    // 1. Send message in literal mode (prefixed with # to make it a comment)
     let comment = format!("# {}", message);
     let output = Command::new("tmux")
         .args(["send-keys", "-t", &target, "-l", &comment])
@@ -109,20 +92,28 @@ pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), Nudg
     }
     thread::sleep(Duration::from_millis(100));
 
-    // 4. Send Enter with retry logic
+    // 2. Send Enter with retry logic
     for attempt in 0..3 {
         let output = Command::new("tmux")
             .args(["send-keys", "-t", &target, "Enter"])
             .output()?;
         if output.status.success() {
-            return Ok(());
+            break;
         }
         if attempt < 2 {
             thread::sleep(Duration::from_millis(200));
+        } else {
+            return Err(NudgeError::EnterFailed);
         }
     }
 
-    Err(NudgeError::EnterFailed)
+    // 3. Wait a moment then verify message was received by checking pane content
+    thread::sleep(Duration::from_millis(100));
+    if verify_message_in_pane(&target, message)? {
+        Ok(())
+    } else {
+        Err(NudgeError::MessageNotReceived)
+    }
 }
 
 /// Check if a tmux session exists
@@ -190,14 +181,10 @@ pub fn list_windows(session: &str) -> Result<Vec<String>, NudgeError> {
 
 /// Send a nudge to a specific pane in a window
 ///
-/// Uses the same reliable multi-step pattern as `send_nudge`:
-/// 1. Send 'i' to enter vim INSERT mode
-/// 2. Wait 100ms for mode transition
-/// 3. Send message text with -l literal mode
-/// 4. Wait 500ms for paste to complete
-/// 5. Send Escape to exit vim INSERT mode
-/// 6. Wait 100ms for mode transition
-/// 7. Send Enter with retry logic
+/// Uses the same simple pattern as `send_nudge`:
+/// 1. Send message text with -l literal mode
+/// 2. Wait 100ms for text to be received
+/// 3. Send Enter with retry logic
 ///
 /// Uses a per-target mutex to prevent concurrent nudges from interleaving.
 pub fn send_nudge_to_pane(
@@ -217,23 +204,7 @@ pub fn send_nudge_to_pane(
     let lock = get_target_lock(&target);
     let _guard = lock.lock().unwrap();
 
-    // 1. Send Escape FIRST to dismiss any dialogs or interruption prompts
-    let _ = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Escape"])
-        .output()?;
-    thread::sleep(Duration::from_millis(200));
-
-    // 2. Send 'i' to enter INSERT mode
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "i"])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(NudgeError::TmuxError(stderr.into_owned()));
-    }
-    thread::sleep(Duration::from_millis(100));
-
-    // 3. Send message in literal mode (prefixed with # to make it a comment)
+    // 1. Send message in literal mode (prefixed with # to make it a comment)
     let comment = format!("# {}", message);
     let output = Command::new("tmux")
         .args(["send-keys", "-t", &target, "-l", &comment])
@@ -244,20 +215,46 @@ pub fn send_nudge_to_pane(
     }
     thread::sleep(Duration::from_millis(100));
 
-    // 4. Send Enter with retry logic
+    // 2. Send Enter with retry logic
     for attempt in 0..3 {
         let output = Command::new("tmux")
             .args(["send-keys", "-t", &target, "Enter"])
             .output()?;
         if output.status.success() {
-            return Ok(());
+            break;
         }
         if attempt < 2 {
             thread::sleep(Duration::from_millis(200));
+        } else {
+            return Err(NudgeError::EnterFailed);
         }
     }
 
-    Err(NudgeError::EnterFailed)
+    // 3. Wait a moment then verify message was received by checking pane content
+    thread::sleep(Duration::from_millis(100));
+    if verify_message_in_pane(&target, message)? {
+        Ok(())
+    } else {
+        Err(NudgeError::MessageNotReceived)
+    }
+}
+
+/// Verify that a message appears in the target pane content
+///
+/// Uses `tmux capture-pane` to get recent pane content and checks
+/// if the message is present.
+fn verify_message_in_pane(target: &str, message: &str) -> Result<bool, NudgeError> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", target, "-p"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(NudgeError::TmuxError(stderr.into_owned()));
+    }
+
+    let content = String::from_utf8_lossy(&output.stdout);
+    Ok(content.contains(message))
 }
 
 /// Get the current pane content (for debugging/testing)
