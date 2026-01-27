@@ -20,6 +20,8 @@ pub struct KanbanTask {
     pub subject: String,
     pub owner: Option<String>,
     pub status: TaskStatus,
+    /// When the task file was last modified (used as proxy for status change time)
+    pub modified_at: Option<DateTime<Utc>>,
 }
 
 /// Task status for kanban columns
@@ -331,12 +333,19 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 _ => TaskStatus::Pending,
             };
 
+            // Get file modification time as proxy for when status changed
+            let modified_at = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(DateTime::<Utc>::from);
+
             if !id.is_empty() {
                 tasks.push(KanbanTask {
                     id,
                     subject,
                     owner,
                     status,
+                    modified_at,
                 });
             }
         }
@@ -508,6 +517,7 @@ mod tests {
             subject: "Test task".to_string(),
             owner: Some("park".to_string()),
             status: TaskStatus::InProgress,
+            modified_at: None,
         };
         let cloned = task.clone();
         assert_eq!(cloned.id, "1");
@@ -530,18 +540,21 @@ mod tests {
                     subject: "Pending task".to_string(),
                     owner: None,
                     status: TaskStatus::Pending,
+                    modified_at: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
                     subject: "In progress task".to_string(),
                     owner: Some("park".to_string()),
                     status: TaskStatus::InProgress,
+                    modified_at: None,
                 },
                 KanbanTask {
                     id: "3".to_string(),
                     subject: "Completed task".to_string(),
                     owner: Some("lexington".to_string()),
                     status: TaskStatus::Completed,
+                    modified_at: None,
                 },
             ],
             prs: Vec::new(),

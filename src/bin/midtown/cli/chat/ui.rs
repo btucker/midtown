@@ -128,8 +128,11 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         .map(|t| {
             let line1 = format!("#{} {}", t.id, t.subject);
             let owner = t.owner.as_deref().unwrap_or("?");
-            // TODO: Track when task became in_progress for accurate duration
-            let line2 = format!("  └ {}", owner);
+            let duration = t
+                .modified_at
+                .map(format_duration_minutes)
+                .unwrap_or_default();
+            let line2 = format!("  └ {} {}", owner, duration);
             KanbanItem {
                 lines: vec![line1, line2],
                 url: None,
