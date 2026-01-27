@@ -58,6 +58,8 @@ pub struct App {
     /// Merged PRs for the Done column
     pub merged_prs: Vec<MergedPr>,
     /// Repository name with owner (e.g., "btucker/midtown")
+    /// Used for constructing GitHub PR URLs in kanban hyperlinks
+    #[allow(dead_code)]
     pub repo_name: String,
     /// Last time kanban data was refreshed
     kanban_last_refresh: Instant,

@@ -197,6 +197,17 @@ const COWORKER_COLORS: &[(&str, &str)] = &[
     ("broadway", "magenta"),
     ("amsterdam", "blue"),
     ("columbus", "red"),
+    ("riverside", "brightcyan"),
+    ("york", "brightgreen"),
+    ("pleasant", "brightmagenta"),
+    ("vernon", "brightblue"),
+    // Overflow names
+    ("bleecker", "colour208"), // orange
+    ("houston", "colour213"),  // pink
+    ("canal", "colour117"),    // light blue
+    ("spring", "colour156"),   // light green
+    ("prince", "colour183"),   // lavender
+    ("mercer", "colour216"),   // salmon
 ];
 
 /// Get the tmux color for a coworker name.
