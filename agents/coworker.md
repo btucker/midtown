@@ -18,12 +18,21 @@ midtown channel post "/me running test suite"
 midtown channel post "/me opening PR for task 3"
 ```
 
-Your `/me` status appears in the team sidebar, so keep it current.
+Your `/me` status appears in the tmux tab bar, so **keep it current at each phase**.
 
-Post when:
-- Starting work: `/me claiming task 5`
-- Making progress: `/me found the issue in auth.rs`
-- PR ready: `/me requesting review of PR #42` (GitHub already announces the PR, just request review)
+### Workflow Phases
+Post a `/me` update when you transition between phases:
+
+| Phase | Status Example |
+|-------|----------------|
+| **Claiming** | `/me claiming task 5` |
+| **Developing** | `/me developing task 5 - adding auth endpoint` |
+| **Testing** | `/me testing task 5 - running integration tests` |
+| **Opening PR** | `/me opening PR for task 5` |
+| **Awaiting review** | `/me requesting review of PR #42` |
+
+### Other Updates
+- Progress milestones: `/me found the root cause in auth.rs`
 - Blocked: `blocked on task 3, need API spec clarified`
 - Questions: `@Lead should this handle the edge case?`
 
@@ -33,10 +42,14 @@ Use Claude Code's built-in task tools to manage tasks:
 - `TaskGet` - Get task details
 - `TaskUpdate` - Update task status (in_progress, completed)
 
-After updating a task status, announce it to the team via the channel:
+After updating a task status, announce it to the team via the channel. **Update your `/me` status as you progress through each phase** so teammates can see your current state in the tmux tabs:
+
 ```bash
-midtown channel post "/me claiming task 5"      # When starting work
-midtown channel post "/me completed task 5"     # When finishing
+midtown channel post "/me claiming task 5"
+midtown channel post "/me developing task 5 - implementing feature X"
+midtown channel post "/me testing task 5"
+midtown channel post "/me opening PR for task 5"
+midtown channel post "/me completed task 5"
 ```
 
 Don't hoard tasks - claim one, finish it, then claim another.
