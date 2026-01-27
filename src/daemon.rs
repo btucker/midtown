@@ -1269,15 +1269,30 @@ fn handle_coworker_shutdown(id: RequestId, name: &str, state: &DaemonState) -> R
 
 /// Handle coworker.list RPC method.
 fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
+    // Build a map of coworker name -> task subject from in_progress tasks
+    let coworker_tasks: std::collections::HashMap<String, String> =
+        crate::tasks::get_in_progress_tasks_with_subjects()
+            .into_iter()
+            .filter_map(|(_task_id, subject, owner)| {
+                if owner.is_empty() {
+                    None
+                } else {
+                    Some((owner.to_lowercase(), subject))
+                }
+            })
+            .collect();
+
     let coworkers: Vec<serde_json::Value> = state
         .coworkers
         .list()
         .iter()
         .map(|cw| {
+            // Look up current task from task storage (case-insensitive)
+            let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
             serde_json::json!({
                 "name": cw.name,
                 "status": cw.status.to_string(),
-                "current_task": cw.current_task,
+                "current_task": current_task,
                 "started_at": cw.started_at.to_rfc3339(),
             })
         })
