@@ -1,5 +1,6 @@
 //! UI rendering for the chat TUI
 
+use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -11,6 +12,18 @@ use ratatui::{
 use midtown::{Message, MessageType};
 
 use super::app::App;
+
+/// Format duration as (Xm) or (Xh) for display
+fn format_duration_minutes(since: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let duration = now.signed_duration_since(since);
+    let minutes = duration.num_minutes();
+    if minutes >= 60 {
+        format!("({}h)", minutes / 60)
+    } else {
+        format!("({}m)", minutes)
+    }
+}
 
 /// Fixed indent for continuation lines (7 = "HH:MM " time prefix)
 /// Using a fixed indent keeps multi-line messages aligned consistently
@@ -47,7 +60,8 @@ fn get_sender_color(name: &str) -> Color {
 }
 
 /// Height of the kanban board (including borders)
-const KANBAN_HEIGHT: u16 = 7;
+/// Increased to accommodate 2-line items in In Progress and Review columns
+const KANBAN_HEIGHT: u16 = 9;
 
 /// Draw the main UI
 ///
@@ -65,6 +79,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_chat_panel(f, app, chunks[1]);
 }
 
+/// A kanban item that may span multiple lines
+struct KanbanItem {
+    /// Lines to display (1 for Backlog/Done, up to 2 for In Progress/Review)
+    lines: Vec<String>,
+}
+
 /// Draw the kanban board with 4 columns
 fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
     // Split into 4 equal columns
@@ -78,25 +98,28 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let (pending, in_progress, completed) = app.tasks_by_status();
+    let (pending, in_progress, _completed) = app.tasks_by_status();
 
-    // Backlog column (pending tasks)
-    let backlog_items: Vec<_> = pending
+    // Backlog column (pending tasks) - single line items
+    let backlog_items: Vec<KanbanItem> = pending
         .iter()
-        .map(|t| format!("#{} {}", t.id, t.subject))
+        .map(|t| KanbanItem {
+            lines: vec![format!("#{} {}", t.id, t.subject)],
+        })
         .collect();
     draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
 
-    // In Progress column (with owner)
-    let in_progress_items: Vec<_> = in_progress
+    // In Progress column (with owner and duration) - 2-line items
+    let in_progress_items: Vec<KanbanItem> = in_progress
         .iter()
         .map(|t| {
-            let owner_suffix = t
-                .owner
-                .as_ref()
-                .map(|o| format!(" ({})", o))
-                .unwrap_or_default();
-            format!("#{} {}{}", t.id, t.subject, owner_suffix)
+            let line1 = format!("#{} {}", t.id, t.subject);
+            let owner = t.owner.as_deref().unwrap_or("?");
+            // TODO: Track when task became in_progress for accurate duration
+            let line2 = format!("  └ {}", owner);
+            KanbanItem {
+                lines: vec![line1, line2],
+            }
         })
         .collect();
     draw_kanban_column(
@@ -107,24 +130,35 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         &in_progress_items,
     );
 
-    // Review column (open PRs with title)
-    let review_items: Vec<_> = app
+    // Review column (open PRs with repo#XX format and duration) - 2-line items
+    let review_items: Vec<KanbanItem> = app
         .prs
         .iter()
-        .map(|pr| format!("#{} {}", pr.number, pr.title))
+        .map(|pr| {
+            let line1 = format!("{}#{} {}", app.repo_name, pr.number, pr.title);
+            let duration = format_duration_minutes(pr.created_at);
+            let line2 = format!("  └ {} {}", pr.author, duration);
+            KanbanItem {
+                lines: vec![line1, line2],
+            }
+        })
         .collect();
     draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
 
-    // Done column (completed tasks)
-    let done_items: Vec<_> = completed
+    // Done column (merged PRs with repo#XX format) - single line, reverse chronological, max 10
+    let done_items: Vec<KanbanItem> = app
+        .merged_prs
         .iter()
-        .map(|t| format!("#{} {}", t.id, t.subject))
+        .take(10)
+        .map(|pr| KanbanItem {
+            lines: vec![format!("{}#{} {}", app.repo_name, pr.number, pr.title)],
+        })
         .collect();
     draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
 }
 
-/// Draw a single kanban column
-fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[String]) {
+/// Draw a single kanban column with multi-line item support
+fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[KanbanItem]) {
     let block = Block::default()
         .title(format!(" {} ({}) ", title, items.len()))
         .borders(Borders::ALL)
@@ -132,19 +166,32 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
 
     let inner = block.inner(area);
 
-    // Build content: one item per line, truncated to fit
+    // Build content: items may have multiple lines, truncated to fit
     let content = if items.is_empty() {
         String::from("-")
     } else {
         let available_width = inner.width as usize;
         let available_lines = inner.height as usize;
 
-        items
-            .iter()
-            .take(available_lines)
-            .map(|item| truncate_str(item, available_width))
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut lines_used = 0;
+        let mut output_lines = Vec::new();
+
+        for item in items {
+            // Check if we have room for at least the first line of this item
+            if lines_used >= available_lines {
+                break;
+            }
+
+            for line in &item.lines {
+                if lines_used >= available_lines {
+                    break;
+                }
+                output_lines.push(truncate_str(line, available_width));
+                lines_used += 1;
+            }
+        }
+
+        output_lines.join("\n")
     };
 
     let paragraph = Paragraph::new(content).style(Style::default().fg(Color::White));
@@ -200,7 +247,11 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// - Long lines that need wrapping to fit the panel width
 /// - Markdown formatting (**bold**, *italic*, `code`)
 fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
-    let time = msg.timestamp.format("%H:%M").to_string();
+    let time = msg
+        .timestamp
+        .with_timezone(&Local)
+        .format("%H:%M")
+        .to_string();
     let color = get_sender_color(&msg.from);
 
     // Calculate the prefix length for continuation line indentation
