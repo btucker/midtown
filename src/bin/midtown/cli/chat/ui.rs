@@ -262,15 +262,57 @@ fn render_hyperlink_line(
 }
 
 /// Truncate a string to fit within the given width, adding "..." if truncated
+///
+/// For kanban items with identifiers like "PR #42" or "#1 Task name", this function
+/// prioritizes showing the identifier (#N) when space is very limited, since that's
+/// the most useful information for identifying the item.
 fn truncate_str(s: &str, max_width: usize) -> String {
     if s.chars().count() <= max_width {
-        s.to_string()
-    } else if max_width <= 3 {
+        return s.to_string();
+    }
+
+    // For very narrow columns (where normal truncation would be useless),
+    // try to extract and show just the identifier (#N)
+    // This handles formats like "PR #42 title" or "#1 task name"
+    if max_width <= 5
+        && let Some(id) = extract_identifier(s)
+        && id.chars().count() <= max_width
+    {
+        return id;
+    }
+
+    // Fall back to normal truncation with ellipsis
+    if max_width <= 1 {
         s.chars().take(max_width).collect()
     } else {
         let truncated: String = s.chars().take(max_width - 1).collect();
         format!("{}…", truncated)
     }
+}
+
+/// Extract the identifier pattern (#N) from a kanban item string
+///
+/// Handles formats like:
+/// - "PR #42 Some title" -> "#42"
+/// - "#1 Task name" -> "#1"
+fn extract_identifier(s: &str) -> Option<String> {
+    // Find the # character
+    let hash_pos = s.find('#')?;
+
+    // Extract digits after the #
+    let after_hash = &s[hash_pos + 1..];
+    let digit_count = after_hash
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+
+    if digit_count == 0 {
+        return None;
+    }
+
+    // Build the identifier: # + digits
+    let digits: String = after_hash.chars().take(digit_count).collect();
+    Some(format!("#{}", digits))
 }
 
 /// Draw the chat panel showing messages
@@ -679,6 +721,23 @@ mod tests {
         for line in &wrapped {
             assert!(line.chars().count() <= 40);
         }
+    }
+
+    #[test]
+    fn test_truncate_str_narrow_preserves_identifier() {
+        // When column is very narrow, we should show the PR/task identifier
+        // not just useless first characters like "P" from "PR #42"
+
+        // PR format: "PR #42" should show "#42" when space is limited
+        assert_eq!(truncate_str("PR #42", 4), "#42");
+        assert_eq!(truncate_str("PR #42 Fix bug", 4), "#42");
+
+        // Task format: "#1 Some task" should show "#1" when space is limited
+        assert_eq!(truncate_str("#1 Some task", 3), "#1");
+        assert_eq!(truncate_str("#42 Some task", 4), "#42");
+
+        // With more space, show full truncation with ellipsis
+        assert_eq!(truncate_str("#42 Some task", 8), "#42 Som…");
     }
 
     #[test]
