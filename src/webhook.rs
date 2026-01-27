@@ -368,25 +368,33 @@ fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
         .copied()
 }
 
-/// Determine the sender for a PR-related event.
-/// Priority: frontmatter > branch prefix > "github"
-fn determine_pr_sender(branch: Option<&str>, body: Option<&str>) -> &'static str {
+/// Determine the coworker associated with a PR-related event.
+/// Priority: frontmatter > branch prefix
+/// Returns None if no coworker can be determined.
+fn determine_pr_coworker(branch: Option<&str>, body: Option<&str>) -> Option<&'static str> {
     // Check frontmatter first (explicit attribution)
     if let Some(body) = body
         && let Some(name) = coworker_from_frontmatter(body)
     {
-        return name;
+        return Some(name);
     }
 
     // Check branch prefix
     if let Some(branch) = branch
         && let Some(name) = coworker_from_branch(branch)
     {
-        return name;
+        return Some(name);
     }
 
-    // Default to github
-    "github"
+    None
+}
+
+/// Format @mention prefix for a coworker, or empty string if none.
+fn mention_prefix(coworker: Option<&str>) -> String {
+    match coworker {
+        Some(name) => format!("@{} ", name),
+        None => String::new(),
+    }
 }
 
 // ============================================================================
@@ -396,12 +404,13 @@ fn determine_pr_sender(branch: Option<&str>, body: Option<&str>) -> &'static str
 fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
     let event: PullRequestEvent = serde_json::from_slice(body)?;
 
-    // Determine sender from branch prefix or PR body frontmatter
+    // Determine coworker from branch prefix or PR body frontmatter
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
-    let sender = determine_pr_sender(branch, pr_body);
+    let coworker = determine_pr_coworker(branch, pr_body);
+    let mention = mention_prefix(coworker);
 
-    let content = match event.action.as_str() {
+    let action_text = match event.action.as_str() {
         "opened" => format!("opened PR #{}: {}", event.number, event.pull_request.title),
         "closed" => {
             if event.pull_request.merged.unwrap_or(false) {
@@ -425,7 +434,8 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new(sender, content, MessageType::Text)))
+    let content = format!("{}{}", mention, action_text);
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -435,12 +445,13 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json
         return Ok(None);
     }
 
-    // Determine sender from PR branch prefix or body frontmatter
+    // Determine coworker from PR branch prefix or body frontmatter
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
-    let sender = determine_pr_sender(branch, pr_body);
+    let coworker = determine_pr_coworker(branch, pr_body);
+    let mention = mention_prefix(coworker);
 
-    let content = match event.review.state.to_lowercase().as_str() {
+    let action_text = match event.review.state.to_lowercase().as_str() {
         "approved" => format!(
             "{} approved PR #{}",
             event.review.user.login, event.pull_request.number
@@ -456,7 +467,8 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new(sender, content, MessageType::Text)))
+    let content = format!("{}{}", mention, action_text);
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -487,32 +499,35 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Err
         return Ok(None);
     }
 
-    // Determine sender from PR branch prefix or body frontmatter
+    // Determine coworker from PR branch prefix or body frontmatter
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
-    let sender = determine_pr_sender(branch, pr_body);
+    let coworker = determine_pr_coworker(branch, pr_body);
+    let mention = mention_prefix(coworker);
 
     let preview = truncate_comment(&event.comment.body, 50);
-    let content = format!(
+    let action_text = format!(
         "{} left review comment on PR #{}: {}",
         event.comment.user.login, event.pull_request.number, preview
     );
 
-    Ok(Some(Message::new(sender, content, MessageType::Text)))
+    let content = format!("{}{}", mention, action_text);
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
     let event: StatusEvent = serde_json::from_slice(body)?;
 
-    // Determine sender from first branch in the branches array
+    // Determine coworker from first branch in the branches array
     let branch = event
         .branches
         .as_ref()
         .and_then(|branches| branches.first())
         .map(|b| b.name.as_str());
-    let sender = determine_pr_sender(branch, None);
+    let coworker = determine_pr_coworker(branch, None);
+    let mention = mention_prefix(coworker);
 
-    let content = match event.state.as_str() {
+    let action_text = match event.state.as_str() {
         "success" => format!(
             "CI passed ({}): {}",
             event.context,
@@ -532,7 +547,8 @@ fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new(sender, content, MessageType::Text)))
+    let content = format!("{}{}", mention, action_text);
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -543,13 +559,14 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         return Ok(None);
     }
 
-    // Determine sender from branch prefix (check_suite includes head_branch)
+    // Determine coworker from branch prefix (check_suite includes head_branch)
     let branch = event
         .check_run
         .check_suite
         .as_ref()
         .and_then(|cs| cs.head_branch.as_deref());
-    let sender = determine_pr_sender(branch, None);
+    let coworker = determine_pr_coworker(branch, None);
+    let mention = mention_prefix(coworker);
 
     let pr_info = event
         .check_run
@@ -559,7 +576,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         .map(|pr| format!(" on PR #{}", pr.number))
         .unwrap_or_default();
 
-    let content = match event.check_run.conclusion.as_deref() {
+    let action_text = match event.check_run.conclusion.as_deref() {
         Some("success") => format!("Check '{}' passed{}", event.check_run.name, pr_info),
         Some("failure") => format!("Check '{}' failed{}", event.check_run.name, pr_info),
         Some("cancelled") => format!("Check '{}' cancelled{}", event.check_run.name, pr_info),
@@ -567,7 +584,8 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new(sender, content, MessageType::Text)))
+    let content = format!("{}{}", mention, action_text);
+    Ok(Some(Message::new("github", content, MessageType::Text)))
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
@@ -644,9 +662,10 @@ mod tests {
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "opened PR #42: Add auth endpoint");
-        // Sender is determined from branch prefix
-        assert_eq!(msg.from, "lexington");
+        // Content includes @mention prefix for coworker
+        assert_eq!(msg.content, "@lexington opened PR #42: Add auth endpoint");
+        // Sender is always "github"
+        assert_eq!(msg.from, "github");
     }
 
     #[test]
@@ -665,9 +684,10 @@ mod tests {
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "opened PR #42: Add auth endpoint");
-        // Sender is determined from frontmatter (takes priority over branch)
-        assert_eq!(msg.from, "park");
+        // Content includes @mention from frontmatter (takes priority over branch)
+        assert_eq!(msg.content, "@park opened PR #42: Add auth endpoint");
+        // Sender is always "github"
+        assert_eq!(msg.from, "github");
     }
 
     #[test]
@@ -685,13 +705,13 @@ mod tests {
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "merged PR #42: Add auth endpoint");
-        assert_eq!(msg.from, "lexington");
+        assert_eq!(msg.content, "@lexington merged PR #42: Add auth endpoint");
+        assert_eq!(msg.from, "github");
     }
 
     #[test]
     fn test_handle_pull_request_no_coworker() {
-        // When branch doesn't match a coworker, sender is "github"
+        // When branch doesn't match a coworker, no @mention prefix
         let payload = r#"{
             "action": "opened",
             "number": 42,
@@ -705,6 +725,8 @@ mod tests {
         }"#;
 
         let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        // No @mention when no coworker is identified
+        assert_eq!(msg.content, "opened PR #42: Add auth endpoint");
         assert_eq!(msg.from, "github");
     }
 
@@ -773,9 +795,10 @@ mod tests {
         let msg = handle_pull_request_review(payload.as_bytes())
             .unwrap()
             .unwrap();
-        assert_eq!(msg.content, "btucker approved PR #42");
-        // Sender is attributed to coworker from branch
-        assert_eq!(msg.from, "amsterdam");
+        // Content includes @mention prefix for coworker from branch
+        assert_eq!(msg.content, "@amsterdam btucker approved PR #42");
+        // Sender is always "github"
+        assert_eq!(msg.from, "github");
     }
 
     #[test]
@@ -797,9 +820,13 @@ mod tests {
         let msg = handle_pull_request_review(payload.as_bytes())
             .unwrap()
             .unwrap();
-        assert_eq!(msg.content, "reviewer requested changes on PR #55");
-        // Frontmatter takes priority over branch
-        assert_eq!(msg.from, "columbus");
+        // Frontmatter takes priority for @mention
+        assert_eq!(
+            msg.content,
+            "@columbus reviewer requested changes on PR #55"
+        );
+        // Sender is always "github"
+        assert_eq!(msg.from, "github");
     }
 
     #[test]
@@ -814,9 +841,10 @@ mod tests {
         }"#;
 
         let msg = handle_status(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "CI failed (ci/tests): Tests failed");
-        // Sender is attributed to coworker from branch
-        assert_eq!(msg.from, "riverside");
+        // Content includes @mention prefix for coworker from branch
+        assert_eq!(msg.content, "@riverside CI failed (ci/tests): Tests failed");
+        // Sender is always "github"
+        assert_eq!(msg.from, "github");
     }
 
     #[test]
@@ -837,9 +865,10 @@ mod tests {
         }"#;
 
         let msg = handle_check_run(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "Check 'build' passed on PR #99");
-        // Sender is attributed to coworker from branch
-        assert_eq!(msg.from, "park");
+        // Content includes @mention prefix for coworker from branch
+        assert_eq!(msg.content, "@park Check 'build' passed on PR #99");
+        // Sender is always "github"
+        assert_eq!(msg.from, "github");
     }
 
     #[test]
@@ -859,11 +888,12 @@ mod tests {
         }"#;
 
         let msg = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
+        // Content includes @mention prefix for coworker from branch
         assert_eq!(
             msg.content,
-            "reviewer left review comment on PR #77: Nice work!"
+            "@madison reviewer left review comment on PR #77: Nice work!"
         );
-        // Sender is attributed to coworker from branch
-        assert_eq!(msg.from, "madison");
+        // Sender is always "github"
+        assert_eq!(msg.from, "github");
     }
 }
