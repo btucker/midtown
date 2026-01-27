@@ -380,7 +380,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             }
 
-            // Forward webhook messages to channel
+            // Forward webhook messages to channel and auto-nudge PR owners
             Some(msg) = async {
                 match webhook_rx.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -390,6 +390,20 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 debug!("Received webhook message: {}", msg.content);
                 if let Err(e) = state.channel.send(&msg) {
                     error!("Failed to forward webhook message to channel: {}", e);
+                }
+
+                // Auto-nudge: notify coworker when their PR gets activity from others
+                if let Some(pr_number) = extract_pr_number(&msg.content)
+                    && let Some(coworker) = get_pr_owner_coworker(pr_number)
+                    && msg.from != coworker
+                    && state.coworkers.get(&coworker).is_some()
+                {
+                    let nudge_msg = format!("PR #{} activity: {}", pr_number, msg.content);
+                    if let Err(e) = state.coworkers.nudge(&coworker, &nudge_msg) {
+                        debug!("Failed to nudge {} about PR activity: {}", coworker, e);
+                    } else {
+                        info!("Nudged {} about activity on their PR #{}", coworker, pr_number);
+                    }
                 }
             }
 
@@ -1497,6 +1511,99 @@ fn truncate_message(msg: &str, max_len: usize) -> String {
     }
 }
 
+// ============================================================================
+// Auto-nudge helpers for PR activity
+// ============================================================================
+
+/// Known coworker names (Manhattan avenues).
+const COWORKER_NAMES: &[&str] = &[
+    "lexington",
+    "park",
+    "madison",
+    "broadway",
+    "amsterdam",
+    "columbus",
+    "central",
+    "riverside",
+    "york",
+    "pleasant",
+    "vernon",
+    "bleecker",
+    "houston",
+    "canal",
+    "spring",
+    "prince",
+    "mercer",
+];
+
+/// Extract PR number from a message content.
+///
+/// Looks for patterns like "PR #42", "#42", "PR #123".
+fn extract_pr_number(content: &str) -> Option<u64> {
+    // Look for "PR #N" pattern first
+    if let Some(idx) = content.find("PR #") {
+        let after = &content[idx + 4..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse() {
+            return Some(num);
+        }
+    }
+
+    // Look for " #N " pattern (standalone PR reference)
+    // This handles messages like "approved PR #42" where we already caught it above
+    // but also cases like "on #42:"
+    for (i, _) in content.match_indices(" #") {
+        let after = &content[i + 2..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num_str.is_empty()
+            && let Ok(num) = num_str.parse()
+        {
+            return Some(num);
+        }
+    }
+
+    None
+}
+
+/// Look up the coworker who owns a PR by checking its branch name.
+///
+/// Uses `gh pr view N --json headRefName` to get the branch, then
+/// extracts the coworker name from the branch prefix (e.g., "lexington/fix-auth" -> "lexington").
+fn get_pr_owner_coworker(pr_number: u64) -> Option<String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "headRefName",
+            "-q",
+            ".headRefName",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    coworker_from_branch(&branch)
+}
+
+/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
+fn coworker_from_branch(branch: &str) -> Option<String> {
+    let prefix = branch.split('/').next()?;
+    COWORKER_NAMES
+        .iter()
+        .find(|&&name| name.eq_ignore_ascii_case(prefix))
+        .map(|&s| s.to_string())
+}
+
+// ============================================================================
+// Orphan task recovery
+// ============================================================================
+
 /// Check for orphaned tasks and auto-recover coworkers.
 ///
 /// An orphaned task is one that is `in_progress` but the owning coworker
@@ -1632,6 +1739,62 @@ fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
 mod tests {
     use super::*;
 
+    // Auto-nudge helper tests
+    #[test]
+    fn test_extract_pr_number_pr_hash() {
+        assert_eq!(extract_pr_number("opened PR #42: Add feature"), Some(42));
+        assert_eq!(extract_pr_number("merged PR #123"), Some(123));
+        assert_eq!(extract_pr_number("btucker approved PR #99"), Some(99));
+    }
+
+    #[test]
+    fn test_extract_pr_number_standalone_hash() {
+        assert_eq!(extract_pr_number("commented on #55: looks good"), Some(55));
+        assert_eq!(
+            extract_pr_number("Check 'build' passed on PR #77"),
+            Some(77)
+        );
+    }
+
+    #[test]
+    fn test_extract_pr_number_none() {
+        assert_eq!(extract_pr_number("no pr reference here"), None);
+        assert_eq!(extract_pr_number("just some text"), None);
+    }
+
+    #[test]
+    fn test_coworker_from_branch() {
+        assert_eq!(
+            coworker_from_branch("lexington/fix-auth"),
+            Some("lexington".to_string())
+        );
+        assert_eq!(
+            coworker_from_branch("park/add-feature"),
+            Some("park".to_string())
+        );
+        assert_eq!(
+            coworker_from_branch("madison/refactor"),
+            Some("madison".to_string())
+        );
+    }
+
+    #[test]
+    fn test_coworker_from_branch_case_insensitive() {
+        assert_eq!(
+            coworker_from_branch("LEXINGTON/fix"),
+            Some("lexington".to_string())
+        );
+        assert_eq!(coworker_from_branch("Park/thing"), Some("park".to_string()));
+    }
+
+    #[test]
+    fn test_coworker_from_branch_not_coworker() {
+        assert_eq!(coworker_from_branch("feature/something"), None);
+        assert_eq!(coworker_from_branch("fix/bug"), None);
+        assert_eq!(coworker_from_branch("main"), None);
+    }
+
+    // PR polling tests
     #[test]
     fn test_pr_issue_tracker_should_nudge_new() {
         let tracker = PrIssueTracker::new();
