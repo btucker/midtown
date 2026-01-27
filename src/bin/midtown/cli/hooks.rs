@@ -67,11 +67,13 @@ fn handle_insight_hook() -> Result<Response, String> {
         });
     }
 
-    // Get previously posted insights (mutable to track in-memory too)
-    let mut posted = get_posted_insights(&transcript_path);
+    // Detect repo first - needed for both channel and insight tracking
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+
+    // Get previously posted insights (tracked per-repo, not per-transcript)
+    let mut posted = get_posted_insights(&repo);
 
     // Post new insights to channel
-    let repo = detect_git_repo().ok_or("Not in a git repository")?;
     let channel =
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
 
@@ -87,7 +89,7 @@ fn handle_insight_hook() -> Result<Response, String> {
 
         // Atomically try to claim this insight - prevents race conditions
         // between concurrent hook invocations
-        if !try_claim_insight(&transcript_path, &hash) {
+        if !try_claim_insight(&repo, &hash) {
             // Another process beat us to it
             posted.insert(hash);
             continue;
@@ -458,25 +460,20 @@ fn extract_insights(text: &str) -> Vec<String> {
     insights
 }
 
-/// Get the path to the insights directory for a transcript.
+/// Get the path to the insights directory for the current repository.
 /// Each posted insight hash becomes a file in this directory.
-fn insights_dir_path(transcript_path: &str) -> PathBuf {
-    let transcript = PathBuf::from(transcript_path);
-    let filename = transcript
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
+/// Uses repo name (not transcript) to prevent duplicates across sessions.
+fn insights_dir_path(repo_name: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join(".midtown")
         .join("insights")
-        .join(filename)
+        .join(repo_name)
 }
 
-/// Get set of already-posted insight hashes.
-fn get_posted_insights(transcript_path: &str) -> HashSet<String> {
-    let dir_path = insights_dir_path(transcript_path);
+/// Get set of already-posted insight hashes for the given repository.
+fn get_posted_insights(repo_name: &str) -> HashSet<String> {
+    let dir_path = insights_dir_path(repo_name);
     if let Ok(entries) = std::fs::read_dir(&dir_path) {
         entries
             .filter_map(|e| e.ok())
@@ -490,8 +487,8 @@ fn get_posted_insights(transcript_path: &str) -> HashSet<String> {
 /// Atomically try to claim an insight for posting.
 /// Returns true if we successfully claimed it (file didn't exist and we created it).
 /// Returns false if another process already claimed it (file exists).
-fn try_claim_insight(transcript_path: &str, hash: &str) -> bool {
-    let dir_path = insights_dir_path(transcript_path);
+fn try_claim_insight(repo_name: &str, hash: &str) -> bool {
+    let dir_path = insights_dir_path(repo_name);
     let _ = std::fs::create_dir_all(&dir_path);
 
     let hash_path = dir_path.join(hash);
