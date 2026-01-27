@@ -77,7 +77,7 @@ fn handle_insight_hook() -> Result<Response, String> {
     let channel =
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
 
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "Lead".to_string());
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
 
     let mut posted_count = 0;
     for insight in &insights {
@@ -138,7 +138,7 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
     if !orphaned.is_empty() {
         for (task_id, owner) in &orphaned {
             let message = midtown::Message::text(
-                "Lead",
+                "lead",
                 format!(
                     "⚠️ Task {} is in_progress but coworker '{}' is not running",
                     task_id, owner
@@ -360,7 +360,7 @@ fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
         let channel = midtown::Channel::for_repo(&repo)
             .map_err(|e| format!("Failed to open channel: {}", e))?;
         let messages = channel
-            .read_since_cursor("Lead")
+            .read_since_cursor("lead")
             .map_err(|e| format!("Failed to read channel: {}", e))?;
         return Ok(messages);
     }
