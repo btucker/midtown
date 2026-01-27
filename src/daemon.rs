@@ -143,6 +143,9 @@ impl Default for DaemonConfig {
     }
 }
 
+/// Interval for checking orphaned tasks (30 seconds)
+const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
+
 /// Shared daemon state.
 struct DaemonState {
     coworkers: CoworkerManager,
@@ -275,6 +278,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         );
     }
 
+    // Timer for periodic orphan checking
+    let mut orphan_check_interval =
+        tokio::time::interval(std::time::Duration::from_secs(ORPHAN_CHECK_INTERVAL_SECS));
+    // Skip the first tick (which fires immediately)
+    orphan_check_interval.tick().await;
+
     // Main accept loop
     loop {
         let shutdown_rx = shutdown_tx.subscribe();
@@ -305,6 +314,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 if let Err(e) = state.channel.send(&msg) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
+            }
+
+            // Periodic orphan check
+            _ = orphan_check_interval.tick() => {
+                check_and_recover_orphans(&state);
             }
 
             // Handle SIGTERM
@@ -1266,6 +1280,137 @@ fn truncate_message(msg: &str, max_len: usize) -> String {
         first_line.to_string()
     } else {
         format!("{}...", &first_line[..max_len])
+    }
+}
+
+/// Check for orphaned tasks and auto-recover coworkers.
+///
+/// An orphaned task is one that is `in_progress` but the owning coworker
+/// is no longer active (no tmux window). If the coworker's worktree still
+/// exists, we respawn them and nudge them to resume work.
+fn check_and_recover_orphans(state: &DaemonState) {
+    // Get in_progress tasks with their owners
+    let in_progress = get_in_progress_tasks_with_owners();
+
+    if in_progress.is_empty() {
+        return;
+    }
+
+    // Get list of currently active coworkers
+    let active_names: std::collections::HashSet<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|cw| cw.name.to_lowercase())
+        .collect();
+
+    // Find orphaned tasks (in_progress with owner not in active list)
+    for (task_id, task_subject, owner) in in_progress {
+        // Skip if owner is Lead or empty
+        if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+            continue;
+        }
+
+        // Skip if coworker is already active
+        if active_names.contains(&owner.to_lowercase()) {
+            continue;
+        }
+
+        // This is an orphaned task - try to recover the coworker
+        info!(
+            "Detected orphaned task #{} owned by {} - attempting recovery",
+            task_id, owner
+        );
+
+        // Try to respawn the coworker
+        match state.coworkers.respawn(&owner) {
+            Ok(()) => {
+                info!("Respawned coworker {} successfully", owner);
+
+                // Post to channel about the recovery
+                let recovery_msg = Message::text(
+                    "daemon",
+                    format!(
+                        "♻️ Recovered coworker {} for orphaned task #{}",
+                        owner, task_id
+                    ),
+                );
+                if let Err(e) = state.channel.send(&recovery_msg) {
+                    warn!("Failed to post recovery message: {}", e);
+                }
+
+                // Give the coworker a moment to start up
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // Nudge them to resume their task
+                let nudge_msg = format!(
+                    "Resume task #{}: {}. You were working on this task before your session was interrupted. Check your git status and continue where you left off.",
+                    task_id, task_subject
+                );
+
+                if let Err(e) = state.coworkers.nudge(&owner, &nudge_msg) {
+                    warn!("Failed to nudge {} to resume: {}", owner, e);
+                } else {
+                    info!("Nudged {} to resume task #{}", owner, task_id);
+                }
+            }
+            Err(e) => {
+                // Could not respawn - log and continue
+                // This might happen if the worktree doesn't exist
+                debug!(
+                    "Could not respawn {} for orphaned task #{}: {}",
+                    owner, task_id, e
+                );
+            }
+        }
+    }
+}
+
+/// Get list of in_progress tasks with their owners and subjects.
+fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
+    // Use bd (beads) to get task list
+    let output = std::process::Command::new("bd")
+        .args(["list", "--json"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return tasks
+                    .iter()
+                    .filter(|task| {
+                        task.get("status")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s == "in_progress")
+                            .unwrap_or(false)
+                    })
+                    .map(|task| {
+                        let id = task
+                            .get("id")
+                            .and_then(|i| {
+                                i.as_str()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| i.as_u64().map(|n| n.to_string()))
+                            })
+                            .unwrap_or_else(|| "?".to_string());
+                        let subject = task
+                            .get("subject")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("Unknown task")
+                            .to_string();
+                        let owner = task
+                            .get("owner")
+                            .and_then(|o| o.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (id, subject, owner)
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
     }
 }
 
