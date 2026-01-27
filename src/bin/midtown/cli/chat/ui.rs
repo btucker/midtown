@@ -192,6 +192,28 @@ struct KanbanItem {
     lines: Vec<String>,
     /// Optional URL for the first line (for clickable PR links)
     url: Option<String>,
+    /// Optional CI status for PRs (for colored dot rendering)
+    ci_status: Option<CiStatus>,
+}
+
+/// Get the dot character for CI status (colored in rendering)
+fn ci_status_dot(status: &CiStatus) -> &'static str {
+    match status {
+        CiStatus::Passed => "●",
+        CiStatus::Failed => "●",
+        CiStatus::Running => "●",
+        CiStatus::Unknown => "○",
+    }
+}
+
+/// Get the color for CI status dot
+fn ci_status_color(status: &CiStatus) -> Color {
+    match status {
+        CiStatus::Passed => Color::Green,
+        CiStatus::Failed => Color::Red,
+        CiStatus::Running => Color::Yellow,
+        CiStatus::Unknown => Color::DarkGray,
+    }
 }
 
 /// Draw the kanban board with 4 columns
@@ -215,6 +237,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         .map(|t| KanbanItem {
             lines: vec![format!("#{} {}", t.id, t.subject)],
             url: None,
+            ci_status: None,
         })
         .collect();
     draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
@@ -233,6 +256,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             KanbanItem {
                 lines: vec![line1, line2],
                 url: None,
+                ci_status: None,
             }
         })
         .collect();
@@ -244,18 +268,20 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         &in_progress_items,
     );
 
-    // Review column (open PRs with repo#XX format and duration) - 2-line items
+    // Review column (open PRs with repo#XX format, CI status dot, and duration) - 2-line items
     let review_items: Vec<KanbanItem> = app
         .prs
         .iter()
         .map(|pr| {
-            let line1 = format!("PR#{} {}", pr.number, pr.title);
+            let ci_dot = ci_status_dot(&pr.ci_status);
+            let line1 = format!("{} PR#{} {}", ci_dot, pr.number, pr.title);
             let duration = format_duration_minutes(pr.created_at);
             let line2 = format!("  └ {} {}", pr.author, duration);
             let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
             KanbanItem {
                 lines: vec![line1, line2],
                 url: Some(url),
+                ci_status: Some(pr.ci_status.clone()),
             }
         })
         .collect();
@@ -271,6 +297,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             KanbanItem {
                 lines: vec![format!("PR#{} {}", pr.number, pr.title)],
                 url: Some(url),
+                ci_status: None,
             }
         })
         .collect();
@@ -313,18 +340,34 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
             let truncated = truncate_str(line, available_width);
             let y = inner.y + lines_used as u16;
 
+            // For the first line, check if we need to color a CI status dot
+            let ci_dot_color = if line_idx == 0 {
+                item.ci_status.as_ref().map(ci_status_color)
+            } else {
+                None
+            };
+
             // Only apply hyperlink to the first line of items that have URLs
             if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
-                render_hyperlink_line(buffer, inner.x, y, &truncated, url, available_width);
+                render_hyperlink_line(
+                    buffer,
+                    inner.x,
+                    y,
+                    &truncated,
+                    url,
+                    available_width,
+                    ci_dot_color,
+                );
             } else {
-                // Render plain text
-                for (i, ch) in truncated.chars().enumerate() {
-                    if i < available_width {
-                        buffer[(inner.x + i as u16, y)]
-                            .set_char(ch)
-                            .set_fg(Color::White);
-                    }
-                }
+                // Render plain text with optional CI dot coloring
+                render_plain_line(
+                    buffer,
+                    inner.x,
+                    y,
+                    &truncated,
+                    available_width,
+                    ci_dot_color,
+                );
             }
 
             lines_used += 1;
@@ -332,7 +375,29 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
     }
 }
 
-/// Render a line as plain text
+/// Render a plain text line with optional CI status dot coloring
+fn render_plain_line(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    text: &str,
+    max_width: usize,
+    ci_dot_color: Option<Color>,
+) {
+    for (i, ch) in text.chars().enumerate() {
+        if i >= max_width {
+            break;
+        }
+        // Color the first character (CI dot) if we have a CI status
+        let fg_color = match (i, &ci_dot_color, ch) {
+            (0, Some(color), '●' | '○') => *color,
+            _ => Color::White,
+        };
+        buffer[(x + i as u16, y)].set_char(ch).set_fg(fg_color);
+    }
+}
+
+/// Render a line as plain text with optional CI dot coloring
 ///
 /// Previously used OSC 8 hyperlinks, but wrapping each character in escape
 /// sequences caused severe performance issues (21,000+ extra chars per frame).
@@ -344,13 +409,19 @@ fn render_hyperlink_line(
     text: &str,
     _url: &str,
     max_width: usize,
+    ci_dot_color: Option<Color>,
 ) {
     // Render plain text - OSC 8 per-character was too slow
     for (i, ch) in text.chars().enumerate() {
         if i >= max_width {
             break;
         }
-        buffer[(x + i as u16, y)].set_char(ch).set_fg(Color::White);
+        // Color the first character (CI dot) if we have a CI status
+        let fg_color = match (i, &ci_dot_color, ch) {
+            (0, Some(color), '●' | '○') => *color,
+            _ => Color::White,
+        };
+        buffer[(x + i as u16, y)].set_char(ch).set_fg(fg_color);
     }
 }
 
