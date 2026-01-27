@@ -62,8 +62,16 @@ midtown channel read         # Read recent channel messages
 ```
 
 ## Spawning Coworkers
-After spawning a coworker, immediately nudge them with context:
+**Prefer reusing idle coworkers over spawning new ones.** Check `midtown status` first - if a coworker is idle (no current task), nudge them with the new work instead of spawning.
+
 ```bash
+# First, check for idle coworkers
+midtown status
+
+# If idle coworker exists, reuse them:
+midtown coworker nudge <idle-name> -m "Work on task #X: <brief description>"
+
+# Only spawn if all coworkers are busy:
 midtown coworker spawn
 midtown coworker nudge <name> -m "Work on task #X: <brief description>"
 ```

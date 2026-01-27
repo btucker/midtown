@@ -67,15 +67,17 @@ fn handle_insight_hook() -> Result<Response, String> {
         });
     }
 
-    // Get previously posted insights (mutable to track in-memory too)
-    let mut posted = get_posted_insights(&transcript_path);
+    // Detect repo first - needed for both channel and insight tracking
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+
+    // Get previously posted insights (tracked per-repo, not per-transcript)
+    let mut posted = get_posted_insights(&repo);
 
     // Post new insights to channel
-    let repo = detect_git_repo().ok_or("Not in a git repository")?;
     let channel =
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
 
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "Lead".to_string());
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
 
     let mut posted_count = 0;
     for insight in &insights {
@@ -87,7 +89,7 @@ fn handle_insight_hook() -> Result<Response, String> {
 
         // Atomically try to claim this insight - prevents race conditions
         // between concurrent hook invocations
-        if !try_claim_insight(&transcript_path, &hash) {
+        if !try_claim_insight(&repo, &hash) {
             // Another process beat us to it
             posted.insert(hash);
             continue;
@@ -110,11 +112,25 @@ fn handle_insight_hook() -> Result<Response, String> {
 /// Handle the Lead stop hook - read channel and check for orphaned tasks and idle coworkers.
 fn handle_lead_stop_hook() -> Result<Response, String> {
     // First, read channel messages to sync
-    let _ = read_channel_messages();
+    let new_messages = read_channel_messages().unwrap_or_default();
 
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
     let channel =
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    // Collect all status items for the response
+    let mut status_items: Vec<String> = Vec::new();
+
+    // Include new channel messages in the response
+    if !new_messages.is_empty() {
+        let formatted = format_channel_messages(&new_messages);
+        status_items.push(format!(
+            "{} new channel message{}:\n- {}",
+            new_messages.len(),
+            if new_messages.len() == 1 { "" } else { "s" },
+            formatted
+        ));
+    }
 
     // Check for orphaned tasks (in_progress but owned by dead coworkers)
     let orphaned = find_orphaned_tasks();
@@ -122,7 +138,7 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
     if !orphaned.is_empty() {
         for (task_id, owner) in &orphaned {
             let message = midtown::Message::text(
-                "Lead",
+                "lead",
                 format!(
                     "⚠️ Task {} is in_progress but coworker '{}' is not running",
                     task_id, owner
@@ -131,9 +147,10 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
             let _ = channel.send(&message);
         }
 
-        return Ok(Response::Message {
-            message: format!("Warning: {} orphaned task(s) found", orphaned.len()),
-        });
+        status_items.push(format!(
+            "Warning: {} orphaned task(s) found",
+            orphaned.len()
+        ));
     }
 
     // Check for idle coworkers with no remaining work
@@ -151,17 +168,21 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         );
         let _ = channel.send(&message);
 
-        return Ok(Response::Message {
-            message: format!(
-                "Coworkers {} are idle with no remaining tasks. Consider: midtown stop",
-                coworker_list
-            ),
-        });
+        status_items.push(format!(
+            "Coworkers {} are idle with no remaining tasks. Consider: midtown stop",
+            coworker_list
+        ));
     }
 
-    Ok(Response::Message {
-        message: "Channel synced, no orphaned tasks".to_string(),
-    })
+    if status_items.is_empty() {
+        Ok(Response::Message {
+            message: "Channel synced, no orphaned tasks".to_string(),
+        })
+    } else {
+        Ok(Response::Message {
+            message: status_items.join("\n\n"),
+        })
+    }
 }
 
 /// Find tasks that are in_progress but owned by coworkers that aren't running.
@@ -333,14 +354,29 @@ fn get_in_progress_tasks() -> Vec<(String, String)> {
     }
 }
 
-/// Read channel messages silently (for stop hook sync).
-fn read_channel_messages() -> Result<(), String> {
+/// Read channel messages and return them (for stop hook sync).
+fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
     if let Some(repo) = detect_git_repo() {
         let channel = midtown::Channel::for_repo(&repo)
             .map_err(|e| format!("Failed to open channel: {}", e))?;
-        let _ = channel.read_since_cursor("Lead");
+        let messages = channel
+            .read_since_cursor("lead")
+            .map_err(|e| format!("Failed to read channel: {}", e))?;
+        return Ok(messages);
     }
-    Ok(())
+    Ok(Vec::new())
+}
+
+/// Format channel messages for display in stop hook reason.
+fn format_channel_messages(messages: &[midtown::Message]) -> String {
+    messages
+        .iter()
+        .map(|msg| match msg.message_type {
+            midtown::MessageType::Action => format!("* {} {}", msg.from, msg.content),
+            _ => format!("{}: {}", msg.from, msg.content),
+        })
+        .collect::<Vec<_>>()
+        .join("\n- ")
 }
 
 /// Handle the idle hook - post to channel that agent is idle.
@@ -458,25 +494,20 @@ fn extract_insights(text: &str) -> Vec<String> {
     insights
 }
 
-/// Get the path to the insights directory for a transcript.
+/// Get the path to the insights directory for the current repository.
 /// Each posted insight hash becomes a file in this directory.
-fn insights_dir_path(transcript_path: &str) -> PathBuf {
-    let transcript = PathBuf::from(transcript_path);
-    let filename = transcript
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
+/// Uses repo name (not transcript) to prevent duplicates across sessions.
+fn insights_dir_path(repo_name: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join(".midtown")
         .join("insights")
-        .join(filename)
+        .join(repo_name)
 }
 
-/// Get set of already-posted insight hashes.
-fn get_posted_insights(transcript_path: &str) -> HashSet<String> {
-    let dir_path = insights_dir_path(transcript_path);
+/// Get set of already-posted insight hashes for the given repository.
+fn get_posted_insights(repo_name: &str) -> HashSet<String> {
+    let dir_path = insights_dir_path(repo_name);
     if let Ok(entries) = std::fs::read_dir(&dir_path) {
         entries
             .filter_map(|e| e.ok())
@@ -490,8 +521,8 @@ fn get_posted_insights(transcript_path: &str) -> HashSet<String> {
 /// Atomically try to claim an insight for posting.
 /// Returns true if we successfully claimed it (file didn't exist and we created it).
 /// Returns false if another process already claimed it (file exists).
-fn try_claim_insight(transcript_path: &str, hash: &str) -> bool {
-    let dir_path = insights_dir_path(transcript_path);
+fn try_claim_insight(repo_name: &str, hash: &str) -> bool {
+    let dir_path = insights_dir_path(repo_name);
     let _ = std::fs::create_dir_all(&dir_path);
 
     let hash_path = dir_path.join(hash);
@@ -509,12 +540,23 @@ fn try_claim_insight(transcript_path: &str, hash: &str) -> bool {
 }
 
 /// Simple hash of insight content.
+/// Normalizes text before hashing to prevent duplicates from whitespace variations:
+/// - Trims leading/trailing whitespace
+/// - Collapses multiple whitespace/newlines to single space
+/// - Lowercases for consistency
 fn hash_insight(insight: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
+    // Normalize: trim, collapse whitespace, lowercase
+    let normalized: String = insight
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
     let mut hasher = DefaultHasher::new();
-    insight.hash(&mut hasher);
+    normalized.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
@@ -623,5 +665,18 @@ Second insight
         let hash1 = hash_insight("Insight one");
         let hash2 = hash_insight("Insight two");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_insight_normalizes_whitespace() {
+        // Same insight with different whitespace should produce same hash
+        let hash1 = hash_insight("This is an insight");
+        let hash2 = hash_insight("  This  is   an   insight  ");
+        let hash3 = hash_insight("This\n  is\nan\ninsight");
+        let hash4 = hash_insight("THIS IS AN INSIGHT");
+
+        assert_eq!(hash1, hash2, "extra whitespace should be normalized");
+        assert_eq!(hash1, hash3, "newlines should be normalized");
+        assert_eq!(hash1, hash4, "case should be normalized");
     }
 }

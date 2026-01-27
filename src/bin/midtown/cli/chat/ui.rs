@@ -25,10 +25,9 @@ fn format_duration_minutes(since: DateTime<Utc>) -> String {
     }
 }
 
-/// Fixed indent for continuation lines (7 = "HH:MM " time prefix)
-/// Using a fixed indent keeps multi-line messages aligned consistently
-/// regardless of sender name length.
-const CONTINUATION_INDENT: usize = 7;
+/// Fixed indent for message content (7 = "HH:MM  " time prefix + space)
+/// Using a fixed indent keeps messages aligned consistently.
+const MESSAGE_INDENT: usize = 7;
 
 /// Avenue names mapped to colors (position-based assignment)
 const AVENUE_COLORS: &[(&str, Color)] = &[
@@ -227,11 +226,15 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Get visible messages
     let visible = app.visible_messages();
 
-    // Build lines for messages, splitting multi-line content
-    let lines: Vec<Line> = visible
-        .iter()
-        .flat_map(|msg| render_message(msg, inner.width as usize))
-        .collect();
+    // Build lines for messages, tracking previous sender for grouping
+    let mut lines: Vec<Line> = Vec::new();
+    let mut prev_sender: Option<&str> = None;
+
+    for msg in visible.iter() {
+        let msg_lines = render_message(msg, inner.width as usize, prev_sender);
+        lines.extend(msg_lines);
+        prev_sender = Some(&msg.from);
+    }
 
     // No Wrap needed - we pre-split lines for better performance
     let paragraph = Paragraph::new(lines);
@@ -242,28 +245,23 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Render a single message into one or more Lines
 ///
+/// Layout:
+/// - Actor name at left margin (only if different from prev_sender)
+/// - Timestamp below the name
+/// - Message content indented after timestamp
+/// - Continuation lines aligned with message content
+///
 /// This handles:
 /// - Multi-line content (explicit newlines in message)
 /// - Long lines that need wrapping to fit the panel width
 /// - Markdown formatting (**bold**, *italic*, `code`)
-fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
-    let time = msg
-        .timestamp
-        .with_timezone(&Local)
-        .format("%H:%M")
-        .to_string();
+fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec<Line<'static>> {
+    let local_time = msg.timestamp.with_timezone(&Local);
+    let time = local_time.format("%H:%M").to_string();
     let color = get_sender_color(&msg.from);
 
-    // Calculate the prefix length for continuation line indentation
-    // Format: "HH:MM <name> " or "HH:MM * name "
-    let prefix_len = match msg.message_type {
-        MessageType::Action => 6 + 2 + msg.from.len() + 1, // "HH:MM * name "
-        MessageType::System => 6 + 9,                      // "HH:MM <system> "
-        _ => 6 + 1 + msg.from.len() + 2,                   // "HH:MM <name> "
-    };
-
-    // Available width for content (account for prefix on first line)
-    let content_width = width.saturating_sub(prefix_len);
+    // Available width for content (account for "HH:MM  " prefix)
+    let content_width = width.saturating_sub(MESSAGE_INDENT);
     if content_width == 0 {
         return vec![]; // Panel too narrow
     }
@@ -275,24 +273,31 @@ fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
         .flat_map(|line| wrap_line(line, content_width))
         .collect();
 
-    let mut result = Vec::with_capacity(content_lines.len());
+    let mut result = Vec::new();
+
+    // Determine if we need to show the sender name
+    let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
+
+    // Add sender name line if this is a new sender
+    if show_sender {
+        result.push(build_sender_line(msg, color));
+    }
+
+    // Determine base style for content based on message type
+    let content_style = match msg.message_type {
+        MessageType::Action => Style::default().fg(color),
+        MessageType::System => Style::default().fg(Color::DarkGray),
+        _ if msg.from == "github" => Style::default().fg(Color::DarkGray),
+        _ => Style::default().fg(Color::White),
+    };
 
     for (i, content) in content_lines.into_iter().enumerate() {
-        // Determine base style for content based on message type
-        // For github/system senders, use DarkGray for both name and content
-        let content_style = match msg.message_type {
-            MessageType::Action => Style::default().fg(color),
-            MessageType::System => Style::default().fg(Color::DarkGray),
-            _ if msg.from == "github" => Style::default().fg(Color::DarkGray),
-            _ => Style::default().fg(Color::White),
-        };
-
         if i == 0 {
-            // First line gets the full prefix
-            result.push(build_first_line(msg, &time, color, content, content_style));
+            // First content line: timestamp + message
+            result.push(build_timestamp_line(&time, content, content_style));
         } else {
-            // Continuation lines get fixed indentation + markdown-parsed content
-            let indent = " ".repeat(CONTINUATION_INDENT);
+            // Continuation lines: just indent + content
+            let indent = " ".repeat(MESSAGE_INDENT);
             let mut spans = vec![Span::raw(indent)];
             spans.extend(parse_markdown(content, content_style));
             result.push(Line::from(spans));
@@ -302,53 +307,48 @@ fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
     result
 }
 
-/// Build the first line of a message with its prefix
-fn build_first_line(
-    msg: &Message,
-    time: &str,
-    color: Color,
-    content: &str,
-    content_style: Style,
-) -> Line<'static> {
-    let mut spans = match msg.message_type {
+/// Build the sender name line (displayed at left margin)
+fn build_sender_line(msg: &Message, color: Color) -> Line<'static> {
+    match msg.message_type {
         MessageType::Action => {
-            // IRC-style action: HH:MM * name action
-            vec![
-                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
+            // IRC-style action marker with name
+            Line::from(vec![
                 Span::styled("* ", Style::default().fg(color)),
                 Span::styled(
-                    format!("{} ", msg.from),
+                    msg.from.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-            ]
+            ])
         }
         MessageType::System => {
-            // System message: HH:MM <system> message
-            vec![
-                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    String::from("<system> "),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]
+            // System label
+            Line::from(vec![Span::styled(
+                String::from("<system>"),
+                Style::default().fg(Color::DarkGray),
+            )])
         }
         _ => {
-            // Regular message: HH:MM <name> message
-            vec![
-                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
+            // Regular sender name with angle brackets
+            Line::from(vec![
                 Span::styled(String::from("<"), Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     msg.from.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(String::from("> "), Style::default().fg(Color::DarkGray)),
-            ]
+                Span::styled(String::from(">"), Style::default().fg(Color::DarkGray)),
+            ])
         }
-    };
+    }
+}
 
-    // Add markdown-parsed content spans
+/// Build a timestamp line with message content
+fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line<'static> {
+    // Format: "HH:MM  content" (timestamp + 2 spaces + content)
+    let mut spans = vec![Span::styled(
+        format!("{}  ", time),
+        Style::default().fg(Color::DarkGray),
+    )];
     spans.extend(parse_markdown(content, content_style));
-
     Line::from(spans)
 }
 
@@ -625,16 +625,17 @@ mod tests {
             message_type: MessageType::Text,
         };
 
-        let short_lines = render_message(&short_name_msg, 80);
-        let long_lines = render_message(&long_name_msg, 80);
+        // With new layout: name line + timestamp line + continuation = 3 lines
+        let short_lines = render_message(&short_name_msg, 80, None);
+        let long_lines = render_message(&long_name_msg, 80, None);
 
-        // Both should have 2 lines
-        assert_eq!(short_lines.len(), 2);
-        assert_eq!(long_lines.len(), 2);
+        // Both should have 3 lines: name, timestamp+content, continuation
+        assert_eq!(short_lines.len(), 3);
+        assert_eq!(long_lines.len(), 3);
 
-        // Extract the indent from continuation lines (second line, first span)
-        let short_indent = &short_lines[1].spans[0].content;
-        let long_indent = &long_lines[1].spans[0].content;
+        // Extract the indent from continuation lines (third line, first span)
+        let short_indent = &short_lines[2].spans[0].content;
+        let long_indent = &long_lines[2].spans[0].content;
 
         // Continuation lines should have the SAME indent regardless of username length
         assert_eq!(
@@ -646,5 +647,37 @@ mod tests {
             long_indent,
             long_indent.len()
         );
+    }
+
+    #[test]
+    fn test_consecutive_messages_skip_sender_name() {
+        use chrono::Utc;
+
+        let msg1 = Message {
+            id: "1".to_string(),
+            from: "columbus".to_string(),
+            content: "first message".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let msg2 = Message {
+            id: "2".to_string(),
+            from: "columbus".to_string(),
+            content: "second message".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        // First message (no previous sender) - should show name
+        let lines1 = render_message(&msg1, 80, None);
+        assert_eq!(lines1.len(), 2); // name line + timestamp line
+
+        // Second message from same sender - should skip name
+        let lines2 = render_message(&msg2, 80, Some("columbus"));
+        assert_eq!(lines2.len(), 1); // only timestamp line, no name
+
+        // Different sender - should show name again
+        let lines3 = render_message(&msg2, 80, Some("lexington"));
+        assert_eq!(lines3.len(), 2); // name line + timestamp line
     }
 }
