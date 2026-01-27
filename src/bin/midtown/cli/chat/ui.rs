@@ -390,6 +390,11 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         return render_action_message(msg, &time, color, content_style, width);
     }
 
+    // For system messages, render entire line in gray (no timestamp gutter)
+    if msg.message_type == MessageType::System {
+        return render_system_message(&msg.content, width);
+    }
+
     // Calculate content width (after " HH:MM " gutter)
     let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
     if content_width == 0 {
@@ -466,6 +471,17 @@ fn render_action_message(
     }
 
     result
+}
+
+/// Render a system message: entire line in gray, no timestamp gutter
+fn render_system_message(content: &str, width: usize) -> Vec<Line<'static>> {
+    let style = Style::default().fg(Color::DarkGray);
+    let content_lines = wrap_content(content, width);
+
+    content_lines
+        .into_iter()
+        .map(|line| Line::from(vec![Span::styled(line, style)]))
+        .collect()
 }
 
 /// Build a line with just the sender name
@@ -894,5 +910,30 @@ mod tests {
         assert!(content.contains("*"));
         assert!(content.contains("park"));
         assert!(content.contains("completed task 3"));
+    }
+
+    #[test]
+    fn test_system_message_format() {
+        use chrono::Utc;
+
+        let msg = Message {
+            id: "1".to_string(),
+            from: "system".to_string(),
+            content: "Session started".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::System,
+        };
+
+        // System messages are gray, no timestamp gutter, just the content
+        let lines = render_message(&msg, 80, None);
+        assert_eq!(lines.len(), 1);
+
+        // Should be just the content, no timestamp
+        let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(content, "Session started");
+        assert!(!content.contains(":")); // No timestamp like "10:12"
+
+        // Verify gray color (DarkGray)
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
     }
 }
