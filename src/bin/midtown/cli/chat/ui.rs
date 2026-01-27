@@ -26,10 +26,8 @@ fn format_duration_minutes(since: DateTime<Utc>) -> String {
     }
 }
 
-/// Fixed indent for message content (7 = "HH:MM  " time prefix + space)
-/// Using a fixed indent keeps messages aligned consistently.
-/// Fixed width for actor name gutter (accommodates names like "<riverside>  ")
-const ACTOR_GUTTER_WIDTH: usize = 14;
+/// Gutter width for timestamp: " HH:MM " = 7 chars
+const TIMESTAMP_GUTTER_WIDTH: usize = 7;
 
 /// Avenue names mapped to colors (position-based assignment)
 const AVENUE_COLORS: &[(&str, Color)] = &[
@@ -340,7 +338,6 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
         prev_sender = Some(&msg.from);
     }
 
-    // No Wrap needed - we pre-split lines for better performance
     let paragraph = Paragraph::new(lines);
 
     f.render_widget(block, area);
@@ -349,19 +346,17 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Render a single message into one or more Lines
 ///
-/// Layout for new sender:
-/// - Line 1: Actor name + first content line (on same line)
-/// - Line 2: Timestamp + second content line (if multi-line)
-/// - Line 3+: Indent + continuation lines
+/// Layout for action messages:
+/// - " HH:MM * name message" all on one line
 ///
-/// Layout for same sender:
-/// - Line 1: Timestamp + first content line
-/// - Line 2+: Indent + continuation lines
+/// Layout for regular messages when sender changes:
+/// - Line 1: Actor name alone
+/// - Line 2: " HH:MM message"
+/// - Line 3+: "       continuation" (7 spaces)
 ///
-/// This handles:
-/// - Multi-line content (explicit newlines in message)
-/// - Long lines that need wrapping to fit the panel width
-/// - Markdown formatting (**bold**, *italic*, `code`)
+/// Layout for regular messages when sender is same:
+/// - Line 1: " HH:MM message"
+/// - Line 2+: "       continuation" (7 spaces)
 fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec<Line<'static>> {
     let local_time = msg.timestamp.with_timezone(&Local);
     let time = local_time.format("%H:%M").to_string();
@@ -369,49 +364,6 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
 
     // Determine if we need to show the sender name
     let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
-
-    // Calculate available width for content
-    // All lines use fixed ACTOR_GUTTER_WIDTH for consistent alignment
-    let gutter_width = get_actor_prefix_width(msg);
-    let content_width = width.saturating_sub(gutter_width);
-    let first_line_width = content_width;
-    let continuation_width = content_width;
-
-    if first_line_width == 0 || continuation_width == 0 {
-        return vec![]; // Panel too narrow
-    }
-
-    // Split content by explicit newlines, then wrap each segment
-    // First line may have different width than continuation lines
-    let raw_lines: Vec<&str> = msg.content.split('\n').collect();
-
-    let mut content_lines: Vec<String> = Vec::new();
-    for (i, line) in raw_lines.iter().enumerate() {
-        let wrap_width = if i == 0 && show_sender {
-            first_line_width
-        } else if content_lines.is_empty() {
-            // This is still the first wrapped line (first raw line was empty or short)
-            first_line_width
-        } else {
-            continuation_width
-        };
-
-        let wrapped = wrap_line(line, wrap_width);
-        for (j, w) in wrapped.into_iter().enumerate() {
-            // After first wrapped segment, use continuation width
-            if i == 0 && j == 0 {
-                content_lines.push(w.to_string());
-            } else {
-                // Re-wrap with continuation width if needed
-                let rewrapped = wrap_line(w, continuation_width);
-                for rw in rewrapped {
-                    content_lines.push(rw.to_string());
-                }
-            }
-        }
-    }
-
-    let mut result = Vec::new();
 
     // Determine base style for content based on message type
     let content_style = match msg.message_type {
@@ -421,21 +373,35 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         _ => Style::default().fg(Color::White),
     };
 
+    // For action messages, use special format: " HH:MM * name message"
+    if msg.message_type == MessageType::Action {
+        return render_action_message(msg, &time, color, content_style, width);
+    }
+
+    // Calculate content width (after " HH:MM " gutter)
+    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
+    if content_width == 0 {
+        return vec![]; // Panel too narrow
+    }
+
+    // Split and wrap content
+    let content_lines = wrap_content(&msg.content, content_width);
+
+    let mut result = Vec::new();
+
+    // Add sender name line if sender changed
+    if show_sender {
+        result.push(build_sender_line(msg, color));
+    }
+
+    // Add content lines with timestamp/indent prefix
     for (i, content) in content_lines.iter().enumerate() {
         if i == 0 {
-            if show_sender {
-                // New sender: actor + first content line on same line
-                result.push(build_actor_content_line(msg, color, content, content_style));
-            } else {
-                // Same sender: timestamp + first content line
-                result.push(build_timestamp_line(&time, content, content_style));
-            }
-        } else if i == 1 && show_sender {
-            // New sender, second line: timestamp + content
+            // First content line: " HH:MM message"
             result.push(build_timestamp_line(&time, content, content_style));
         } else {
-            // Continuation lines: just indent + content (matching gutter width)
-            let indent = " ".repeat(ACTOR_GUTTER_WIDTH);
+            // Continuation lines: "       message" (7 spaces)
+            let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
             let mut spans = vec![Span::raw(indent)];
             spans.extend(parse_markdown(content, content_style));
             result.push(Line::from(spans));
@@ -445,82 +411,85 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Get the width of the actor prefix (fixed width for alignment)
-fn get_actor_prefix_width(_msg: &Message) -> usize {
-    ACTOR_GUTTER_WIDTH
-}
-
-/// Build a line with actor name and first content (on same line)
-/// Actor name is left-aligned in a fixed-width gutter
-fn build_actor_content_line(
+/// Render an action message: " HH:MM * name message"
+fn render_action_message(
     msg: &Message,
+    time: &str,
     color: Color,
-    content: &str,
     content_style: Style,
-) -> Line<'static> {
-    // Build the actor prefix (left-aligned, padded to ACTOR_GUTTER_WIDTH)
-    let (prefix, prefix_len) = match msg.message_type {
-        MessageType::Action => {
-            let text = format!("* {}", msg.from);
-            let len = text.len();
-            (
-                vec![
-                    Span::styled("* ", Style::default().fg(color)),
-                    Span::styled(
-                        msg.from.clone(),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                ],
-                len,
-            )
-        }
-        MessageType::System => {
-            let text = "<system>";
-            (
-                vec![Span::styled(
-                    String::from(text),
-                    Style::default().fg(Color::DarkGray),
-                )],
-                text.len(),
-            )
-        }
-        _ => {
-            let text = format!("<{}>", msg.from);
-            let len = text.len();
-            (
-                vec![
-                    Span::styled(String::from("<"), Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        msg.from.clone(),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(String::from(">"), Style::default().fg(Color::DarkGray)),
-                ],
-                len,
-            )
-        }
-    };
+    width: usize,
+) -> Vec<Line<'static>> {
+    // Format: " HH:MM * name message"
+    // Prefix is " HH:MM * name " where name varies
+    let prefix_len = 1 + 5 + 3 + msg.from.len() + 1; // " " + "HH:MM" + " * " + name + " "
+    let content_width = width.saturating_sub(prefix_len);
 
-    // Pad to fill the gutter width (right-aligned actor name, padding on left)
-    let padding = ACTOR_GUTTER_WIDTH.saturating_sub(prefix_len);
-    let mut spans = vec![Span::raw(" ".repeat(padding))];
-    spans.extend(prefix);
+    if content_width == 0 {
+        return vec![];
+    }
+
+    let content_lines = wrap_content(&msg.content, content_width);
+    let mut result = Vec::new();
+
+    for (i, content) in content_lines.iter().enumerate() {
+        if i == 0 {
+            // First line: " HH:MM * name message"
+            let spans = vec![
+                Span::styled(format!(" {} ", time), Style::default().fg(Color::DarkGray)),
+                Span::styled("* ", Style::default().fg(color)),
+                Span::styled(
+                    msg.from.clone(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" {}", content), content_style),
+            ];
+            result.push(Line::from(spans));
+        } else {
+            // Continuation: indent to align with message content
+            let indent = " ".repeat(prefix_len);
+            let mut spans = vec![Span::raw(indent)];
+            spans.extend(parse_markdown(content, content_style));
+            result.push(Line::from(spans));
+        }
+    }
+
+    result
+}
+
+/// Build a line with just the sender name
+fn build_sender_line(msg: &Message, color: Color) -> Line<'static> {
+    match msg.message_type {
+        MessageType::System => Line::from(vec![Span::styled(
+            String::from("<system>"),
+            Style::default().fg(Color::DarkGray),
+        )]),
+        _ => Line::from(vec![Span::styled(
+            msg.from.clone(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )]),
+    }
+}
+
+/// Build a timestamp line with message content: " HH:MM message"
+fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!(" {} ", time),
+        Style::default().fg(Color::DarkGray),
+    )];
     spans.extend(parse_markdown(content, content_style));
     Line::from(spans)
 }
 
-/// Build a timestamp line with message content
-/// Timestamp is right-aligned in a fixed-width gutter
-fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line<'static> {
-    // Right-align timestamp in gutter: padding + "HH:MM " = ACTOR_GUTTER_WIDTH
-    let time_with_space = format!("{} ", time); // "HH:MM "
-    let padding = ACTOR_GUTTER_WIDTH.saturating_sub(time_with_space.len());
-    let mut spans = vec![
-        Span::raw(" ".repeat(padding)),
-        Span::styled(time_with_space, Style::default().fg(Color::DarkGray)),
-    ];
-    spans.extend(parse_markdown(content, content_style));
-    Line::from(spans)
+/// Wrap content text into lines that fit the given width
+fn wrap_content(content: &str, width: usize) -> Vec<String> {
+    let mut result = Vec::new();
+    for line in content.split('\n') {
+        let wrapped = wrap_line(line, width);
+        for w in wrapped {
+            result.push(w.to_string());
+        }
+    }
+    result
 }
 
 /// Parse markdown in text and return styled spans
@@ -797,7 +766,7 @@ mod tests {
     fn test_continuation_lines_have_consistent_indent() {
         use chrono::Utc;
 
-        // Create messages from users with different name lengths (3 lines to test continuation)
+        // Create messages from users with different name lengths (3 content lines)
         let short_name_msg = Message {
             id: "1".to_string(),
             from: "a".to_string(),
@@ -813,27 +782,30 @@ mod tests {
             message_type: MessageType::Text,
         };
 
-        // New layout: actor+content, timestamp+content, indent+content = 3 lines
+        // New layout: name line, then 3 content lines (timestamp + 2 continuations)
+        // Total = 4 lines: sender, timestamp+line1, indent+line2, indent+line3
         let short_lines = render_message(&short_name_msg, 80, None);
         let long_lines = render_message(&long_name_msg, 80, None);
 
-        // Both should have 3 lines: actor+line1, timestamp+line2, indent+line3
-        assert_eq!(short_lines.len(), 3);
-        assert_eq!(long_lines.len(), 3);
+        assert_eq!(short_lines.len(), 4, "Expected 4 lines: sender + 3 content");
+        assert_eq!(long_lines.len(), 4, "Expected 4 lines: sender + 3 content");
 
-        // Extract the indent from continuation lines (third line, first span)
+        // Extract the indent from continuation lines (3rd and 4th line, first span)
         let short_indent = &short_lines[2].spans[0].content;
         let long_indent = &long_lines[2].spans[0].content;
 
-        // Continuation lines should have the SAME indent regardless of username length
+        // Continuation lines should have the SAME indent (7 spaces) regardless of username length
+        assert_eq!(
+            short_indent.len(),
+            TIMESTAMP_GUTTER_WIDTH,
+            "Indent should be {} chars, got {}",
+            TIMESTAMP_GUTTER_WIDTH,
+            short_indent.len()
+        );
         assert_eq!(
             short_indent.len(),
             long_indent.len(),
-            "Continuation indent should be consistent: short='{}' ({}), long='{}' ({})",
-            short_indent,
-            short_indent.len(),
-            long_indent,
-            long_indent.len()
+            "Continuation indent should be consistent"
         );
     }
 
@@ -856,19 +828,19 @@ mod tests {
             message_type: MessageType::Text,
         };
 
-        // First message (no previous sender) - shows actor + content on one line
+        // First message (no previous sender) - shows sender line + timestamp line
         let lines1 = render_message(&msg1, 80, None);
-        assert_eq!(lines1.len(), 1); // actor + content on same line
+        assert_eq!(lines1.len(), 2); // sender line + timestamp+content line
 
-        // Second message from same sender - shows timestamp + content (no actor)
+        // Second message from same sender - shows only timestamp + content (no sender)
         let lines2 = render_message(&msg2, 80, Some("columbus"));
-        assert_eq!(lines2.len(), 1); // timestamp + content
+        assert_eq!(lines2.len(), 1); // just timestamp + content
 
-        // Different sender - shows actor + content on one line
+        // Different sender - shows sender line + timestamp line
         let lines3 = render_message(&msg2, 80, Some("lexington"));
-        assert_eq!(lines3.len(), 1); // actor + content on same line
+        assert_eq!(lines3.len(), 2); // sender line + timestamp+content line
 
-        // Verify first message has actor name
+        // Verify first message has sender name on first line
         let first_line_content: String =
             lines1[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(first_line_content.contains("columbus"));
@@ -878,5 +850,27 @@ mod tests {
             lines2[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(!same_sender_content.contains("columbus"));
         assert!(same_sender_content.contains(":")); // Has timestamp like "10:12"
+    }
+
+    #[test]
+    fn test_action_message_format() {
+        use chrono::Utc;
+
+        let msg = Message {
+            id: "1".to_string(),
+            from: "park".to_string(),
+            content: "completed task 3".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Action,
+        };
+
+        // Action messages are " HH:MM * name message" on one line
+        let lines = render_message(&msg, 80, None);
+        assert_eq!(lines.len(), 1);
+
+        let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(content.contains("*"));
+        assert!(content.contains("park"));
+        assert!(content.contains("completed task 3"));
     }
 }
