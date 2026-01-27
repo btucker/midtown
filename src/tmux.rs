@@ -9,6 +9,102 @@ use std::process::Command;
 
 use crate::Error;
 
+/// Parse a status message and return an abbreviated version for tmux tab display.
+///
+/// Extracts status keywords and task numbers to create concise tab names.
+///
+/// # Examples
+/// - "claiming task #1" → "claim #1"
+/// - "developing task #1" → "dev #1"
+/// - "running tests" → "test"
+/// - "opening PR for task #1" → "PR #1"
+/// - "waiting for review" → "idle"
+/// - "investigating the auth bug" → "investigating the au..."
+pub fn parse_status(status: &str) -> String {
+    let status_lower = status.to_lowercase();
+
+    // Extract task number if present (matches "#1", "task 1", "task #1", etc.)
+    let task_num = extract_task_number(status);
+
+    // Match status keywords and map to abbreviations
+    // Order matters: more specific/priority states come first
+    let abbrev = if status_lower.contains("claim") {
+        "claim"
+    } else if status_lower.contains("complet") || status_lower.contains("finish") {
+        // Check "completed/finished" before "implement" which could match "implementation"
+        "done"
+    } else if status_lower.contains("idle")
+        || status_lower.contains("waiting")
+        || status_lower.contains("blocked")
+    {
+        // Check "waiting/blocked" before "review" which could match "waiting for review"
+        "idle"
+    } else if status_lower.contains("pr ")
+        || status_lower.contains("pull request")
+        || status_lower.starts_with("pr")
+        || status_lower.contains("review")
+    {
+        // Match "PR " with space to avoid false positives, or "review" for code review
+        "PR"
+    } else if status_lower.contains("develop")
+        || status_lower.contains("working")
+        || status_lower.contains("coding")
+        || status_lower.contains("implement")
+    {
+        "dev"
+    } else if status_lower.contains("test") {
+        "test"
+    } else if status_lower.contains("debug") || status_lower.contains("investigating") {
+        "debug"
+    } else {
+        // No keyword match - truncate the original status
+        return truncate_status(status, 20);
+    };
+
+    // Combine abbreviation with task number if present
+    match task_num {
+        Some(num) => format!("{} #{}", abbrev, num),
+        None => abbrev.to_string(),
+    }
+}
+
+/// Extract task number from status text.
+///
+/// Matches patterns like "#1", "task 1", "task #1", "#42"
+fn extract_task_number(status: &str) -> Option<u32> {
+    // Try to find "#N" pattern first
+    if let Some(pos) = status.find('#') {
+        let rest = &status[pos + 1..];
+        let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse::<u32>() {
+            return Some(num);
+        }
+    }
+
+    // Try "task N" pattern (case insensitive)
+    let lower = status.to_lowercase();
+    if let Some(pos) = lower.find("task ") {
+        let rest = &status[pos + 5..];
+        // Skip optional '#' after "task "
+        let rest = rest.strip_prefix('#').unwrap_or(rest);
+        let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse::<u32>() {
+            return Some(num);
+        }
+    }
+
+    None
+}
+
+/// Truncate status to a maximum length, adding "..." if truncated.
+fn truncate_status(status: &str, max_len: usize) -> String {
+    if status.len() <= max_len {
+        status.to_string()
+    } else {
+        format!("{}...", &status[..max_len.saturating_sub(3)])
+    }
+}
+
 /// Get the state directory for midtown.
 fn state_dir() -> PathBuf {
     let state_dir = std::env::var("XDG_STATE_HOME")
@@ -275,16 +371,12 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
 pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::Result<()> {
     let target = format!("{}:{}", session, name);
 
-    // Build the new window name
+    // Build the new window name with parsed/abbreviated status
     let new_name = match status {
         Some(s) if !s.is_empty() => {
-            // Truncate status to keep tab readable
-            let truncated = if s.len() > 20 {
-                format!("{}...", &s[..17])
-            } else {
-                s.to_string()
-            };
-            format!("{}: {}", name, truncated)
+            // Parse status to extract keywords and task numbers
+            let parsed = parse_status(s);
+            format!("{}: {}", name, parsed)
         }
         _ => name.to_string(),
     };
@@ -707,4 +799,95 @@ mod tests {
     }
 
     // Integration tests would require actual tmux, so we keep unit tests minimal
+
+    #[test]
+    fn test_parse_status_claiming() {
+        assert_eq!(parse_status("claiming task #1"), "claim #1");
+        assert_eq!(parse_status("Claiming task 5"), "claim #5");
+        assert_eq!(parse_status("just claimed #3"), "claim #3");
+    }
+
+    #[test]
+    fn test_parse_status_developing() {
+        assert_eq!(parse_status("developing task #1"), "dev #1");
+        assert_eq!(parse_status("working on task #2"), "dev #2");
+        assert_eq!(parse_status("coding the feature"), "dev");
+        assert_eq!(parse_status("implementing auth #5"), "dev #5");
+    }
+
+    #[test]
+    fn test_parse_status_testing() {
+        assert_eq!(parse_status("testing"), "test");
+        assert_eq!(parse_status("running tests for #3"), "test #3");
+        assert_eq!(parse_status("test suite running"), "test");
+    }
+
+    #[test]
+    fn test_parse_status_pr() {
+        assert_eq!(parse_status("opening PR for task #1"), "PR #1");
+        assert_eq!(parse_status("PR ready"), "PR");
+        assert_eq!(parse_status("creating pull request #4"), "PR #4");
+        assert_eq!(parse_status("requesting review #2"), "PR #2");
+    }
+
+    #[test]
+    fn test_parse_status_debug() {
+        assert_eq!(parse_status("debugging auth bug"), "debug");
+        assert_eq!(parse_status("investigating the issue #7"), "debug #7");
+    }
+
+    #[test]
+    fn test_parse_status_idle() {
+        assert_eq!(parse_status("idle"), "idle");
+        assert_eq!(parse_status("waiting for review"), "idle");
+        assert_eq!(parse_status("blocked on task #3"), "idle #3");
+    }
+
+    #[test]
+    fn test_parse_status_done() {
+        assert_eq!(parse_status("completed task #1"), "done #1");
+        assert_eq!(parse_status("finished implementation"), "done");
+    }
+
+    #[test]
+    fn test_parse_status_no_keyword_truncates() {
+        assert_eq!(parse_status("doing something"), "doing something");
+        assert_eq!(
+            parse_status("this is a very long status message that should be truncated"),
+            "this is a very lo..."
+        );
+    }
+
+    #[test]
+    fn test_extract_task_number_hash_format() {
+        assert_eq!(extract_task_number("task #1"), Some(1));
+        assert_eq!(extract_task_number("#42 is the answer"), Some(42));
+        assert_eq!(extract_task_number("working on #5"), Some(5));
+    }
+
+    #[test]
+    fn test_extract_task_number_task_word_format() {
+        assert_eq!(extract_task_number("claiming task 3"), Some(3));
+        assert_eq!(extract_task_number("TASK 7 is mine"), Some(7));
+    }
+
+    #[test]
+    fn test_extract_task_number_none() {
+        assert_eq!(extract_task_number("just coding"), None);
+        assert_eq!(extract_task_number("no numbers here"), None);
+        assert_eq!(extract_task_number("#"), None);
+    }
+
+    #[test]
+    fn test_truncate_status() {
+        assert_eq!(truncate_status("short", 20), "short");
+        assert_eq!(
+            truncate_status("exactly twenty chars", 20),
+            "exactly twenty chars"
+        );
+        assert_eq!(
+            truncate_status("this is way too long for the tab", 20),
+            "this is way too l..."
+        );
+    }
 }
