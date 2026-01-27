@@ -40,7 +40,14 @@ Post a `/me` update when you transition between phases:
 Use Claude Code's built-in task tools to manage tasks:
 - `TaskList` - See available tasks
 - `TaskGet` - Get task details
-- `TaskUpdate` - Update task status (in_progress, completed)
+- `TaskUpdate` - Update task status and ownership
+
+**When claiming a task**, always set BOTH the status AND owner:
+```
+TaskUpdate with taskId, status: "in_progress", owner: "{name}"
+```
+
+This ensures `midtown status` shows who's working on each task.
 
 After updating a task status, announce it to the team via the channel. **Update your `/me` status as you progress through each phase** so teammates can see your current state in the tmux tabs:
 

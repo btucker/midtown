@@ -84,6 +84,14 @@ Coworkers start with no context - they need a nudge to know what to do.
 - Monitor overall progress via `midtown status`
 - Check channel for updates: `midtown channel read`
 
+## Assigning Tasks
+When assigning a task to a specific coworker, use `TaskUpdate` to set the `owner` field:
+```
+TaskUpdate with taskId, owner: "<coworker-name>"
+```
+
+This ensures `midtown status` shows the assignment before the coworker claims it.
+
 ## Plans
 - Always save plans to `~/.claude/plans/`
 - Use descriptive filenames: `YYYY-MM-DD-<topic>.md`
