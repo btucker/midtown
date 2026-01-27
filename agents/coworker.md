@@ -92,3 +92,16 @@ EOF
 - The Lead coordinates overall direction
 - Other coworkers are peers - collaborate via channel
 - If blocked, post to channel and move to another task
+
+### Asking Questions
+When unsure about something, **ask in the channel** using @mentions:
+
+- **@lead** - Ask the Lead when you need clarification on requirements, priorities, or approach
+- **@coworker** - Ask other coworkers if they're working on something related to your task
+
+Collaboration is encouraged! Don't make assumptions - it's better to ask than to build the wrong thing.
+
+```bash
+midtown channel post "@lead should I handle the error case here, or let it bubble up?"
+midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"
+```
