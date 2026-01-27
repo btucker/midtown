@@ -36,6 +36,8 @@ pub enum NudgeReason {
     BlockerResolved { blocker_id: String },
     /// Manual nudge from another agent or user
     Manual { from: String },
+    /// Coworker is asking for feedback/help
+    FeedbackRequest { from: String, question: String },
 }
 
 impl NudgeReason {
@@ -50,6 +52,9 @@ impl NudgeReason {
                 format!("blocker {} resolved", blocker_id)
             }
             NudgeReason::Manual { from } => format!("nudge from {}", from),
+            NudgeReason::FeedbackRequest { from, question } => {
+                format!("{} is asking for feedback: {}", from, question)
+            }
         }
     }
 }
@@ -241,6 +246,14 @@ mod tests {
             }
             .description(),
             "nudge from witness"
+        );
+        assert_eq!(
+            NudgeReason::FeedbackRequest {
+                from: "park".to_string(),
+                question: "Should I use async here?".to_string()
+            }
+            .description(),
+            "park is asking for feedback: Should I use async here?"
         );
     }
 

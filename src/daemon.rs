@@ -5,7 +5,7 @@
 //! runs a webhook server to receive GitHub events, and polls PRs for
 //! actionable issues.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -165,6 +165,8 @@ struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
+    /// Tracks message IDs that have already triggered a nudge to Lead (to avoid duplicates)
+    nudged_messages: std::sync::RwLock<HashSet<String>>,
     /// Tracks when each coworker became idle (no in_progress tasks)
     idle_since: RwLock<HashMap<String, Instant>>,
     /// Tracker to avoid spamming the same PR issues
@@ -192,6 +194,7 @@ impl DaemonState {
             coworkers: CoworkerManager::new(session_name, worktree_manager),
             channel,
             socket_path,
+            nudged_messages: std::sync::RwLock::new(HashSet::new()),
             idle_since: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
         })
@@ -1234,11 +1237,70 @@ fn handle_coworker_asking(
     )
 }
 
+/// Known system senders that should not trigger feedback detection.
+const SYSTEM_SENDERS: &[&str] = &["Lead", "lead", "github", "system", "GitHub"];
+
+/// Patterns that indicate a message is asking for feedback or help.
+/// Checked case-insensitively.
+const FEEDBACK_PATTERNS: &[&str] = &[
+    "feedback",
+    "thoughts?",
+    "opinion?",
+    "what do you think",
+    "help",
+    "blocked",
+    "stuck",
+    "unsure",
+    "not sure",
+    "question",
+    "@lead",
+    "lead:",
+];
+
+/// Check if a message is asking for feedback or help.
+///
+/// Returns true if the message:
+/// - Contains any feedback pattern keywords
+/// - Is directed at Lead (@Lead, Lead:)
+/// - Ends with "?" and contains substantive content (not just a status update)
+fn is_feedback_request(message: &str) -> bool {
+    let lower = message.to_lowercase();
+
+    // Check for explicit feedback patterns
+    for pattern in FEEDBACK_PATTERNS {
+        if lower.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Check if it ends with "?" and has substantive content
+    // Exclude status updates like "claiming task?" or short messages
+    if message.trim().ends_with('?') && message.len() > 30 {
+        // But exclude if it looks like a status update (starts with /me or common status words)
+        if !lower.starts_with("/me ")
+            && !lower.contains("claiming")
+            && !lower.contains("starting")
+            && !lower.contains("working on")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Check if a sender is a coworker (not Lead or system).
+fn is_coworker_sender(from: &str) -> bool {
+    !SYSTEM_SENDERS.contains(&from)
+}
+
 /// Handle channel.post RPC method.
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
 /// the prefix is stripped and the message is stored as an Action type.
 /// For coworkers, the action text is also reflected in their tmux tab name.
+///
+/// Also detects feedback requests from coworkers and nudges the Lead.
 fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonState) -> Response {
     // Check for /me prefix (IRC-style action)
     let (content, msg_type) = if let Some(action) = message.strip_prefix("/me ") {
@@ -1258,6 +1320,38 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 // Update the coworker's tmux tab to show their status
                 if let Err(e) = state.coworkers.update_status_display(from, Some(&content)) {
                     debug!("Failed to update tmux tab for {}: {}", from, e);
+                }
+            }
+
+            // Check for feedback requests from coworkers and nudge Lead
+            if is_coworker_sender(from) && is_feedback_request(&content) {
+                // Use message ID to avoid duplicate nudges
+                let should_nudge = {
+                    let nudged = state.nudged_messages.read().unwrap();
+                    !nudged.contains(&msg.id)
+                };
+
+                if should_nudge {
+                    // Record that we're nudging for this message
+                    {
+                        let mut nudged = state.nudged_messages.write().unwrap();
+                        nudged.insert(msg.id.clone());
+                    }
+
+                    // Truncate question for nudge message (max 100 chars)
+                    let question = if content.len() > 100 {
+                        format!("{}...", &content[..97])
+                    } else {
+                        content.clone()
+                    };
+
+                    let nudge_msg = format!("{} is asking for feedback: {}", from, question);
+                    info!("Nudging Lead about feedback request from {}", from);
+
+                    // Nudge the Lead window
+                    if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
+                        warn!("Failed to nudge Lead about feedback request: {}", e);
+                    }
                 }
             }
 
@@ -1795,6 +1889,71 @@ mod tests {
     }
 
     // PR polling tests
+    #[test]
+    fn test_is_feedback_request_with_keywords() {
+        // Explicit feedback keywords
+        assert!(is_feedback_request(
+            "What do you think about this approach?"
+        ));
+        assert!(is_feedback_request(
+            "I need some feedback on the API design"
+        ));
+        assert!(is_feedback_request("Thoughts? I'm not sure about this"));
+        assert!(is_feedback_request("Could I get your opinion?"));
+        assert!(is_feedback_request("I'm blocked on the auth issue"));
+        assert!(is_feedback_request(
+            "I'm stuck here, not sure how to proceed"
+        ));
+        assert!(is_feedback_request(
+            "I have a question about the architecture"
+        ));
+        assert!(is_feedback_request("@Lead can you review this?"));
+        assert!(is_feedback_request("Lead: what's the best approach here?"));
+    }
+
+    #[test]
+    fn test_is_feedback_request_with_questions() {
+        // Long questions that end with "?" and don't look like status updates should trigger
+        assert!(is_feedback_request(
+            "Is this the right way to handle the authentication flow in the API layer?"
+        ));
+        assert!(is_feedback_request(
+            "Should we use async/await here or is the sync version fine for this use case?"
+        ));
+    }
+
+    #[test]
+    fn test_is_feedback_request_excludes_status_updates() {
+        // Status updates should not trigger
+        assert!(!is_feedback_request("/me claiming task 1"));
+        assert!(!is_feedback_request("/me working on task 2"));
+        assert!(!is_feedback_request("starting task #3"));
+        assert!(!is_feedback_request("claiming #5?"));
+    }
+
+    #[test]
+    fn test_is_feedback_request_excludes_short_questions() {
+        // Short questions that are probably just confirmations
+        assert!(!is_feedback_request("Ready?"));
+        assert!(!is_feedback_request("Done?"));
+    }
+
+    #[test]
+    fn test_is_coworker_sender() {
+        // System senders should not be coworkers
+        assert!(!is_coworker_sender("Lead"));
+        assert!(!is_coworker_sender("lead"));
+        assert!(!is_coworker_sender("github"));
+        assert!(!is_coworker_sender("GitHub"));
+        assert!(!is_coworker_sender("system"));
+
+        // Actual coworker names should be detected
+        assert!(is_coworker_sender("lexington"));
+        assert!(is_coworker_sender("park"));
+        assert!(is_coworker_sender("amsterdam"));
+        assert!(is_coworker_sender("madison"));
+    }
+
     #[test]
     fn test_pr_issue_tracker_should_nudge_new() {
         let tracker = PrIssueTracker::new();
