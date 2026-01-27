@@ -1,9 +1,9 @@
 //! UI rendering for the chat TUI
 
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -12,6 +12,18 @@ use ratatui::{
 use midtown::{Message, MessageType};
 
 use super::app::App;
+
+/// Format duration as (Xm) or (Xh) for display
+fn format_duration_minutes(since: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let duration = now.signed_duration_since(since);
+    let minutes = duration.num_minutes();
+    if minutes >= 60 {
+        format!("({}h)", minutes / 60)
+    } else {
+        format!("({}m)", minutes)
+    }
+}
 
 /// Fixed indent for message content (7 = "HH:MM  " time prefix + space)
 /// Using a fixed indent keeps messages aligned consistently.
@@ -46,14 +58,157 @@ fn get_sender_color(name: &str) -> Color {
     }
 }
 
+/// Height of the kanban board (including borders)
+/// Increased to accommodate 2-line items in In Progress and Review columns
+const KANBAN_HEIGHT: u16 = 9;
+
 /// Draw the main UI
 ///
 /// Note: The Team panel has been removed - coworker status is now shown
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Full width for chat panel - team status shown in tmux tabs instead
-    draw_chat_panel(f, app, f.area());
+    // Split into kanban (top) and chat (bottom) panels
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(KANBAN_HEIGHT), Constraint::Min(10)])
+        .split(f.area());
+
+    draw_kanban_panel(f, app, chunks[0]);
+    draw_chat_panel(f, app, chunks[1]);
+}
+
+/// A kanban item that may span multiple lines
+struct KanbanItem {
+    /// Lines to display (1 for Backlog/Done, up to 2 for In Progress/Review)
+    lines: Vec<String>,
+}
+
+/// Draw the kanban board with 4 columns
+fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
+    // Split into 4 equal columns
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
+
+    let (pending, in_progress, _completed) = app.tasks_by_status();
+
+    // Backlog column (pending tasks) - single line items
+    let backlog_items: Vec<KanbanItem> = pending
+        .iter()
+        .map(|t| KanbanItem {
+            lines: vec![format!("#{} {}", t.id, t.subject)],
+        })
+        .collect();
+    draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
+
+    // In Progress column (with owner and duration) - 2-line items
+    let in_progress_items: Vec<KanbanItem> = in_progress
+        .iter()
+        .map(|t| {
+            let line1 = format!("#{} {}", t.id, t.subject);
+            let owner = t.owner.as_deref().unwrap_or("?");
+            // TODO: Track when task became in_progress for accurate duration
+            let line2 = format!("  └ {}", owner);
+            KanbanItem {
+                lines: vec![line1, line2],
+            }
+        })
+        .collect();
+    draw_kanban_column(
+        f,
+        columns[1],
+        "In Progress",
+        Color::Yellow,
+        &in_progress_items,
+    );
+
+    // Review column (open PRs with repo#XX format and duration) - 2-line items
+    let review_items: Vec<KanbanItem> = app
+        .prs
+        .iter()
+        .map(|pr| {
+            let line1 = format!("{}#{} {}", app.repo_name, pr.number, pr.title);
+            let duration = format_duration_minutes(pr.created_at);
+            let line2 = format!("  └ {} {}", pr.author, duration);
+            KanbanItem {
+                lines: vec![line1, line2],
+            }
+        })
+        .collect();
+    draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
+
+    // Done column (merged PRs with repo#XX format) - single line, reverse chronological, max 10
+    let done_items: Vec<KanbanItem> = app
+        .merged_prs
+        .iter()
+        .take(10)
+        .map(|pr| KanbanItem {
+            lines: vec![format!("{}#{} {}", app.repo_name, pr.number, pr.title)],
+        })
+        .collect();
+    draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
+}
+
+/// Draw a single kanban column with multi-line item support
+fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[KanbanItem]) {
+    let block = Block::default()
+        .title(format!(" {} ({}) ", title, items.len()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color));
+
+    let inner = block.inner(area);
+
+    // Build content: items may have multiple lines, truncated to fit
+    let content = if items.is_empty() {
+        String::from("-")
+    } else {
+        let available_width = inner.width as usize;
+        let available_lines = inner.height as usize;
+
+        let mut lines_used = 0;
+        let mut output_lines = Vec::new();
+
+        for item in items {
+            // Check if we have room for at least the first line of this item
+            if lines_used >= available_lines {
+                break;
+            }
+
+            for line in &item.lines {
+                if lines_used >= available_lines {
+                    break;
+                }
+                output_lines.push(truncate_str(line, available_width));
+                lines_used += 1;
+            }
+        }
+
+        output_lines.join("\n")
+    };
+
+    let paragraph = Paragraph::new(content).style(Style::default().fg(Color::White));
+
+    f.render_widget(block, area);
+    f.render_widget(paragraph, inner);
+}
+
+/// Truncate a string to fit within the given width, adding "..." if truncated
+fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
+        s.to_string()
+    } else if max_width <= 3 {
+        s.chars().take(max_width).collect()
+    } else {
+        let truncated: String = s.chars().take(max_width - 1).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Draw the chat panel showing messages
@@ -90,11 +245,14 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Render a single message into one or more Lines
 ///
-/// Layout:
-/// - Actor name at left margin (only if different from prev_sender)
-/// - Timestamp below the name
-/// - Message content indented after timestamp
-/// - Continuation lines aligned with message content
+/// Layout for new sender:
+/// - Line 1: Actor name + first content line (on same line)
+/// - Line 2: Timestamp + second content line (if multi-line)
+/// - Line 3+: Indent + continuation lines
+///
+/// Layout for same sender:
+/// - Line 1: Timestamp + first content line
+/// - Line 2+: Indent + continuation lines
 ///
 /// This handles:
 /// - Multi-line content (explicit newlines in message)
@@ -105,28 +263,55 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     let time = local_time.format("%H:%M").to_string();
     let color = get_sender_color(&msg.from);
 
-    // Available width for content (account for "HH:MM  " prefix)
-    let content_width = width.saturating_sub(MESSAGE_INDENT);
-    if content_width == 0 {
-        return vec![]; // Panel too narrow
-    }
-
-    // Split content by explicit newlines, then wrap each line
-    let content_lines: Vec<&str> = msg
-        .content
-        .split('\n')
-        .flat_map(|line| wrap_line(line, content_width))
-        .collect();
-
-    let mut result = Vec::new();
-
     // Determine if we need to show the sender name
     let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
 
-    // Add sender name line if this is a new sender
-    if show_sender {
-        result.push(build_sender_line(msg, color));
+    // Calculate available width for content
+    // For new sender first line: width - actor prefix (varies by message type)
+    // For timestamp lines: width - "HH:MM  " (MESSAGE_INDENT)
+    let actor_prefix_width = get_actor_prefix_width(msg);
+    let first_line_width = if show_sender {
+        width.saturating_sub(actor_prefix_width)
+    } else {
+        width.saturating_sub(MESSAGE_INDENT)
+    };
+    let continuation_width = width.saturating_sub(MESSAGE_INDENT);
+
+    if first_line_width == 0 || continuation_width == 0 {
+        return vec![]; // Panel too narrow
     }
+
+    // Split content by explicit newlines, then wrap each segment
+    // First line may have different width than continuation lines
+    let raw_lines: Vec<&str> = msg.content.split('\n').collect();
+
+    let mut content_lines: Vec<String> = Vec::new();
+    for (i, line) in raw_lines.iter().enumerate() {
+        let wrap_width = if i == 0 && show_sender {
+            first_line_width
+        } else if content_lines.is_empty() {
+            // This is still the first wrapped line (first raw line was empty or short)
+            first_line_width
+        } else {
+            continuation_width
+        };
+
+        let wrapped = wrap_line(line, wrap_width);
+        for (j, w) in wrapped.into_iter().enumerate() {
+            // After first wrapped segment, use continuation width
+            if i == 0 && j == 0 {
+                content_lines.push(w.to_string());
+            } else {
+                // Re-wrap with continuation width if needed
+                let rewrapped = wrap_line(w, continuation_width);
+                for rw in rewrapped {
+                    content_lines.push(rw.to_string());
+                }
+            }
+        }
+    }
+
+    let mut result = Vec::new();
 
     // Determine base style for content based on message type
     let content_style = match msg.message_type {
@@ -136,9 +321,17 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         _ => Style::default().fg(Color::White),
     };
 
-    for (i, content) in content_lines.into_iter().enumerate() {
+    for (i, content) in content_lines.iter().enumerate() {
         if i == 0 {
-            // First content line: timestamp + message
+            if show_sender {
+                // New sender: actor + first content line on same line
+                result.push(build_actor_content_line(msg, color, content, content_style));
+            } else {
+                // Same sender: timestamp + first content line
+                result.push(build_timestamp_line(&time, content, content_style));
+            }
+        } else if i == 1 && show_sender {
+            // New sender, second line: timestamp + content
             result.push(build_timestamp_line(&time, content, content_style));
         } else {
             // Continuation lines: just indent + content
@@ -152,38 +345,65 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Build the sender name line (displayed at left margin)
-fn build_sender_line(msg: &Message, color: Color) -> Line<'static> {
+/// Get the width of the actor prefix (for calculating content width)
+fn get_actor_prefix_width(msg: &Message) -> usize {
     match msg.message_type {
         MessageType::Action => {
-            // IRC-style action marker with name
-            Line::from(vec![
+            // "* name  " = 2 + name.len() + 2
+            2 + msg.from.len() + 2
+        }
+        MessageType::System => {
+            // "<system>  " = 10
+            10
+        }
+        _ => {
+            // "<name>  " = 1 + name.len() + 1 + 2
+            msg.from.len() + 4
+        }
+    }
+}
+
+/// Build a line with actor name and first content (on same line)
+fn build_actor_content_line(
+    msg: &Message,
+    color: Color,
+    content: &str,
+    content_style: Style,
+) -> Line<'static> {
+    let mut spans = match msg.message_type {
+        MessageType::Action => {
+            vec![
                 Span::styled("* ", Style::default().fg(color)),
                 Span::styled(
                     msg.from.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-            ])
+                Span::raw("  "),
+            ]
         }
         MessageType::System => {
-            // System label
-            Line::from(vec![Span::styled(
-                String::from("<system>"),
-                Style::default().fg(Color::DarkGray),
-            )])
+            vec![
+                Span::styled(
+                    String::from("<system>"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw("  "),
+            ]
         }
         _ => {
-            // Regular sender name with angle brackets
-            Line::from(vec![
+            vec![
                 Span::styled(String::from("<"), Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     msg.from.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(String::from(">"), Style::default().fg(Color::DarkGray)),
-            ])
+                Span::raw("  "),
+            ]
         }
-    }
+    };
+    spans.extend(parse_markdown(content, content_style));
+    Line::from(spans)
 }
 
 /// Build a timestamp line with message content
@@ -454,27 +674,27 @@ mod tests {
     fn test_continuation_lines_have_consistent_indent() {
         use chrono::Utc;
 
-        // Create messages from users with different name lengths
+        // Create messages from users with different name lengths (3 lines to test continuation)
         let short_name_msg = Message {
             id: "1".to_string(),
             from: "a".to_string(),
-            content: "line1\nline2".to_string(),
+            content: "line1\nline2\nline3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
             from: "lexington".to_string(),
-            content: "line1\nline2".to_string(),
+            content: "line1\nline2\nline3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
 
-        // With new layout: name line + timestamp line + continuation = 3 lines
+        // New layout: actor+content, timestamp+content, indent+content = 3 lines
         let short_lines = render_message(&short_name_msg, 80, None);
         let long_lines = render_message(&long_name_msg, 80, None);
 
-        // Both should have 3 lines: name, timestamp+content, continuation
+        // Both should have 3 lines: actor+line1, timestamp+line2, indent+line3
         assert_eq!(short_lines.len(), 3);
         assert_eq!(long_lines.len(), 3);
 
@@ -513,16 +733,27 @@ mod tests {
             message_type: MessageType::Text,
         };
 
-        // First message (no previous sender) - should show name
+        // First message (no previous sender) - shows actor + content on one line
         let lines1 = render_message(&msg1, 80, None);
-        assert_eq!(lines1.len(), 2); // name line + timestamp line
+        assert_eq!(lines1.len(), 1); // actor + content on same line
 
-        // Second message from same sender - should skip name
+        // Second message from same sender - shows timestamp + content (no actor)
         let lines2 = render_message(&msg2, 80, Some("columbus"));
-        assert_eq!(lines2.len(), 1); // only timestamp line, no name
+        assert_eq!(lines2.len(), 1); // timestamp + content
 
-        // Different sender - should show name again
+        // Different sender - shows actor + content on one line
         let lines3 = render_message(&msg2, 80, Some("lexington"));
-        assert_eq!(lines3.len(), 2); // name line + timestamp line
+        assert_eq!(lines3.len(), 1); // actor + content on same line
+
+        // Verify first message has actor name
+        let first_line_content: String =
+            lines1[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(first_line_content.contains("columbus"));
+
+        // Verify same-sender message has timestamp, not actor
+        let same_sender_content: String =
+            lines2[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!same_sender_content.contains("columbus"));
+        assert!(same_sender_content.contains(":")); // Has timestamp like "10:12"
     }
 }
