@@ -149,7 +149,12 @@ pub fn get_lead_session_id(repo_name: &str) -> Option<String> {
 ///
 /// This allows coworkers to see and modify the same task list as the Lead.
 /// Creates: ~/.claude/tasks/<coworker_session_id> -> ~/.claude/tasks/<lead_session_id>
-fn symlink_tasks_to_lead(coworker_session_id: &str, lead_session_id: &str) -> crate::Result<()> {
+///
+/// This function is public so the daemon can update symlinks when the Lead session changes.
+pub fn symlink_tasks_to_lead(
+    coworker_session_id: &str,
+    lead_session_id: &str,
+) -> crate::Result<()> {
     let home = std::env::var("HOME").map_err(|e| Error::Io(std::io::Error::other(e)))?;
     let tasks_dir = PathBuf::from(&home).join(".claude").join("tasks");
 
@@ -602,12 +607,15 @@ fn write_coworker_settings_file(bin_command: &str) -> crate::Result<PathBuf> {
 ///
 /// If `repo_name` is provided, the coworker's task storage will be symlinked to
 /// the Lead's task storage, enabling shared task visibility across the team.
+/// Spawn Claude Code in a tmux window, returning the coworker's session ID.
+///
+/// Returns the generated session UUID for use in task symlink management.
 pub fn spawn_claude(
     session: &str,
     name: &str,
     working_dir: &str,
     repo_name: Option<&str>,
-) -> crate::Result<()> {
+) -> crate::Result<String> {
     // Get bin_command from project config
     let bin_command = crate::config::get_bin_command();
 
@@ -650,7 +658,7 @@ pub fn spawn_claude(
     // Set window tab color to match chat TUI team panel
     set_window_color(session, name)?;
 
-    Ok(())
+    Ok(coworker_session_id)
 }
 
 // Legacy functions for backward compatibility during transition
