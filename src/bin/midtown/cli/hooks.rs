@@ -110,11 +110,25 @@ fn handle_insight_hook() -> Result<Response, String> {
 /// Handle the Lead stop hook - read channel and check for orphaned tasks and idle coworkers.
 fn handle_lead_stop_hook() -> Result<Response, String> {
     // First, read channel messages to sync
-    let _ = read_channel_messages();
+    let new_messages = read_channel_messages().unwrap_or_default();
 
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
     let channel =
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    // Collect all status items for the response
+    let mut status_items: Vec<String> = Vec::new();
+
+    // Include new channel messages in the response
+    if !new_messages.is_empty() {
+        let formatted = format_channel_messages(&new_messages);
+        status_items.push(format!(
+            "{} new channel message{}:\n- {}",
+            new_messages.len(),
+            if new_messages.len() == 1 { "" } else { "s" },
+            formatted
+        ));
+    }
 
     // Check for orphaned tasks (in_progress but owned by dead coworkers)
     let orphaned = find_orphaned_tasks();
@@ -131,9 +145,10 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
             let _ = channel.send(&message);
         }
 
-        return Ok(Response::Message {
-            message: format!("Warning: {} orphaned task(s) found", orphaned.len()),
-        });
+        status_items.push(format!(
+            "Warning: {} orphaned task(s) found",
+            orphaned.len()
+        ));
     }
 
     // Check for idle coworkers with no remaining work
@@ -151,17 +166,21 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         );
         let _ = channel.send(&message);
 
-        return Ok(Response::Message {
-            message: format!(
-                "Coworkers {} are idle with no remaining tasks. Consider: midtown stop",
-                coworker_list
-            ),
-        });
+        status_items.push(format!(
+            "Coworkers {} are idle with no remaining tasks. Consider: midtown stop",
+            coworker_list
+        ));
     }
 
-    Ok(Response::Message {
-        message: "Channel synced, no orphaned tasks".to_string(),
-    })
+    if status_items.is_empty() {
+        Ok(Response::Message {
+            message: "Channel synced, no orphaned tasks".to_string(),
+        })
+    } else {
+        Ok(Response::Message {
+            message: status_items.join("\n\n"),
+        })
+    }
 }
 
 /// Find tasks that are in_progress but owned by coworkers that aren't running.
@@ -333,14 +352,29 @@ fn get_in_progress_tasks() -> Vec<(String, String)> {
     }
 }
 
-/// Read channel messages silently (for stop hook sync).
-fn read_channel_messages() -> Result<(), String> {
+/// Read channel messages and return them (for stop hook sync).
+fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
     if let Some(repo) = detect_git_repo() {
         let channel = midtown::Channel::for_repo(&repo)
             .map_err(|e| format!("Failed to open channel: {}", e))?;
-        let _ = channel.read_since_cursor("Lead");
+        let messages = channel
+            .read_since_cursor("Lead")
+            .map_err(|e| format!("Failed to read channel: {}", e))?;
+        return Ok(messages);
     }
-    Ok(())
+    Ok(Vec::new())
+}
+
+/// Format channel messages for display in stop hook reason.
+fn format_channel_messages(messages: &[midtown::Message]) -> String {
+    messages
+        .iter()
+        .map(|msg| match msg.message_type {
+            midtown::MessageType::Action => format!("* {} {}", msg.from, msg.content),
+            _ => format!("{}: {}", msg.from, msg.content),
+        })
+        .collect::<Vec<_>>()
+        .join("\n- ")
 }
 
 /// Handle the idle hook - post to channel that agent is idle.

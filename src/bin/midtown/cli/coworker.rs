@@ -84,7 +84,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
 /// prevent stopping and allow the coworker to continue working.
 pub fn handle_stop_hook_standalone() -> Result<Response, String> {
     // First, read channel messages to sync any pending updates
-    let new_message_count = read_channel_messages().unwrap_or(0);
+    let new_messages = read_channel_messages().unwrap_or_default();
 
     // Get coworker name from environment
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
@@ -93,11 +93,13 @@ pub fn handle_stop_hook_standalone() -> Result<Response, String> {
     let mut work_items: Vec<String> = Vec::new();
 
     // Check for new channel messages (nudges, requests, etc.)
-    if new_message_count > 0 {
+    if !new_messages.is_empty() {
+        let formatted = format_channel_messages(&new_messages);
         work_items.push(format!(
-            "{} new channel message{}",
-            new_message_count,
-            if new_message_count == 1 { "" } else { "s" }
+            "{} new channel message{}:\n- {}",
+            new_messages.len(),
+            if new_messages.len() == 1 { "" } else { "s" },
+            formatted
         ));
     }
 
@@ -331,8 +333,8 @@ pub fn handle_task_hook_standalone() -> Result<Response, String> {
     })
 }
 
-/// Read channel messages and return count of new messages.
-fn read_channel_messages() -> Result<usize, String> {
+/// Read channel messages and return them.
+fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
     // Try to detect repo and read channel
     if let Some(repo) = detect_git_repo() {
         let channel = midtown::Channel::for_repo(&repo)
@@ -345,9 +347,21 @@ fn read_channel_messages() -> Result<usize, String> {
         let messages = channel
             .read_since_cursor(&agent)
             .map_err(|e| format!("Failed to read channel: {}", e))?;
-        return Ok(messages.len());
+        return Ok(messages);
     }
-    Ok(0)
+    Ok(Vec::new())
+}
+
+/// Format channel messages for display in stop hook reason.
+fn format_channel_messages(messages: &[midtown::Message]) -> String {
+    messages
+        .iter()
+        .map(|msg| match msg.message_type {
+            midtown::MessageType::Action => format!("* {} {}", msg.from, msg.content),
+            _ => format!("{}: {}", msg.from, msg.content),
+        })
+        .collect::<Vec<_>>()
+        .join("\n- ")
 }
 
 /// Count unclaimed tasks from the beads system.
