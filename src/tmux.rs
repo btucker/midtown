@@ -295,7 +295,7 @@ fi"#,
             "set-hook",
             "-t",
             session,
-            "window-focus-in",
+            "pane-focus-in",
             &format!("run-shell '{}'", script),
         ])
         .status()
