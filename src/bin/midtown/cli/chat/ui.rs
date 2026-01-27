@@ -47,7 +47,7 @@ fn get_sender_color(name: &str) -> Color {
 }
 
 /// Height of the kanban board (including borders)
-const KANBAN_HEIGHT: u16 = 5;
+const KANBAN_HEIGHT: u16 = 7;
 
 /// Draw the main UI
 ///
@@ -81,58 +81,46 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
     let (pending, in_progress, completed) = app.tasks_by_status();
 
     // Backlog column (pending tasks)
-    draw_kanban_column(
-        f,
-        columns[0],
-        "Backlog",
-        Color::Blue,
-        &pending
-            .iter()
-            .map(|t| format!("#{}", t.id))
-            .collect::<Vec<_>>(),
-    );
+    let backlog_items: Vec<_> = pending
+        .iter()
+        .map(|t| format!("#{} {}", t.id, t.subject))
+        .collect();
+    draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
 
     // In Progress column (with owner)
+    let in_progress_items: Vec<_> = in_progress
+        .iter()
+        .map(|t| {
+            let owner_suffix = t
+                .owner
+                .as_ref()
+                .map(|o| format!(" ({})", o))
+                .unwrap_or_default();
+            format!("#{} {}{}", t.id, t.subject, owner_suffix)
+        })
+        .collect();
     draw_kanban_column(
         f,
         columns[1],
         "In Progress",
         Color::Yellow,
-        &in_progress
-            .iter()
-            .map(|t| {
-                if let Some(ref owner) = t.owner {
-                    format!("#{} ({})", t.id, owner)
-                } else {
-                    format!("#{}", t.id)
-                }
-            })
-            .collect::<Vec<_>>(),
+        &in_progress_items,
     );
 
-    // Review column (open PRs)
-    draw_kanban_column(
-        f,
-        columns[2],
-        "Review",
-        Color::Magenta,
-        &app.prs
-            .iter()
-            .map(|pr| format!("PR#{}", pr.number))
-            .collect::<Vec<_>>(),
-    );
+    // Review column (open PRs with title)
+    let review_items: Vec<_> = app
+        .prs
+        .iter()
+        .map(|pr| format!("#{} {}", pr.number, pr.title))
+        .collect();
+    draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
 
     // Done column (completed tasks)
-    draw_kanban_column(
-        f,
-        columns[3],
-        "Done",
-        Color::Green,
-        &completed
-            .iter()
-            .map(|t| format!("#{}", t.id))
-            .collect::<Vec<_>>(),
-    );
+    let done_items: Vec<_> = completed
+        .iter()
+        .map(|t| format!("#{} {}", t.id, t.subject))
+        .collect();
+    draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
 }
 
 /// Draw a single kanban column
@@ -144,44 +132,37 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
 
     let inner = block.inner(area);
 
-    // Build content: show items horizontally separated by spaces, wrapped if needed
+    // Build content: one item per line, truncated to fit
     let content = if items.is_empty() {
         String::from("-")
     } else {
-        // Show as many items as fit on available lines
         let available_width = inner.width as usize;
         let available_lines = inner.height as usize;
 
-        let mut lines = Vec::new();
-        let mut current_line = String::new();
-
-        for item in items {
-            let separator = if current_line.is_empty() { "" } else { " " };
-            let needed = separator.len() + item.len();
-
-            if current_line.len() + needed > available_width && !current_line.is_empty() {
-                lines.push(current_line);
-                current_line = item.clone();
-                if lines.len() >= available_lines {
-                    break;
-                }
-            } else {
-                current_line.push_str(separator);
-                current_line.push_str(item);
-            }
-        }
-
-        if !current_line.is_empty() && lines.len() < available_lines {
-            lines.push(current_line);
-        }
-
-        lines.join("\n")
+        items
+            .iter()
+            .take(available_lines)
+            .map(|item| truncate_str(item, available_width))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
     let paragraph = Paragraph::new(content).style(Style::default().fg(Color::White));
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+}
+
+/// Truncate a string to fit within the given width, adding "..." if truncated
+fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
+        s.to_string()
+    } else if max_width <= 3 {
+        s.chars().take(max_width).collect()
+    } else {
+        let truncated: String = s.chars().take(max_width - 1).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Draw the chat panel showing messages
