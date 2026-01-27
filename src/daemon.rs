@@ -219,7 +219,7 @@ fn read_lead_session_id(repo_name: &str) -> Option<String> {
     let session_file = std::path::PathBuf::from(home)
         .join(".midtown")
         .join(repo_name)
-        .join("lead-session");
+        .join("lead-session-id");
 
     std::fs::read_to_string(&session_file)
         .ok()

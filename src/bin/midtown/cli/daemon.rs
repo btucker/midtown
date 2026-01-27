@@ -736,12 +736,12 @@ pub fn handle_register_session() -> Result<Response, String> {
 
     let lead_uuid = find_newest_dir(&tasks_dir)?;
 
-    // Save to ~/.midtown/<repo>/lead-session
+    // Save to ~/.midtown/<repo>/lead-session-id
     let midtown_dir = home.join(".midtown").join(&repo_name);
     fs::create_dir_all(&midtown_dir)
         .map_err(|e| format!("Failed to create midtown directory: {}", e))?;
 
-    let session_file = midtown_dir.join("lead-session");
+    let session_file = midtown_dir.join("lead-session-id");
     fs::write(&session_file, &lead_uuid)
         .map_err(|e| format!("Failed to write session file: {}", e))?;
 
