@@ -352,6 +352,20 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             ])
             .status();
 
+        // Set terminal title to "Midtown: <project>" instead of showing the command
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", &session, "set-titles", "on"])
+            .status();
+        let _ = Command::new("tmux")
+            .args([
+                "set-option",
+                "-t",
+                &session,
+                "set-titles-string",
+                &format!("Midtown: {}", project_name),
+            ])
+            .status();
+
         // Set Lead window tab color (yellow to match chat TUI team panel)
         let lead_window = format!("{}:Lead", session);
         let _ = Command::new("tmux")
