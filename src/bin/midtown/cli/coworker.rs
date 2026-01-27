@@ -84,13 +84,22 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
 /// prevent stopping and allow the coworker to continue working.
 pub fn handle_stop_hook_standalone() -> Result<Response, String> {
     // First, read channel messages to sync any pending updates
-    let _ = read_channel_messages();
+    let new_message_count = read_channel_messages().unwrap_or(0);
 
     // Get coworker name from environment
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
 
     // Collect all available work
     let mut work_items: Vec<String> = Vec::new();
+
+    // Check for new channel messages (nudges, requests, etc.)
+    if new_message_count > 0 {
+        work_items.push(format!(
+            "{} new channel message{}",
+            new_message_count,
+            if new_message_count == 1 { "" } else { "s" }
+        ));
+    }
 
     // Check for unclaimed tasks
     let unclaimed_count = count_unclaimed_tasks();
@@ -322,8 +331,8 @@ pub fn handle_task_hook_standalone() -> Result<Response, String> {
     })
 }
 
-/// Read channel messages silently (for stop hook sync).
-fn read_channel_messages() -> Result<(), String> {
+/// Read channel messages and return count of new messages.
+fn read_channel_messages() -> Result<usize, String> {
     // Try to detect repo and read channel
     if let Some(repo) = detect_git_repo() {
         let channel = midtown::Channel::for_repo(&repo)
@@ -333,9 +342,12 @@ fn read_channel_messages() -> Result<(), String> {
         let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
 
         // Read new messages since cursor (advances cursor position)
-        let _ = channel.read_since_cursor(&agent);
+        let messages = channel
+            .read_since_cursor(&agent)
+            .map_err(|e| format!("Failed to read channel: {}", e))?;
+        return Ok(messages.len());
     }
-    Ok(())
+    Ok(0)
 }
 
 /// Count unclaimed tasks from the beads system.
