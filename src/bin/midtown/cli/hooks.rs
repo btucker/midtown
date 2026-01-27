@@ -175,8 +175,7 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
 
     if status_items.is_empty() {
         Ok(Response::Message {
-            message: "Channel synced, no orphaned tasks, no idle coworkers, no mergeable PRs"
-                .to_string(),
+            message: "Channel synced, no orphaned tasks, no mergeable PRs".to_string(),
         })
     } else {
         Ok(Response::Message {
