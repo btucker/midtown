@@ -509,12 +509,23 @@ fn try_claim_insight(transcript_path: &str, hash: &str) -> bool {
 }
 
 /// Simple hash of insight content.
+/// Normalizes text before hashing to prevent duplicates from whitespace variations:
+/// - Trims leading/trailing whitespace
+/// - Collapses multiple whitespace/newlines to single space
+/// - Lowercases for consistency
 fn hash_insight(insight: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
+    // Normalize: trim, collapse whitespace, lowercase
+    let normalized: String = insight
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
     let mut hasher = DefaultHasher::new();
-    insight.hash(&mut hasher);
+    normalized.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
@@ -623,5 +634,18 @@ Second insight
         let hash1 = hash_insight("Insight one");
         let hash2 = hash_insight("Insight two");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_insight_normalizes_whitespace() {
+        // Same insight with different whitespace should produce same hash
+        let hash1 = hash_insight("This is an insight");
+        let hash2 = hash_insight("  This  is   an   insight  ");
+        let hash3 = hash_insight("This\n  is\nan\ninsight");
+        let hash4 = hash_insight("THIS IS AN INSIGHT");
+
+        assert_eq!(hash1, hash2, "extra whitespace should be normalized");
+        assert_eq!(hash1, hash3, "newlines should be normalized");
+        assert_eq!(hash1, hash4, "case should be normalized");
     }
 }
