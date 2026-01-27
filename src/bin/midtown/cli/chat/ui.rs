@@ -1,9 +1,9 @@
 //! UI rendering for the chat TUI
 
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -12,6 +12,18 @@ use ratatui::{
 use midtown::{Message, MessageType};
 
 use super::app::App;
+
+/// Format duration as (Xm) or (Xh) for display
+fn format_duration_minutes(since: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let duration = now.signed_duration_since(since);
+    let minutes = duration.num_minutes();
+    if minutes >= 60 {
+        format!("({}h)", minutes / 60)
+    } else {
+        format!("({}m)", minutes)
+    }
+}
 
 /// Fixed indent for message content (7 = "HH:MM  " time prefix + space)
 /// Using a fixed indent keeps messages aligned consistently.
@@ -46,14 +58,157 @@ fn get_sender_color(name: &str) -> Color {
     }
 }
 
+/// Height of the kanban board (including borders)
+/// Increased to accommodate 2-line items in In Progress and Review columns
+const KANBAN_HEIGHT: u16 = 9;
+
 /// Draw the main UI
 ///
 /// Note: The Team panel has been removed - coworker status is now shown
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Full width for chat panel - team status shown in tmux tabs instead
-    draw_chat_panel(f, app, f.area());
+    // Split into kanban (top) and chat (bottom) panels
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(KANBAN_HEIGHT), Constraint::Min(10)])
+        .split(f.area());
+
+    draw_kanban_panel(f, app, chunks[0]);
+    draw_chat_panel(f, app, chunks[1]);
+}
+
+/// A kanban item that may span multiple lines
+struct KanbanItem {
+    /// Lines to display (1 for Backlog/Done, up to 2 for In Progress/Review)
+    lines: Vec<String>,
+}
+
+/// Draw the kanban board with 4 columns
+fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
+    // Split into 4 equal columns
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
+
+    let (pending, in_progress, _completed) = app.tasks_by_status();
+
+    // Backlog column (pending tasks) - single line items
+    let backlog_items: Vec<KanbanItem> = pending
+        .iter()
+        .map(|t| KanbanItem {
+            lines: vec![format!("#{} {}", t.id, t.subject)],
+        })
+        .collect();
+    draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
+
+    // In Progress column (with owner and duration) - 2-line items
+    let in_progress_items: Vec<KanbanItem> = in_progress
+        .iter()
+        .map(|t| {
+            let line1 = format!("#{} {}", t.id, t.subject);
+            let owner = t.owner.as_deref().unwrap_or("?");
+            // TODO: Track when task became in_progress for accurate duration
+            let line2 = format!("  └ {}", owner);
+            KanbanItem {
+                lines: vec![line1, line2],
+            }
+        })
+        .collect();
+    draw_kanban_column(
+        f,
+        columns[1],
+        "In Progress",
+        Color::Yellow,
+        &in_progress_items,
+    );
+
+    // Review column (open PRs with repo#XX format and duration) - 2-line items
+    let review_items: Vec<KanbanItem> = app
+        .prs
+        .iter()
+        .map(|pr| {
+            let line1 = format!("{}#{} {}", app.repo_name, pr.number, pr.title);
+            let duration = format_duration_minutes(pr.created_at);
+            let line2 = format!("  └ {} {}", pr.author, duration);
+            KanbanItem {
+                lines: vec![line1, line2],
+            }
+        })
+        .collect();
+    draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
+
+    // Done column (merged PRs with repo#XX format) - single line, reverse chronological, max 10
+    let done_items: Vec<KanbanItem> = app
+        .merged_prs
+        .iter()
+        .take(10)
+        .map(|pr| KanbanItem {
+            lines: vec![format!("{}#{} {}", app.repo_name, pr.number, pr.title)],
+        })
+        .collect();
+    draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
+}
+
+/// Draw a single kanban column with multi-line item support
+fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[KanbanItem]) {
+    let block = Block::default()
+        .title(format!(" {} ({}) ", title, items.len()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color));
+
+    let inner = block.inner(area);
+
+    // Build content: items may have multiple lines, truncated to fit
+    let content = if items.is_empty() {
+        String::from("-")
+    } else {
+        let available_width = inner.width as usize;
+        let available_lines = inner.height as usize;
+
+        let mut lines_used = 0;
+        let mut output_lines = Vec::new();
+
+        for item in items {
+            // Check if we have room for at least the first line of this item
+            if lines_used >= available_lines {
+                break;
+            }
+
+            for line in &item.lines {
+                if lines_used >= available_lines {
+                    break;
+                }
+                output_lines.push(truncate_str(line, available_width));
+                lines_used += 1;
+            }
+        }
+
+        output_lines.join("\n")
+    };
+
+    let paragraph = Paragraph::new(content).style(Style::default().fg(Color::White));
+
+    f.render_widget(block, area);
+    f.render_widget(paragraph, inner);
+}
+
+/// Truncate a string to fit within the given width, adding "..." if truncated
+fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
+        s.to_string()
+    } else if max_width <= 3 {
+        s.chars().take(max_width).collect()
+    } else {
+        let truncated: String = s.chars().take(max_width - 1).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Draw the chat panel showing messages
