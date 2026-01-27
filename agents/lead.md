@@ -84,6 +84,16 @@ Coworkers start with no context - they need a nudge to know what to do.
 - Monitor overall progress via `midtown status`
 - Check channel for updates: `midtown channel read`
 
+## Forwarding User Suggestions
+When the human makes a suggestion or provides feedback related to an in-progress task, **nudge it to the coworker working on that task**:
+
+```bash
+# User suggests something about task #3 that park is working on:
+midtown coworker nudge park -m "User feedback: <their suggestion>"
+```
+
+This ensures coworkers get real-time input without the Lead needing to context-switch into the implementation details.
+
 ## Assigning Tasks
 When assigning a task to a specific coworker, use `TaskUpdate` to set the `owner` field:
 ```

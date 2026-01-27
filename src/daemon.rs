@@ -516,6 +516,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 /// A coworker is considered idle if they have no tasks in "in_progress" status
 /// with their name as owner. After 5 minutes of continuous idle, they are
 /// automatically shut down.
+///
+/// IMPORTANT: Coworkers with open PRs are NEVER auto-killed, regardless of
+/// idle time. This ensures they can respond to PR feedback and merge their work.
 async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     // Get list of active coworkers
     let active_coworkers: Vec<String> = state
@@ -532,6 +535,9 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     // Get in_progress tasks to determine who is busy
     let busy_coworkers = get_busy_coworkers();
 
+    // Get coworkers with open PRs - they should NEVER be auto-killed
+    let coworkers_with_open_prs = get_coworkers_with_open_prs();
+
     let now = Instant::now();
     let mut to_shutdown = Vec::new();
 
@@ -543,16 +549,28 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                 .iter()
                 .any(|b| b.eq_ignore_ascii_case(coworker));
 
-            if is_busy {
-                // Coworker is busy, remove from idle tracking
+            // Check if coworker has an open PR (case-insensitive)
+            let has_open_pr = coworkers_with_open_prs
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(coworker));
+
+            if is_busy || has_open_pr {
+                // Coworker is busy or has open PR, remove from idle tracking
                 if idle_since.remove(coworker).is_some() {
-                    debug!(
-                        "Coworker {} is now busy, removed from idle tracking",
-                        coworker
-                    );
+                    if has_open_pr {
+                        debug!(
+                            "Coworker {} has open PR, removed from idle tracking",
+                            coworker
+                        );
+                    } else {
+                        debug!(
+                            "Coworker {} is now busy, removed from idle tracking",
+                            coworker
+                        );
+                    }
                 }
             } else {
-                // Coworker is idle
+                // Coworker is idle and has no open PRs
                 match idle_since.get(coworker) {
                     Some(since) => {
                         // Check if they've been idle long enough
@@ -629,6 +647,38 @@ fn get_busy_coworkers() -> Vec<String> {
         }
         _ => {
             debug!("Failed to get tasks from bd CLI for idle check");
+            Vec::new()
+        }
+    }
+}
+
+/// Get list of coworker names who have open PRs.
+///
+/// A coworker is considered to have an open PR if the PR's branch name
+/// starts with the coworker's name (e.g., "lexington/fix-auth").
+/// Coworkers with open PRs should NEVER be auto-killed.
+fn get_coworkers_with_open_prs() -> Vec<String> {
+    let output = std::process::Command::new("gh")
+        .args(["pr", "list", "--json", "headRefName"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return prs
+                    .iter()
+                    .filter_map(|pr| {
+                        pr.get("headRefName")
+                            .and_then(|r| r.as_str())
+                            .and_then(coworker_from_branch)
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => {
+            debug!("Failed to get PRs from gh CLI for idle check");
             Vec::new()
         }
     }

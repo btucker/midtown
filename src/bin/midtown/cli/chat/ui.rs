@@ -28,7 +28,8 @@ fn format_duration_minutes(since: DateTime<Utc>) -> String {
 
 /// Fixed indent for message content (7 = "HH:MM  " time prefix + space)
 /// Using a fixed indent keeps messages aligned consistently.
-const MESSAGE_INDENT: usize = 7;
+/// Fixed width for actor name gutter (accommodates names like "<riverside>  ")
+const ACTOR_GUTTER_WIDTH: usize = 14;
 
 /// Avenue names mapped to colors (position-based assignment)
 const AVENUE_COLORS: &[(&str, Color)] = &[
@@ -38,6 +39,17 @@ const AVENUE_COLORS: &[(&str, Color)] = &[
     ("broadway", Color::Magenta),
     ("amsterdam", Color::Blue),
     ("columbus", Color::Red),
+    ("riverside", Color::LightCyan),
+    ("york", Color::LightGreen),
+    ("pleasant", Color::LightMagenta),
+    ("vernon", Color::LightBlue),
+    // Overflow names
+    ("bleecker", Color::Indexed(208)), // orange
+    ("houston", Color::Indexed(213)),  // pink
+    ("canal", Color::Indexed(117)),    // light blue
+    ("spring", Color::Indexed(156)),   // light green
+    ("prince", Color::Indexed(183)),   // lavender
+    ("mercer", Color::Indexed(216)),   // salmon
 ];
 
 /// Get color for a sender name
@@ -139,7 +151,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         .prs
         .iter()
         .map(|pr| {
-            let line1 = format!("{}#{} {}", app.repo_name, pr.number, pr.title);
+            let line1 = format!("PR#{} {}", pr.number, pr.title);
             let duration = format_duration_minutes(pr.created_at);
             let line2 = format!("  └ {} {}", pr.author, duration);
             let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
@@ -159,7 +171,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         .map(|pr| {
             let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
             KanbanItem {
-                lines: vec![format!("{}#{} {}", app.repo_name, pr.number, pr.title)],
+                lines: vec![format!("PR#{} {}", pr.number, pr.title)],
                 url: Some(url),
             }
         })
@@ -317,15 +329,11 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
 
     // Calculate available width for content
-    // For new sender first line: width - actor prefix (varies by message type)
-    // For timestamp lines: width - "HH:MM  " (MESSAGE_INDENT)
-    let actor_prefix_width = get_actor_prefix_width(msg);
-    let first_line_width = if show_sender {
-        width.saturating_sub(actor_prefix_width)
-    } else {
-        width.saturating_sub(MESSAGE_INDENT)
-    };
-    let continuation_width = width.saturating_sub(MESSAGE_INDENT);
+    // All lines use fixed ACTOR_GUTTER_WIDTH for consistent alignment
+    let gutter_width = get_actor_prefix_width(msg);
+    let content_width = width.saturating_sub(gutter_width);
+    let first_line_width = content_width;
+    let continuation_width = content_width;
 
     if first_line_width == 0 || continuation_width == 0 {
         return vec![]; // Panel too narrow
@@ -384,8 +392,8 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
             // New sender, second line: timestamp + content
             result.push(build_timestamp_line(&time, content, content_style));
         } else {
-            // Continuation lines: just indent + content
-            let indent = " ".repeat(MESSAGE_INDENT);
+            // Continuation lines: just indent + content (matching gutter width)
+            let indent = " ".repeat(ACTOR_GUTTER_WIDTH);
             let mut spans = vec![Span::raw(indent)];
             spans.extend(parse_markdown(content, content_style));
             result.push(Line::from(spans));
@@ -395,74 +403,80 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Get the width of the actor prefix (for calculating content width)
-fn get_actor_prefix_width(msg: &Message) -> usize {
-    match msg.message_type {
-        MessageType::Action => {
-            // "* name  " = 2 + name.len() + 2
-            2 + msg.from.len() + 2
-        }
-        MessageType::System => {
-            // "<system>  " = 10
-            10
-        }
-        _ => {
-            // "<name>  " = 1 + name.len() + 1 + 2
-            msg.from.len() + 4
-        }
-    }
+/// Get the width of the actor prefix (fixed width for alignment)
+fn get_actor_prefix_width(_msg: &Message) -> usize {
+    ACTOR_GUTTER_WIDTH
 }
 
 /// Build a line with actor name and first content (on same line)
+/// Actor name is left-aligned in a fixed-width gutter
 fn build_actor_content_line(
     msg: &Message,
     color: Color,
     content: &str,
     content_style: Style,
 ) -> Line<'static> {
-    let mut spans = match msg.message_type {
+    // Build the actor prefix (left-aligned, padded to ACTOR_GUTTER_WIDTH)
+    let (prefix, prefix_len) = match msg.message_type {
         MessageType::Action => {
-            vec![
-                Span::styled("* ", Style::default().fg(color)),
-                Span::styled(
-                    msg.from.clone(),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-            ]
+            let text = format!("* {}", msg.from);
+            let len = text.len();
+            (
+                vec![
+                    Span::styled("* ", Style::default().fg(color)),
+                    Span::styled(
+                        msg.from.clone(),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                ],
+                len,
+            )
         }
         MessageType::System => {
-            vec![
-                Span::styled(
-                    String::from("<system>"),
+            let text = "<system>";
+            (
+                vec![Span::styled(
+                    String::from(text),
                     Style::default().fg(Color::DarkGray),
-                ),
-                Span::raw("  "),
-            ]
+                )],
+                text.len(),
+            )
         }
         _ => {
-            vec![
-                Span::styled(String::from("<"), Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    msg.from.clone(),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(String::from(">"), Style::default().fg(Color::DarkGray)),
-                Span::raw("  "),
-            ]
+            let text = format!("<{}>", msg.from);
+            let len = text.len();
+            (
+                vec![
+                    Span::styled(String::from("<"), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        msg.from.clone(),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(String::from(">"), Style::default().fg(Color::DarkGray)),
+                ],
+                len,
+            )
         }
     };
+
+    // Pad to fill the gutter width (right-aligned actor name, padding on left)
+    let padding = ACTOR_GUTTER_WIDTH.saturating_sub(prefix_len);
+    let mut spans = vec![Span::raw(" ".repeat(padding))];
+    spans.extend(prefix);
     spans.extend(parse_markdown(content, content_style));
     Line::from(spans)
 }
 
 /// Build a timestamp line with message content
+/// Timestamp is right-aligned in a fixed-width gutter
 fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line<'static> {
-    // Format: "HH:MM  content" (timestamp + 2 spaces + content)
-    let mut spans = vec![Span::styled(
-        format!("{}  ", time),
-        Style::default().fg(Color::DarkGray),
-    )];
+    // Right-align timestamp in gutter: padding + "HH:MM " = ACTOR_GUTTER_WIDTH
+    let time_with_space = format!("{} ", time); // "HH:MM "
+    let padding = ACTOR_GUTTER_WIDTH.saturating_sub(time_with_space.len());
+    let mut spans = vec![
+        Span::raw(" ".repeat(padding)),
+        Span::styled(time_with_space, Style::default().fg(Color::DarkGray)),
+    ];
     spans.extend(parse_markdown(content, content_style));
     Line::from(spans)
 }
