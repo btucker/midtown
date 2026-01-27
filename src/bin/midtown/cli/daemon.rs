@@ -577,6 +577,7 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
 /// Gracefully restarts the daemon while preserving the tmux session and all
 /// running Claude processes (Lead and coworkers). Only the daemon process is
 /// restarted, which allows updating daemon code without losing work in progress.
+/// Also restarts the chat pane to pick up any code changes.
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
 pub fn handle_restart() -> Result<Response, String> {
@@ -588,6 +589,30 @@ pub fn handle_restart() -> Result<Response, String> {
 
     // Start daemon (session already exists, so it will re-discover coworkers)
     let result = handle_start(false)?;
+
+    // Restart the chat pane to pick up code changes
+    if let Ok(session) = session_name() {
+        let chat_pane = format!("{}:lead.1", session);
+
+        // Send Ctrl-C to stop the current chat process
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &chat_pane, "C-c"])
+            .status();
+
+        // Brief pause for the process to terminate
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Restart the chat with cargo run --release
+        let _ = Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                &chat_pane,
+                "cargo run --release -- chat",
+                "Enter",
+            ])
+            .status();
+    }
 
     // Enhance the message to clarify graceful restart
     match result {
