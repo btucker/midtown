@@ -557,6 +557,12 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                     "command": format!("{} coworker task-hook", bin_command)
                 }]
             }, {
+                "matcher": "AskUserQuestion",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} coworker ask-hook", bin_command)
+                }]
+            }, {
                 // No matcher = runs on every tool use
                 "hooks": [{
                     "type": "command",
@@ -757,10 +763,10 @@ mod tests {
             "midtown --format json coworker stop-hook"
         );
 
-        // Verify PostToolUse hooks for task operations and insights
+        // Verify PostToolUse hooks for task operations, questions, and insights
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
         assert!(post_tool_hooks.is_array());
-        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 3);
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 4);
 
         // TaskUpdate hook
         assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
@@ -776,10 +782,17 @@ mod tests {
             "midtown coworker task-hook"
         );
 
-        // Insight hook (no matcher)
-        assert!(post_tool_hooks[2]["matcher"].is_null());
+        // AskUserQuestion hook
+        assert_eq!(post_tool_hooks[2]["matcher"], "AskUserQuestion");
         assert_eq!(
             post_tool_hooks[2]["hooks"][0]["command"],
+            "midtown coworker ask-hook"
+        );
+
+        // Insight hook (no matcher)
+        assert!(post_tool_hooks[3]["matcher"].is_null());
+        assert_eq!(
+            post_tool_hooks[3]["hooks"][0]["command"],
             "midtown hook insight"
         );
 
