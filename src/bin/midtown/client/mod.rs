@@ -158,6 +158,13 @@ impl DaemonClient {
         self.send("coworker.nudge", Some(args))
     }
 
+    pub fn coworker_asking(&self, name: &str, question: &str) -> Result<Response, String> {
+        self.send(
+            "coworker.asking",
+            Some(serde_json::json!({ "name": name, "question": question })),
+        )
+    }
+
     // Nudge configuration commands
 
     pub fn nudge_config_show(&self) -> Result<Response, String> {
