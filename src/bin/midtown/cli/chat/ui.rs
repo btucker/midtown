@@ -3,6 +3,7 @@
 use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -82,6 +83,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 struct KanbanItem {
     /// Lines to display (1 for Backlog/Done, up to 2 for In Progress/Review)
     lines: Vec<String>,
+    /// Optional URL for the first line (for clickable PR links)
+    url: Option<String>,
 }
 
 /// Draw the kanban board with 4 columns
@@ -104,6 +107,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|t| KanbanItem {
             lines: vec![format!("#{} {}", t.id, t.subject)],
+            url: None,
         })
         .collect();
     draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
@@ -118,6 +122,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             let line2 = format!("  └ {}", owner);
             KanbanItem {
                 lines: vec![line1, line2],
+                url: None,
             }
         })
         .collect();
@@ -137,8 +142,10 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             let line1 = format!("{}#{} {}", app.repo_name, pr.number, pr.title);
             let duration = format_duration_minutes(pr.created_at);
             let line2 = format!("  └ {} {}", pr.author, duration);
+            let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
             KanbanItem {
                 lines: vec![line1, line2],
+                url: Some(url),
             }
         })
         .collect();
@@ -149,14 +156,18 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         .merged_prs
         .iter()
         .take(10)
-        .map(|pr| KanbanItem {
-            lines: vec![format!("{}#{} {}", app.repo_name, pr.number, pr.title)],
+        .map(|pr| {
+            let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
+            KanbanItem {
+                lines: vec![format!("{}#{} {}", app.repo_name, pr.number, pr.title)],
+                url: Some(url),
+            }
         })
         .collect();
     draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
 }
 
-/// Draw a single kanban column with multi-line item support
+/// Draw a single kanban column with multi-line item support and optional hyperlinks
 fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[KanbanItem]) {
     let block = Block::default()
         .title(format!(" {} ({}) ", title, items.len()))
@@ -164,39 +175,79 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
         .border_style(Style::default().fg(color));
 
     let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    // Build content: items may have multiple lines, truncated to fit
-    let content = if items.is_empty() {
-        String::from("-")
-    } else {
-        let available_width = inner.width as usize;
-        let available_lines = inner.height as usize;
+    if items.is_empty() {
+        let paragraph = Paragraph::new("-").style(Style::default().fg(Color::White));
+        f.render_widget(paragraph, inner);
+        return;
+    }
 
-        let mut lines_used = 0;
-        let mut output_lines = Vec::new();
+    let available_width = inner.width as usize;
+    let available_lines = inner.height as usize;
+    let buffer = f.buffer_mut();
 
-        for item in items {
-            // Check if we have room for at least the first line of this item
+    let mut lines_used = 0;
+
+    for item in items {
+        // Check if we have room for at least the first line of this item
+        if lines_used >= available_lines {
+            break;
+        }
+
+        for (line_idx, line) in item.lines.iter().enumerate() {
             if lines_used >= available_lines {
                 break;
             }
 
-            for line in &item.lines {
-                if lines_used >= available_lines {
-                    break;
+            let truncated = truncate_str(line, available_width);
+            let y = inner.y + lines_used as u16;
+
+            // Only apply hyperlink to the first line of items that have URLs
+            if line_idx == 0 && item.url.is_some() {
+                let url = item.url.as_ref().unwrap();
+                render_hyperlink_line(buffer, inner.x, y, &truncated, url, available_width);
+            } else {
+                // Render plain text
+                for (i, ch) in truncated.chars().enumerate() {
+                    if i < available_width {
+                        buffer[(inner.x + i as u16, y)]
+                            .set_char(ch)
+                            .set_fg(Color::White);
+                    }
                 }
-                output_lines.push(truncate_str(line, available_width));
-                lines_used += 1;
             }
+
+            lines_used += 1;
         }
+    }
+}
 
-        output_lines.join("\n")
-    };
-
-    let paragraph = Paragraph::new(content).style(Style::default().fg(Color::White));
-
-    f.render_widget(block, area);
-    f.render_widget(paragraph, inner);
+/// Render a line with OSC 8 hyperlink escape sequences
+///
+/// Uses the OSC 8 format: \x1B]8;;{url}\x07{text}\x1B]8;;\x07
+/// to create clickable hyperlinks in supported terminals.
+fn render_hyperlink_line(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    text: &str,
+    url: &str,
+    max_width: usize,
+) {
+    // Render each character with hyperlink escape sequence
+    // We use OSC 8 format: ESC ] 8 ; ; URL ST text ESC ] 8 ; ; ST
+    // where ST (String Terminator) is BEL (\x07) or ESC \ (\x1B\\)
+    for (i, ch) in text.chars().enumerate() {
+        if i >= max_width {
+            break;
+        }
+        // Create the hyperlink-wrapped character
+        let hyperlink = format!("\x1B]8;;{}\x07{}\x1B]8;;\x07", url, ch);
+        buffer[(x + i as u16, y)]
+            .set_symbol(&hyperlink)
+            .set_fg(Color::White);
+    }
 }
 
 /// Truncate a string to fit within the given width, adding "..." if truncated
