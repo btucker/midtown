@@ -285,7 +285,7 @@ case "$lower_name" in
         *) color="" ;;
 esac; \
 if [ -n "$color" ]; then \
-    tmux set-option -t {} status-style "bg=colour236,fg=$color"; \
+    tmux set-option -t {} status-style bg=colour236,fg=$color; \
 fi"#,
         case_statement, session
     );
