@@ -53,6 +53,10 @@ enum Commands {
         /// Port for GitHub webhook server (disabled if not set)
         #[arg(long)]
         webhook_port: Option<u16>,
+
+        /// Run in foreground (don't daemonize) - for debugging
+        #[arg(long)]
+        foreground: bool,
     },
     /// Start midtown (daemon + tmux session)
     Start {
@@ -169,6 +173,7 @@ fn main() {
         workdir,
         verbose,
         webhook_port,
+        foreground,
     } = &command
     {
         let mut config = midtown::daemon::DaemonConfig::default();
@@ -182,6 +187,73 @@ fn main() {
         // CLI flag overrides env var
         if webhook_port.is_some() {
             config.webhook_port = *webhook_port;
+        }
+
+        // Daemonize unless --foreground is set
+        if !foreground {
+            use daemonize::Daemonize;
+            use std::os::unix::net::UnixStream;
+
+            // Check if daemon is already running BEFORE forking
+            // This allows us to print the error to the terminal
+            if config.socket_path.exists() && UnixStream::connect(&config.socket_path).is_ok() {
+                // Try to get the PID for a helpful message
+                let pid_msg = std::fs::read_to_string(&config.pid_file_path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    .map(|pid| format!(" (PID {})", pid))
+                    .unwrap_or_default();
+                eprintln!(
+                    "Error: Daemon is already running{}. Stop it first with 'midtown stop'.",
+                    pid_msg
+                );
+                std::process::exit(1);
+            }
+
+            // Create log directory for daemon output
+            let log_dir = midtown::paths::daemon_log_dir();
+            if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                eprintln!("Failed to create log directory: {}", e);
+                std::process::exit(1);
+            }
+
+            // Open log files for stdout/stderr
+            let stdout_path = log_dir.join("daemon.out");
+            let stderr_path = log_dir.join("daemon.err");
+
+            let stdout = match std::fs::File::create(&stdout_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Failed to create stdout log: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let stderr = match std::fs::File::create(&stderr_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Failed to create stderr log: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            // Note: We don't use daemonize's pid_file feature because we have
+            // our own PID file with flock-based locking for singleton enforcement.
+            // The daemon::run() function handles the PID file.
+            let daemonize = Daemonize::new()
+                .working_directory(&config.workdir)
+                .stdout(stdout)
+                .stderr(stderr);
+
+            match daemonize.start() {
+                Ok(_) => {
+                    // We are now in the daemon child process
+                    // Continue to run the daemon server below
+                }
+                Err(e) => {
+                    eprintln!("Failed to daemonize: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
 
         // Run the daemon (this blocks until shutdown)

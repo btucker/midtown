@@ -280,16 +280,20 @@ pub fn setup_status_bar_hook(session: &str) -> crate::Result<()> {
     // 2. Convert to lowercase for case-insensitive matching
     // 3. Look up color with case statement
     // 4. If found, set status-style with that color
+    //
+    // Note: We use double quotes for the run-shell argument and escape inner
+    // double quotes. This avoids complex single-quote escaping for tr's character
+    // class arguments like '[:upper:]'.
     let script = format!(
         r#"window_name=$(tmux display-message -p '#{{window_name}}'); \
-base_name=$(echo "$window_name" | cut -d: -f1); \
-lower_name=$(echo "$base_name" | tr '[:upper:]' '[:lower:]'); \
-color=""; \
-case "$lower_name" in
+base_name=$(echo \"$window_name\" | cut -d: -f1); \
+lower_name=$(echo \"$base_name\" | tr [:upper:] [:lower:]); \
+color=\"\"; \
+case \"$lower_name\" in
 {}
-        *) color="" ;;
+        *) color=\"\" ;;
 esac; \
-if [ -n "$color" ]; then \
+if [ -n \"$color\" ]; then \
     tmux set-option -t {} status-style bg=colour236,fg=$color; \
 fi"#,
         case_statement, session
@@ -301,7 +305,7 @@ fi"#,
             "-t",
             session,
             "pane-focus-in",
-            &format!("run-shell '{}'", script),
+            &format!("run-shell \"{}\"", script),
         ])
         .status()
         .map_err(Error::Io)?;

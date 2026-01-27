@@ -49,6 +49,9 @@ toml = "0.9.11"
 # Random number generation (for coworker name selection)
 fastrand = "2"
 
+# Daemon process management
+daemonize = "0.5"
+
 # TUI for chat interface
 ratatui = "0.29"
 crossterm = "0.29"
