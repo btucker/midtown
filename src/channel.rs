@@ -121,14 +121,20 @@ impl Channel {
     ///
     /// Messages are sorted by timestamp to ensure chronological order,
     /// regardless of the order they were written to the file.
+    ///
+    /// Uses a non-blocking lock to avoid freezing the UI when there's lock
+    /// contention from writers. If the lock can't be acquired immediately,
+    /// returns an error and the caller can retry later.
     pub fn read_all(&self) -> Result<Vec<Message>> {
         if !self.channel_file.exists() {
             return Ok(Vec::new());
         }
 
         let file = File::open(&self.channel_file)?;
-        // Acquire shared lock for reading
-        file.lock_shared()?;
+        // Try to acquire shared lock without blocking - avoids UI freeze when
+        // writers hold exclusive locks
+        file.try_lock_shared()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
 
         let reader = BufReader::new(file);
         let mut messages = Vec::new();
@@ -150,6 +156,9 @@ impl Channel {
     /// Read messages since the agent's cursor position
     ///
     /// Returns new messages and updates the cursor.
+    ///
+    /// Uses a non-blocking lock to avoid blocking when there's lock contention.
+    /// If the lock can't be acquired immediately, returns an error.
     pub fn read_since_cursor(&self, agent: &str) -> Result<Vec<Message>> {
         if !self.channel_file.exists() {
             return Ok(Vec::new());
@@ -158,8 +167,9 @@ impl Channel {
         let mut cursor = Cursor::load_or_create(&self.base_dir, agent)?;
 
         let file = File::open(&self.channel_file)?;
-        // Acquire shared lock for reading
-        file.lock_shared()?;
+        // Try to acquire shared lock without blocking
+        file.try_lock_shared()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
 
         let mut reader = BufReader::new(file);
 
