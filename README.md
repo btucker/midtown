@@ -56,6 +56,14 @@ All agents run as windows within a single tmux session. Use `Ctrl-b w` to see ev
 
 ### 1. Install
 
+From [crates.io](https://crates.io/crates/midtown):
+
+```bash
+cargo install midtown
+```
+
+Or from source:
+
 ```bash
 cargo install --path .
 ```
