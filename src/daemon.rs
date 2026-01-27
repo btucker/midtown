@@ -6,10 +6,13 @@
 //! actionable issues.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use fs2::FileExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -28,6 +31,8 @@ use crate::worktree::WorktreeManager;
 pub struct DaemonConfig {
     /// Path to the Unix socket.
     pub socket_path: PathBuf,
+    /// Path to the PID file for singleton enforcement.
+    pub pid_file_path: PathBuf,
     /// Working directory for spawned coworkers.
     pub workdir: PathBuf,
     /// Enable verbose logging.
@@ -133,6 +138,8 @@ impl Default for DaemonConfig {
         Self {
             // Use repo-specific socket path to isolate daemons per project
             socket_path: crate::paths::daemon_socket(),
+            // Use repo-specific PID file for singleton enforcement
+            pid_file_path: crate::paths::daemon_pid_file(),
             workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             verbose: false,
             webhook_port,
@@ -181,6 +188,59 @@ impl DaemonState {
     }
 }
 
+/// Acquire an exclusive lock on the PID file.
+///
+/// This enforces singleton behavior - only one daemon can run per repository.
+/// The lock is held for the lifetime of the returned File handle.
+///
+/// Returns an error if another daemon is already running (lock already held).
+fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
+    // Ensure parent directory exists
+    if let Some(parent) = pid_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Open or create the PID file
+    let mut file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(pid_path)?;
+
+    // Try to acquire an exclusive lock (non-blocking)
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            // We got the lock - write our PID
+            let pid = std::process::id();
+            file.set_len(0)?; // Truncate any old content
+            writeln!(file, "{}", pid)?;
+            file.sync_all()?;
+            Ok(file)
+        }
+        Err(e) => {
+            // Lock is held by another process
+            // Try to read the existing PID for a better error message
+            let existing_pid = std::fs::read_to_string(pid_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+
+            let msg = match existing_pid {
+                Some(pid) => format!(
+                    "Another daemon is already running (PID {}). Stop it first with 'midtown stop'.",
+                    pid
+                ),
+                None => format!(
+                    "Another daemon is already running. Stop it first with 'midtown stop'. ({})",
+                    e
+                ),
+            };
+
+            Err(crate::Error::Io(std::io::Error::other(msg)))
+        }
+    }
+}
+
 /// Run the daemon server with the given configuration.
 ///
 /// This function will block until the daemon receives a shutdown signal
@@ -193,7 +253,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         .with_target(false)
         .init();
 
-    // Ensure parent directory exists
+    // Acquire exclusive lock on PID file to enforce singleton behavior
+    let pid_file = acquire_pid_lock(&config.pid_file_path)?;
+    info!("Acquired PID lock: {}", config.pid_file_path.display());
+
+    // Ensure parent directory exists for socket
     if let Some(parent) = config.socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -354,6 +418,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Clean up socket file
     if config.socket_path.exists() {
         std::fs::remove_file(&config.socket_path)?;
+    }
+
+    // Release PID lock and clean up PID file
+    // The lock is released when pid_file is dropped, but we explicitly clean up the file
+    drop(pid_file);
+    match std::fs::remove_file(&config.pid_file_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!("Failed to remove PID file: {}", e),
     }
 
     info!("Daemon stopped");
