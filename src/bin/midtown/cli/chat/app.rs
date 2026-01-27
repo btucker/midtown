@@ -59,8 +59,8 @@ pub struct App {
     pub visible_height: usize,
     /// Channel for reading messages
     channel: Option<Channel>,
-    /// Last known file size (for cheap change detection)
-    last_file_size: u64,
+    /// Whether initial messages have been loaded
+    initial_load_done: bool,
     /// Tasks for the kanban board
     pub tasks: Vec<KanbanTask>,
     /// Open PRs for the kanban board (Review column)
@@ -98,7 +98,7 @@ impl App {
             scroll_offset: 0,
             visible_height: 20,
             channel,
-            last_file_size: 0,
+            initial_load_done: false,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
@@ -114,22 +114,27 @@ impl App {
 
     /// Refresh messages from the channel and kanban data
     pub fn refresh(&mut self) {
-        // Check if channel file has changed using file size (O(1) operation)
-        // This avoids reading and parsing all messages when nothing changed
+        // Use cursor-based reading for efficient tailing
+        // The cursor tracks byte position in the file, so we only read new content
         if let Some(ref channel) = self.channel {
-            let current_size = channel.file_size();
+            if !self.initial_load_done {
+                // First load: reset cursor to start of file, then read all via cursor
+                // This ensures the cursor position is updated correctly
+                let _ = channel.reset_cursor("chat-tui");
+                self.initial_load_done = true;
+            }
 
-            // Only read messages if file size changed
-            if current_size != self.last_file_size
-                && let Ok(messages) = channel.read_all()
+            // Read new messages since cursor position
+            // On first call, cursor is at 0, so we read everything
+            // On subsequent calls, cursor is at end of last read
+            if let Ok(new_messages) = channel.read_since_cursor("chat-tui")
+                && !new_messages.is_empty()
             {
-                let old_count = self.messages.len();
-                let new_count = messages.len();
-                let added = new_count.saturating_sub(old_count);
+                let added = new_messages.len();
                 let was_at_bottom = self.scroll_offset == 0;
 
-                self.messages = messages;
-                self.last_file_size = current_size;
+                // Append new messages (they're already in chronological order)
+                self.messages.extend(new_messages);
 
                 if was_at_bottom {
                     // User was at bottom - stay at bottom (auto-scroll)
@@ -564,7 +569,7 @@ mod tests {
             scroll_offset: 0,
             visible_height: 20,
             channel: None,
-            last_file_size: 0,
+            initial_load_done: true,
             tasks: vec![
                 KanbanTask {
                     id: "1".to_string(),
@@ -623,7 +628,7 @@ mod tests {
             scroll_offset: 0, // "at bottom" - should show most recent
             visible_height: 10,
             channel: None,
-            last_file_size: 0,
+            initial_load_done: true,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),

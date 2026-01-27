@@ -591,6 +591,32 @@ fn test_channel_message_schema() {
     assert_eq!(msg["type"].as_str(), Some("text"));
 }
 
+/// Test that the message format used in e2e tests can be parsed.
+#[test]
+fn test_e2e_message_format_parses() {
+    use chrono::Utc;
+
+    let unique_msg = "TEST_MESSAGE_123";
+    let timestamp = Utc::now().to_rfc3339();
+
+    let msg_json = format!(
+        r#"{{"id":"new-test","from":"test-sender","content":"{}","timestamp":"{}","type":"text"}}"#,
+        unique_msg, timestamp
+    );
+
+    eprintln!("Testing message format: {}", msg_json);
+
+    // Test parsing as Value first
+    let parsed: serde_json::Value = serde_json::from_str(&msg_json).expect("Should parse as Value");
+    assert_eq!(parsed["type"].as_str(), Some("text"));
+
+    // Test parsing as Message struct - this is what read_all() does
+    use midtown::Message;
+    let msg: Message = serde_json::from_str(&msg_json).expect("Should parse as Message struct");
+    assert_eq!(msg.from, "test-sender");
+    assert_eq!(msg.content, unique_msg);
+}
+
 /// Test that task JSON format matches expected schema.
 #[test]
 fn test_task_json_schema() {
@@ -605,4 +631,341 @@ fn test_task_json_schema() {
     assert_eq!(task["id"].as_str(), Some("5"));
     assert_eq!(task["status"].as_str(), Some("in_progress"));
     assert_eq!(task["owner"].as_str(), Some("park"));
+}
+
+/// Test that new messages appear in the TUI within a reasonable time.
+///
+/// This test reproduces the "40 minute delay" bug by:
+/// 1. Starting the chat TUI
+/// 2. Waiting for it to initialize
+/// 3. Writing a new message to the channel file
+/// 4. Checking that the message appears within 2 seconds
+///
+/// The poll interval is 250ms, so messages should appear within 500ms typically.
+#[test]
+#[ignore] // Requires tmux and built binary
+fn test_message_appears_in_tui_promptly() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    // Build the binary first
+    let build_result = Command::new("cargo")
+        .args(["build", "--release"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status();
+
+    if build_result.map(|s| !s.success()).unwrap_or(true) {
+        eprintln!("Skipping test: could not build binary");
+        return;
+    }
+
+    let session = test_session_name();
+    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("release")
+        .join("midtown");
+
+    // Create test directory structure
+    let test_dir = std::env::temp_dir().join(format!("midtown-delay-test-{}", std::process::id()));
+    let midtown_dir = test_dir.join(".midtown").join("delay-test-repo");
+    fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
+
+    // Initialize git in test directory (midtown requires it)
+    let git_dir = test_dir.join("delay-test-repo");
+    fs::create_dir_all(&git_dir).expect("Failed to create git dir");
+    let _ = Command::new("git")
+        .args(["init"])
+        .current_dir(&git_dir)
+        .status();
+
+    // Create session with reasonable size
+    assert!(
+        create_test_session_with_size(&session, 100, 30),
+        "Failed to create test session"
+    );
+    let _cleanup = SessionCleanup(&session);
+
+    // Set up environment and start TUI
+    send_keys(&session, &format!("export HOME={}", test_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    send_keys(&session, &format!("cd {}", git_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    // Start midtown chat
+    send_keys(&session, &format!("{} chat", binary_path.display()));
+    send_keys(&session, "Enter");
+
+    // Wait for TUI to start and render initial state
+    thread::sleep(Duration::from_secs(2));
+
+    // Verify TUI started
+    let initial_content = capture_pane(&session).unwrap_or_default();
+    if !initial_content.contains("#midtown") && !initial_content.contains("Backlog") {
+        eprintln!(
+            "TUI may not have started correctly. Content:\n{}",
+            initial_content
+        );
+        // Still continue - the TUI might be running but showing different content
+    }
+
+    // Write a message with a unique identifier directly to the channel file
+    let unique_msg = format!("DELAY_TEST_{}", std::process::id());
+    let channel_file = midtown_dir.join("channel.jsonl");
+
+    use chrono::Utc;
+    let timestamp = Utc::now().to_rfc3339();
+    let msg_json = format!(
+        r#"{{"id":"test-{}","from":"test-sender","content":"{}","timestamp":"{}","type":"text"}}"#,
+        std::process::id(),
+        unique_msg,
+        timestamp
+    );
+
+    // Write the message
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&channel_file)
+        .expect("Failed to open channel file");
+    use std::io::Write;
+    writeln!(file, "{}", msg_json).expect("Failed to write message");
+    drop(file);
+
+    // Wait for message to appear (poll interval is 250ms, so 2s should be plenty)
+    let mut found = false;
+    for attempt in 0..8 {
+        thread::sleep(Duration::from_millis(250));
+        let content = capture_pane(&session).unwrap_or_default();
+        if content.contains(&unique_msg) {
+            eprintln!("Message appeared after {} ms", (attempt + 1) * 250);
+            found = true;
+            break;
+        }
+    }
+
+    // Quit the TUI
+    send_keys(&session, "q");
+    thread::sleep(Duration::from_millis(200));
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&test_dir);
+
+    assert!(
+        found,
+        "Message '{}' should appear in TUI within 2 seconds. This reproduces the 40min delay bug.",
+        unique_msg
+    );
+}
+
+/// Test that messages appear in the TUI when using a real channel file.
+///
+/// This test is closer to production conditions:
+/// 1. Uses a channel file that already has messages
+/// 2. Starts the TUI
+/// 3. Appends a new message
+/// 4. Verifies the new message appears
+///
+/// This catches issues where:
+/// - The TUI doesn't update when file size changes
+/// - Lock contention prevents reading
+/// - Sorting causes messages to appear in wrong position
+#[test]
+#[ignore] // Requires tmux and built binary
+fn test_message_update_in_existing_channel() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    // Build the binary first
+    let build_result = Command::new("cargo")
+        .args(["build", "--release"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status();
+
+    if build_result.map(|s| !s.success()).unwrap_or(true) {
+        eprintln!("Skipping test: could not build binary");
+        return;
+    }
+
+    let session = test_session_name();
+    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("release")
+        .join("midtown");
+
+    // Create test directory structure
+    let test_dir =
+        std::env::temp_dir().join(format!("midtown-existing-test-{}", std::process::id()));
+    let midtown_dir = test_dir.join(".midtown").join("existing-test-repo");
+    fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
+
+    // Initialize git in test directory
+    let git_dir = test_dir.join("existing-test-repo");
+    fs::create_dir_all(&git_dir).expect("Failed to create git dir");
+    let _ = Command::new("git")
+        .args(["init"])
+        .current_dir(&git_dir)
+        .status();
+
+    // Pre-populate the channel with some messages to simulate production
+    let channel_file = midtown_dir.join("channel.jsonl");
+    {
+        use chrono::Utc;
+        use std::io::Write;
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&channel_file)
+            .expect("Failed to open channel file");
+
+        // Add 50 messages to simulate a real channel
+        for i in 0..50 {
+            let timestamp = Utc::now().to_rfc3339();
+            let msg = format!(
+                r#"{{"id":"pre-{}","from":"test","content":"existing message {}","timestamp":"{}","type":"text"}}"#,
+                i, i, timestamp
+            );
+            writeln!(file, "{}", msg).expect("Failed to write message");
+        }
+        // Ensure all data is flushed to disk before TUI reads
+        file.sync_all().expect("Failed to sync initial messages");
+    }
+
+    // Verify channel file was created with correct size
+    let initial_size = fs::metadata(&channel_file).map(|m| m.len()).unwrap_or(0);
+    assert!(initial_size > 0, "Channel file should have content");
+
+    // Create session
+    assert!(
+        create_test_session_with_size(&session, 100, 30),
+        "Failed to create test session"
+    );
+    let _cleanup = SessionCleanup(&session);
+
+    // Set up environment
+    send_keys(&session, &format!("export HOME={}", test_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    send_keys(&session, &format!("cd {}", git_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    // Start midtown chat
+    send_keys(&session, &format!("{} chat", binary_path.display()));
+    send_keys(&session, "Enter");
+
+    // Wait for TUI to start and load existing messages
+    // Use longer delay to ensure TUI has completed initial refresh cycle
+    thread::sleep(Duration::from_secs(3));
+
+    // Capture initial TUI state
+    let initial_content = capture_pane(&session).unwrap_or_default();
+    eprintln!("Initial TUI content (before adding new message):");
+    eprintln!("{}", initial_content);
+
+    // Verify TUI loaded the existing messages (showing last ~18 messages)
+    assert!(
+        initial_content.contains("existing message 4"),
+        "TUI should show some existing messages initially"
+    );
+
+    // Now add a NEW message with a unique identifier
+    let unique_msg = format!("NEW_MSG_AFTER_START_{}", std::process::id());
+    {
+        use chrono::Utc;
+        use std::io::Write;
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&channel_file)
+            .expect("Failed to open channel file");
+
+        let timestamp = Utc::now().to_rfc3339();
+        let msg = format!(
+            r#"{{"id":"new-test","from":"test-sender","content":"{}","timestamp":"{}","type":"text"}}"#,
+            unique_msg, timestamp
+        );
+        writeln!(file, "{}", msg).expect("Failed to write message");
+        file.sync_all().expect("Failed to sync file");
+    }
+
+    // Debug: verify the message is in the file
+    let file_content = fs::read_to_string(&channel_file).expect("Failed to read channel file");
+    let lines: Vec<_> = file_content.lines().collect();
+    eprintln!("Channel file has {} lines", lines.len());
+    eprintln!("Last line: {}", lines.last().unwrap_or(&"<empty>"));
+    eprintln!("Channel file path: {}", channel_file.display());
+    eprintln!("HOME is set to: {}", test_dir.display());
+    eprintln!("Git dir (cwd): {}", git_dir.display());
+    assert!(
+        file_content.contains(&unique_msg),
+        "Message should be in file"
+    );
+
+    // Debug: check what the TUI sees by listing files in HOME/.midtown/
+    let midtown_dir_contents = fs::read_dir(&midtown_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path().display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|_| "error reading dir".to_string());
+    eprintln!(
+        "Contents of {}: {}",
+        midtown_dir.display(),
+        midtown_dir_contents
+    );
+
+    // Verify file size increased (this is what the TUI uses for change detection)
+    let new_size = fs::metadata(&channel_file).map(|m| m.len()).unwrap_or(0);
+    assert!(
+        new_size > initial_size,
+        "File size should have increased: {} -> {}",
+        initial_size,
+        new_size
+    );
+
+    // Add a small delay to ensure write is fully visible to other processes
+    thread::sleep(Duration::from_millis(100));
+
+    // Wait for message to appear - poll interval is 250ms, so 4 seconds should be plenty
+    let mut found = false;
+    let mut last_content = String::new();
+    for attempt in 0..16 {
+        thread::sleep(Duration::from_millis(250));
+        let content = capture_pane(&session).unwrap_or_default();
+        last_content = content.clone();
+        if content.contains(&unique_msg) {
+            eprintln!("Message appeared after {} ms", (attempt + 1) * 250);
+            found = true;
+            break;
+        }
+    }
+
+    // Debug: show what the TUI is displaying
+    eprintln!("TUI content at end of test:\n{}", last_content);
+
+    // Quit the TUI
+    send_keys(&session, "q");
+    thread::sleep(Duration::from_millis(200));
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&test_dir);
+
+    assert!(
+        found,
+        "New message '{}' should appear in TUI within 2 seconds after being added to existing channel.",
+        unique_msg
+    );
 }
