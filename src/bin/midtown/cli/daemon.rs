@@ -330,9 +330,15 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             return Err(format!("Failed to create session '{}'", session));
         }
 
-        // Configure status bar with dark gray background for visibility
+        // Configure status bar with dark gray background and yellow foreground (Lead's color)
         let _ = Command::new("tmux")
-            .args(["set-option", "-t", &session, "status-style", "bg=colour236"])
+            .args([
+                "set-option",
+                "-t",
+                &session,
+                "status-style",
+                "bg=colour236,fg=yellow",
+            ])
             .status();
 
         // Set status-left with project name
@@ -366,6 +372,9 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
                 "fg=yellow,bold",
             ])
             .status();
+
+        // Set up hook to update status bar color based on active window
+        let _ = midtown::tmux::setup_status_bar_hook(&session);
 
         // Split Lead window with chat TUI on the right (30% width)
         let lead_target = format!("{}:Lead", session);

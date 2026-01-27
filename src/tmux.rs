@@ -87,7 +87,9 @@ pub const SESSION_PREFIX: &str = "midtown-";
 
 /// Coworker name to tmux color mapping.
 /// These colors match the AVENUE_COLORS in cli/chat/ui.rs for visual consistency.
+/// Lead uses yellow (same as UI's LightYellow).
 const COWORKER_COLORS: &[(&str, &str)] = &[
+    ("Lead", "yellow"),
     ("lexington", "cyan"),
     ("park", "green"),
     ("madison", "yellow"),
@@ -144,6 +146,72 @@ fn set_window_color(session: &str, name: &str) -> crate::Result<()> {
             &current_style,
         ])
         .status();
+
+    Ok(())
+}
+
+/// Set up a tmux hook to update the status bar color based on the active window.
+///
+/// When a window gains focus, this hook:
+/// 1. Gets the window name (agent name like "Lead", "lexington", etc.)
+/// 2. Extracts the base name (before any ":" for status suffix)
+/// 3. Looks up the agent's color from COWORKER_COLORS
+/// 4. Updates the session's status-style with that color as the foreground
+///
+/// The default status bar background is colour236 (dark gray).
+pub fn setup_status_bar_hook(session: &str) -> crate::Result<()> {
+    // Build a shell case statement for color lookup
+    // Window names may have status suffixes like "lexington: investigating..."
+    // so we extract just the base name before any ":"
+    let case_arms: Vec<String> = COWORKER_COLORS
+        .iter()
+        .map(|(name, color)| {
+            // Case-insensitive matching using lowercase
+            let lower_name = name.to_lowercase();
+            format!("        {}) color=\"{}\" ;;", lower_name, color)
+        })
+        .collect();
+
+    let case_statement = case_arms.join("\n");
+
+    // Shell script that runs on window focus:
+    // 1. Get the window name and extract base (before ":")
+    // 2. Convert to lowercase for case-insensitive matching
+    // 3. Look up color with case statement
+    // 4. If found, set status-style with that color
+    let script = format!(
+        r#"window_name=$(tmux display-message -p '#{{window_name}}'); \
+base_name=$(echo "$window_name" | cut -d: -f1); \
+lower_name=$(echo "$base_name" | tr '[:upper:]' '[:lower:]'); \
+color=""; \
+case "$lower_name" in
+{}
+        *) color="" ;;
+esac; \
+if [ -n "$color" ]; then \
+    tmux set-option -t {} status-style "bg=colour236,fg=$color"; \
+fi"#,
+        case_statement, session
+    );
+
+    let status = Command::new("tmux")
+        .args([
+            "set-hook",
+            "-t",
+            session,
+            "window-focus-in",
+            &format!("run-shell '{}'", script),
+        ])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        // Non-fatal - log but don't fail
+        eprintln!(
+            "Warning: Failed to set status bar hook for session {}",
+            session
+        );
+    }
 
     Ok(())
 }
@@ -684,6 +752,7 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_known_names() {
+        assert_eq!(get_coworker_color("Lead"), Some("yellow"));
         assert_eq!(get_coworker_color("lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("park"), Some("green"));
         assert_eq!(get_coworker_color("madison"), Some("yellow"));
@@ -694,6 +763,8 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_case_insensitive() {
+        assert_eq!(get_coworker_color("LEAD"), Some("yellow"));
+        assert_eq!(get_coworker_color("lead"), Some("yellow"));
         assert_eq!(get_coworker_color("LEXINGTON"), Some("cyan"));
         assert_eq!(get_coworker_color("Lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("LeXiNgToN"), Some("cyan"));
@@ -702,7 +773,7 @@ mod tests {
     #[test]
     fn test_get_coworker_color_unknown_returns_none() {
         assert_eq!(get_coworker_color("unknown"), None);
-        assert_eq!(get_coworker_color("lead"), None);
+        assert_eq!(get_coworker_color("coworker"), None);
         assert_eq!(get_coworker_color(""), None);
     }
 
