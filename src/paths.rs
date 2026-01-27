@@ -131,6 +131,15 @@ pub fn daemon_pid_file() -> PathBuf {
     daemon_pid_file_for_repo(&repo)
 }
 
+/// Get the daemon log directory for the current repository.
+///
+/// Returns `~/.midtown/<repo>/logs/`.
+/// This is where daemon stdout/stderr are redirected when daemonized.
+pub fn daemon_log_dir() -> PathBuf {
+    let repo = detect_repo_name().unwrap_or_else(|| "default".to_string());
+    midtown_dir_for_repo(&repo).join("logs")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

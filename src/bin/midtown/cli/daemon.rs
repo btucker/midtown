@@ -45,6 +45,82 @@ fn daemon_is_running() -> bool {
     UnixStream::connect(&path).is_ok()
 }
 
+/// Wait for the daemon socket to become available with retries.
+///
+/// Polls the socket every `interval_ms` milliseconds, up to `max_attempts` times.
+/// Returns true if the socket became available, false if we timed out.
+fn wait_for_daemon_socket(max_attempts: u32, interval_ms: u64) -> bool {
+    for _ in 0..max_attempts {
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+        if daemon_is_running() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Clean up stale daemon state before starting a new daemon.
+///
+/// This handles the case where a previous daemon crashed or was killed
+/// without cleaning up its PID file. It reads the PID file, checks if
+/// that process is still running, and kills it if so.
+fn cleanup_stale_daemon() {
+    let pid_path = midtown::paths::daemon_pid_file();
+
+    // Read the PID file if it exists
+    let pid_str = match std::fs::read_to_string(&pid_path) {
+        Ok(s) => s,
+        Err(_) => return, // No PID file, nothing to clean up
+    };
+
+    // Parse the PID
+    let pid: u32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(_) => {
+            // Invalid PID file, remove it
+            let _ = std::fs::remove_file(&pid_path);
+            return;
+        }
+    };
+
+    // Check if the process is still running using kill -0 (suppress stderr)
+    let status = Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status();
+
+    if status.map(|s| s.success()).unwrap_or(false) {
+        // Process is still running, try to kill it gracefully
+        eprintln!("Cleaning up stale daemon process (PID {})", pid);
+        let _ = Command::new("kill")
+            .arg(pid.to_string())
+            .stderr(Stdio::null())
+            .status();
+
+        // Wait briefly for it to exit
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Force kill if still running
+        let still_running = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if still_running {
+            let _ = Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+
+    // Clean up stale files
+    let _ = std::fs::remove_file(&pid_path);
+    let _ = std::fs::remove_file(socket_path());
+}
+
 /// Check if the project's tmux session exists.
 fn session_exists(session: &str) -> bool {
     let output = Command::new("tmux")
@@ -262,6 +338,9 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
     if daemon_is_running() {
         messages.push("Daemon already running".to_string());
     } else {
+        // Clean up any stale PID file or orphaned daemon before starting
+        cleanup_stale_daemon();
+
         // Start the daemon in the background using `midtown daemon`
         let exe = std::env::current_exe()
             .map_err(|e| format!("Failed to get current executable: {}", e))?;
@@ -279,10 +358,10 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         cmd.spawn()
             .map_err(|e| format!("Failed to start daemon: {}", e))?;
 
-        // Wait briefly for daemon to start
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Wait for daemon to start, polling the socket with retries
+        let started = wait_for_daemon_socket(5, 200);
 
-        if daemon_is_running() {
+        if started {
             messages.push("Started daemon".to_string());
         } else {
             return Err("Daemon failed to start".to_string());
@@ -463,7 +542,22 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
 
     // Step 2: Stop daemon
     if daemon_is_running() {
-        // Remove the socket file - daemon will detect this and exit
+        // Read the PID and send SIGTERM for a clean shutdown
+        let pid_path = midtown::paths::daemon_pid_file();
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
+            && let Ok(pid) = pid_str.trim().parse::<u32>()
+        {
+            // Send SIGTERM for graceful shutdown
+            let _ = Command::new("kill")
+                .arg(pid.to_string())
+                .stderr(Stdio::null())
+                .status();
+
+            // Wait briefly for daemon to exit and clean up
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        // Also remove socket file as a fallback
         let path = socket_path();
         if path.exists() {
             let _ = std::fs::remove_file(&path);
