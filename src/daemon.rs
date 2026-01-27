@@ -803,6 +803,21 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "coworker.asking" => {
+            let params = request.params.as_ref();
+            let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
+            let question = params
+                .and_then(|p| p.get("question"))
+                .and_then(|v| v.as_str());
+
+            match (name, question) {
+                (Some(name), Some(question)) => {
+                    handle_coworker_asking(request.id, name, question, state)
+                }
+                _ => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "status" => handle_status(request.id, state),
 
         "channel.post" => {
@@ -932,6 +947,49 @@ fn handle_coworker_nudge(
             Response::error(id, RpcError::new(-32603, e.to_string()))
         }
     }
+}
+
+/// Handle coworker.asking RPC method.
+///
+/// Called when a coworker uses AskUserQuestion tool. This:
+/// 1. Posts the question to the channel
+/// 2. Nudges the Lead with the question
+/// 3. Marks the coworker as waiting for feedback
+fn handle_coworker_asking(
+    id: RequestId,
+    name: &str,
+    question: &str,
+    state: &DaemonState,
+) -> Response {
+    // Post question to channel
+    let msg = Message::text(name, format!("Question for Lead: {}", question));
+    if let Err(e) = state.channel.send(&msg) {
+        error!("Failed to post question to channel: {}", e);
+    }
+
+    // Nudge the Lead with the question
+    let nudge_message = format!("{} is asking: {}", name, question);
+    if let Err(e) = state.coworkers.nudge("Lead", &nudge_message) {
+        // Log but don't fail - Lead might not be in a tmux window
+        debug!("Failed to nudge Lead: {}", e);
+    }
+
+    // Update coworker status to show they're waiting
+    if let Err(e) = state
+        .coworkers
+        .update_status_display(name, Some("waiting for feedback"))
+    {
+        debug!("Failed to update coworker status: {}", e);
+    }
+
+    info!("Coworker {} asking: {}", name, question);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Notified Lead about question from {}", name),
+        }),
+    )
 }
 
 /// Handle channel.post RPC method.
