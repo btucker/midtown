@@ -520,7 +520,7 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             let from = params
                 .and_then(|p| p.get("from"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("Lead");
+                .unwrap_or("lead");
 
             match message {
                 Some(msg) => handle_channel_post(request.id, from, msg, state),

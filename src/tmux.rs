@@ -183,9 +183,9 @@ pub const SESSION_PREFIX: &str = "midtown-";
 
 /// Coworker name to tmux color mapping.
 /// These colors match the AVENUE_COLORS in cli/chat/ui.rs for visual consistency.
-/// Lead uses yellow (same as UI's LightYellow).
+/// lead uses brightyellow for visibility.
 const COWORKER_COLORS: &[(&str, &str)] = &[
-    ("Lead", "yellow"),
+    ("lead", "brightyellow"),
     ("lexington", "cyan"),
     ("park", "green"),
     ("madison", "yellow"),
@@ -508,7 +508,7 @@ pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let windows: Vec<String> = stdout
         .lines()
-        .filter(|name| *name != "Lead") // Exclude the Lead window
+        .filter(|name| *name != "lead") // Exclude the lead window
         .map(|s| s.to_string())
         .collect();
 
@@ -844,7 +844,7 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_known_names() {
-        assert_eq!(get_coworker_color("Lead"), Some("yellow"));
+        assert_eq!(get_coworker_color("lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("park"), Some("green"));
         assert_eq!(get_coworker_color("madison"), Some("yellow"));
@@ -855,8 +855,8 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_case_insensitive() {
-        assert_eq!(get_coworker_color("LEAD"), Some("yellow"));
-        assert_eq!(get_coworker_color("lead"), Some("yellow"));
+        assert_eq!(get_coworker_color("LEAD"), Some("brightyellow"));
+        assert_eq!(get_coworker_color("Lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("LEXINGTON"), Some("cyan"));
         assert_eq!(get_coworker_color("Lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("LeXiNgToN"), Some("cyan"));
