@@ -118,6 +118,9 @@ impl Channel {
     }
 
     /// Read all messages from the channel
+    ///
+    /// Messages are sorted by timestamp to ensure chronological order,
+    /// regardless of the order they were written to the file.
     pub fn read_all(&self) -> Result<Vec<Message>> {
         if !self.channel_file.exists() {
             return Ok(Vec::new());
@@ -137,6 +140,9 @@ impl Channel {
                 messages.push(message);
             }
         }
+
+        // Sort by timestamp to ensure chronological order
+        messages.sort_by_key(|m| m.timestamp);
 
         Ok(messages)
     }
@@ -336,5 +342,61 @@ mod tests {
 
         let messages = channel.read_since_cursor("reader").unwrap();
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_messages_sorted_by_timestamp() {
+        use chrono::{Duration, Utc};
+        use std::io::Write;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Create messages with out-of-order timestamps
+        // Simulate: msg written at T+40min has timestamp T (old message arrived late)
+        let now = Utc::now();
+        let old_time = now - Duration::minutes(40);
+
+        // Write messages directly to file in wrong order (simulating delayed write)
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&channel_file)
+            .unwrap();
+
+        // First: write a "new" message (timestamp = now)
+        let new_msg = Message {
+            id: "new".to_string(),
+            timestamp: now,
+            from: "agent1".to_string(),
+            content: "New message".to_string(),
+            message_type: MessageType::Text,
+        };
+        writeln!(file, "{}", serde_json::to_string(&new_msg).unwrap()).unwrap();
+
+        // Second: write an "old" message that arrived late (timestamp = 40 min ago)
+        let old_msg = Message {
+            id: "old".to_string(),
+            timestamp: old_time,
+            from: "agent2".to_string(),
+            content: "Old message (delayed)".to_string(),
+            message_type: MessageType::Text,
+        };
+        writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
+
+        drop(file);
+
+        // Read messages - they should be sorted by timestamp (oldest first)
+        let messages = channel.read_all().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0].content, "Old message (delayed)",
+            "Older message should appear first (sorted by timestamp)"
+        );
+        assert_eq!(
+            messages[1].content, "New message",
+            "Newer message should appear second (sorted by timestamp)"
+        );
     }
 }
