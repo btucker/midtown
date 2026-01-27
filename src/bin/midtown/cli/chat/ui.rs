@@ -269,14 +269,26 @@ fn truncate_str(s: &str, max_width: usize) -> String {
         return s.to_string();
     }
 
-    // For very narrow columns (where normal truncation would be useless),
-    // try to extract and show just the identifier (#N)
-    // This handles formats like "PR #42 title" or "#1 task name"
-    if max_width <= 5
-        && let Some(id) = extract_identifier(s)
-        && id.chars().count() <= max_width
-    {
-        return id;
+    // For narrow columns, try to extract and show just the identifier (#N)
+    // This handles formats like "PR #42 title", "#1 task name", or "midtown#97"
+    if let Some(id) = extract_identifier(s) {
+        let id_len = id.chars().count();
+        if id_len <= max_width {
+            // For very narrow columns (<=5), always prefer the clean identifier
+            // e.g., "#1 Some task" at width 3 → "#1" instead of "#1…"
+            if max_width <= 5 {
+                return id;
+            }
+
+            // For wider columns, show identifier when truncation would hide it
+            // e.g., "midtown#97" at width 6 → "#97" instead of "midto…"
+            if let Some(hash_pos) = s.find('#') {
+                // If the # would be cut off by truncation, show just the identifier
+                if hash_pos >= max_width.saturating_sub(1) {
+                    return id;
+                }
+            }
+        }
     }
 
     // Fall back to normal truncation with ellipsis
@@ -694,7 +706,7 @@ mod tests {
 
     #[test]
     fn test_truncate_str_narrow_preserves_identifier() {
-        // When column is very narrow, we should show the PR/task identifier
+        // When column is narrow, we should show the PR/task identifier
         // not just useless first characters like "P" from "PR #42"
 
         // PR format: "PR #42" should show "#42" when space is limited
@@ -705,7 +717,17 @@ mod tests {
         assert_eq!(truncate_str("#1 Some task", 3), "#1");
         assert_eq!(truncate_str("#42 Some task", 4), "#42");
 
-        // With more space, show full truncation with ellipsis
+        // Repo#PR format: "midtown#97" should show "#97" when truncation would
+        // hide the identifier (this is the format used in Review/Done columns)
+        assert_eq!(truncate_str("midtown#97", 4), "#97");
+        assert_eq!(truncate_str("midtown#97", 6), "#97"); // "midto…" would be useless
+        assert_eq!(truncate_str("midtown#97", 8), "#97"); // still prefer identifier
+
+        // With enough space to show the full string, show it all
+        assert_eq!(truncate_str("midtown#97", 10), "midtown#97");
+        assert_eq!(truncate_str("midtown#97", 15), "midtown#97");
+
+        // When identifier starts early, normal truncation is fine
         assert_eq!(truncate_str("#42 Some task", 8), "#42 Som…");
     }
 
