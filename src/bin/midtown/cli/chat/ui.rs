@@ -270,24 +270,30 @@ fn truncate_str(s: &str, max_width: usize) -> String {
     }
 
     // For narrow columns, try to extract and show just the identifier (#N)
-    // This handles formats like "PR #42 title", "#1 task name", or "midtown#97"
+    // This handles formats like "PR #42 title", "#1 task name", or "PR#97"
     if let Some(id) = extract_identifier(s) {
         let id_len = id.chars().count();
-        if id_len <= max_width {
-            // For very narrow columns (<=5), always prefer the clean identifier
-            // e.g., "#1 Some task" at width 3 → "#1" instead of "#1…"
-            if max_width <= 5 {
-                return id;
-            }
 
-            // For wider columns, show identifier when truncation would hide it
-            // e.g., "midtown#97" at width 6 → "#97" instead of "midto…"
-            if let Some(hash_pos) = s.find('#') {
-                // If the # would be cut off by truncation, show just the identifier
-                if hash_pos >= max_width.saturating_sub(1) {
-                    return id;
-                }
+        // For very narrow columns (<=5), prefer showing (truncated) identifier
+        // over useless prefix characters like "P" from "PR#97"
+        if max_width <= 5 {
+            if id_len <= max_width {
+                return id;
+            } else {
+                // Identifier doesn't fit entirely, but still better to show truncated id
+                // e.g., "PR#97" at width 2 → "#9" instead of "P…"
+                return id.chars().take(max_width).collect();
             }
+        }
+
+        // For wider columns, show identifier when truncation would hide it
+        // e.g., "midtown#97" at width 6 → "#97" instead of "midto…"
+        if id_len <= max_width
+            && let Some(hash_pos) = s.find('#')
+            && hash_pos >= max_width.saturating_sub(1)
+        {
+            // If the # would be cut off by truncation, show just the identifier
+            return id;
         }
     }
 
@@ -729,6 +735,12 @@ mod tests {
 
         // When identifier starts early, normal truncation is fine
         assert_eq!(truncate_str("#42 Some task", 8), "#42 Som…");
+
+        // VERY narrow columns (1-2 chars): show truncated identifier, not useless prefix
+        // This is the format used in Done column: "PR#97 title"
+        assert_eq!(truncate_str("PR#97 Fix bug", 1), "#"); // not "P"
+        assert_eq!(truncate_str("PR#97 Fix bug", 2), "#9"); // not "P…"
+        assert_eq!(truncate_str("PR#97 Fix bug", 3), "#97"); // full identifier fits
     }
 
     #[test]
