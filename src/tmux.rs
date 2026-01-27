@@ -183,9 +183,9 @@ pub const SESSION_PREFIX: &str = "midtown-";
 
 /// Coworker name to tmux color mapping.
 /// These colors match the AVENUE_COLORS in cli/chat/ui.rs for visual consistency.
-/// Lead uses yellow (same as UI's LightYellow).
+/// lead uses brightyellow for visibility.
 const COWORKER_COLORS: &[(&str, &str)] = &[
-    ("Lead", "yellow"),
+    ("lead", "brightyellow"),
     ("lexington", "cyan"),
     ("park", "green"),
     ("madison", "yellow"),
@@ -285,7 +285,7 @@ case "$lower_name" in
         *) color="" ;;
 esac; \
 if [ -n "$color" ]; then \
-    tmux set-option -t {} status-style "bg=colour236,fg=$color"; \
+    tmux set-option -t {} status-style bg=colour236,fg=$color; \
 fi"#,
         case_statement, session
     );
@@ -508,7 +508,7 @@ pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let windows: Vec<String> = stdout
         .lines()
-        .filter(|name| *name != "Lead") // Exclude the Lead window
+        .filter(|name| *name != "lead") // Exclude the lead window
         .map(|s| s.to_string())
         .collect();
 
@@ -555,6 +555,12 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                 "hooks": [{
                     "type": "command",
                     "command": format!("{} coworker task-hook", bin_command)
+                }]
+            }, {
+                "matcher": "AskUserQuestion",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} coworker ask-hook", bin_command)
                 }]
             }, {
                 // No matcher = runs on every tool use
@@ -757,10 +763,10 @@ mod tests {
             "midtown --format json coworker stop-hook"
         );
 
-        // Verify PostToolUse hooks for task operations and insights
+        // Verify PostToolUse hooks for task operations, questions, and insights
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
         assert!(post_tool_hooks.is_array());
-        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 3);
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 4);
 
         // TaskUpdate hook
         assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
@@ -776,10 +782,17 @@ mod tests {
             "midtown coworker task-hook"
         );
 
-        // Insight hook (no matcher)
-        assert!(post_tool_hooks[2]["matcher"].is_null());
+        // AskUserQuestion hook
+        assert_eq!(post_tool_hooks[2]["matcher"], "AskUserQuestion");
         assert_eq!(
             post_tool_hooks[2]["hooks"][0]["command"],
+            "midtown coworker ask-hook"
+        );
+
+        // Insight hook (no matcher)
+        assert!(post_tool_hooks[3]["matcher"].is_null());
+        assert_eq!(
+            post_tool_hooks[3]["hooks"][0]["command"],
             "midtown hook insight"
         );
 
@@ -844,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_known_names() {
-        assert_eq!(get_coworker_color("Lead"), Some("yellow"));
+        assert_eq!(get_coworker_color("lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("park"), Some("green"));
         assert_eq!(get_coworker_color("madison"), Some("yellow"));
@@ -855,8 +868,8 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_case_insensitive() {
-        assert_eq!(get_coworker_color("LEAD"), Some("yellow"));
-        assert_eq!(get_coworker_color("lead"), Some("yellow"));
+        assert_eq!(get_coworker_color("LEAD"), Some("brightyellow"));
+        assert_eq!(get_coworker_color("Lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("LEXINGTON"), Some("cyan"));
         assert_eq!(get_coworker_color("Lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("LeXiNgToN"), Some("cyan"));
