@@ -13,6 +13,31 @@ struct KanbanData {
     merged_prs: Vec<MergedPr>,
 }
 
+/// CI status for the repo status line
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum CiStatus {
+    #[default]
+    Unknown,
+    Running,
+    Passed,
+    Failed,
+}
+
+/// Repository status data for the status line above kanban
+#[derive(Debug, Clone, Default)]
+pub struct RepoStatus {
+    /// Short commit hash (7 chars)
+    pub commit_hash: String,
+    /// Time since last commit
+    pub commit_time: Option<DateTime<Utc>>,
+    /// CI status
+    pub ci_status: CiStatus,
+    /// Latest release tag (e.g., "v0.1.0")
+    pub release_tag: Option<String>,
+    /// Time of latest release
+    pub release_time: Option<DateTime<Utc>>,
+}
+
 /// A task item for the kanban board
 #[derive(Debug, Clone)]
 pub struct KanbanTask {
@@ -69,16 +94,24 @@ pub struct App {
     pub merged_prs: Vec<MergedPr>,
     /// Repository name with owner (e.g., "btucker/midtown")
     /// Used for constructing GitHub PR URLs in kanban hyperlinks
-    #[allow(dead_code)]
     pub repo_name: String,
     /// Last time kanban data was refreshed
     kanban_last_refresh: Instant,
     /// Receiver for async kanban data from background thread
     kanban_receiver: Option<Receiver<KanbanData>>,
+    /// Repository status (commit, CI, release info)
+    pub repo_status: RepoStatus,
+    /// Last time repo status was refreshed
+    repo_status_last_refresh: Instant,
+    /// Receiver for async repo status from background thread
+    repo_status_receiver: Option<Receiver<RepoStatus>>,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
 const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Interval between repo status refreshes (60 seconds)
+const REPO_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 impl App {
     pub fn new() -> Self {
@@ -105,6 +138,9 @@ impl App {
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
+            repo_status_receiver: None,
         };
 
         // Initial load
@@ -166,6 +202,30 @@ impl App {
             self.refresh_kanban();
             self.kanban_last_refresh = Instant::now();
         }
+
+        // Check for repo status data from background thread (non-blocking)
+        if let Some(ref receiver) = self.repo_status_receiver {
+            match receiver.try_recv() {
+                Ok(status) => {
+                    self.repo_status = status;
+                    self.repo_status_receiver = None;
+                }
+                Err(TryRecvError::Empty) => {
+                    // Still waiting for data
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.repo_status_receiver = None;
+                }
+            }
+        }
+
+        // Refresh repo status less frequently
+        if self.repo_status_last_refresh.elapsed() >= REPO_STATUS_REFRESH_INTERVAL
+            && self.repo_status_receiver.is_none()
+        {
+            self.refresh_repo_status();
+            self.repo_status_last_refresh = Instant::now();
+        }
     }
 
     /// Refresh kanban board data (tasks and PRs)
@@ -182,6 +242,17 @@ impl App {
             let merged_prs = fetch_merged_prs();
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData { prs, merged_prs });
+        });
+    }
+
+    /// Refresh repository status (commit, CI, release)
+    fn refresh_repo_status(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        self.repo_status_receiver = Some(rx);
+
+        thread::spawn(move || {
+            let status = fetch_repo_status();
+            let _ = tx.send(status);
         });
     }
 
@@ -508,6 +579,87 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
     prs
 }
 
+/// Fetch repository status (commit, CI status, release) from GitHub using gh CLI
+fn fetch_repo_status() -> RepoStatus {
+    let mut status = RepoStatus::default();
+
+    // Fetch latest commit on default branch
+    if let Ok(output) = std::process::Command::new("gh")
+        .args([
+            "api",
+            "repos/{owner}/{repo}/commits/{branch}",
+            "--jq",
+            r#"{sha: .sha[0:7], date: .commit.author.date}"#,
+        ])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(sha) = data.get("sha").and_then(|v| v.as_str()) {
+                status.commit_hash = sha.to_string();
+            }
+            if let Some(date_str) = data.get("date").and_then(|v| v.as_str()) {
+                status.commit_time = DateTime::parse_from_rfc3339(date_str)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc));
+            }
+        }
+    }
+
+    // Fetch CI status from latest workflow run
+    if let Ok(output) = std::process::Command::new("gh")
+        .args([
+            "api",
+            "repos/{owner}/{repo}/actions/runs",
+            "--jq",
+            ".workflow_runs[0] | {status: .status, conclusion: .conclusion}",
+        ])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            let run_status = data.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let conclusion = data.get("conclusion").and_then(|v| v.as_str());
+
+            status.ci_status = match (run_status, conclusion) {
+                ("completed", Some("success")) => CiStatus::Passed,
+                ("completed", Some("failure")) => CiStatus::Failed,
+                ("completed", Some("cancelled")) => CiStatus::Failed,
+                ("in_progress", _) | ("queued", _) | ("waiting", _) => CiStatus::Running,
+                _ => CiStatus::Unknown,
+            };
+        }
+    }
+
+    // Fetch latest release
+    if let Ok(output) = std::process::Command::new("gh")
+        .args([
+            "api",
+            "repos/{owner}/{repo}/releases/latest",
+            "--jq",
+            "{tag: .tag_name, published_at: .published_at}",
+        ])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(tag) = data.get("tag").and_then(|v| v.as_str()) {
+                status.release_tag = Some(tag.to_string());
+            }
+            if let Some(date_str) = data.get("published_at").and_then(|v| v.as_str()) {
+                status.release_time = DateTime::parse_from_rfc3339(date_str)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc));
+            }
+        }
+    }
+
+    status
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,6 +745,9 @@ mod tests {
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_status_last_refresh: Instant::now(),
+            repo_status_receiver: None,
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -630,6 +785,9 @@ mod tests {
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_status_last_refresh: Instant::now(),
+            repo_status_receiver: None,
         };
 
         let visible = app.visible_messages();
