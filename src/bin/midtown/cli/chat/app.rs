@@ -57,8 +57,8 @@ pub struct App {
     pub visible_height: usize,
     /// Channel for reading messages
     channel: Option<Channel>,
-    /// Last known message count (for detecting new messages)
-    last_count: usize,
+    /// Last known file size (for cheap change detection)
+    last_file_size: u64,
     /// Tasks for the kanban board
     pub tasks: Vec<KanbanTask>,
     /// Open PRs for the kanban board (Review column)
@@ -96,7 +96,7 @@ impl App {
             scroll_offset: 0,
             visible_height: 20,
             channel,
-            last_count: 0,
+            last_file_size: 0,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
@@ -112,19 +112,22 @@ impl App {
 
     /// Refresh messages from the channel and kanban data
     pub fn refresh(&mut self) {
-        // Read all messages from channel
-        if let Some(ref channel) = self.channel
-            && let Ok(messages) = channel.read_all()
-        {
-            let new_count = messages.len();
+        // Check if channel file has changed using file size (O(1) operation)
+        // This avoids reading and parsing all messages when nothing changed
+        if let Some(ref channel) = self.channel {
+            let current_size = channel.file_size();
 
-            // Update messages if count changed
-            if new_count != self.last_count {
-                let added = new_count.saturating_sub(self.last_count);
+            // Only read messages if file size changed
+            if current_size != self.last_file_size
+                && let Ok(messages) = channel.read_all()
+            {
+                let old_count = self.messages.len();
+                let new_count = messages.len();
+                let added = new_count.saturating_sub(old_count);
                 let was_at_bottom = self.scroll_offset == 0;
 
                 self.messages = messages;
-                self.last_count = new_count;
+                self.last_file_size = current_size;
 
                 if was_at_bottom {
                     // User was at bottom - stay at bottom (auto-scroll)
@@ -520,7 +523,7 @@ mod tests {
             scroll_offset: 0,
             visible_height: 20,
             channel: None,
-            last_count: 0,
+            last_file_size: 0,
             tasks: vec![
                 KanbanTask {
                     id: "1".to_string(),

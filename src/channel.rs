@@ -226,6 +226,17 @@ impl Channel {
     pub fn exists(&self) -> bool {
         self.channel_file.exists()
     }
+
+    /// Get the current file size in bytes
+    ///
+    /// This is a cheap O(1) operation that can be used to detect if new
+    /// messages have been added without reading the entire file.
+    /// Returns 0 if the file doesn't exist.
+    pub fn file_size(&self) -> u64 {
+        fs::metadata(&self.channel_file)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +326,28 @@ mod tests {
         channel.send(&Message::text("agent1", "3")).unwrap();
 
         assert_eq!(channel.message_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_file_size_increases_with_messages() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Empty channel has size 0
+        assert_eq!(channel.file_size(), 0);
+
+        // Sending a message increases file size
+        channel.send(&Message::text("agent1", "Hello")).unwrap();
+        let size1 = channel.file_size();
+        assert!(size1 > 0);
+
+        // Sending another message increases it further
+        channel.send(&Message::text("agent1", "World")).unwrap();
+        let size2 = channel.file_size();
+        assert!(size2 > size1);
+
+        // Size stays the same when no messages are added
+        assert_eq!(channel.file_size(), size2);
     }
 
     #[test]
