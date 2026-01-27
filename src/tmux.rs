@@ -14,10 +14,10 @@ use crate::Error;
 /// Extracts status keywords and task numbers to create concise tab names.
 ///
 /// # Examples
-/// - "claiming task #1" → "claim #1"
-/// - "developing task #1" → "dev #1"
+/// - "claiming task #1" → "claim#1"
+/// - "developing task #1" → "dev#1"
 /// - "running tests" → "test"
-/// - "opening PR for task #1" → "PR #1"
+/// - "opening PR for task #1" → "PR#1"
 /// - "waiting for review" → "idle"
 /// - "investigating the auth bug" → "investigating the au..."
 pub fn parse_status(status: &str) -> String {
@@ -63,7 +63,7 @@ pub fn parse_status(status: &str) -> String {
 
     // Combine abbreviation with task number if present
     match task_num {
-        Some(num) => format!("{} #{}", abbrev, num),
+        Some(num) => format!("{}#{}", abbrev, num),
         None => abbrev.to_string(),
     }
 }
@@ -183,9 +183,9 @@ pub const SESSION_PREFIX: &str = "midtown-";
 
 /// Coworker name to tmux color mapping.
 /// These colors match the AVENUE_COLORS in cli/chat/ui.rs for visual consistency.
-/// Lead uses yellow (same as UI's LightYellow).
+/// lead uses brightyellow for visibility.
 const COWORKER_COLORS: &[(&str, &str)] = &[
-    ("Lead", "yellow"),
+    ("lead", "brightyellow"),
     ("lexington", "cyan"),
     ("park", "green"),
     ("madison", "yellow"),
@@ -285,7 +285,7 @@ case "$lower_name" in
         *) color="" ;;
 esac; \
 if [ -n "$color" ]; then \
-    tmux set-option -t {} status-style "bg=colour236,fg=$color"; \
+    tmux set-option -t {} status-style bg=colour236,fg=$color; \
 fi"#,
         case_statement, session
     );
@@ -295,7 +295,7 @@ fi"#,
             "set-hook",
             "-t",
             session,
-            "window-focus-in",
+            "pane-focus-in",
             &format!("run-shell '{}'", script),
         ])
         .status()
@@ -432,7 +432,7 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
 /// * `status` - The status to display (e.g., "investigating auth bug")
 ///
 /// # Window Name Format
-/// - With status: "lexington: investigating..."
+/// - With status: "lexington:dev#3"
 /// - Without status (idle): "lexington"
 ///
 /// Status is truncated to keep the tab readable (max 20 chars).
@@ -444,7 +444,7 @@ pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::
         Some(s) if !s.is_empty() => {
             // Parse status to extract keywords and task numbers
             let parsed = parse_status(s);
-            format!("{}: {}", name, parsed)
+            format!("{}:{}", name, parsed)
         }
         _ => name.to_string(),
     };
@@ -508,7 +508,7 @@ pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let windows: Vec<String> = stdout
         .lines()
-        .filter(|name| *name != "Lead") // Exclude the Lead window
+        .filter(|name| *name != "lead") // Exclude the lead window
         .map(|s| s.to_string())
         .collect();
 
@@ -555,6 +555,12 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                 "hooks": [{
                     "type": "command",
                     "command": format!("{} coworker task-hook", bin_command)
+                }]
+            }, {
+                "matcher": "AskUserQuestion",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} coworker ask-hook", bin_command)
                 }]
             }, {
                 // No matcher = runs on every tool use
@@ -757,10 +763,10 @@ mod tests {
             "midtown --format json coworker stop-hook"
         );
 
-        // Verify PostToolUse hooks for task operations and insights
+        // Verify PostToolUse hooks for task operations, questions, and insights
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
         assert!(post_tool_hooks.is_array());
-        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 3);
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 4);
 
         // TaskUpdate hook
         assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
@@ -776,10 +782,17 @@ mod tests {
             "midtown coworker task-hook"
         );
 
-        // Insight hook (no matcher)
-        assert!(post_tool_hooks[2]["matcher"].is_null());
+        // AskUserQuestion hook
+        assert_eq!(post_tool_hooks[2]["matcher"], "AskUserQuestion");
         assert_eq!(
             post_tool_hooks[2]["hooks"][0]["command"],
+            "midtown coworker ask-hook"
+        );
+
+        // Insight hook (no matcher)
+        assert!(post_tool_hooks[3]["matcher"].is_null());
+        assert_eq!(
+            post_tool_hooks[3]["hooks"][0]["command"],
             "midtown hook insight"
         );
 
@@ -844,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_known_names() {
-        assert_eq!(get_coworker_color("Lead"), Some("yellow"));
+        assert_eq!(get_coworker_color("lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("park"), Some("green"));
         assert_eq!(get_coworker_color("madison"), Some("yellow"));
@@ -855,8 +868,8 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_case_insensitive() {
-        assert_eq!(get_coworker_color("LEAD"), Some("yellow"));
-        assert_eq!(get_coworker_color("lead"), Some("yellow"));
+        assert_eq!(get_coworker_color("LEAD"), Some("brightyellow"));
+        assert_eq!(get_coworker_color("Lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("LEXINGTON"), Some("cyan"));
         assert_eq!(get_coworker_color("Lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("LeXiNgToN"), Some("cyan"));
@@ -873,50 +886,50 @@ mod tests {
 
     #[test]
     fn test_parse_status_claiming() {
-        assert_eq!(parse_status("claiming task #1"), "claim #1");
-        assert_eq!(parse_status("Claiming task 5"), "claim #5");
-        assert_eq!(parse_status("just claimed #3"), "claim #3");
+        assert_eq!(parse_status("claiming task #1"), "claim#1");
+        assert_eq!(parse_status("Claiming task 5"), "claim#5");
+        assert_eq!(parse_status("just claimed #3"), "claim#3");
     }
 
     #[test]
     fn test_parse_status_developing() {
-        assert_eq!(parse_status("developing task #1"), "dev #1");
-        assert_eq!(parse_status("working on task #2"), "dev #2");
+        assert_eq!(parse_status("developing task #1"), "dev#1");
+        assert_eq!(parse_status("working on task #2"), "dev#2");
         assert_eq!(parse_status("coding the feature"), "dev");
-        assert_eq!(parse_status("implementing auth #5"), "dev #5");
+        assert_eq!(parse_status("implementing auth #5"), "dev#5");
     }
 
     #[test]
     fn test_parse_status_testing() {
         assert_eq!(parse_status("testing"), "test");
-        assert_eq!(parse_status("running tests for #3"), "test #3");
+        assert_eq!(parse_status("running tests for #3"), "test#3");
         assert_eq!(parse_status("test suite running"), "test");
     }
 
     #[test]
     fn test_parse_status_pr() {
-        assert_eq!(parse_status("opening PR for task #1"), "PR #1");
+        assert_eq!(parse_status("opening PR for task #1"), "PR#1");
         assert_eq!(parse_status("PR ready"), "PR");
-        assert_eq!(parse_status("creating pull request #4"), "PR #4");
-        assert_eq!(parse_status("requesting review #2"), "PR #2");
+        assert_eq!(parse_status("creating pull request #4"), "PR#4");
+        assert_eq!(parse_status("requesting review #2"), "PR#2");
     }
 
     #[test]
     fn test_parse_status_debug() {
         assert_eq!(parse_status("debugging auth bug"), "debug");
-        assert_eq!(parse_status("investigating the issue #7"), "debug #7");
+        assert_eq!(parse_status("investigating the issue #7"), "debug#7");
     }
 
     #[test]
     fn test_parse_status_idle() {
         assert_eq!(parse_status("idle"), "idle");
         assert_eq!(parse_status("waiting for review"), "idle");
-        assert_eq!(parse_status("blocked on task #3"), "idle #3");
+        assert_eq!(parse_status("blocked on task #3"), "idle#3");
     }
 
     #[test]
     fn test_parse_status_done() {
-        assert_eq!(parse_status("completed task #1"), "done #1");
+        assert_eq!(parse_status("completed task #1"), "done#1");
         assert_eq!(parse_status("finished implementation"), "done");
     }
 

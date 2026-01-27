@@ -53,15 +53,17 @@ pub enum NudgeError {
 
 /// Send a nudge message to a coworker's tmux window
 ///
-/// Uses a reliable multi-step pattern to inject the message:
-/// 1. Send 'i' to enter vim INSERT mode (separate keystroke)
-/// 2. Wait 100ms for mode transition
-/// 3. Send message text with -l literal mode
-/// 4. Wait 500ms for paste to complete (critical for long messages)
-/// 5. Send Escape to exit vim INSERT mode
-/// 6. Wait 100ms for mode transition
+/// Uses a reliable pattern to inject the message:
+/// 1. Send Escape to dismiss any dialogs or interruption prompts
+/// 2. Wait 200ms for state to clear
+/// 3. Send 'i' to enter INSERT mode
+/// 4. Wait 100ms for mode transition
+/// 5. Send message text with -l literal mode (prefixed with #)
+/// 6. Wait 100ms for text to be received
 /// 7. Send Enter with retry logic
 ///
+/// Key insight: Escape must come BEFORE the text (to clear state),
+/// not after (which would cancel the input).
 /// Uses a per-target mutex to prevent concurrent nudges from interleaving.
 ///
 /// # Arguments
@@ -80,7 +82,13 @@ pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), Nudg
     let lock = get_target_lock(&target);
     let _guard = lock.lock().unwrap();
 
-    // 1. Send 'i' to enter vim INSERT mode
+    // 1. Send Escape FIRST to dismiss any dialogs or interruption prompts
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Escape"])
+        .output()?;
+    thread::sleep(Duration::from_millis(200));
+
+    // 2. Send 'i' to enter INSERT mode
     let output = Command::new("tmux")
         .args(["send-keys", "-t", &target, "i"])
         .output()?;
@@ -90,7 +98,7 @@ pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), Nudg
     }
     thread::sleep(Duration::from_millis(100));
 
-    // 2. Send message in literal mode (prefixed with # to make it a comment)
+    // 3. Send message in literal mode (prefixed with # to make it a comment)
     let comment = format!("# {}", message);
     let output = Command::new("tmux")
         .args(["send-keys", "-t", &target, "-l", &comment])
@@ -99,21 +107,9 @@ pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), Nudg
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(NudgeError::TmuxError(stderr.into_owned()));
     }
-
-    // 3. Wait for paste to complete (critical for reliability)
-    thread::sleep(Duration::from_millis(500));
-
-    // 4. Send Escape to exit vim INSERT mode
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Escape"])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(NudgeError::TmuxError(stderr.into_owned()));
-    }
     thread::sleep(Duration::from_millis(100));
 
-    // 5. Send Enter with retry logic
+    // 4. Send Enter with retry logic
     for attempt in 0..3 {
         let output = Command::new("tmux")
             .args(["send-keys", "-t", &target, "Enter"])
@@ -221,7 +217,13 @@ pub fn send_nudge_to_pane(
     let lock = get_target_lock(&target);
     let _guard = lock.lock().unwrap();
 
-    // 1. Send 'i' to enter vim INSERT mode
+    // 1. Send Escape FIRST to dismiss any dialogs or interruption prompts
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Escape"])
+        .output()?;
+    thread::sleep(Duration::from_millis(200));
+
+    // 2. Send 'i' to enter INSERT mode
     let output = Command::new("tmux")
         .args(["send-keys", "-t", &target, "i"])
         .output()?;
@@ -231,7 +233,7 @@ pub fn send_nudge_to_pane(
     }
     thread::sleep(Duration::from_millis(100));
 
-    // 2. Send message in literal mode (prefixed with # to make it a comment)
+    // 3. Send message in literal mode (prefixed with # to make it a comment)
     let comment = format!("# {}", message);
     let output = Command::new("tmux")
         .args(["send-keys", "-t", &target, "-l", &comment])
@@ -240,21 +242,9 @@ pub fn send_nudge_to_pane(
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(NudgeError::TmuxError(stderr.into_owned()));
     }
-
-    // 3. Wait for paste to complete (critical for reliability)
-    thread::sleep(Duration::from_millis(500));
-
-    // 4. Send Escape to exit vim INSERT mode
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Escape"])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(NudgeError::TmuxError(stderr.into_owned()));
-    }
     thread::sleep(Duration::from_millis(100));
 
-    // 5. Send Enter with retry logic
+    // 4. Send Enter with retry logic
     for attempt in 0..3 {
         let output = Command::new("tmux")
             .args(["send-keys", "-t", &target, "Enter"])

@@ -308,7 +308,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             .unwrap_or_else(|| "PROJECT".to_string());
 
         // Create tmux session with claude command directly
-        // -n sets the window name to "Lead"
+        // -n sets the window name to "lead"
         let status = Command::new("tmux")
             .args([
                 "new-session",
@@ -316,7 +316,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
                 "-s",
                 &session,
                 "-n",
-                "Lead",
+                "lead",
                 "-c",
                 &repo.to_string_lossy(),
                 "sh",
@@ -352,8 +352,22 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             ])
             .status();
 
+        // Set terminal title to "Midtown: <project>" instead of showing the command
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", &session, "set-titles", "on"])
+            .status();
+        let _ = Command::new("tmux")
+            .args([
+                "set-option",
+                "-t",
+                &session,
+                "set-titles-string",
+                &format!("Midtown: {}", project_name),
+            ])
+            .status();
+
         // Set Lead window tab color (yellow to match chat TUI team panel)
-        let lead_window = format!("{}:Lead", session);
+        let lead_window = format!("{}:lead", session);
         let _ = Command::new("tmux")
             .args([
                 "set-window-option",
@@ -377,13 +391,13 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         let _ = midtown::tmux::setup_status_bar_hook(&session);
 
         // Split Lead window with chat TUI on the right (30% width)
-        let lead_target = format!("{}:Lead", session);
+        let lead_target = format!("{}:lead", session);
         let _ = Command::new("tmux")
             .args(["split-window", "-h", "-t", &lead_target, "-p", "30"])
             .status();
 
         // Start chat TUI in the new pane (pane .1)
-        let chat_pane = format!("{}:Lead.1", session);
+        let chat_pane = format!("{}:lead.1", session);
         let bin_command = midtown::config::get_bin_command();
         let chat_cmd = format!("{} chat", bin_command);
         let _ = Command::new("tmux")
@@ -391,7 +405,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
             .status();
 
         // Keep focus on the main pane (Claude Code, pane .0)
-        let main_pane = format!("{}:Lead.0", session);
+        let main_pane = format!("{}:lead.0", session);
         let _ = Command::new("tmux")
             .args(["select-pane", "-t", &main_pane])
             .status();
@@ -530,7 +544,7 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
     let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing)?;
 
     // Kill the current Lead pane content and restart with proper settings
-    let lead_pane = format!("{}:Lead.0", session);
+    let lead_pane = format!("{}:lead.0", session);
 
     // Send Ctrl-C to interrupt any running process, then exit
     let _ = Command::new("tmux")
