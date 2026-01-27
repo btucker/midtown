@@ -151,7 +151,9 @@ impl DaemonClient {
     }
 
     pub fn coworker_nudge(&self, name: &str, message: Option<&str>) -> Result<Response, String> {
-        let mut args = serde_json::json!({ "name": name });
+        // Use MIDTOWN_AGENT env var for sender, defaulting to "lead"
+        let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+        let mut args = serde_json::json!({ "name": name, "from": from });
         if let Some(msg) = message {
             args["message"] = serde_json::json!(msg);
         }
