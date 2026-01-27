@@ -67,6 +67,8 @@ pub struct Coworker {
     pub started_at: DateTime<Utc>,
     /// Current task being worked on (if any)
     pub current_task: Option<String>,
+    /// Claude Code session ID (UUID) for task symlink management
+    pub session_id: Option<String>,
 }
 
 /// Manager for coworker lifecycle.
@@ -199,15 +201,17 @@ impl CoworkerManager {
         // Create the tmux window and spawn claude in the worktree
         // Pass repo_name so the coworker's tasks can be symlinked to the Lead's tasks
         let repo_name = self.worktree_manager.repo_name();
-        tmux::spawn_claude(&self.session_name, &name, &working_dir, Some(repo_name))?;
+        let session_id =
+            tmux::spawn_claude(&self.session_name, &name, &working_dir, Some(repo_name))?;
 
-        // Record the coworker
+        // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
             name: name.clone(),
             status: CoworkerStatus::Running,
             working_dir,
             started_at: Utc::now(),
             current_task: None,
+            session_id: Some(session_id),
         };
 
         {
@@ -369,15 +373,17 @@ impl CoworkerManager {
 
         // Spawn Claude in the existing worktree
         let repo_name = self.worktree_manager.repo_name();
-        tmux::spawn_claude(&self.session_name, name, &working_dir, Some(repo_name))?;
+        let session_id =
+            tmux::spawn_claude(&self.session_name, name, &working_dir, Some(repo_name))?;
 
-        // Record the coworker
+        // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
             name: name.to_string(),
             status: CoworkerStatus::Running,
             working_dir,
             started_at: Utc::now(),
             current_task: None,
+            session_id: Some(session_id),
         };
 
         {
@@ -407,6 +413,29 @@ impl CoworkerManager {
     pub fn count(&self) -> usize {
         let coworkers = self.coworkers.read().unwrap();
         coworkers.len()
+    }
+
+    /// Update task symlinks for all coworkers to point to a new Lead session.
+    ///
+    /// Called when the Lead's session changes to ensure coworkers see the updated task list.
+    pub fn update_task_symlinks(&self, new_lead_session_id: &str) -> crate::Result<()> {
+        let coworkers = self.coworkers.read().unwrap();
+
+        for coworker in coworkers.values() {
+            if let Some(ref session_id) = coworker.session_id {
+                if let Err(e) = tmux::symlink_tasks_to_lead(session_id, new_lead_session_id) {
+                    tracing::warn!("Failed to update task symlink for {}: {}", coworker.name, e);
+                } else {
+                    tracing::info!(
+                        "Updated task symlink for {} to Lead session {}",
+                        coworker.name,
+                        new_lead_session_id
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -487,6 +516,7 @@ mod tests {
                     working_dir: "/tmp".to_string(),
                     started_at: Utc::now(),
                     current_task: None,
+                    session_id: None,
                 },
             );
         }
@@ -516,6 +546,7 @@ mod tests {
                         working_dir: "/tmp".to_string(),
                         started_at: Utc::now(),
                         current_task: None,
+                        session_id: None,
                     },
                 );
             }
@@ -543,6 +574,7 @@ mod tests {
                         working_dir: "/tmp".to_string(),
                         started_at: Utc::now(),
                         current_task: None,
+                        session_id: None,
                     },
                 );
             }
@@ -582,6 +614,7 @@ mod tests {
                     working_dir: "/tmp".to_string(),
                     started_at: Utc::now(),
                     current_task: None,
+                    session_id: None,
                 },
             );
         }
