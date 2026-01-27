@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Midtown daemon - multi-agent workspace manager for Gas Town"
 license = "Apache-2.0"
+repository = "https://github.com/btucker/midtown"
+readme = "README.md"
 
 [dependencies]
 # Async runtime
