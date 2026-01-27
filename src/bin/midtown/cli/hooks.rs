@@ -85,13 +85,20 @@ fn handle_insight_hook() -> Result<Response, String> {
             continue;
         }
 
+        // Atomically try to claim this insight - prevents race conditions
+        // between concurrent hook invocations
+        if !try_claim_insight(&transcript_path, &hash) {
+            // Another process beat us to it
+            posted.insert(hash);
+            continue;
+        }
+
         // Post insight to channel
         let message = midtown::Message::text(&agent, format!("💡 {}", insight));
         if channel.send(&message).is_ok() {
             posted_count += 1;
-            // Record that we posted this insight (both in-memory and to file)
-            posted.insert(hash.clone());
-            record_posted_insight(&transcript_path, &hash);
+            // Track in-memory for subsequent iterations
+            posted.insert(hash);
         }
     }
 
@@ -378,8 +385,9 @@ fn extract_insights(text: &str) -> Vec<String> {
     insights
 }
 
-/// Get the path to the insights cursor file for a transcript.
-fn insights_cursor_path(transcript_path: &str) -> PathBuf {
+/// Get the path to the insights directory for a transcript.
+/// Each posted insight hash becomes a file in this directory.
+fn insights_dir_path(transcript_path: &str) -> PathBuf {
     let transcript = PathBuf::from(transcript_path);
     let filename = transcript
         .file_stem()
@@ -390,33 +398,40 @@ fn insights_cursor_path(transcript_path: &str) -> PathBuf {
     PathBuf::from(home)
         .join(".midtown")
         .join("insights")
-        .join(format!("{}.posted", filename))
+        .join(filename)
 }
 
 /// Get set of already-posted insight hashes.
 fn get_posted_insights(transcript_path: &str) -> HashSet<String> {
-    let cursor_path = insights_cursor_path(transcript_path);
-    if let Ok(content) = std::fs::read_to_string(&cursor_path) {
-        content.lines().map(|s| s.to_string()).collect()
+    let dir_path = insights_dir_path(transcript_path);
+    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+        entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect()
     } else {
         HashSet::new()
     }
 }
 
-/// Record that an insight was posted.
-fn record_posted_insight(transcript_path: &str, hash: &str) {
-    let cursor_path = insights_cursor_path(transcript_path);
-    if let Some(parent) = cursor_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Append hash to file
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&cursor_path)
+/// Atomically try to claim an insight for posting.
+/// Returns true if we successfully claimed it (file didn't exist and we created it).
+/// Returns false if another process already claimed it (file exists).
+fn try_claim_insight(transcript_path: &str, hash: &str) -> bool {
+    let dir_path = insights_dir_path(transcript_path);
+    let _ = std::fs::create_dir_all(&dir_path);
+
+    let hash_path = dir_path.join(hash);
+
+    // Use create_new(true) for atomic "create only if not exists"
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&hash_path)
     {
-        let _ = writeln!(file, "{}", hash);
+        Ok(_) => true, // We created it - we own this insight
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(_) => false, // Other errors - fail safe by not posting
     }
 }
 
