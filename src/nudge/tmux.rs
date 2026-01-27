@@ -1,7 +1,27 @@
 //! tmux integration for sending nudges to coworker windows
 
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 use thiserror::Error;
+
+use once_cell::sync::Lazy;
+
+/// Mutex map to serialize nudges per target (session:window or session:window.pane)
+/// This prevents concurrent nudges from interleaving and corrupting each other.
+static TARGET_LOCKS: Lazy<Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Get or create a mutex for the given target
+fn get_target_lock(target: &str) -> std::sync::Arc<Mutex<()>> {
+    let mut locks = TARGET_LOCKS.lock().unwrap();
+    locks
+        .entry(target.to_string())
+        .or_insert_with(|| std::sync::Arc::new(Mutex::new(())))
+        .clone()
+}
 
 /// Errors that can occur when sending nudges via tmux
 #[derive(Error, Debug)]
@@ -22,6 +42,10 @@ pub enum NudgeError {
     #[error("tmux window not found: {0}")]
     WindowNotFound(String),
 
+    /// Enter key failed after retries
+    #[error("failed to send Enter key after retries")]
+    EnterFailed,
+
     /// I/O error
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -29,8 +53,18 @@ pub enum NudgeError {
 
 /// Send a nudge message to a coworker's tmux window
 ///
-/// Uses `tmux send-keys` to inject the message into the target window.
-/// The message is sent as literal text followed by Enter to execute.
+/// Uses a reliable pattern to inject the message:
+/// 1. Send Escape to dismiss any dialogs or interruption prompts
+/// 2. Wait 200ms for state to clear
+/// 3. Send 'i' to enter INSERT mode
+/// 4. Wait 100ms for mode transition
+/// 5. Send message text with -l literal mode (prefixed with #)
+/// 6. Wait 100ms for text to be received
+/// 7. Send Enter with retry logic
+///
+/// Key insight: Escape must come BEFORE the text (to clear state),
+/// not after (which would cancel the input).
+/// Uses a per-target mutex to prevent concurrent nudges from interleaving.
 ///
 /// # Arguments
 /// * `session` - The tmux session name (e.g., "midtown-projectname")
@@ -44,21 +78,51 @@ pub fn send_nudge(session: &str, window: &str, message: &str) -> Result<(), Nudg
         return Err(NudgeError::SessionNotFound(session.to_string()));
     }
 
-    // Send the message as a comment (prefixed with #) so it doesn't execute
-    // anything harmful, followed by a newline.
-    // Prefix with "i " to enter insert mode if coworker is in vim mode.
-    let comment_message = format!("i # {}", message);
+    // Get mutex for this target to prevent interleaving
+    let lock = get_target_lock(&target);
+    let _guard = lock.lock().unwrap();
 
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", &target, &comment_message, "Enter"])
+    // 1. Send Escape FIRST to dismiss any dialogs or interruption prompts
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Escape"])
         .output()?;
+    thread::sleep(Duration::from_millis(200));
 
+    // 2. Send 'i' to enter INSERT mode
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "i"])
+        .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(NudgeError::TmuxError(stderr.into_owned()));
     }
+    thread::sleep(Duration::from_millis(100));
 
-    Ok(())
+    // 3. Send message in literal mode (prefixed with # to make it a comment)
+    let comment = format!("# {}", message);
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", &comment])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(NudgeError::TmuxError(stderr.into_owned()));
+    }
+    thread::sleep(Duration::from_millis(100));
+
+    // 4. Send Enter with retry logic
+    for attempt in 0..3 {
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        if attempt < 2 {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    Err(NudgeError::EnterFailed)
 }
 
 /// Check if a tmux session exists
@@ -125,6 +189,17 @@ pub fn list_windows(session: &str) -> Result<Vec<String>, NudgeError> {
 }
 
 /// Send a nudge to a specific pane in a window
+///
+/// Uses the same reliable multi-step pattern as `send_nudge`:
+/// 1. Send 'i' to enter vim INSERT mode
+/// 2. Wait 100ms for mode transition
+/// 3. Send message text with -l literal mode
+/// 4. Wait 500ms for paste to complete
+/// 5. Send Escape to exit vim INSERT mode
+/// 6. Wait 100ms for mode transition
+/// 7. Send Enter with retry logic
+///
+/// Uses a per-target mutex to prevent concurrent nudges from interleaving.
 pub fn send_nudge_to_pane(
     session: &str,
     window: &str,
@@ -138,18 +213,51 @@ pub fn send_nudge_to_pane(
         return Err(NudgeError::SessionNotFound(session.to_string()));
     }
 
-    let comment_message = format!("# {}", message);
+    // Get mutex for this target to prevent interleaving
+    let lock = get_target_lock(&target);
+    let _guard = lock.lock().unwrap();
 
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", &target, &comment_message, "Enter"])
+    // 1. Send Escape FIRST to dismiss any dialogs or interruption prompts
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Escape"])
         .output()?;
+    thread::sleep(Duration::from_millis(200));
 
+    // 2. Send 'i' to enter INSERT mode
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "i"])
+        .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(NudgeError::TmuxError(stderr.into_owned()));
     }
+    thread::sleep(Duration::from_millis(100));
 
-    Ok(())
+    // 3. Send message in literal mode (prefixed with # to make it a comment)
+    let comment = format!("# {}", message);
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", &comment])
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(NudgeError::TmuxError(stderr.into_owned()));
+    }
+    thread::sleep(Duration::from_millis(100));
+
+    // 4. Send Enter with retry logic
+    for attempt in 0..3 {
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        if attempt < 2 {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    Err(NudgeError::EnterFailed)
 }
 
 /// Get the current pane content (for debugging/testing)

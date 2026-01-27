@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Midtown daemon - multi-agent workspace manager for Gas Town"
 license = "Apache-2.0"
+repository = "https://github.com/btucker/midtown"
+readme = "README.md"
 
 [dependencies]
 # Async runtime
@@ -27,6 +29,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4"] }
 fs2 = "0.4"
+
+# Lazy static initialization
+once_cell = "1.21"
 
 # Webhook HTTP server
 axum = "0.8"

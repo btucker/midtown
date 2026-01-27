@@ -9,6 +9,102 @@ use std::process::Command;
 
 use crate::Error;
 
+/// Parse a status message and return an abbreviated version for tmux tab display.
+///
+/// Extracts status keywords and task numbers to create concise tab names.
+///
+/// # Examples
+/// - "claiming task #1" → "claim#1"
+/// - "developing task #1" → "dev#1"
+/// - "running tests" → "test"
+/// - "opening PR for task #1" → "PR#1"
+/// - "waiting for review" → "idle"
+/// - "investigating the auth bug" → "investigating the au..."
+pub fn parse_status(status: &str) -> String {
+    let status_lower = status.to_lowercase();
+
+    // Extract task number if present (matches "#1", "task 1", "task #1", etc.)
+    let task_num = extract_task_number(status);
+
+    // Match status keywords and map to abbreviations
+    // Order matters: more specific/priority states come first
+    let abbrev = if status_lower.contains("claim") {
+        "claim"
+    } else if status_lower.contains("complet") || status_lower.contains("finish") {
+        // Check "completed/finished" before "implement" which could match "implementation"
+        "done"
+    } else if status_lower.contains("idle")
+        || status_lower.contains("waiting")
+        || status_lower.contains("blocked")
+    {
+        // Check "waiting/blocked" before "review" which could match "waiting for review"
+        "idle"
+    } else if status_lower.contains("pr ")
+        || status_lower.contains("pull request")
+        || status_lower.starts_with("pr")
+        || status_lower.contains("review")
+    {
+        // Match "PR " with space to avoid false positives, or "review" for code review
+        "PR"
+    } else if status_lower.contains("develop")
+        || status_lower.contains("working")
+        || status_lower.contains("coding")
+        || status_lower.contains("implement")
+    {
+        "dev"
+    } else if status_lower.contains("test") {
+        "test"
+    } else if status_lower.contains("debug") || status_lower.contains("investigating") {
+        "debug"
+    } else {
+        // No keyword match - truncate the original status
+        return truncate_status(status, 20);
+    };
+
+    // Combine abbreviation with task number if present
+    match task_num {
+        Some(num) => format!("{}#{}", abbrev, num),
+        None => abbrev.to_string(),
+    }
+}
+
+/// Extract task number from status text.
+///
+/// Matches patterns like "#1", "task 1", "task #1", "#42"
+fn extract_task_number(status: &str) -> Option<u32> {
+    // Try to find "#N" pattern first
+    if let Some(pos) = status.find('#') {
+        let rest = &status[pos + 1..];
+        let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse::<u32>() {
+            return Some(num);
+        }
+    }
+
+    // Try "task N" pattern (case insensitive)
+    let lower = status.to_lowercase();
+    if let Some(pos) = lower.find("task ") {
+        let rest = &status[pos + 5..];
+        // Skip optional '#' after "task "
+        let rest = rest.strip_prefix('#').unwrap_or(rest);
+        let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse::<u32>() {
+            return Some(num);
+        }
+    }
+
+    None
+}
+
+/// Truncate status to a maximum length, adding "..." if truncated.
+fn truncate_status(status: &str, max_len: usize) -> String {
+    if status.len() <= max_len {
+        status.to_string()
+    } else {
+        format!("{}...", &status[..max_len.saturating_sub(3)])
+    }
+}
+
 /// Get the state directory for midtown.
 fn state_dir() -> PathBuf {
     let state_dir = std::env::var("XDG_STATE_HOME")
@@ -87,7 +183,9 @@ pub const SESSION_PREFIX: &str = "midtown-";
 
 /// Coworker name to tmux color mapping.
 /// These colors match the AVENUE_COLORS in cli/chat/ui.rs for visual consistency.
+/// lead uses brightyellow for visibility.
 const COWORKER_COLORS: &[(&str, &str)] = &[
+    ("lead", "brightyellow"),
     ("lexington", "cyan"),
     ("park", "green"),
     ("madison", "yellow"),
@@ -144,6 +242,72 @@ fn set_window_color(session: &str, name: &str) -> crate::Result<()> {
             &current_style,
         ])
         .status();
+
+    Ok(())
+}
+
+/// Set up a tmux hook to update the status bar color based on the active window.
+///
+/// When a window gains focus, this hook:
+/// 1. Gets the window name (agent name like "Lead", "lexington", etc.)
+/// 2. Extracts the base name (before any ":" for status suffix)
+/// 3. Looks up the agent's color from COWORKER_COLORS
+/// 4. Updates the session's status-style with that color as the foreground
+///
+/// The default status bar background is colour236 (dark gray).
+pub fn setup_status_bar_hook(session: &str) -> crate::Result<()> {
+    // Build a shell case statement for color lookup
+    // Window names may have status suffixes like "lexington: investigating..."
+    // so we extract just the base name before any ":"
+    let case_arms: Vec<String> = COWORKER_COLORS
+        .iter()
+        .map(|(name, color)| {
+            // Case-insensitive matching using lowercase
+            let lower_name = name.to_lowercase();
+            format!("        {}) color=\"{}\" ;;", lower_name, color)
+        })
+        .collect();
+
+    let case_statement = case_arms.join("\n");
+
+    // Shell script that runs on window focus:
+    // 1. Get the window name and extract base (before ":")
+    // 2. Convert to lowercase for case-insensitive matching
+    // 3. Look up color with case statement
+    // 4. If found, set status-style with that color
+    let script = format!(
+        r#"window_name=$(tmux display-message -p '#{{window_name}}'); \
+base_name=$(echo "$window_name" | cut -d: -f1); \
+lower_name=$(echo "$base_name" | tr '[:upper:]' '[:lower:]'); \
+color=""; \
+case "$lower_name" in
+{}
+        *) color="" ;;
+esac; \
+if [ -n "$color" ]; then \
+    tmux set-option -t {} status-style bg=colour236,fg=$color; \
+fi"#,
+        case_statement, session
+    );
+
+    let status = Command::new("tmux")
+        .args([
+            "set-hook",
+            "-t",
+            session,
+            "pane-focus-in",
+            &format!("run-shell '{}'", script),
+        ])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        // Non-fatal - log but don't fail
+        eprintln!(
+            "Warning: Failed to set status bar hook for session {}",
+            session
+        );
+    }
 
     Ok(())
 }
@@ -268,23 +432,19 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
 /// * `status` - The status to display (e.g., "investigating auth bug")
 ///
 /// # Window Name Format
-/// - With status: "lexington: investigating..."
+/// - With status: "lexington:dev#3"
 /// - Without status (idle): "lexington"
 ///
 /// Status is truncated to keep the tab readable (max 20 chars).
 pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::Result<()> {
     let target = format!("{}:{}", session, name);
 
-    // Build the new window name
+    // Build the new window name with parsed/abbreviated status
     let new_name = match status {
         Some(s) if !s.is_empty() => {
-            // Truncate status to keep tab readable
-            let truncated = if s.len() > 20 {
-                format!("{}...", &s[..17])
-            } else {
-                s.to_string()
-            };
-            format!("{}: {}", name, truncated)
+            // Parse status to extract keywords and task numbers
+            let parsed = parse_status(s);
+            format!("{}:{}", name, parsed)
         }
         _ => name.to_string(),
     };
@@ -348,7 +508,7 @@ pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let windows: Vec<String> = stdout
         .lines()
-        .filter(|name| *name != "Lead") // Exclude the Lead window
+        .filter(|name| *name != "lead") // Exclude the lead window
         .map(|s| s.to_string())
         .collect();
 
@@ -395,6 +555,12 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                 "hooks": [{
                     "type": "command",
                     "command": format!("{} coworker task-hook", bin_command)
+                }]
+            }, {
+                "matcher": "AskUserQuestion",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} coworker ask-hook", bin_command)
                 }]
             }, {
                 // No matcher = runs on every tool use
@@ -597,10 +763,10 @@ mod tests {
             "midtown --format json coworker stop-hook"
         );
 
-        // Verify PostToolUse hooks for task operations and insights
+        // Verify PostToolUse hooks for task operations, questions, and insights
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
         assert!(post_tool_hooks.is_array());
-        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 3);
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 4);
 
         // TaskUpdate hook
         assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
@@ -616,10 +782,17 @@ mod tests {
             "midtown coworker task-hook"
         );
 
-        // Insight hook (no matcher)
-        assert!(post_tool_hooks[2]["matcher"].is_null());
+        // AskUserQuestion hook
+        assert_eq!(post_tool_hooks[2]["matcher"], "AskUserQuestion");
         assert_eq!(
             post_tool_hooks[2]["hooks"][0]["command"],
+            "midtown coworker ask-hook"
+        );
+
+        // Insight hook (no matcher)
+        assert!(post_tool_hooks[3]["matcher"].is_null());
+        assert_eq!(
+            post_tool_hooks[3]["hooks"][0]["command"],
             "midtown hook insight"
         );
 
@@ -684,6 +857,7 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_known_names() {
+        assert_eq!(get_coworker_color("lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("park"), Some("green"));
         assert_eq!(get_coworker_color("madison"), Some("yellow"));
@@ -694,6 +868,8 @@ mod tests {
 
     #[test]
     fn test_get_coworker_color_case_insensitive() {
+        assert_eq!(get_coworker_color("LEAD"), Some("brightyellow"));
+        assert_eq!(get_coworker_color("Lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("LEXINGTON"), Some("cyan"));
         assert_eq!(get_coworker_color("Lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("LeXiNgToN"), Some("cyan"));
@@ -702,9 +878,100 @@ mod tests {
     #[test]
     fn test_get_coworker_color_unknown_returns_none() {
         assert_eq!(get_coworker_color("unknown"), None);
-        assert_eq!(get_coworker_color("lead"), None);
+        assert_eq!(get_coworker_color("coworker"), None);
         assert_eq!(get_coworker_color(""), None);
     }
 
     // Integration tests would require actual tmux, so we keep unit tests minimal
+
+    #[test]
+    fn test_parse_status_claiming() {
+        assert_eq!(parse_status("claiming task #1"), "claim#1");
+        assert_eq!(parse_status("Claiming task 5"), "claim#5");
+        assert_eq!(parse_status("just claimed #3"), "claim#3");
+    }
+
+    #[test]
+    fn test_parse_status_developing() {
+        assert_eq!(parse_status("developing task #1"), "dev#1");
+        assert_eq!(parse_status("working on task #2"), "dev#2");
+        assert_eq!(parse_status("coding the feature"), "dev");
+        assert_eq!(parse_status("implementing auth #5"), "dev#5");
+    }
+
+    #[test]
+    fn test_parse_status_testing() {
+        assert_eq!(parse_status("testing"), "test");
+        assert_eq!(parse_status("running tests for #3"), "test#3");
+        assert_eq!(parse_status("test suite running"), "test");
+    }
+
+    #[test]
+    fn test_parse_status_pr() {
+        assert_eq!(parse_status("opening PR for task #1"), "PR#1");
+        assert_eq!(parse_status("PR ready"), "PR");
+        assert_eq!(parse_status("creating pull request #4"), "PR#4");
+        assert_eq!(parse_status("requesting review #2"), "PR#2");
+    }
+
+    #[test]
+    fn test_parse_status_debug() {
+        assert_eq!(parse_status("debugging auth bug"), "debug");
+        assert_eq!(parse_status("investigating the issue #7"), "debug#7");
+    }
+
+    #[test]
+    fn test_parse_status_idle() {
+        assert_eq!(parse_status("idle"), "idle");
+        assert_eq!(parse_status("waiting for review"), "idle");
+        assert_eq!(parse_status("blocked on task #3"), "idle#3");
+    }
+
+    #[test]
+    fn test_parse_status_done() {
+        assert_eq!(parse_status("completed task #1"), "done#1");
+        assert_eq!(parse_status("finished implementation"), "done");
+    }
+
+    #[test]
+    fn test_parse_status_no_keyword_truncates() {
+        assert_eq!(parse_status("doing something"), "doing something");
+        assert_eq!(
+            parse_status("this is a very long status message that should be truncated"),
+            "this is a very lo..."
+        );
+    }
+
+    #[test]
+    fn test_extract_task_number_hash_format() {
+        assert_eq!(extract_task_number("task #1"), Some(1));
+        assert_eq!(extract_task_number("#42 is the answer"), Some(42));
+        assert_eq!(extract_task_number("working on #5"), Some(5));
+    }
+
+    #[test]
+    fn test_extract_task_number_task_word_format() {
+        assert_eq!(extract_task_number("claiming task 3"), Some(3));
+        assert_eq!(extract_task_number("TASK 7 is mine"), Some(7));
+    }
+
+    #[test]
+    fn test_extract_task_number_none() {
+        assert_eq!(extract_task_number("just coding"), None);
+        assert_eq!(extract_task_number("no numbers here"), None);
+        assert_eq!(extract_task_number("#"), None);
+    }
+
+    #[test]
+    fn test_truncate_status() {
+        assert_eq!(truncate_status("short", 20), "short");
+        assert_eq!(
+            truncate_status("exactly twenty chars", 20),
+            "exactly twenty chars"
+        );
+        assert_eq!(
+            truncate_status("this is way too long for the tab", 20),
+            "this is way too l..."
+        );
+    }
 }

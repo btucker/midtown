@@ -237,6 +237,8 @@ struct Review {
 #[derive(Debug, Deserialize)]
 struct PullRequestRef {
     number: u64,
+    head: Option<PullRequestHead>,
+    body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -276,8 +278,14 @@ struct StatusEvent {
     description: Option<String>,
     #[allow(dead_code)]
     sha: String,
+    branches: Option<Vec<StatusBranch>>,
     #[allow(dead_code)]
     repository: Repository,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatusBranch {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,6 +309,7 @@ struct CheckRun {
 struct CheckSuite {
     #[allow(dead_code)]
     head_sha: String,
+    head_branch: Option<String>,
     pull_requests: Vec<CheckSuitePR>,
 }
 
@@ -426,6 +435,11 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json
         return Ok(None);
     }
 
+    // Determine sender from PR branch prefix or body frontmatter
+    let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
+    let pr_body = event.pull_request.body.as_deref();
+    let sender = determine_pr_sender(branch, pr_body);
+
     let content = match event.review.state.to_lowercase().as_str() {
         "approved" => format!(
             "{} approved PR #{}",
@@ -442,7 +456,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(Message::new(sender, content, MessageType::Text)))
 }
 
 fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -473,17 +487,30 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Err
         return Ok(None);
     }
 
+    // Determine sender from PR branch prefix or body frontmatter
+    let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
+    let pr_body = event.pull_request.body.as_deref();
+    let sender = determine_pr_sender(branch, pr_body);
+
     let preview = truncate_comment(&event.comment.body, 50);
     let content = format!(
         "{} left review comment on PR #{}: {}",
         event.comment.user.login, event.pull_request.number, preview
     );
 
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(Message::new(sender, content, MessageType::Text)))
 }
 
 fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
     let event: StatusEvent = serde_json::from_slice(body)?;
+
+    // Determine sender from first branch in the branches array
+    let branch = event
+        .branches
+        .as_ref()
+        .and_then(|branches| branches.first())
+        .map(|b| b.name.as_str());
+    let sender = determine_pr_sender(branch, None);
 
     let content = match event.state.as_str() {
         "success" => format!(
@@ -505,7 +532,7 @@ fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(Message::new(sender, content, MessageType::Text)))
 }
 
 fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
@@ -515,6 +542,14 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
     if event.check_run.status != "completed" {
         return Ok(None);
     }
+
+    // Determine sender from branch prefix (check_suite includes head_branch)
+    let branch = event
+        .check_run
+        .check_suite
+        .as_ref()
+        .and_then(|cs| cs.head_branch.as_deref());
+    let sender = determine_pr_sender(branch, None);
 
     let pr_info = event
         .check_run
@@ -532,7 +567,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
         _ => return Ok(None),
     };
 
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(Message::new(sender, content, MessageType::Text)))
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
@@ -717,5 +752,118 @@ mod tests {
 
         let msg = handle_status(payload.as_bytes()).unwrap();
         assert!(msg.is_none());
+    }
+
+    #[test]
+    fn test_handle_review_with_branch_attribution() {
+        let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "state": "approved",
+                "user": {"login": "btucker"}
+            },
+            "pull_request": {
+                "number": 42,
+                "head": {"ref": "amsterdam/fix-bug"},
+                "body": "Some PR description"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_pull_request_review(payload.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(msg.content, "btucker approved PR #42");
+        // Sender is attributed to coworker from branch
+        assert_eq!(msg.from, "amsterdam");
+    }
+
+    #[test]
+    fn test_handle_review_with_frontmatter_attribution() {
+        let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "state": "changes_requested",
+                "user": {"login": "reviewer"}
+            },
+            "pull_request": {
+                "number": 55,
+                "head": {"ref": "feature/unrelated"},
+                "body": "<!-- midtown: columbus -->\n\nSome description"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_pull_request_review(payload.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(msg.content, "reviewer requested changes on PR #55");
+        // Frontmatter takes priority over branch
+        assert_eq!(msg.from, "columbus");
+    }
+
+    #[test]
+    fn test_handle_ci_status_with_branch_attribution() {
+        let payload = r#"{
+            "state": "failure",
+            "context": "ci/tests",
+            "description": "Tests failed",
+            "sha": "abc123",
+            "branches": [{"name": "riverside/add-feature"}],
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_status(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(msg.content, "CI failed (ci/tests): Tests failed");
+        // Sender is attributed to coworker from branch
+        assert_eq!(msg.from, "riverside");
+    }
+
+    #[test]
+    fn test_handle_check_run_with_branch_attribution() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "park/implement-thing",
+                    "pull_requests": [{"number": 99}]
+                }
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(msg.content, "Check 'build' passed on PR #99");
+        // Sender is attributed to coworker from branch
+        assert_eq!(msg.from, "park");
+    }
+
+    #[test]
+    fn test_handle_review_comment_with_branch_attribution() {
+        let payload = r#"{
+            "action": "created",
+            "pull_request": {
+                "number": 77,
+                "head": {"ref": "madison/refactor"},
+                "body": "PR body here"
+            },
+            "comment": {
+                "user": {"login": "reviewer"},
+                "body": "Nice work!"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            msg.content,
+            "reviewer left review comment on PR #77: Nice work!"
+        );
+        // Sender is attributed to coworker from branch
+        assert_eq!(msg.from, "madison");
     }
 }

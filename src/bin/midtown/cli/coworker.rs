@@ -36,6 +36,11 @@ pub enum CoworkerCommand {
     TaskHook,
     /// Link this session's tasks to the Lead's task directory (SessionStart hook)
     LinkTasks,
+    /// Handle Claude Code PostToolUse hook for AskUserQuestion
+    ///
+    /// Reads tool use context from stdin and notifies daemon to nudge Lead.
+    /// Called automatically by Claude Code when AskUserQuestion tool is used.
+    AskHook,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -68,6 +73,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
         CoworkerCommand::StopHook => handle_stop_hook_standalone(),
         CoworkerCommand::TaskHook => handle_task_hook_standalone(),
         CoworkerCommand::LinkTasks => handle_link_tasks_standalone(),
+        CoworkerCommand::AskHook => handle_ask_hook_standalone(),
     }
 }
 
@@ -84,13 +90,24 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
 /// prevent stopping and allow the coworker to continue working.
 pub fn handle_stop_hook_standalone() -> Result<Response, String> {
     // First, read channel messages to sync any pending updates
-    let _ = read_channel_messages();
+    let new_messages = read_channel_messages().unwrap_or_default();
 
     // Get coworker name from environment
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
 
     // Collect all available work
     let mut work_items: Vec<String> = Vec::new();
+
+    // Check for new channel messages (nudges, requests, etc.)
+    if !new_messages.is_empty() {
+        let formatted = format_channel_messages(&new_messages);
+        work_items.push(format!(
+            "{} new channel message{}:\n- {}",
+            new_messages.len(),
+            if new_messages.len() == 1 { "" } else { "s" },
+            formatted
+        ));
+    }
 
     // Check for unclaimed tasks
     let unclaimed_count = count_unclaimed_tasks();
@@ -322,8 +339,109 @@ pub fn handle_task_hook_standalone() -> Result<Response, String> {
     })
 }
 
-/// Read channel messages silently (for stop hook sync).
-fn read_channel_messages() -> Result<(), String> {
+/// Handle the PostToolUse hook for AskUserQuestion.
+///
+/// This command is designed to be used as a Claude Code PostToolUse hook
+/// for the AskUserQuestion tool. It:
+/// 1. Reads tool use context from stdin (JSON)
+/// 2. Extracts the question(s) being asked
+/// 3. Notifies daemon via RPC to nudge the Lead with the question
+///
+/// Example: When a coworker uses AskUserQuestion to ask "Should I use REST or GraphQL?",
+/// this hook triggers and the Lead gets nudged with that question.
+pub fn handle_ask_hook_standalone() -> Result<Response, String> {
+    use std::io::Read;
+
+    // Read stdin for tool context
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| format!("Failed to read stdin: {}", e))?;
+
+    // Parse the JSON input
+    let context: serde_json::Value =
+        serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+    // Get agent name from environment
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
+
+    // Extract questions from tool input
+    let tool_input = &context["tool_input"];
+    let questions = extract_questions(tool_input);
+
+    if questions.is_empty() {
+        return Ok(Response::Message {
+            message: "No questions found in tool input".to_string(),
+        });
+    }
+
+    // Format the question(s) for the nudge
+    let question_text = if questions.len() == 1 {
+        questions[0].clone()
+    } else {
+        questions.join("; ")
+    };
+
+    // Try to notify daemon via RPC
+    let client_result = crate::client::DaemonClient::connect();
+    match client_result {
+        Ok(client) => {
+            // Call daemon RPC to notify about the question
+            match client.coworker_asking(&agent, &question_text) {
+                Ok(_) => Ok(Response::Message {
+                    message: format!("Notified Lead: {} is asking: {}", agent, question_text),
+                }),
+                Err(e) => {
+                    // Fallback: post to channel directly if daemon call fails
+                    post_question_to_channel(&agent, &question_text)?;
+                    Ok(Response::Message {
+                        message: format!("Posted question to channel (daemon error: {})", e),
+                    })
+                }
+            }
+        }
+        Err(_) => {
+            // Fallback: post to channel directly if daemon not running
+            post_question_to_channel(&agent, &question_text)?;
+            Ok(Response::Message {
+                message: "Posted question to channel (daemon not running)".to_string(),
+            })
+        }
+    }
+}
+
+/// Extract questions from AskUserQuestion tool input.
+fn extract_questions(tool_input: &serde_json::Value) -> Vec<String> {
+    let mut questions = Vec::new();
+
+    // AskUserQuestion has a "questions" array with "question" fields
+    if let Some(qs) = tool_input.get("questions").and_then(|q| q.as_array()) {
+        for q in qs {
+            if let Some(text) = q.get("question").and_then(|t| t.as_str()) {
+                questions.push(text.to_string());
+            }
+        }
+    }
+
+    questions
+}
+
+/// Post a question to the channel as a fallback when daemon is unavailable.
+fn post_question_to_channel(agent: &str, question: &str) -> Result<(), String> {
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+    let channel =
+        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    let message = midtown::Message::text(agent, format!("Question for Lead: {}", question));
+    channel
+        .send(&message)
+        .map_err(|e| format!("Failed to post to channel: {}", e))?;
+
+    Ok(())
+}
+
+/// Read channel messages and return them.
+fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
     // Try to detect repo and read channel
     if let Some(repo) = detect_git_repo() {
         let channel = midtown::Channel::for_repo(&repo)
@@ -333,9 +451,24 @@ fn read_channel_messages() -> Result<(), String> {
         let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
 
         // Read new messages since cursor (advances cursor position)
-        let _ = channel.read_since_cursor(&agent);
+        let messages = channel
+            .read_since_cursor(&agent)
+            .map_err(|e| format!("Failed to read channel: {}", e))?;
+        return Ok(messages);
     }
-    Ok(())
+    Ok(Vec::new())
+}
+
+/// Format channel messages for display in stop hook reason.
+fn format_channel_messages(messages: &[midtown::Message]) -> String {
+    messages
+        .iter()
+        .map(|msg| match msg.message_type {
+            midtown::MessageType::Action => format!("* {} {}", msg.from, msg.content),
+            _ => format!("{}: {}", msg.from, msg.content),
+        })
+        .collect::<Vec<_>>()
+        .join("\n- ")
 }
 
 /// Count unclaimed tasks from the beads system.

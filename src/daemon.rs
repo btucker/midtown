@@ -2,15 +2,21 @@
 //!
 //! This module provides the daemon server that listens on a Unix socket and
 //! handles JSON-RPC requests for workspace management operations. It also
-//! runs a webhook server to receive GitHub events.
+//! runs a webhook server to receive GitHub events, and polls PRs for
+//! actionable issues.
 
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use fs2::FileExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
@@ -25,6 +31,8 @@ use crate::worktree::WorktreeManager;
 pub struct DaemonConfig {
     /// Path to the Unix socket.
     pub socket_path: PathBuf,
+    /// Path to the PID file for singleton enforcement.
+    pub pid_file_path: PathBuf,
     /// Working directory for spawned coworkers.
     pub workdir: PathBuf,
     /// Enable verbose logging.
@@ -35,6 +43,8 @@ pub struct DaemonConfig {
     pub webhook_secret: Option<String>,
     /// Interval in seconds to restart webhook forwarder (for reliability).
     pub webhook_restart_interval_secs: u64,
+    /// Interval in seconds to poll PRs for actionable issues.
+    pub pr_poll_interval_secs: u64,
 }
 
 /// Default interval for restarting the webhook forwarder (5 minutes)
@@ -42,6 +52,69 @@ pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
 
 /// Default port for the webhook server (obscure to avoid conflicts)
 pub const DEFAULT_WEBHOOK_PORT: u16 = 47022;
+
+/// Default interval for polling PRs (1 minute)
+pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 60;
+
+/// Minimum time between nudging the same PR issue (10 minutes)
+pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
+
+/// Types of actionable PR issues
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrIssueType {
+    /// PR has merge conflicts
+    MergeConflict,
+    /// CI checks failed
+    CiFailed,
+    /// Review requested changes
+    ChangesRequested,
+    /// PR is approved and ready to merge
+    Approved,
+}
+
+impl std::fmt::Display for PrIssueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrIssueType::MergeConflict => write!(f, "merge conflict"),
+            PrIssueType::CiFailed => write!(f, "CI failed"),
+            PrIssueType::ChangesRequested => write!(f, "changes requested"),
+            PrIssueType::Approved => write!(f, "approved"),
+        }
+    }
+}
+
+/// Tracks which PR issues have been nudged to avoid spamming
+#[derive(Debug, Default)]
+pub struct PrIssueTracker {
+    /// Map of (pr_number, issue_type) -> last_nudge_time
+    nudged: HashMap<(u64, PrIssueType), Instant>,
+}
+
+impl PrIssueTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if we should nudge for this issue (not nudged recently)
+    pub fn should_nudge(&self, pr_number: u64, issue_type: PrIssueType) -> bool {
+        match self.nudged.get(&(pr_number, issue_type)) {
+            Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(PR_NUDGE_COOLDOWN_SECS),
+            None => true,
+        }
+    }
+
+    /// Record that we nudged for this issue
+    pub fn record_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
+        self.nudged.insert((pr_number, issue_type), Instant::now());
+    }
+
+    /// Clean up old entries (older than cooldown period)
+    pub fn cleanup(&mut self) {
+        let cutoff = Duration::from_secs(PR_NUDGE_COOLDOWN_SECS);
+        self.nudged
+            .retain(|_, last_nudge| last_nudge.elapsed() < cutoff);
+    }
+}
 
 impl Default for DaemonConfig {
     fn default() -> Self {
@@ -57,23 +130,36 @@ impl Default for DaemonConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS);
 
+        let pr_poll_interval_secs = std::env::var("MIDTOWN_PR_POLL_INTERVAL")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_PR_POLL_INTERVAL_SECS);
+
         Self {
             // Use repo-specific socket path to isolate daemons per project
             socket_path: crate::paths::daemon_socket(),
+            // Use repo-specific PID file for singleton enforcement
+            pid_file_path: crate::paths::daemon_pid_file(),
             workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             verbose: false,
             webhook_port,
             webhook_secret,
             webhook_restart_interval_secs,
+            pr_poll_interval_secs,
         }
     }
 }
+
+/// Interval for checking orphaned tasks (30 seconds)
+const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
 
 /// Shared daemon state.
 struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
+    /// Tracker to avoid spamming the same PR issues
+    pr_issue_tracker: Mutex<PrIssueTracker>,
 }
 
 impl DaemonState {
@@ -97,7 +183,61 @@ impl DaemonState {
             coworkers: CoworkerManager::new(session_name, worktree_manager),
             channel,
             socket_path,
+            pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
         })
+    }
+}
+
+/// Acquire an exclusive lock on the PID file.
+///
+/// This enforces singleton behavior - only one daemon can run per repository.
+/// The lock is held for the lifetime of the returned File handle.
+///
+/// Returns an error if another daemon is already running (lock already held).
+fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
+    // Ensure parent directory exists
+    if let Some(parent) = pid_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Open or create the PID file
+    let mut file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(pid_path)?;
+
+    // Try to acquire an exclusive lock (non-blocking)
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            // We got the lock - write our PID
+            let pid = std::process::id();
+            file.set_len(0)?; // Truncate any old content
+            writeln!(file, "{}", pid)?;
+            file.sync_all()?;
+            Ok(file)
+        }
+        Err(e) => {
+            // Lock is held by another process
+            // Try to read the existing PID for a better error message
+            let existing_pid = std::fs::read_to_string(pid_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+
+            let msg = match existing_pid {
+                Some(pid) => format!(
+                    "Another daemon is already running (PID {}). Stop it first with 'midtown stop'.",
+                    pid
+                ),
+                None => format!(
+                    "Another daemon is already running. Stop it first with 'midtown stop'. ({})",
+                    e
+                ),
+            };
+
+            Err(crate::Error::Io(std::io::Error::other(msg)))
+        }
     }
 }
 
@@ -113,7 +253,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         .with_target(false)
         .init();
 
-    // Ensure parent directory exists
+    // Acquire exclusive lock on PID file to enforce singleton behavior
+    let pid_file = acquire_pid_lock(&config.pid_file_path)?;
+    info!("Acquired PID lock: {}", config.pid_file_path.display());
+
+    // Ensure parent directory exists for socket
     if let Some(parent) = config.socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -184,6 +328,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
 
+    // Start PR polling background task
+    let (pr_poll_shutdown_tx, pr_poll_shutdown_rx) = watch::channel(false);
+    {
+        let state = Arc::clone(&state);
+        let interval_secs = config.pr_poll_interval_secs;
+        tokio::spawn(async move {
+            pr_poll_task(state, interval_secs, pr_poll_shutdown_rx).await;
+        });
+        info!(
+            "PR polling started (interval: {}s)",
+            config.pr_poll_interval_secs
+        );
+    }
+
+    // Timer for periodic orphan checking
+    let mut orphan_check_interval =
+        tokio::time::interval(std::time::Duration::from_secs(ORPHAN_CHECK_INTERVAL_SECS));
+    // Skip the first tick (which fires immediately)
+    orphan_check_interval.tick().await;
+
     // Main accept loop
     loop {
         let shutdown_rx = shutdown_tx.subscribe();
@@ -216,6 +380,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             }
 
+            // Periodic orphan check
+            _ = orphan_check_interval.tick() => {
+                check_and_recover_orphans(&state);
+            }
+
             // Handle SIGTERM
             _ = sigterm.recv() => {
                 info!("Received SIGTERM, shutting down...");
@@ -236,6 +405,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     info!("Stopping webhook forwarder watchdog...");
     let _ = forwarder_shutdown_tx.send(true);
 
+    // Signal PR poll task to stop
+    info!("Stopping PR poll task...");
+    let _ = pr_poll_shutdown_tx.send(true);
+
     // Shutdown all coworkers
     info!("Shutting down coworkers...");
     if let Err(e) = state.coworkers.shutdown_all() {
@@ -245,6 +418,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Clean up socket file
     if config.socket_path.exists() {
         std::fs::remove_file(&config.socket_path)?;
+    }
+
+    // Release PID lock and clean up PID file
+    // The lock is released when pid_file is dropped, but we explicitly clean up the file
+    drop(pid_file);
+    match std::fs::remove_file(&config.pid_file_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!("Failed to remove PID file: {}", e),
     }
 
     info!("Daemon stopped");
@@ -392,6 +574,204 @@ fn start_gh_webhook_forward(repo: &str, url: &str) -> std::io::Result<std::proce
         .spawn()
 }
 
+/// Background task that polls PRs for actionable issues.
+///
+/// Checks all open PRs every `interval_secs` seconds for:
+/// - Merge conflicts
+/// - CI failures
+/// - Changes requested
+/// - Approved and ready to merge
+///
+/// Nudges the PR owner (extracted from branch prefix) or an idle coworker.
+async fn pr_poll_task(
+    state: Arc<DaemonState>,
+    interval_secs: u64,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    let interval = Duration::from_secs(interval_secs);
+
+    loop {
+        // Wait for the interval or shutdown signal
+        let delay = tokio::time::sleep(interval);
+
+        tokio::select! {
+            _ = delay => {
+                // Time to poll PRs
+                if let Err(e) = poll_prs_for_issues(&state).await {
+                    warn!("PR poll error: {}", e);
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("PR poll task received shutdown signal");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Poll all open PRs and nudge for actionable issues.
+async fn poll_prs_for_issues(
+    state: &DaemonState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    debug!("Polling PRs for actionable issues...");
+
+    // Get list of active coworkers
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    // Run gh pr list command
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title",
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr list failed: {}", stderr).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
+
+    // Cleanup old nudge tracking entries
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.cleanup();
+    }
+
+    for pr in prs {
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+
+        // Extract owner from branch prefix (e.g., "amsterdam/feature" -> "amsterdam")
+        let owner = head_ref.split('/').next().unwrap_or("");
+
+        // Check for actionable issues
+        let issues = detect_pr_issues(&pr);
+
+        for issue_type in issues {
+            // Check if we should nudge for this issue
+            let should_nudge = {
+                let tracker = state.pr_issue_tracker.lock().await;
+                tracker.should_nudge(pr_number, issue_type)
+            };
+
+            if !should_nudge {
+                continue;
+            }
+
+            // Format the nudge message
+            let message = format!(
+                "PR #{} ({}) - {}: {}",
+                pr_number,
+                truncate_str(title, 40),
+                issue_type,
+                get_issue_action(issue_type)
+            );
+
+            // Determine who to nudge
+            let nudged = if active_coworkers.contains(&owner.to_string()) {
+                // Owner is an active coworker, nudge them
+                match state.coworkers.nudge(owner, &message) {
+                    Ok(()) => {
+                        info!("Nudged {} about PR #{}: {}", owner, pr_number, issue_type);
+                        true
+                    }
+                    Err(e) => {
+                        warn!("Failed to nudge {}: {}", owner, e);
+                        false
+                    }
+                }
+            } else {
+                // Owner not active, post to channel
+                let msg = Message::new("daemon", message.clone(), MessageType::Text);
+                if let Err(e) = state.channel.send(&msg) {
+                    warn!("Failed to post PR issue to channel: {}", e);
+                }
+                info!("Posted PR #{} issue to channel: {}", pr_number, issue_type);
+                true
+            };
+
+            // Record the nudge
+            if nudged {
+                let mut tracker = state.pr_issue_tracker.lock().await;
+                tracker.record_nudge(pr_number, issue_type);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Detect actionable issues for a PR.
+fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
+    let mut issues = Vec::new();
+
+    // Check for merge conflicts
+    let mergeable = pr.get("mergeable").and_then(|m| m.as_str()).unwrap_or("");
+    if mergeable == "CONFLICTING" {
+        issues.push(PrIssueType::MergeConflict);
+    }
+
+    // Check for CI failures
+    if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
+        let has_failure = checks.iter().any(|check| {
+            let conclusion = check
+                .get("conclusion")
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            conclusion == "FAILURE"
+        });
+        if has_failure {
+            issues.push(PrIssueType::CiFailed);
+        }
+    }
+
+    // Check review decision
+    let review_decision = pr
+        .get("reviewDecision")
+        .and_then(|r| r.as_str())
+        .unwrap_or("");
+    match review_decision {
+        "CHANGES_REQUESTED" => issues.push(PrIssueType::ChangesRequested),
+        "APPROVED" => issues.push(PrIssueType::Approved),
+        _ => {}
+    }
+
+    issues
+}
+
+/// Get action text for a PR issue type.
+fn get_issue_action(issue_type: PrIssueType) -> &'static str {
+    match issue_type {
+        PrIssueType::MergeConflict => "please rebase",
+        PrIssueType::CiFailed => "please investigate",
+        PrIssueType::ChangesRequested => "please address feedback",
+        PrIssueType::Approved => "ready to merge!",
+    }
+}
+
+/// Truncate a string to max length with ellipsis.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
 /// Handle a single client connection.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
@@ -510,6 +890,21 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "coworker.asking" => {
+            let params = request.params.as_ref();
+            let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
+            let question = params
+                .and_then(|p| p.get("question"))
+                .and_then(|v| v.as_str());
+
+            match (name, question) {
+                (Some(name), Some(question)) => {
+                    handle_coworker_asking(request.id, name, question, state)
+                }
+                _ => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "status" => handle_status(request.id, state),
 
         "channel.post" => {
@@ -520,7 +915,7 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             let from = params
                 .and_then(|p| p.get("from"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("Lead");
+                .unwrap_or("lead");
 
             match message {
                 Some(msg) => handle_channel_post(request.id, from, msg, state),
@@ -639,6 +1034,49 @@ fn handle_coworker_nudge(
             Response::error(id, RpcError::new(-32603, e.to_string()))
         }
     }
+}
+
+/// Handle coworker.asking RPC method.
+///
+/// Called when a coworker uses AskUserQuestion tool. This:
+/// 1. Posts the question to the channel
+/// 2. Nudges the Lead with the question
+/// 3. Marks the coworker as waiting for feedback
+fn handle_coworker_asking(
+    id: RequestId,
+    name: &str,
+    question: &str,
+    state: &DaemonState,
+) -> Response {
+    // Post question to channel
+    let msg = Message::text(name, format!("Question for Lead: {}", question));
+    if let Err(e) = state.channel.send(&msg) {
+        error!("Failed to post question to channel: {}", e);
+    }
+
+    // Nudge the Lead with the question
+    let nudge_message = format!("{} is asking: {}", name, question);
+    if let Err(e) = state.coworkers.nudge("Lead", &nudge_message) {
+        // Log but don't fail - Lead might not be in a tmux window
+        debug!("Failed to nudge Lead: {}", e);
+    }
+
+    // Update coworker status to show they're waiting
+    if let Err(e) = state
+        .coworkers
+        .update_status_display(name, Some("waiting for feedback"))
+    {
+        debug!("Failed to update coworker status: {}", e);
+    }
+
+    info!("Coworker {} asking: {}", name, question);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Notified Lead about question from {}", name),
+        }),
+    )
 }
 
 /// Handle channel.post RPC method.
@@ -915,5 +1353,280 @@ fn truncate_message(msg: &str, max_len: usize) -> String {
         first_line.to_string()
     } else {
         format!("{}...", &first_line[..max_len])
+    }
+}
+
+/// Check for orphaned tasks and auto-recover coworkers.
+///
+/// An orphaned task is one that is `in_progress` but the owning coworker
+/// is no longer active (no tmux window). If the coworker's worktree still
+/// exists, we respawn them and nudge them to resume work.
+fn check_and_recover_orphans(state: &DaemonState) {
+    // Get in_progress tasks with their owners
+    let in_progress = get_in_progress_tasks_with_owners();
+
+    if in_progress.is_empty() {
+        return;
+    }
+
+    // Get list of currently active coworkers
+    let active_names: std::collections::HashSet<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|cw| cw.name.to_lowercase())
+        .collect();
+
+    // Find orphaned tasks (in_progress with owner not in active list)
+    for (task_id, task_subject, owner) in in_progress {
+        // Skip if owner is Lead or empty
+        if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+            continue;
+        }
+
+        // Skip if coworker is already active
+        if active_names.contains(&owner.to_lowercase()) {
+            continue;
+        }
+
+        // This is an orphaned task - try to recover the coworker
+        info!(
+            "Detected orphaned task #{} owned by {} - attempting recovery",
+            task_id, owner
+        );
+
+        // Try to respawn the coworker
+        match state.coworkers.respawn(&owner) {
+            Ok(()) => {
+                info!("Respawned coworker {} successfully", owner);
+
+                // Post to channel about the recovery
+                let recovery_msg = Message::text(
+                    "daemon",
+                    format!(
+                        "♻️ Recovered coworker {} for orphaned task #{}",
+                        owner, task_id
+                    ),
+                );
+                if let Err(e) = state.channel.send(&recovery_msg) {
+                    warn!("Failed to post recovery message: {}", e);
+                }
+
+                // Give the coworker a moment to start up
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // Nudge them to resume their task
+                let nudge_msg = format!(
+                    "Resume task #{}: {}. You were working on this task before your session was interrupted. Check your git status and continue where you left off.",
+                    task_id, task_subject
+                );
+
+                if let Err(e) = state.coworkers.nudge(&owner, &nudge_msg) {
+                    warn!("Failed to nudge {} to resume: {}", owner, e);
+                } else {
+                    info!("Nudged {} to resume task #{}", owner, task_id);
+                }
+            }
+            Err(e) => {
+                // Could not respawn - log and continue
+                // This might happen if the worktree doesn't exist
+                debug!(
+                    "Could not respawn {} for orphaned task #{}: {}",
+                    owner, task_id, e
+                );
+            }
+        }
+    }
+}
+
+/// Get list of in_progress tasks with their owners and subjects.
+fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
+    // Use bd (beads) to get task list
+    let output = std::process::Command::new("bd")
+        .args(["list", "--json"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return tasks
+                    .iter()
+                    .filter(|task| {
+                        task.get("status")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s == "in_progress")
+                            .unwrap_or(false)
+                    })
+                    .map(|task| {
+                        let id = task
+                            .get("id")
+                            .and_then(|i| {
+                                i.as_str()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| i.as_u64().map(|n| n.to_string()))
+                            })
+                            .unwrap_or_else(|| "?".to_string());
+                        let subject = task
+                            .get("subject")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("Unknown task")
+                            .to_string();
+                        let owner = task
+                            .get("owner")
+                            .and_then(|o| o.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (id, subject, owner)
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pr_issue_tracker_should_nudge_new() {
+        let tracker = PrIssueTracker::new();
+        assert!(tracker.should_nudge(42, PrIssueType::MergeConflict));
+        assert!(tracker.should_nudge(42, PrIssueType::CiFailed));
+    }
+
+    #[test]
+    fn test_pr_issue_tracker_should_nudge_after_record() {
+        let mut tracker = PrIssueTracker::new();
+        tracker.record_nudge(42, PrIssueType::MergeConflict);
+
+        // Same issue should not be nudged again immediately
+        assert!(!tracker.should_nudge(42, PrIssueType::MergeConflict));
+
+        // Different issue type for same PR should be nudged
+        assert!(tracker.should_nudge(42, PrIssueType::CiFailed));
+
+        // Same issue type for different PR should be nudged
+        assert!(tracker.should_nudge(43, PrIssueType::MergeConflict));
+    }
+
+    #[test]
+    fn test_pr_issue_type_display() {
+        assert_eq!(PrIssueType::MergeConflict.to_string(), "merge conflict");
+        assert_eq!(PrIssueType::CiFailed.to_string(), "CI failed");
+        assert_eq!(
+            PrIssueType::ChangesRequested.to_string(),
+            "changes requested"
+        );
+        assert_eq!(PrIssueType::Approved.to_string(), "approved");
+    }
+
+    #[test]
+    fn test_detect_pr_issues_merge_conflict() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "CONFLICTING",
+            "statusCheckRollup": [],
+            "reviewDecision": ""
+        });
+        let issues = detect_pr_issues(&pr);
+        assert!(issues.contains(&PrIssueType::MergeConflict));
+    }
+
+    #[test]
+    fn test_detect_pr_issues_ci_failed() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "name": "lint"},
+                {"conclusion": "FAILURE", "name": "test"}
+            ],
+            "reviewDecision": ""
+        });
+        let issues = detect_pr_issues(&pr);
+        assert!(issues.contains(&PrIssueType::CiFailed));
+    }
+
+    #[test]
+    fn test_detect_pr_issues_changes_requested() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [],
+            "reviewDecision": "CHANGES_REQUESTED"
+        });
+        let issues = detect_pr_issues(&pr);
+        assert!(issues.contains(&PrIssueType::ChangesRequested));
+    }
+
+    #[test]
+    fn test_detect_pr_issues_approved() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [],
+            "reviewDecision": "APPROVED"
+        });
+        let issues = detect_pr_issues(&pr);
+        assert!(issues.contains(&PrIssueType::Approved));
+    }
+
+    #[test]
+    fn test_detect_pr_issues_no_issues() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "name": "test"}
+            ],
+            "reviewDecision": ""
+        });
+        let issues = detect_pr_issues(&pr);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_detect_pr_issues_multiple() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "CONFLICTING",
+            "statusCheckRollup": [
+                {"conclusion": "FAILURE", "name": "test"}
+            ],
+            "reviewDecision": "CHANGES_REQUESTED"
+        });
+        let issues = detect_pr_issues(&pr);
+        assert_eq!(issues.len(), 3);
+        assert!(issues.contains(&PrIssueType::MergeConflict));
+        assert!(issues.contains(&PrIssueType::CiFailed));
+        assert!(issues.contains(&PrIssueType::ChangesRequested));
+    }
+
+    #[test]
+    fn test_get_issue_action() {
+        assert_eq!(
+            get_issue_action(PrIssueType::MergeConflict),
+            "please rebase"
+        );
+        assert_eq!(
+            get_issue_action(PrIssueType::CiFailed),
+            "please investigate"
+        );
+        assert_eq!(
+            get_issue_action(PrIssueType::ChangesRequested),
+            "please address feedback"
+        );
+        assert_eq!(get_issue_action(PrIssueType::Approved), "ready to merge!");
+    }
+
+    #[test]
+    fn test_truncate_str() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+        assert_eq!(truncate_str("hello world", 8), "hello...");
+        assert_eq!(truncate_str("hi", 2), "hi");
     }
 }

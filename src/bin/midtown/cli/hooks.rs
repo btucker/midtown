@@ -67,15 +67,17 @@ fn handle_insight_hook() -> Result<Response, String> {
         });
     }
 
-    // Get previously posted insights (mutable to track in-memory too)
-    let mut posted = get_posted_insights(&transcript_path);
+    // Detect repo first - needed for both channel and insight tracking
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+
+    // Get previously posted insights (tracked per-repo, not per-transcript)
+    let mut posted = get_posted_insights(&repo);
 
     // Post new insights to channel
-    let repo = detect_git_repo().ok_or("Not in a git repository")?;
     let channel =
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
 
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "Lead".to_string());
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
 
     let mut posted_count = 0;
     for insight in &insights {
@@ -85,13 +87,20 @@ fn handle_insight_hook() -> Result<Response, String> {
             continue;
         }
 
+        // Atomically try to claim this insight - prevents race conditions
+        // between concurrent hook invocations
+        if !try_claim_insight(&repo, &hash) {
+            // Another process beat us to it
+            posted.insert(hash);
+            continue;
+        }
+
         // Post insight to channel
         let message = midtown::Message::text(&agent, format!("💡 {}", insight));
         if channel.send(&message).is_ok() {
             posted_count += 1;
-            // Record that we posted this insight (both in-memory and to file)
-            posted.insert(hash.clone());
-            record_posted_insight(&transcript_path, &hash);
+            // Track in-memory for subsequent iterations
+            posted.insert(hash);
         }
     }
 
@@ -100,25 +109,36 @@ fn handle_insight_hook() -> Result<Response, String> {
     })
 }
 
-/// Handle the Lead stop hook - read channel, check for orphaned tasks, and check for mergeable PRs.
+/// Handle the Lead stop hook - read channel, check for orphaned tasks, idle coworkers, and mergeable PRs.
 fn handle_lead_stop_hook() -> Result<Response, String> {
     // First, read channel messages to sync
-    let _ = read_channel_messages();
+    let new_messages = read_channel_messages().unwrap_or_default();
 
-    let mut messages = Vec::new();
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+    let channel =
+        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    // Collect all status items for the response
+    let mut status_items: Vec<String> = Vec::new();
+
+    // Include new channel messages in the response
+    if !new_messages.is_empty() {
+        let formatted = format_channel_messages(&new_messages);
+        status_items.push(format!(
+            "{} new channel message{}:\n- {}",
+            new_messages.len(),
+            if new_messages.len() == 1 { "" } else { "s" },
+            formatted
+        ));
+    }
 
     // Check for orphaned tasks (in_progress but owned by dead coworkers)
     let orphaned = find_orphaned_tasks();
 
     if !orphaned.is_empty() {
-        // Post warning to channel
-        let repo = detect_git_repo().ok_or("Not in a git repository")?;
-        let channel = midtown::Channel::for_repo(&repo)
-            .map_err(|e| format!("Failed to open channel: {}", e))?;
-
         for (task_id, owner) in &orphaned {
             let message = midtown::Message::text(
-                "Lead",
+                "lead",
                 format!(
                     "⚠️ Task {} is in_progress but coworker '{}' is not running",
                     task_id, owner
@@ -127,9 +147,30 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
             let _ = channel.send(&message);
         }
 
-        messages.push(format!(
+        status_items.push(format!(
             "Warning: {} orphaned task(s) found",
             orphaned.len()
+        ));
+    }
+
+    // Check for idle coworkers with no remaining work
+    let idle_coworkers = find_idle_coworkers();
+    let pending_tasks = get_pending_tasks();
+
+    if !idle_coworkers.is_empty() && pending_tasks.is_empty() {
+        let coworker_list = idle_coworkers.join(", ");
+        let message = midtown::Message::text(
+            "Lead",
+            format!(
+                "💤 Coworkers [{}] are idle with no remaining tasks. Consider shutting them down.",
+                coworker_list
+            ),
+        );
+        let _ = channel.send(&message);
+
+        status_items.push(format!(
+            "Coworkers {} are idle with no remaining tasks. Consider: midtown stop",
+            coworker_list
         ));
     }
 
@@ -147,16 +188,17 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
             })
             .collect();
 
-        messages.extend(pr_messages);
+        status_items.extend(pr_messages);
     }
 
-    if messages.is_empty() {
+    if status_items.is_empty() {
         Ok(Response::Message {
-            message: "Channel synced, no orphaned tasks, no mergeable PRs".to_string(),
+            message: "Channel synced, no orphaned tasks, no idle coworkers, no mergeable PRs"
+                .to_string(),
         })
     } else {
         Ok(Response::Message {
-            message: messages.join("\n\n"),
+            message: status_items.join("\n\n"),
         })
     }
 }
@@ -264,6 +306,57 @@ fn find_orphaned_tasks() -> Vec<(String, String)> {
     orphaned
 }
 
+/// Find coworkers that are running but not actively working on any task.
+fn find_idle_coworkers() -> Vec<String> {
+    let active_coworkers = get_active_coworkers();
+    let in_progress = get_in_progress_tasks();
+
+    // Build set of coworkers who own in_progress tasks
+    let busy_coworkers: HashSet<String> = in_progress
+        .iter()
+        .map(|(_, owner)| owner.to_lowercase())
+        .collect();
+
+    // Return coworkers who are active but not busy
+    active_coworkers
+        .into_iter()
+        .filter(|cw| !busy_coworkers.contains(&cw.to_lowercase()))
+        .collect()
+}
+
+/// Get list of pending tasks (tasks that can still be claimed).
+fn get_pending_tasks() -> Vec<String> {
+    let output = std::process::Command::new("bd")
+        .args(["list", "--json"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return tasks
+                    .iter()
+                    .filter(|task| {
+                        task.get("status")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s == "pending")
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|task| {
+                        task.get("id").and_then(|i| {
+                            i.as_str()
+                                .map(|s| s.to_string())
+                                .or_else(|| i.as_u64().map(|n| n.to_string()))
+                        })
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Get list of active coworker names from daemon.
 fn get_active_coworkers() -> Vec<String> {
     // Try to connect to daemon and get coworker list
@@ -355,14 +448,29 @@ fn get_in_progress_tasks() -> Vec<(String, String)> {
     }
 }
 
-/// Read channel messages silently (for stop hook sync).
-fn read_channel_messages() -> Result<(), String> {
+/// Read channel messages and return them (for stop hook sync).
+fn read_channel_messages() -> Result<Vec<midtown::Message>, String> {
     if let Some(repo) = detect_git_repo() {
         let channel = midtown::Channel::for_repo(&repo)
             .map_err(|e| format!("Failed to open channel: {}", e))?;
-        let _ = channel.read_since_cursor("Lead");
+        let messages = channel
+            .read_since_cursor("lead")
+            .map_err(|e| format!("Failed to read channel: {}", e))?;
+        return Ok(messages);
     }
-    Ok(())
+    Ok(Vec::new())
+}
+
+/// Format channel messages for display in stop hook reason.
+fn format_channel_messages(messages: &[midtown::Message]) -> String {
+    messages
+        .iter()
+        .map(|msg| match msg.message_type {
+            midtown::MessageType::Action => format!("* {} {}", msg.from, msg.content),
+            _ => format!("{}: {}", msg.from, msg.content),
+        })
+        .collect::<Vec<_>>()
+        .join("\n- ")
 }
 
 /// Handle the idle hook - post to channel that agent is idle.
@@ -480,55 +588,69 @@ fn extract_insights(text: &str) -> Vec<String> {
     insights
 }
 
-/// Get the path to the insights cursor file for a transcript.
-fn insights_cursor_path(transcript_path: &str) -> PathBuf {
-    let transcript = PathBuf::from(transcript_path);
-    let filename = transcript
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
+/// Get the path to the insights directory for the current repository.
+/// Each posted insight hash becomes a file in this directory.
+/// Uses repo name (not transcript) to prevent duplicates across sessions.
+fn insights_dir_path(repo_name: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join(".midtown")
         .join("insights")
-        .join(format!("{}.posted", filename))
+        .join(repo_name)
 }
 
-/// Get set of already-posted insight hashes.
-fn get_posted_insights(transcript_path: &str) -> HashSet<String> {
-    let cursor_path = insights_cursor_path(transcript_path);
-    if let Ok(content) = std::fs::read_to_string(&cursor_path) {
-        content.lines().map(|s| s.to_string()).collect()
+/// Get set of already-posted insight hashes for the given repository.
+fn get_posted_insights(repo_name: &str) -> HashSet<String> {
+    let dir_path = insights_dir_path(repo_name);
+    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+        entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect()
     } else {
         HashSet::new()
     }
 }
 
-/// Record that an insight was posted.
-fn record_posted_insight(transcript_path: &str, hash: &str) {
-    let cursor_path = insights_cursor_path(transcript_path);
-    if let Some(parent) = cursor_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Append hash to file
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&cursor_path)
+/// Atomically try to claim an insight for posting.
+/// Returns true if we successfully claimed it (file didn't exist and we created it).
+/// Returns false if another process already claimed it (file exists).
+fn try_claim_insight(repo_name: &str, hash: &str) -> bool {
+    let dir_path = insights_dir_path(repo_name);
+    let _ = std::fs::create_dir_all(&dir_path);
+
+    let hash_path = dir_path.join(hash);
+
+    // Use create_new(true) for atomic "create only if not exists"
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&hash_path)
     {
-        let _ = writeln!(file, "{}", hash);
+        Ok(_) => true, // We created it - we own this insight
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(_) => false, // Other errors - fail safe by not posting
     }
 }
 
 /// Simple hash of insight content.
+/// Normalizes text before hashing to prevent duplicates from whitespace variations:
+/// - Trims leading/trailing whitespace
+/// - Collapses multiple whitespace/newlines to single space
+/// - Lowercases for consistency
 fn hash_insight(insight: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
+    // Normalize: trim, collapse whitespace, lowercase
+    let normalized: String = insight
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
     let mut hasher = DefaultHasher::new();
-    insight.hash(&mut hasher);
+    normalized.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
@@ -637,6 +759,19 @@ Second insight
         let hash1 = hash_insight("Insight one");
         let hash2 = hash_insight("Insight two");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_insight_normalizes_whitespace() {
+        // Same insight with different whitespace should produce same hash
+        let hash1 = hash_insight("This is an insight");
+        let hash2 = hash_insight("  This  is   an   insight  ");
+        let hash3 = hash_insight("This\n  is\nan\ninsight");
+        let hash4 = hash_insight("THIS IS AN INSIGHT");
+
+        assert_eq!(hash1, hash2, "extra whitespace should be normalized");
+        assert_eq!(hash1, hash3, "newlines should be normalized");
+        assert_eq!(hash1, hash4, "case should be normalized");
     }
 
     #[test]

@@ -101,6 +101,36 @@ pub fn daemon_socket() -> PathBuf {
     daemon_socket_for_repo(&repo)
 }
 
+/// Get the midtown directory for a specific repository.
+///
+/// Returns `~/.midtown/<repo>/`.
+fn midtown_dir_for_repo(repo: &str) -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".midtown")
+        .join(repo)
+}
+
+/// Get the daemon PID file path for a specific repository.
+///
+/// Returns `~/.midtown/<repo>/daemon.pid`.
+///
+/// The PID file is used to enforce singleton behavior - only one daemon
+/// can run per repository. The file is locked exclusively while the
+/// daemon is running.
+pub fn daemon_pid_file_for_repo(repo: &str) -> PathBuf {
+    midtown_dir_for_repo(repo).join("daemon.pid")
+}
+
+/// Get the daemon PID file path for the current repository.
+///
+/// Detects the repo name from the current git working directory.
+/// Falls back to "default" if not in a git repository.
+pub fn daemon_pid_file() -> PathBuf {
+    let repo = detect_repo_name().unwrap_or_else(|| "default".to_string());
+    daemon_pid_file_for_repo(&repo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +147,21 @@ mod tests {
     fn test_daemon_socket_different_repos() {
         let path1 = daemon_socket_for_repo("project-a");
         let path2 = daemon_socket_for_repo("project-b");
+        assert_ne!(path1, path2);
+    }
+
+    #[test]
+    fn test_daemon_pid_file_for_repo() {
+        let path = daemon_pid_file_for_repo("myproject");
+        assert!(path.to_string_lossy().contains(".midtown"));
+        assert!(path.to_string_lossy().contains("myproject"));
+        assert!(path.to_string_lossy().ends_with("daemon.pid"));
+    }
+
+    #[test]
+    fn test_daemon_pid_file_different_repos() {
+        let path1 = daemon_pid_file_for_repo("project-a");
+        let path2 = daemon_pid_file_for_repo("project-b");
         assert_ne!(path1, path2);
     }
 }
