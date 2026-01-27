@@ -109,7 +109,7 @@ fn handle_insight_hook() -> Result<Response, String> {
     })
 }
 
-/// Handle the Lead stop hook - read channel and check for orphaned tasks and idle coworkers.
+/// Handle the Lead stop hook - read channel, check for orphaned tasks, idle coworkers, and mergeable PRs.
 fn handle_lead_stop_hook() -> Result<Response, String> {
     // First, read channel messages to sync
     let new_messages = read_channel_messages().unwrap_or_default();
@@ -174,15 +174,109 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         ));
     }
 
+    // Check for mergeable PRs with passing CI
+    let mergeable_prs = find_mergeable_prs();
+
+    if !mergeable_prs.is_empty() {
+        let pr_messages: Vec<String> = mergeable_prs
+            .iter()
+            .map(|pr| {
+                format!(
+                    "PR #{} \"{}\" has passing CI and is ready to merge.\nPlease review it and ask the human if you should merge.",
+                    pr.number, pr.title
+                )
+            })
+            .collect();
+
+        status_items.extend(pr_messages);
+    }
+
     if status_items.is_empty() {
         Ok(Response::Message {
-            message: "Channel synced, no orphaned tasks".to_string(),
+            message: "Channel synced, no orphaned tasks, no idle coworkers, no mergeable PRs"
+                .to_string(),
         })
     } else {
         Ok(Response::Message {
             message: status_items.join("\n\n"),
         })
     }
+}
+
+/// Information about a mergeable PR.
+#[derive(Debug, PartialEq)]
+struct MergeablePr {
+    number: u64,
+    title: String,
+}
+
+/// Find PRs that are mergeable with all CI checks passing.
+fn find_mergeable_prs() -> Vec<MergeablePr> {
+    // Query GitHub for PRs with mergeable status and check results
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,title,mergeable,statusCheckRollup",
+        ])
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_mergeable_prs(&stdout)
+}
+
+/// Parse PR JSON output and filter for mergeable PRs with passing checks.
+fn parse_mergeable_prs(json_str: &str) -> Vec<MergeablePr> {
+    let prs: Vec<serde_json::Value> = match serde_json::from_str(json_str) {
+        Ok(prs) => prs,
+        Err(_) => return Vec::new(),
+    };
+
+    prs.iter()
+        .filter_map(|pr| {
+            let number = pr.get("number")?.as_u64()?;
+            let title = pr.get("title")?.as_str()?.to_string();
+            let mergeable = pr.get("mergeable")?.as_str()?;
+
+            // Check if PR is mergeable
+            if mergeable != "MERGEABLE" {
+                return None;
+            }
+
+            // Check if all status checks passed
+            let checks = pr.get("statusCheckRollup")?.as_array()?;
+
+            // If there are no checks, consider it as not ready (require at least one check)
+            if checks.is_empty() {
+                return None;
+            }
+
+            // All checks must be successful
+            let all_passed = checks.iter().all(|check| {
+                // Check for conclusion field (used by check runs)
+                if let Some(conclusion) = check.get("conclusion").and_then(|c| c.as_str()) {
+                    return conclusion == "SUCCESS";
+                }
+                // Check for state field (used by status contexts)
+                if let Some(state) = check.get("state").and_then(|s| s.as_str()) {
+                    return state == "SUCCESS";
+                }
+                false
+            });
+
+            if all_passed {
+                Some(MergeablePr { number, title })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Find tasks that are in_progress but owned by coworkers that aren't running.
@@ -678,5 +772,127 @@ Second insight
         assert_eq!(hash1, hash2, "extra whitespace should be normalized");
         assert_eq!(hash1, hash3, "newlines should be normalized");
         assert_eq!(hash1, hash4, "case should be normalized");
+    }
+
+    #[test]
+    fn test_parse_mergeable_prs_with_passing_checks() {
+        let json = r#"[
+            {
+                "number": 42,
+                "title": "feat: Add widget",
+                "mergeable": "MERGEABLE",
+                "statusCheckRollup": [
+                    {"conclusion": "SUCCESS"},
+                    {"conclusion": "SUCCESS"}
+                ]
+            }
+        ]"#;
+
+        let prs = parse_mergeable_prs(json);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(
+            prs[0],
+            MergeablePr {
+                number: 42,
+                title: "feat: Add widget".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_mergeable_prs_with_failing_checks() {
+        let json = r#"[
+            {
+                "number": 42,
+                "title": "feat: Add widget",
+                "mergeable": "MERGEABLE",
+                "statusCheckRollup": [
+                    {"conclusion": "SUCCESS"},
+                    {"conclusion": "FAILURE"}
+                ]
+            }
+        ]"#;
+
+        let prs = parse_mergeable_prs(json);
+        assert!(prs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_mergeable_prs_not_mergeable() {
+        let json = r#"[
+            {
+                "number": 42,
+                "title": "feat: Add widget",
+                "mergeable": "CONFLICTING",
+                "statusCheckRollup": [
+                    {"conclusion": "SUCCESS"}
+                ]
+            }
+        ]"#;
+
+        let prs = parse_mergeable_prs(json);
+        assert!(prs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_mergeable_prs_no_checks() {
+        let json = r#"[
+            {
+                "number": 42,
+                "title": "feat: Add widget",
+                "mergeable": "MERGEABLE",
+                "statusCheckRollup": []
+            }
+        ]"#;
+
+        let prs = parse_mergeable_prs(json);
+        assert!(prs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_mergeable_prs_with_state_field() {
+        // Some GitHub status contexts use "state" instead of "conclusion"
+        let json = r#"[
+            {
+                "number": 42,
+                "title": "feat: Add widget",
+                "mergeable": "MERGEABLE",
+                "statusCheckRollup": [
+                    {"state": "SUCCESS"}
+                ]
+            }
+        ]"#;
+
+        let prs = parse_mergeable_prs(json);
+        assert_eq!(prs.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_mergeable_prs_multiple() {
+        let json = r#"[
+            {
+                "number": 42,
+                "title": "feat: Add widget",
+                "mergeable": "MERGEABLE",
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            },
+            {
+                "number": 43,
+                "title": "fix: Bug fix",
+                "mergeable": "CONFLICTING",
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            },
+            {
+                "number": 44,
+                "title": "docs: Update readme",
+                "mergeable": "MERGEABLE",
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            }
+        ]"#;
+
+        let prs = parse_mergeable_prs(json);
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].number, 42);
+        assert_eq!(prs[1].number, 44);
     }
 }
