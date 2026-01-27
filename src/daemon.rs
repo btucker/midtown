@@ -153,6 +153,9 @@ impl Default for DaemonConfig {
 /// Interval for checking orphaned tasks (30 seconds)
 const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
 
+/// Interval for checking Lead session changes (10 seconds)
+const SESSION_CHECK_INTERVAL_SECS: u64 = 10;
+
 /// Shared daemon state.
 struct DaemonState {
     coworkers: CoworkerManager,
@@ -160,6 +163,10 @@ struct DaemonState {
     socket_path: PathBuf,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
+    /// Current Lead session ID (for detecting changes)
+    lead_session_id: std::sync::Mutex<Option<String>>,
+    /// Repository name (for reading Lead session file)
+    repo_name: String,
 }
 
 impl DaemonState {
@@ -179,13 +186,32 @@ impl DaemonState {
             message: format!("Failed to initialize worktree manager: {}", e),
         })?;
 
+        // Read initial Lead session ID if available
+        let initial_lead_session = read_lead_session_id(&repo_name);
+
         Ok(Self {
             coworkers: CoworkerManager::new(session_name, worktree_manager),
             channel,
             socket_path,
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
+            lead_session_id: std::sync::Mutex::new(initial_lead_session),
+            repo_name,
         })
     }
+}
+
+/// Read the Lead session ID from the filesystem.
+fn read_lead_session_id(repo_name: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let session_file = std::path::PathBuf::from(home)
+        .join(".midtown")
+        .join(repo_name)
+        .join("lead-session");
+
+    std::fs::read_to_string(&session_file)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Acquire an exclusive lock on the PID file.
@@ -342,6 +368,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         );
     }
 
+    // Start Lead session monitoring background task
+    let (session_check_shutdown_tx, session_check_shutdown_rx) = watch::channel(false);
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            session_check_task(state, session_check_shutdown_rx).await;
+        });
+        info!(
+            "Lead session monitoring started (interval: {}s)",
+            SESSION_CHECK_INTERVAL_SECS
+        );
+    }
+
     // Timer for periodic orphan checking
     let mut orphan_check_interval =
         tokio::time::interval(std::time::Duration::from_secs(ORPHAN_CHECK_INTERVAL_SECS));
@@ -408,6 +447,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Signal PR poll task to stop
     info!("Stopping PR poll task...");
     let _ = pr_poll_shutdown_tx.send(true);
+
+    // Signal session check task to stop
+    info!("Stopping session check task...");
+    let _ = session_check_shutdown_tx.send(true);
 
     // Shutdown all coworkers
     info!("Shutting down coworkers...");
@@ -607,6 +650,63 @@ async fn pr_poll_task(
                     break;
                 }
             }
+        }
+    }
+}
+
+/// Background task that monitors for Lead session changes.
+///
+/// When the Lead starts a new Claude Code session, this task detects the change
+/// and updates all coworker task symlinks to point to the new session, ensuring
+/// coworkers see the updated task list.
+async fn session_check_task(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>) {
+    let interval = Duration::from_secs(SESSION_CHECK_INTERVAL_SECS);
+
+    loop {
+        // Wait for the interval or shutdown signal
+        let delay = tokio::time::sleep(interval);
+
+        tokio::select! {
+            _ = delay => {
+                // Check for Lead session change
+                check_lead_session_change(&state);
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Session check task received shutdown signal");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Check if the Lead session has changed and update coworker symlinks if so.
+fn check_lead_session_change(state: &DaemonState) {
+    let current_session = read_lead_session_id(&state.repo_name);
+
+    // Compare with stored session
+    let mut stored_session = state.lead_session_id.lock().unwrap();
+
+    match (&*stored_session, &current_session) {
+        (Some(old), Some(new)) if old != new => {
+            // Session changed - update all coworker symlinks
+            info!("Lead session changed: {} -> {}", old, new);
+
+            if let Err(e) = state.coworkers.update_task_symlinks(new) {
+                warn!("Failed to update coworker task symlinks: {}", e);
+            }
+
+            // Update stored session
+            *stored_session = Some(new.clone());
+        }
+        (None, Some(new)) => {
+            // First session detected
+            debug!("Lead session detected: {}", new);
+            *stored_session = Some(new.clone());
+        }
+        _ => {
+            // No change
         }
     }
 }
