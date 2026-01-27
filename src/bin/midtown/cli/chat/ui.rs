@@ -204,8 +204,7 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
             let y = inner.y + lines_used as u16;
 
             // Only apply hyperlink to the first line of items that have URLs
-            if line_idx == 0 && item.url.is_some() {
-                let url = item.url.as_ref().unwrap();
+            if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
                 render_hyperlink_line(buffer, inner.x, y, &truncated, url, available_width);
             } else {
                 // Render plain text
