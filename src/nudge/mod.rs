@@ -13,7 +13,8 @@ mod tmux;
 pub use config::NudgeConfig;
 pub use state::{CoworkerNudgeState, NudgeTracker};
 pub use tmux::{
-    NudgeError, list_sessions, list_windows, send_nudge, send_nudge_to_pane, window_exists,
+    NudgeError, list_sessions, list_windows, send_nudge, send_nudge_to_pane, session_exists,
+    window_exists,
 };
 
 use std::time::{Duration, SystemTime};

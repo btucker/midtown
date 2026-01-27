@@ -173,6 +173,23 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         status_items.extend(pr_messages);
     }
 
+    // Check for mergeable PRs with passing CI
+    let mergeable_prs = find_mergeable_prs();
+
+    if !mergeable_prs.is_empty() {
+        let pr_messages: Vec<String> = mergeable_prs
+            .iter()
+            .map(|pr| {
+                format!(
+                    "PR #{} \"{}\" has passing CI and is ready to merge.\nPlease review it and ask the human if you should merge.",
+                    pr.number, pr.title
+                )
+            })
+            .collect();
+
+        status_items.extend(pr_messages);
+    }
+
     if status_items.is_empty() {
         Ok(Response::Message {
             message: "Channel synced, no orphaned tasks, no mergeable PRs".to_string(),
