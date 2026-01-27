@@ -64,6 +64,7 @@ pub struct KanbanPr {
     pub title: String,
     pub author: String,
     pub created_at: DateTime<Utc>,
+    pub ci_status: CiStatus,
 }
 
 /// A merged PR item for the Done column
@@ -490,7 +491,12 @@ fn fetch_prs() -> Vec<KanbanPr> {
     let mut prs = Vec::new();
 
     if let Ok(output) = std::process::Command::new("gh")
-        .args(["pr", "list", "--json", "number,title,author,createdAt,body"])
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,title,author,createdAt,body,statusCheckRollup",
+        ])
         .output()
         && output.status.success()
     {
@@ -519,12 +525,21 @@ fn fetch_prs() -> Vec<KanbanPr> {
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(Utc::now);
 
+                // Parse CI status from statusCheckRollup
+                let ci_status = parse_ci_status_from_checks(
+                    pr.get("statusCheckRollup")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.as_slice())
+                        .unwrap_or(&[]),
+                );
+
                 if number > 0 {
                     prs.push(KanbanPr {
                         number,
                         title,
                         author,
                         created_at,
+                        ci_status,
                     });
                 }
             }
@@ -532,6 +547,59 @@ fn fetch_prs() -> Vec<KanbanPr> {
     }
 
     prs
+}
+
+/// Parse CI status from GitHub statusCheckRollup array
+fn parse_ci_status_from_checks(checks: &[serde_json::Value]) -> CiStatus {
+    if checks.is_empty() {
+        return CiStatus::Unknown;
+    }
+
+    let mut has_running = false;
+    let mut has_failed = false;
+    let mut has_passed = false;
+
+    for check in checks {
+        // Check runs have "status" and "conclusion" fields
+        // Status contexts have "state" field
+        let status = check.get("status").and_then(|v| v.as_str());
+        let conclusion = check.get("conclusion").and_then(|v| v.as_str());
+        let state = check.get("state").and_then(|v| v.as_str());
+
+        // Handle check runs (GitHub Actions)
+        if let Some(status) = status {
+            match status {
+                "IN_PROGRESS" | "QUEUED" | "WAITING" | "PENDING" => has_running = true,
+                "COMPLETED" => match conclusion {
+                    Some("SUCCESS") => has_passed = true,
+                    Some("FAILURE") | Some("CANCELLED") | Some("TIMED_OUT") => has_failed = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        // Handle status contexts (external CI)
+        if let Some(state) = state {
+            match state {
+                "PENDING" => has_running = true,
+                "SUCCESS" => has_passed = true,
+                "FAILURE" | "ERROR" => has_failed = true,
+                _ => {}
+            }
+        }
+    }
+
+    // Priority: failed > running > passed > unknown
+    if has_failed {
+        CiStatus::Failed
+    } else if has_running {
+        CiStatus::Running
+    } else if has_passed {
+        CiStatus::Passed
+    } else {
+        CiStatus::Unknown
+    }
 }
 
 /// Fetch merged PRs from GitHub using gh CLI (for Done column)
