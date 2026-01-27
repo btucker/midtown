@@ -1,9 +1,17 @@
 //! Application state and logic for the chat TUI
 
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use midtown::{Channel, Message};
+
+/// Data fetched from background thread for kanban refresh
+struct KanbanData {
+    prs: Vec<KanbanPr>,
+    merged_prs: Vec<MergedPr>,
+}
 
 /// A task item for the kanban board
 #[derive(Debug, Clone)]
@@ -63,6 +71,8 @@ pub struct App {
     pub repo_name: String,
     /// Last time kanban data was refreshed
     kanban_last_refresh: Instant,
+    /// Receiver for async kanban data from background thread
+    kanban_receiver: Option<Receiver<KanbanData>>,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -92,6 +102,7 @@ impl App {
             merged_prs: Vec::new(),
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
+            kanban_receiver: None,
         };
 
         // Initial load
@@ -125,8 +136,28 @@ impl App {
             }
         }
 
-        // Refresh kanban data less frequently to avoid UI lag
-        if self.kanban_last_refresh.elapsed() >= KANBAN_REFRESH_INTERVAL {
+        // Check for kanban data from background thread (non-blocking)
+        if let Some(ref receiver) = self.kanban_receiver {
+            match receiver.try_recv() {
+                Ok(data) => {
+                    self.prs = data.prs;
+                    self.merged_prs = data.merged_prs;
+                    self.kanban_receiver = None; // Clear receiver, fetch complete
+                }
+                Err(TryRecvError::Empty) => {
+                    // Still waiting for data, continue
+                }
+                Err(TryRecvError::Disconnected) => {
+                    // Thread finished without sending (error case), clear receiver
+                    self.kanban_receiver = None;
+                }
+            }
+        }
+
+        // Refresh kanban data less frequently - spawn background thread if not already running
+        if self.kanban_last_refresh.elapsed() >= KANBAN_REFRESH_INTERVAL
+            && self.kanban_receiver.is_none()
+        {
             self.refresh_kanban();
             self.kanban_last_refresh = Instant::now();
         }
@@ -134,9 +165,19 @@ impl App {
 
     /// Refresh kanban board data (tasks and PRs)
     fn refresh_kanban(&mut self) {
+        // Tasks are local file reads - fast, can stay synchronous
         self.tasks = fetch_tasks();
-        self.prs = fetch_prs();
-        self.merged_prs = fetch_merged_prs();
+
+        // PRs require gh CLI calls - run in background thread to avoid blocking UI
+        let (tx, rx) = mpsc::channel();
+        self.kanban_receiver = Some(rx);
+
+        thread::spawn(move || {
+            let prs = fetch_prs();
+            let merged_prs = fetch_merged_prs();
+            // Ignore send error if receiver dropped (app closed)
+            let _ = tx.send(KanbanData { prs, merged_prs });
+        });
     }
 
     /// Get tasks grouped by status for the kanban board
@@ -501,6 +542,7 @@ mod tests {
             merged_prs: Vec::new(),
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
+            kanban_receiver: None,
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
