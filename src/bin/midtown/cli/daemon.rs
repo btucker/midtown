@@ -574,16 +574,32 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
 
 /// Handle `midtown restart` command.
 ///
-/// Stops and then starts midtown.
+/// Gracefully restarts the daemon while preserving the tmux session and all
+/// running Claude processes (Lead and coworkers). Only the daemon process is
+/// restarted, which allows updating daemon code without losing work in progress.
+///
+/// For a full fresh start, use `midtown stop && midtown start`.
 pub fn handle_restart() -> Result<Response, String> {
-    // Stop everything (ignore errors if not running)
-    let _ = handle_stop(false);
+    // Stop daemon only, keep the tmux session running
+    let _ = handle_stop(true);
 
     // Brief pause for cleanup
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    // Start fresh
-    handle_start(false)
+    // Start daemon (session already exists, so it will re-discover coworkers)
+    let result = handle_start(false)?;
+
+    // Enhance the message to clarify graceful restart
+    match result {
+        Response::Message { message } => Ok(Response::Message {
+            message: format!(
+                "{}. Resumed Lead session in '{}'. Attach with: midtown attach",
+                message,
+                session_name().unwrap_or_else(|_| "midtown".to_string())
+            ),
+        }),
+        other => Ok(other),
+    }
 }
 
 /// Handle `midtown attach` command.
