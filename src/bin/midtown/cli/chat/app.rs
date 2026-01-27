@@ -382,12 +382,39 @@ fn fetch_repo_name() -> String {
         .unwrap_or_else(|| "repo".to_string())
 }
 
+/// Extract coworker name from PR body frontmatter.
+///
+/// Looks for `<!-- midtown: coworkername -->` in the PR body and extracts the coworker name.
+/// Handles variations like `<!--midtown:name-->` or `<!-- midtown: name -->`.
+fn extract_coworker_from_body(body: &str) -> Option<String> {
+    // Look for midtown: pattern within an HTML comment
+    // Handle both "<!-- midtown:" and "<!--midtown:" formats
+    let marker = "midtown:";
+
+    if let Some(marker_pos) = body.find(marker) {
+        // Check that it's within an HTML comment (<!-- before it)
+        let before = &body[..marker_pos];
+        if !before.contains("<!--") {
+            return None;
+        }
+
+        let after_marker = &body[marker_pos + marker.len()..];
+        if let Some(end) = after_marker.find("-->") {
+            let name = after_marker[..end].trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Fetch open PRs from GitHub using gh CLI
 fn fetch_prs() -> Vec<KanbanPr> {
     let mut prs = Vec::new();
 
     if let Ok(output) = std::process::Command::new("gh")
-        .args(["pr", "list", "--json", "number,title,author,createdAt"])
+        .args(["pr", "list", "--json", "number,title,author,createdAt,body"])
         .output()
         && output.status.success()
     {
@@ -400,12 +427,15 @@ fn fetch_prs() -> Vec<KanbanPr> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let author = pr
+                let github_author = pr
                     .get("author")
                     .and_then(|v| v.get("login"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
+                let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                // Use coworker name from body frontmatter if present, otherwise GitHub author
+                let author = extract_coworker_from_body(body).unwrap_or(github_author);
                 let created_at = pr
                     .get("createdAt")
                     .and_then(|v| v.as_str())
@@ -596,5 +626,27 @@ mod tests {
         assert_eq!(subject, "Fix Backlog & In Progress kanban columns");
         assert_eq!(owner, Some("park"));
         assert_eq!(status_str, "in_progress");
+    }
+
+    #[test]
+    fn test_extract_coworker_from_body() {
+        // With coworker frontmatter
+        let body = "<!-- midtown: york -->\n\n## Summary\n- Added feature";
+        assert_eq!(extract_coworker_from_body(body), Some("york".to_string()));
+
+        // With extra whitespace
+        let body = "<!--midtown:  park  -->\n\nDescription";
+        assert_eq!(extract_coworker_from_body(body), Some("park".to_string()));
+
+        // No frontmatter
+        let body = "## Summary\nJust a regular PR";
+        assert_eq!(extract_coworker_from_body(body), None);
+
+        // Empty body
+        assert_eq!(extract_coworker_from_body(""), None);
+
+        // Malformed frontmatter (no closing)
+        let body = "<!-- midtown: york\n## Summary";
+        assert_eq!(extract_coworker_from_body(body), None);
     }
 }
