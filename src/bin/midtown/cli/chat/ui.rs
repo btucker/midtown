@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -46,14 +46,142 @@ fn get_sender_color(name: &str) -> Color {
     }
 }
 
+/// Height of the kanban board (including borders)
+const KANBAN_HEIGHT: u16 = 5;
+
 /// Draw the main UI
 ///
 /// Note: The Team panel has been removed - coworker status is now shown
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Full width for chat panel - team status shown in tmux tabs instead
-    draw_chat_panel(f, app, f.area());
+    // Split into kanban (top) and chat (bottom) panels
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(KANBAN_HEIGHT), Constraint::Min(10)])
+        .split(f.area());
+
+    draw_kanban_panel(f, app, chunks[0]);
+    draw_chat_panel(f, app, chunks[1]);
+}
+
+/// Draw the kanban board with 4 columns
+fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
+    // Split into 4 equal columns
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
+
+    let (pending, in_progress, completed) = app.tasks_by_status();
+
+    // Backlog column (pending tasks)
+    draw_kanban_column(
+        f,
+        columns[0],
+        "Backlog",
+        Color::Blue,
+        &pending
+            .iter()
+            .map(|t| format!("#{}", t.id))
+            .collect::<Vec<_>>(),
+    );
+
+    // In Progress column (with owner)
+    draw_kanban_column(
+        f,
+        columns[1],
+        "In Progress",
+        Color::Yellow,
+        &in_progress
+            .iter()
+            .map(|t| {
+                if let Some(ref owner) = t.owner {
+                    format!("#{} ({})", t.id, owner)
+                } else {
+                    format!("#{}", t.id)
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Review column (open PRs)
+    draw_kanban_column(
+        f,
+        columns[2],
+        "Review",
+        Color::Magenta,
+        &app.prs
+            .iter()
+            .map(|pr| format!("PR#{}", pr.number))
+            .collect::<Vec<_>>(),
+    );
+
+    // Done column (completed tasks)
+    draw_kanban_column(
+        f,
+        columns[3],
+        "Done",
+        Color::Green,
+        &completed
+            .iter()
+            .map(|t| format!("#{}", t.id))
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// Draw a single kanban column
+fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[String]) {
+    let block = Block::default()
+        .title(format!(" {} ({}) ", title, items.len()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color));
+
+    let inner = block.inner(area);
+
+    // Build content: show items horizontally separated by spaces, wrapped if needed
+    let content = if items.is_empty() {
+        String::from("-")
+    } else {
+        // Show as many items as fit on available lines
+        let available_width = inner.width as usize;
+        let available_lines = inner.height as usize;
+
+        let mut lines = Vec::new();
+        let mut current_line = String::new();
+
+        for item in items {
+            let separator = if current_line.is_empty() { "" } else { " " };
+            let needed = separator.len() + item.len();
+
+            if current_line.len() + needed > available_width && !current_line.is_empty() {
+                lines.push(current_line);
+                current_line = item.clone();
+                if lines.len() >= available_lines {
+                    break;
+                }
+            } else {
+                current_line.push_str(separator);
+                current_line.push_str(item);
+            }
+        }
+
+        if !current_line.is_empty() && lines.len() < available_lines {
+            lines.push(current_line);
+        }
+
+        lines.join("\n")
+    };
+
+    let paragraph = Paragraph::new(content).style(Style::default().fg(Color::White));
+
+    f.render_widget(block, area);
+    f.render_widget(paragraph, inner);
 }
 
 /// Draw the chat panel showing messages
