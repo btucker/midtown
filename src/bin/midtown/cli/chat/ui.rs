@@ -12,6 +12,11 @@ use midtown::{Message, MessageType};
 
 use super::app::App;
 
+/// Fixed indent for continuation lines (7 = "HH:MM " time prefix)
+/// Using a fixed indent keeps multi-line messages aligned consistently
+/// regardless of sender name length.
+const CONTINUATION_INDENT: usize = 7;
+
 /// Avenue names mapped to colors (position-based assignment)
 const AVENUE_COLORS: &[(&str, Color)] = &[
     ("lexington", Color::Cyan),
@@ -126,8 +131,8 @@ fn render_message(msg: &Message, width: usize) -> Vec<Line<'static>> {
             // First line gets the full prefix
             result.push(build_first_line(msg, &time, color, content, content_style));
         } else {
-            // Continuation lines get indentation + markdown-parsed content
-            let indent = " ".repeat(prefix_len);
+            // Continuation lines get fixed indentation + markdown-parsed content
+            let indent = " ".repeat(CONTINUATION_INDENT);
             let mut spans = vec![Span::raw(indent)];
             spans.extend(parse_markdown(content, content_style));
             result.push(Line::from(spans));
@@ -438,5 +443,48 @@ mod tests {
         assert_eq!(spans[1].content, " and ");
         assert_eq!(spans[2].content, "code");
         assert_eq!(spans[2].style.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn test_continuation_lines_have_consistent_indent() {
+        use chrono::Utc;
+
+        // Create messages from users with different name lengths
+        let short_name_msg = Message {
+            id: "1".to_string(),
+            from: "a".to_string(),
+            content: "line1\nline2".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let long_name_msg = Message {
+            id: "2".to_string(),
+            from: "lexington".to_string(),
+            content: "line1\nline2".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        let short_lines = render_message(&short_name_msg, 80);
+        let long_lines = render_message(&long_name_msg, 80);
+
+        // Both should have 2 lines
+        assert_eq!(short_lines.len(), 2);
+        assert_eq!(long_lines.len(), 2);
+
+        // Extract the indent from continuation lines (second line, first span)
+        let short_indent = &short_lines[1].spans[0].content;
+        let long_indent = &long_lines[1].spans[0].content;
+
+        // Continuation lines should have the SAME indent regardless of username length
+        assert_eq!(
+            short_indent.len(),
+            long_indent.len(),
+            "Continuation indent should be consistent: short='{}' ({}), long='{}' ({})",
+            short_indent,
+            short_indent.len(),
+            long_indent,
+            long_indent.len()
+        );
     }
 }
