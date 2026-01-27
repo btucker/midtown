@@ -2,6 +2,9 @@
 //!
 //! This module provides a read-only chat interface showing team activity
 //! and coworker status in a split-pane layout.
+//!
+//! Uses async I/O with the `tailf` crate for instant message updates when
+//! the channel.jsonl file changes, rather than polling.
 
 mod app;
 mod ui;
@@ -11,12 +14,15 @@ use std::time::Duration;
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+        MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use futures::StreamExt;
 use ratatui::{Terminal, prelude::CrosstermBackend};
+use tokio::time::interval;
 
 use app::App;
 
@@ -34,8 +40,12 @@ pub fn run() -> Result<(), String> {
     // Create app state
     let mut app = App::new();
 
-    // Run the main loop
-    let result = run_app(&mut terminal, &mut app);
+    // Run the async main loop using tokio
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Failed to create tokio runtime: {}", e))?
+        .block_on(run_app_async(&mut terminal, &mut app));
 
     // Restore terminal (always attempt cleanup)
     let _ = disable_raw_mode();
@@ -49,34 +59,90 @@ pub fn run() -> Result<(), String> {
     result.map_err(|e| format!("TUI error: {}", e))
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+async fn run_app_async(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> io::Result<()> {
+    // Set up async event stream for terminal events
+    let mut event_stream = EventStream::new();
+
+    // Set up file tailer for channel.jsonl if available
+    // We start from line 0 because we use cursor-based reading for message parsing
+    let mut tailer = app
+        .channel_file_path()
+        .and_then(|path| tailf::tailf(&path, Some(0)).ok());
+
+    // Fallback timer for kanban/repo status refresh (30 seconds)
+    // This ensures periodic refreshes even without file activity
+    let mut refresh_interval = interval(Duration::from_secs(30));
+
     loop {
         // Draw UI
         terminal.draw(|f| ui::draw(f, app))?;
 
-        // Poll for events with a timeout to allow periodic updates
-        if event::poll(Duration::from_millis(250))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
-                    KeyCode::PageUp => app.page_up(),
-                    KeyCode::PageDown => app.page_down(),
-                    KeyCode::Home | KeyCode::Char('g') => app.scroll_to_top(),
-                    KeyCode::End | KeyCode::Char('G') => app.scroll_to_bottom(),
-                    _ => {}
-                },
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll_up(),
-                    MouseEventKind::ScrollDown => app.scroll_down(),
-                    _ => {}
-                },
-                _ => {}
+        // Use tokio::select! to wait for either:
+        // 1. Terminal events (keyboard/mouse)
+        // 2. File changes from tailf
+        // 3. Periodic refresh timer
+        tokio::select! {
+            // Handle terminal events (keyboard, mouse)
+            maybe_event = event_stream.next() => {
+                match maybe_event {
+                    Some(Ok(event)) => {
+                        if handle_event(app, event) {
+                            return Ok(());
+                        }
+                    }
+                    Some(Err(_)) => {
+                        // Event stream error, continue
+                    }
+                    None => {
+                        // Event stream closed
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Handle file changes from tailf - instant message updates
+            Some(result) = async {
+                match &mut tailer {
+                    Some(t) => Some(t.next().await),
+                    None => None,
+                }
+            } => {
+                if let Ok(Some(_)) = result {
+                    // New content in channel.jsonl - refresh messages
+                    app.refresh();
+                }
+            }
+
+            // Periodic refresh for kanban and repo status
+            _ = refresh_interval.tick() => {
+                app.refresh();
             }
         }
-
-        // Check for new messages
-        app.refresh();
     }
+}
+
+/// Handle a terminal event, returns true if the app should exit
+fn handle_event(app: &mut App, event: Event) -> bool {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+            KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+            KeyCode::PageUp => app.page_up(),
+            KeyCode::PageDown => app.page_down(),
+            KeyCode::Home | KeyCode::Char('g') => app.scroll_to_top(),
+            KeyCode::End | KeyCode::Char('G') => app.scroll_to_bottom(),
+            _ => {}
+        },
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::ScrollUp => app.scroll_up(),
+            MouseEventKind::ScrollDown => app.scroll_down(),
+            _ => {}
+        },
+        _ => {}
+    }
+    false
 }

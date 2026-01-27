@@ -154,7 +154,8 @@ impl App {
         // Use cursor-based reading for efficient tailing
         // The cursor tracks byte position in the file, so we only read new content
         if let Some(ref channel) = self.channel {
-            if !self.initial_load_done {
+            let is_initial_load = !self.initial_load_done;
+            if is_initial_load {
                 // First load: reset cursor to start of file, then read all via cursor
                 // This ensures the cursor position is updated correctly
                 let _ = channel.reset_cursor("chat-tui");
@@ -173,7 +174,10 @@ impl App {
                 // Append new messages (they're already in chronological order)
                 self.messages.extend(new_messages);
 
-                if was_at_bottom {
+                if is_initial_load {
+                    // On initial load, always scroll to bottom (most recent messages)
+                    self.scroll_offset = 0;
+                } else if was_at_bottom {
                     // User was at bottom - stay at bottom (auto-scroll)
                     self.scroll_offset = 0;
                 } else {
@@ -323,6 +327,13 @@ impl App {
     /// Maximum scroll offset
     fn max_scroll(&self) -> usize {
         self.messages.len().saturating_sub(self.visible_height)
+    }
+
+    /// Get the channel file path for file watching
+    pub fn channel_file_path(&self) -> Option<std::path::PathBuf> {
+        self.channel
+            .as_ref()
+            .map(|c| c.channel_file_path().to_path_buf())
     }
 
     /// Get messages visible in the current scroll position

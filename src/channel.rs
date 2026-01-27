@@ -95,6 +95,11 @@ impl Channel {
         &self.base_dir
     }
 
+    /// Get the path to the channel.jsonl file
+    pub fn channel_file_path(&self) -> &Path {
+        &self.channel_file
+    }
+
     /// Append a message to the channel
     ///
     /// Uses file locking to ensure atomic append operations.
