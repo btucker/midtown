@@ -14,10 +14,10 @@ use crate::Error;
 /// Extracts status keywords and task numbers to create concise tab names.
 ///
 /// # Examples
-/// - "claiming task #1" → "claim #1"
-/// - "developing task #1" → "dev #1"
+/// - "claiming task #1" → "claim#1"
+/// - "developing task #1" → "dev#1"
 /// - "running tests" → "test"
-/// - "opening PR for task #1" → "PR #1"
+/// - "opening PR for task #1" → "PR#1"
 /// - "waiting for review" → "idle"
 /// - "investigating the auth bug" → "investigating the au..."
 pub fn parse_status(status: &str) -> String {
@@ -63,7 +63,7 @@ pub fn parse_status(status: &str) -> String {
 
     // Combine abbreviation with task number if present
     match task_num {
-        Some(num) => format!("{} #{}", abbrev, num),
+        Some(num) => format!("{}#{}", abbrev, num),
         None => abbrev.to_string(),
     }
 }
@@ -432,7 +432,7 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
 /// * `status` - The status to display (e.g., "investigating auth bug")
 ///
 /// # Window Name Format
-/// - With status: "lexington: investigating..."
+/// - With status: "lexington:dev#3"
 /// - Without status (idle): "lexington"
 ///
 /// Status is truncated to keep the tab readable (max 20 chars).
@@ -444,7 +444,7 @@ pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::
         Some(s) if !s.is_empty() => {
             // Parse status to extract keywords and task numbers
             let parsed = parse_status(s);
-            format!("{}: {}", name, parsed)
+            format!("{}:{}", name, parsed)
         }
         _ => name.to_string(),
     };
@@ -873,50 +873,50 @@ mod tests {
 
     #[test]
     fn test_parse_status_claiming() {
-        assert_eq!(parse_status("claiming task #1"), "claim #1");
-        assert_eq!(parse_status("Claiming task 5"), "claim #5");
-        assert_eq!(parse_status("just claimed #3"), "claim #3");
+        assert_eq!(parse_status("claiming task #1"), "claim#1");
+        assert_eq!(parse_status("Claiming task 5"), "claim#5");
+        assert_eq!(parse_status("just claimed #3"), "claim#3");
     }
 
     #[test]
     fn test_parse_status_developing() {
-        assert_eq!(parse_status("developing task #1"), "dev #1");
-        assert_eq!(parse_status("working on task #2"), "dev #2");
+        assert_eq!(parse_status("developing task #1"), "dev#1");
+        assert_eq!(parse_status("working on task #2"), "dev#2");
         assert_eq!(parse_status("coding the feature"), "dev");
-        assert_eq!(parse_status("implementing auth #5"), "dev #5");
+        assert_eq!(parse_status("implementing auth #5"), "dev#5");
     }
 
     #[test]
     fn test_parse_status_testing() {
         assert_eq!(parse_status("testing"), "test");
-        assert_eq!(parse_status("running tests for #3"), "test #3");
+        assert_eq!(parse_status("running tests for #3"), "test#3");
         assert_eq!(parse_status("test suite running"), "test");
     }
 
     #[test]
     fn test_parse_status_pr() {
-        assert_eq!(parse_status("opening PR for task #1"), "PR #1");
+        assert_eq!(parse_status("opening PR for task #1"), "PR#1");
         assert_eq!(parse_status("PR ready"), "PR");
-        assert_eq!(parse_status("creating pull request #4"), "PR #4");
-        assert_eq!(parse_status("requesting review #2"), "PR #2");
+        assert_eq!(parse_status("creating pull request #4"), "PR#4");
+        assert_eq!(parse_status("requesting review #2"), "PR#2");
     }
 
     #[test]
     fn test_parse_status_debug() {
         assert_eq!(parse_status("debugging auth bug"), "debug");
-        assert_eq!(parse_status("investigating the issue #7"), "debug #7");
+        assert_eq!(parse_status("investigating the issue #7"), "debug#7");
     }
 
     #[test]
     fn test_parse_status_idle() {
         assert_eq!(parse_status("idle"), "idle");
         assert_eq!(parse_status("waiting for review"), "idle");
-        assert_eq!(parse_status("blocked on task #3"), "idle #3");
+        assert_eq!(parse_status("blocked on task #3"), "idle#3");
     }
 
     #[test]
     fn test_parse_status_done() {
-        assert_eq!(parse_status("completed task #1"), "done #1");
+        assert_eq!(parse_status("completed task #1"), "done#1");
         assert_eq!(parse_status("finished implementation"), "done");
     }
 
