@@ -1547,16 +1547,32 @@ fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Respons
 
 /// Handle status RPC method.
 fn handle_status(id: RequestId, state: &DaemonState) -> Response {
-    // Get coworkers with their details
+    // Build a map of coworker name -> task subject from in_progress tasks
+    // This is the source of truth for what each coworker is working on
+    let coworker_tasks: std::collections::HashMap<String, String> =
+        crate::tasks::get_in_progress_tasks_with_subjects()
+            .into_iter()
+            .filter_map(|(_task_id, subject, owner)| {
+                if owner.is_empty() {
+                    None
+                } else {
+                    Some((owner.to_lowercase(), subject))
+                }
+            })
+            .collect();
+
+    // Get coworkers with their details, looking up current task from task storage
     let coworkers: Vec<serde_json::Value> = state
         .coworkers
         .list()
         .iter()
         .map(|cw| {
+            // Look up current task from task storage (case-insensitive)
+            let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
             serde_json::json!({
                 "name": cw.name,
                 "status": cw.status.to_string(),
-                "current_task": cw.current_task,
+                "current_task": current_task,
                 "started_at": cw.started_at.to_rfc3339(),
             })
         })
