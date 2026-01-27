@@ -153,25 +153,41 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         ));
     }
 
-    // Check for idle coworkers with no remaining work
-    let idle_coworkers = find_idle_coworkers();
-    let pending_tasks = get_pending_tasks();
+    // Note: Idle coworkers are now automatically shut down by the daemon after 5 minutes.
+    // No need to notify the Lead about idle coworkers here.
 
-    if !idle_coworkers.is_empty() && pending_tasks.is_empty() {
-        let coworker_list = idle_coworkers.join(", ");
-        let message = midtown::Message::text(
-            "Lead",
-            format!(
-                "💤 Coworkers [{}] are idle with no remaining tasks. Consider shutting them down.",
-                coworker_list
-            ),
-        );
-        let _ = channel.send(&message);
+    // Check for mergeable PRs with passing CI
+    let mergeable_prs = find_mergeable_prs();
 
-        status_items.push(format!(
-            "Coworkers {} are idle with no remaining tasks. Consider: midtown stop",
-            coworker_list
-        ));
+    if !mergeable_prs.is_empty() {
+        let pr_messages: Vec<String> = mergeable_prs
+            .iter()
+            .map(|pr| {
+                format!(
+                    "PR #{} \"{}\" has passing CI and is ready to merge.\nPlease review it and ask the human if you should merge.",
+                    pr.number, pr.title
+                )
+            })
+            .collect();
+
+        status_items.extend(pr_messages);
+    }
+
+    // Check for mergeable PRs with passing CI
+    let mergeable_prs = find_mergeable_prs();
+
+    if !mergeable_prs.is_empty() {
+        let pr_messages: Vec<String> = mergeable_prs
+            .iter()
+            .map(|pr| {
+                format!(
+                    "PR #{} \"{}\" has passing CI and is ready to merge.\nPlease review it and ask the human if you should merge.",
+                    pr.number, pr.title
+                )
+            })
+            .collect();
+
+        status_items.extend(pr_messages);
     }
 
     // Check for mergeable PRs with passing CI
@@ -193,8 +209,7 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
 
     if status_items.is_empty() {
         Ok(Response::Message {
-            message: "Channel synced, no orphaned tasks, no idle coworkers, no mergeable PRs"
-                .to_string(),
+            message: "Channel synced, no orphaned tasks, no mergeable PRs".to_string(),
         })
     } else {
         Ok(Response::Message {
@@ -304,57 +319,6 @@ fn find_orphaned_tasks() -> Vec<(String, String)> {
     }
 
     orphaned
-}
-
-/// Find coworkers that are running but not actively working on any task.
-fn find_idle_coworkers() -> Vec<String> {
-    let active_coworkers = get_active_coworkers();
-    let in_progress = get_in_progress_tasks();
-
-    // Build set of coworkers who own in_progress tasks
-    let busy_coworkers: HashSet<String> = in_progress
-        .iter()
-        .map(|(_, owner)| owner.to_lowercase())
-        .collect();
-
-    // Return coworkers who are active but not busy
-    active_coworkers
-        .into_iter()
-        .filter(|cw| !busy_coworkers.contains(&cw.to_lowercase()))
-        .collect()
-}
-
-/// Get list of pending tasks (tasks that can still be claimed).
-fn get_pending_tasks() -> Vec<String> {
-    let output = std::process::Command::new("bd")
-        .args(["list", "--json"])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                return tasks
-                    .iter()
-                    .filter(|task| {
-                        task.get("status")
-                            .and_then(|s| s.as_str())
-                            .map(|s| s == "pending")
-                            .unwrap_or(false)
-                    })
-                    .filter_map(|task| {
-                        task.get("id").and_then(|i| {
-                            i.as_str()
-                                .map(|s| s.to_string())
-                                .or_else(|| i.as_u64().map(|n| n.to_string()))
-                        })
-                    })
-                    .collect();
-            }
-            Vec::new()
-        }
-        _ => Vec::new(),
-    }
 }
 
 /// Get list of active coworker names from daemon.

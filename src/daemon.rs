@@ -5,7 +5,7 @@
 //! runs a webhook server to receive GitHub events, and polls PRs for
 //! actionable issues.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -16,7 +16,8 @@ use fs2::FileExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{Mutex, broadcast, watch};
+use tokio::sync::{Mutex, RwLock, broadcast, watch};
+use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
@@ -150,6 +151,12 @@ impl Default for DaemonConfig {
     }
 }
 
+/// How long a coworker must be idle before automatic shutdown (5 minutes)
+const IDLE_SHUTDOWN_DURATION: Duration = Duration::from_secs(300);
+
+/// How often to check for idle coworkers (30 seconds)
+const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Interval for checking orphaned tasks (30 seconds)
 const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
 
@@ -161,6 +168,10 @@ struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
+    /// Tracks message IDs that have already triggered a nudge to Lead (to avoid duplicates)
+    nudged_messages: std::sync::RwLock<HashSet<String>>,
+    /// Tracks when each coworker became idle (no in_progress tasks)
+    idle_since: RwLock<HashMap<String, Instant>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Current Lead session ID (for detecting changes)
@@ -193,6 +204,8 @@ impl DaemonState {
             coworkers: CoworkerManager::new(session_name, worktree_manager),
             channel,
             socket_path,
+            nudged_messages: std::sync::RwLock::new(HashSet::new()),
+            idle_since: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             lead_session_id: std::sync::Mutex::new(initial_lead_session),
             repo_name,
@@ -354,6 +367,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
 
+    // Set up idle check interval
+    let mut idle_check_interval = interval(IDLE_CHECK_INTERVAL);
+
     // Start PR polling background task
     let (pr_poll_shutdown_tx, pr_poll_shutdown_rx) = watch::channel(false);
     {
@@ -406,7 +422,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             }
 
-            // Forward webhook messages to channel
+            // Forward webhook messages to channel and auto-nudge PR owners
             Some(msg) = async {
                 match webhook_rx.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -417,6 +433,25 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 if let Err(e) = state.channel.send(&msg) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
+
+                // Auto-nudge: notify coworker when their PR gets activity from others
+                if let Some(pr_number) = extract_pr_number(&msg.content)
+                    && let Some(coworker) = get_pr_owner_coworker(pr_number)
+                    && msg.from != coworker
+                    && state.coworkers.get(&coworker).is_some()
+                {
+                    let nudge_msg = format!("PR #{} activity: {}", pr_number, msg.content);
+                    if let Err(e) = state.coworkers.nudge(&coworker, &nudge_msg) {
+                        debug!("Failed to nudge {} about PR activity: {}", coworker, e);
+                    } else {
+                        info!("Nudged {} about activity on their PR #{}", coworker, pr_number);
+                    }
+                }
+            }
+
+            // Periodically check for idle coworkers and shut them down
+            _ = idle_check_interval.tick() => {
+                check_and_shutdown_idle_coworkers(&state).await;
             }
 
             // Periodic orphan check
@@ -474,6 +509,129 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     info!("Daemon stopped");
     Ok(())
+}
+
+/// Check for idle coworkers and shut them down after the idle timeout.
+///
+/// A coworker is considered idle if they have no tasks in "in_progress" status
+/// with their name as owner. After 5 minutes of continuous idle, they are
+/// automatically shut down.
+async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
+    // Get list of active coworkers
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    if active_coworkers.is_empty() {
+        return;
+    }
+
+    // Get in_progress tasks to determine who is busy
+    let busy_coworkers = get_busy_coworkers();
+
+    let now = Instant::now();
+    let mut to_shutdown = Vec::new();
+
+    {
+        let mut idle_since = state.idle_since.write().await;
+
+        for coworker in &active_coworkers {
+            let is_busy = busy_coworkers
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(coworker));
+
+            if is_busy {
+                // Coworker is busy, remove from idle tracking
+                if idle_since.remove(coworker).is_some() {
+                    debug!(
+                        "Coworker {} is now busy, removed from idle tracking",
+                        coworker
+                    );
+                }
+            } else {
+                // Coworker is idle
+                match idle_since.get(coworker) {
+                    Some(since) => {
+                        // Check if they've been idle long enough
+                        if now.duration_since(*since) >= IDLE_SHUTDOWN_DURATION {
+                            to_shutdown.push(coworker.clone());
+                        }
+                    }
+                    None => {
+                        // Just became idle, start tracking
+                        idle_since.insert(coworker.clone(), now);
+                        debug!("Coworker {} is now idle, starting timer", coworker);
+                    }
+                }
+            }
+        }
+
+        // Remove shutdown coworkers from tracking
+        for name in &to_shutdown {
+            idle_since.remove(name);
+        }
+    }
+
+    // Shutdown idle coworkers (outside the lock)
+    for name in to_shutdown {
+        info!(
+            "Auto-shutting down idle coworker: {} (idle for 5+ minutes)",
+            name
+        );
+
+        // Post system message to channel
+        let msg = Message::text(
+            "system",
+            format!("⏱️ Auto-shutting down idle coworker: {}", name),
+        );
+        if let Err(e) = state.channel.send(&msg) {
+            warn!("Failed to post shutdown message to channel: {}", e);
+        }
+
+        // Shutdown the coworker
+        if let Err(e) = state.coworkers.shutdown(&name) {
+            warn!("Failed to shutdown idle coworker {}: {}", name, e);
+        }
+    }
+}
+
+/// Get list of coworker names who have in_progress tasks.
+fn get_busy_coworkers() -> Vec<String> {
+    // Use bd (beads) to get task list
+    let output = std::process::Command::new("bd")
+        .args(["list", "--json"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return tasks
+                    .iter()
+                    .filter(|task| {
+                        task.get("status")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s == "in_progress")
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|task| {
+                        task.get("owner")
+                            .and_then(|o| o.as_str())
+                            .filter(|o| !o.is_empty())
+                            .map(|o| o.to_string())
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => {
+            debug!("Failed to get tasks from bd CLI for idle check");
+            Vec::new()
+        }
+    }
 }
 
 /// Watchdog task that manages the gh webhook forward process with periodic restarts.
@@ -1179,11 +1337,70 @@ fn handle_coworker_asking(
     )
 }
 
+/// Known system senders that should not trigger feedback detection.
+const SYSTEM_SENDERS: &[&str] = &["Lead", "lead", "github", "system", "GitHub"];
+
+/// Patterns that indicate a message is asking for feedback or help.
+/// Checked case-insensitively.
+const FEEDBACK_PATTERNS: &[&str] = &[
+    "feedback",
+    "thoughts?",
+    "opinion?",
+    "what do you think",
+    "help",
+    "blocked",
+    "stuck",
+    "unsure",
+    "not sure",
+    "question",
+    "@lead",
+    "lead:",
+];
+
+/// Check if a message is asking for feedback or help.
+///
+/// Returns true if the message:
+/// - Contains any feedback pattern keywords
+/// - Is directed at Lead (@Lead, Lead:)
+/// - Ends with "?" and contains substantive content (not just a status update)
+fn is_feedback_request(message: &str) -> bool {
+    let lower = message.to_lowercase();
+
+    // Check for explicit feedback patterns
+    for pattern in FEEDBACK_PATTERNS {
+        if lower.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Check if it ends with "?" and has substantive content
+    // Exclude status updates like "claiming task?" or short messages
+    if message.trim().ends_with('?') && message.len() > 30 {
+        // But exclude if it looks like a status update (starts with /me or common status words)
+        if !lower.starts_with("/me ")
+            && !lower.contains("claiming")
+            && !lower.contains("starting")
+            && !lower.contains("working on")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Check if a sender is a coworker (not Lead or system).
+fn is_coworker_sender(from: &str) -> bool {
+    !SYSTEM_SENDERS.contains(&from)
+}
+
 /// Handle channel.post RPC method.
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
 /// the prefix is stripped and the message is stored as an Action type.
 /// For coworkers, the action text is also reflected in their tmux tab name.
+///
+/// Also detects feedback requests from coworkers and nudges the Lead.
 fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonState) -> Response {
     // Check for /me prefix (IRC-style action)
     let (content, msg_type) = if let Some(action) = message.strip_prefix("/me ") {
@@ -1203,6 +1420,38 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 // Update the coworker's tmux tab to show their status
                 if let Err(e) = state.coworkers.update_status_display(from, Some(&content)) {
                     debug!("Failed to update tmux tab for {}: {}", from, e);
+                }
+            }
+
+            // Check for feedback requests from coworkers and nudge Lead
+            if is_coworker_sender(from) && is_feedback_request(&content) {
+                // Use message ID to avoid duplicate nudges
+                let should_nudge = {
+                    let nudged = state.nudged_messages.read().unwrap();
+                    !nudged.contains(&msg.id)
+                };
+
+                if should_nudge {
+                    // Record that we're nudging for this message
+                    {
+                        let mut nudged = state.nudged_messages.write().unwrap();
+                        nudged.insert(msg.id.clone());
+                    }
+
+                    // Truncate question for nudge message (max 100 chars)
+                    let question = if content.len() > 100 {
+                        format!("{}...", &content[..97])
+                    } else {
+                        content.clone()
+                    };
+
+                    let nudge_msg = format!("{} is asking for feedback: {}", from, question);
+                    info!("Nudging Lead about feedback request from {}", from);
+
+                    // Nudge the Lead window
+                    if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
+                        warn!("Failed to nudge Lead about feedback request: {}", e);
+                    }
                 }
             }
 
@@ -1456,6 +1705,99 @@ fn truncate_message(msg: &str, max_len: usize) -> String {
     }
 }
 
+// ============================================================================
+// Auto-nudge helpers for PR activity
+// ============================================================================
+
+/// Known coworker names (Manhattan avenues).
+const COWORKER_NAMES: &[&str] = &[
+    "lexington",
+    "park",
+    "madison",
+    "broadway",
+    "amsterdam",
+    "columbus",
+    "central",
+    "riverside",
+    "york",
+    "pleasant",
+    "vernon",
+    "bleecker",
+    "houston",
+    "canal",
+    "spring",
+    "prince",
+    "mercer",
+];
+
+/// Extract PR number from a message content.
+///
+/// Looks for patterns like "PR #42", "#42", "PR #123".
+fn extract_pr_number(content: &str) -> Option<u64> {
+    // Look for "PR #N" pattern first
+    if let Some(idx) = content.find("PR #") {
+        let after = &content[idx + 4..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse() {
+            return Some(num);
+        }
+    }
+
+    // Look for " #N " pattern (standalone PR reference)
+    // This handles messages like "approved PR #42" where we already caught it above
+    // but also cases like "on #42:"
+    for (i, _) in content.match_indices(" #") {
+        let after = &content[i + 2..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num_str.is_empty()
+            && let Ok(num) = num_str.parse()
+        {
+            return Some(num);
+        }
+    }
+
+    None
+}
+
+/// Look up the coworker who owns a PR by checking its branch name.
+///
+/// Uses `gh pr view N --json headRefName` to get the branch, then
+/// extracts the coworker name from the branch prefix (e.g., "lexington/fix-auth" -> "lexington").
+fn get_pr_owner_coworker(pr_number: u64) -> Option<String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "headRefName",
+            "-q",
+            ".headRefName",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    coworker_from_branch(&branch)
+}
+
+/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
+fn coworker_from_branch(branch: &str) -> Option<String> {
+    let prefix = branch.split('/').next()?;
+    COWORKER_NAMES
+        .iter()
+        .find(|&&name| name.eq_ignore_ascii_case(prefix))
+        .map(|&s| s.to_string())
+}
+
+// ============================================================================
+// Orphan task recovery
+// ============================================================================
+
 /// Check for orphaned tasks and auto-recover coworkers.
 ///
 /// An orphaned task is one that is `in_progress` but the owning coworker
@@ -1590,6 +1932,127 @@ fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Auto-nudge helper tests
+    #[test]
+    fn test_extract_pr_number_pr_hash() {
+        assert_eq!(extract_pr_number("opened PR #42: Add feature"), Some(42));
+        assert_eq!(extract_pr_number("merged PR #123"), Some(123));
+        assert_eq!(extract_pr_number("btucker approved PR #99"), Some(99));
+    }
+
+    #[test]
+    fn test_extract_pr_number_standalone_hash() {
+        assert_eq!(extract_pr_number("commented on #55: looks good"), Some(55));
+        assert_eq!(
+            extract_pr_number("Check 'build' passed on PR #77"),
+            Some(77)
+        );
+    }
+
+    #[test]
+    fn test_extract_pr_number_none() {
+        assert_eq!(extract_pr_number("no pr reference here"), None);
+        assert_eq!(extract_pr_number("just some text"), None);
+    }
+
+    #[test]
+    fn test_coworker_from_branch() {
+        assert_eq!(
+            coworker_from_branch("lexington/fix-auth"),
+            Some("lexington".to_string())
+        );
+        assert_eq!(
+            coworker_from_branch("park/add-feature"),
+            Some("park".to_string())
+        );
+        assert_eq!(
+            coworker_from_branch("madison/refactor"),
+            Some("madison".to_string())
+        );
+    }
+
+    #[test]
+    fn test_coworker_from_branch_case_insensitive() {
+        assert_eq!(
+            coworker_from_branch("LEXINGTON/fix"),
+            Some("lexington".to_string())
+        );
+        assert_eq!(coworker_from_branch("Park/thing"), Some("park".to_string()));
+    }
+
+    #[test]
+    fn test_coworker_from_branch_not_coworker() {
+        assert_eq!(coworker_from_branch("feature/something"), None);
+        assert_eq!(coworker_from_branch("fix/bug"), None);
+        assert_eq!(coworker_from_branch("main"), None);
+    }
+
+    // PR polling tests
+    #[test]
+    fn test_is_feedback_request_with_keywords() {
+        // Explicit feedback keywords
+        assert!(is_feedback_request(
+            "What do you think about this approach?"
+        ));
+        assert!(is_feedback_request(
+            "I need some feedback on the API design"
+        ));
+        assert!(is_feedback_request("Thoughts? I'm not sure about this"));
+        assert!(is_feedback_request("Could I get your opinion?"));
+        assert!(is_feedback_request("I'm blocked on the auth issue"));
+        assert!(is_feedback_request(
+            "I'm stuck here, not sure how to proceed"
+        ));
+        assert!(is_feedback_request(
+            "I have a question about the architecture"
+        ));
+        assert!(is_feedback_request("@Lead can you review this?"));
+        assert!(is_feedback_request("Lead: what's the best approach here?"));
+    }
+
+    #[test]
+    fn test_is_feedback_request_with_questions() {
+        // Long questions that end with "?" and don't look like status updates should trigger
+        assert!(is_feedback_request(
+            "Is this the right way to handle the authentication flow in the API layer?"
+        ));
+        assert!(is_feedback_request(
+            "Should we use async/await here or is the sync version fine for this use case?"
+        ));
+    }
+
+    #[test]
+    fn test_is_feedback_request_excludes_status_updates() {
+        // Status updates should not trigger
+        assert!(!is_feedback_request("/me claiming task 1"));
+        assert!(!is_feedback_request("/me working on task 2"));
+        assert!(!is_feedback_request("starting task #3"));
+        assert!(!is_feedback_request("claiming #5?"));
+    }
+
+    #[test]
+    fn test_is_feedback_request_excludes_short_questions() {
+        // Short questions that are probably just confirmations
+        assert!(!is_feedback_request("Ready?"));
+        assert!(!is_feedback_request("Done?"));
+    }
+
+    #[test]
+    fn test_is_coworker_sender() {
+        // System senders should not be coworkers
+        assert!(!is_coworker_sender("Lead"));
+        assert!(!is_coworker_sender("lead"));
+        assert!(!is_coworker_sender("github"));
+        assert!(!is_coworker_sender("GitHub"));
+        assert!(!is_coworker_sender("system"));
+
+        // Actual coworker names should be detected
+        assert!(is_coworker_sender("lexington"));
+        assert!(is_coworker_sender("park"));
+        assert!(is_coworker_sender("amsterdam"));
+        assert!(is_coworker_sender("madison"));
+    }
 
     #[test]
     fn test_pr_issue_tracker_should_nudge_new() {
