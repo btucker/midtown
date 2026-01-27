@@ -432,17 +432,17 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Render an action message: " HH:MM * name message"
+/// Render an action message: "* name message" (no timestamp)
 fn render_action_message(
     msg: &Message,
-    time: &str,
+    _time: &str,
     color: Color,
     content_style: Style,
     width: usize,
 ) -> Vec<Line<'static>> {
-    // Format: " HH:MM * name message"
-    // Prefix is " HH:MM * name " where name varies
-    let prefix_len = 1 + 5 + 3 + msg.from.len() + 1; // " " + "HH:MM" + " * " + name + " "
+    // Format: "* name message" (no timestamp for /me actions)
+    // Prefix is "* name " where name varies
+    let prefix_len = 2 + msg.from.len() + 1; // "* " + name + " "
     let content_width = width.saturating_sub(prefix_len);
 
     if content_width == 0 {
@@ -454,9 +454,8 @@ fn render_action_message(
 
     for (i, content) in content_lines.iter().enumerate() {
         if i == 0 {
-            // First line: " HH:MM * name message"
+            // First line: "* name message"
             let spans = vec![
-                Span::styled(format!(" {} ", time), Style::default().fg(Color::DarkGray)),
                 Span::styled("* ", Style::default().fg(color)),
                 Span::styled(
                     msg.from.clone(),
@@ -912,7 +911,7 @@ mod tests {
             message_type: MessageType::Action,
         };
 
-        // Action messages are " HH:MM * name message" on one line
+        // Action messages are "* name message" on one line (no timestamp)
         let lines = render_message(&msg, 80, None);
         assert_eq!(lines.len(), 1);
 
@@ -920,6 +919,12 @@ mod tests {
         assert!(content.contains("*"));
         assert!(content.contains("park"));
         assert!(content.contains("completed task 3"));
+        // Should NOT contain timestamp (no colon like "10:42")
+        assert!(
+            !content.contains(":"),
+            "Action message should not contain timestamp, got: {}",
+            content
+        );
     }
 
     #[test]
