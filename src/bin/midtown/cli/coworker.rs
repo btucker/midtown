@@ -6,7 +6,11 @@ use crate::client::DaemonClient;
 #[derive(Subcommand, Debug, Clone)]
 pub enum CoworkerCommand {
     /// Spawn a new coworker
-    Spawn,
+    Spawn {
+        /// Resume the previous Claude session (passes --continue to claude)
+        #[arg(long)]
+        resume: bool,
+    },
     /// Shutdown a coworker
     Shutdown {
         /// Name of the coworker to shutdown
@@ -65,7 +69,7 @@ pub enum NudgeConfigCommand {
 
 pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        CoworkerCommand::Spawn => client.coworker_spawn(),
+        CoworkerCommand::Spawn { resume } => client.coworker_spawn(*resume),
         CoworkerCommand::Shutdown { name } => client.coworker_shutdown(name),
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),

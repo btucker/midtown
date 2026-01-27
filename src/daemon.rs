@@ -1135,7 +1135,15 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "shutting_down"}))
         }
 
-        "coworker.spawn" => handle_coworker_spawn(request.id, state),
+        "coworker.spawn" => {
+            let resume = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("resume"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            handle_coworker_spawn(request.id, state, resume)
+        }
 
         "coworker.shutdown" => {
             let name = request
@@ -1222,8 +1230,8 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
 }
 
 /// Handle coworker.spawn RPC method.
-fn handle_coworker_spawn(id: RequestId, state: &DaemonState) -> Response {
-    match state.coworkers.spawn() {
+fn handle_coworker_spawn(id: RequestId, state: &DaemonState, resume: bool) -> Response {
+    match state.coworkers.spawn(resume) {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
             Response::success(

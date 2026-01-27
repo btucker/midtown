@@ -625,11 +625,15 @@ fn write_coworker_settings_file(bin_command: &str) -> crate::Result<PathBuf> {
 /// Spawn Claude Code in a tmux window, returning the coworker's session ID.
 ///
 /// Returns the generated session UUID for use in task symlink management.
+///
+/// If `resume` is true, passes `--continue` to claude to resume the previous
+/// session from this worktree, preserving context from the last session.
 pub fn spawn_claude(
     session: &str,
     name: &str,
     working_dir: &str,
     repo_name: Option<&str>,
+    resume: bool,
 ) -> crate::Result<String> {
     // Get bin_command from project config
     let bin_command = crate::config::get_bin_command();
@@ -660,10 +664,13 @@ pub fn spawn_claude(
     // Use file paths for settings and prompt to avoid shell quoting issues
     // Set MIDTOWN_AGENT env var so the coworker's name appears in messages
     // Use --setting-sources project,local to use project settings (no vim mode)
+    // Add --continue flag if resuming a previous session
+    let continue_flag = if resume { " --continue" } else { "" };
     let command = format!(
-        "export MIDTOWN_AGENT={}; claude --dangerously-skip-permissions --session-id {} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        "export MIDTOWN_AGENT={}; claude --dangerously-skip-permissions --session-id {}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
         name,
         coworker_session_id,
+        continue_flag,
         settings_file.display(),
         prompt_file.display()
     );
