@@ -4,13 +4,16 @@
 //! handles JSON-RPC requests for workspace management operations. It also
 //! runs a webhook server to receive GitHub events.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{RwLock, broadcast, watch};
+use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
@@ -69,11 +72,19 @@ impl Default for DaemonConfig {
     }
 }
 
+/// How long a coworker must be idle before automatic shutdown (5 minutes)
+const IDLE_SHUTDOWN_DURATION: Duration = Duration::from_secs(300);
+
+/// How often to check for idle coworkers (30 seconds)
+const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Shared daemon state.
 struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
+    /// Tracks when each coworker became idle (no in_progress tasks)
+    idle_since: RwLock<HashMap<String, Instant>>,
 }
 
 impl DaemonState {
@@ -97,6 +108,7 @@ impl DaemonState {
             coworkers: CoworkerManager::new(session_name, worktree_manager),
             channel,
             socket_path,
+            idle_since: RwLock::new(HashMap::new()),
         })
     }
 }
@@ -184,6 +196,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
 
+    // Set up idle check interval
+    let mut idle_check_interval = interval(IDLE_CHECK_INTERVAL);
+
     // Main accept loop
     loop {
         let shutdown_rx = shutdown_tx.subscribe();
@@ -214,6 +229,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 if let Err(e) = state.channel.send(&msg) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
+            }
+
+            // Periodically check for idle coworkers and shut them down
+            _ = idle_check_interval.tick() => {
+                check_and_shutdown_idle_coworkers(&state).await;
             }
 
             // Handle SIGTERM
@@ -249,6 +269,129 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     info!("Daemon stopped");
     Ok(())
+}
+
+/// Check for idle coworkers and shut them down after the idle timeout.
+///
+/// A coworker is considered idle if they have no tasks in "in_progress" status
+/// with their name as owner. After 5 minutes of continuous idle, they are
+/// automatically shut down.
+async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
+    // Get list of active coworkers
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    if active_coworkers.is_empty() {
+        return;
+    }
+
+    // Get in_progress tasks to determine who is busy
+    let busy_coworkers = get_busy_coworkers();
+
+    let now = Instant::now();
+    let mut to_shutdown = Vec::new();
+
+    {
+        let mut idle_since = state.idle_since.write().await;
+
+        for coworker in &active_coworkers {
+            let is_busy = busy_coworkers
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(coworker));
+
+            if is_busy {
+                // Coworker is busy, remove from idle tracking
+                if idle_since.remove(coworker).is_some() {
+                    debug!(
+                        "Coworker {} is now busy, removed from idle tracking",
+                        coworker
+                    );
+                }
+            } else {
+                // Coworker is idle
+                match idle_since.get(coworker) {
+                    Some(since) => {
+                        // Check if they've been idle long enough
+                        if now.duration_since(*since) >= IDLE_SHUTDOWN_DURATION {
+                            to_shutdown.push(coworker.clone());
+                        }
+                    }
+                    None => {
+                        // Just became idle, start tracking
+                        idle_since.insert(coworker.clone(), now);
+                        debug!("Coworker {} is now idle, starting timer", coworker);
+                    }
+                }
+            }
+        }
+
+        // Remove shutdown coworkers from tracking
+        for name in &to_shutdown {
+            idle_since.remove(name);
+        }
+    }
+
+    // Shutdown idle coworkers (outside the lock)
+    for name in to_shutdown {
+        info!(
+            "Auto-shutting down idle coworker: {} (idle for 5+ minutes)",
+            name
+        );
+
+        // Post system message to channel
+        let msg = Message::text(
+            "system",
+            format!("⏱️ Auto-shutting down idle coworker: {}", name),
+        );
+        if let Err(e) = state.channel.send(&msg) {
+            warn!("Failed to post shutdown message to channel: {}", e);
+        }
+
+        // Shutdown the coworker
+        if let Err(e) = state.coworkers.shutdown(&name) {
+            warn!("Failed to shutdown idle coworker {}: {}", name, e);
+        }
+    }
+}
+
+/// Get list of coworker names who have in_progress tasks.
+fn get_busy_coworkers() -> Vec<String> {
+    // Use bd (beads) to get task list
+    let output = std::process::Command::new("bd")
+        .args(["list", "--json"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(tasks) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return tasks
+                    .iter()
+                    .filter(|task| {
+                        task.get("status")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s == "in_progress")
+                            .unwrap_or(false)
+                    })
+                    .filter_map(|task| {
+                        task.get("owner")
+                            .and_then(|o| o.as_str())
+                            .filter(|o| !o.is_empty())
+                            .map(|o| o.to_string())
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => {
+            debug!("Failed to get tasks from bd CLI for idle check");
+            Vec::new()
+        }
+    }
 }
 
 /// Watchdog task that manages the gh webhook forward process with periodic restarts.
