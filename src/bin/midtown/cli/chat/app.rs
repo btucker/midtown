@@ -218,52 +218,89 @@ impl App {
     }
 }
 
-/// Fetch tasks from bd (beads) CLI
+/// Fetch tasks from Claude Code's task storage.
+///
+/// Reads tasks from `~/.claude/tasks/<lead_session_id>/` where the lead session ID
+/// is stored in `~/.midtown/<repo>/lead-session`.
 fn fetch_tasks() -> Vec<KanbanTask> {
     let mut tasks = Vec::new();
 
-    // Get all tasks with bd list --json
-    if let Ok(output) = std::process::Command::new("bd")
-        .args(["list", "--json"])
-        .output()
-        && output.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Ok(beads) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-            for bead in beads {
-                let id = bead
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let subject = bead
-                    .get("subject")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let owner = bead.get("owner").and_then(|v| v.as_str()).map(String::from);
-                let status_str = bead
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("open");
+    // Get repo name to find the lead session file
+    let repo_name = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
 
-                let status = match status_str {
-                    "in_progress" => TaskStatus::InProgress,
-                    "completed" | "closed" => TaskStatus::Completed,
-                    _ => TaskStatus::Pending,
-                };
+    // Get home directory
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return tasks,
+    };
 
-                if !id.is_empty() {
-                    tasks.push(KanbanTask {
-                        id,
-                        subject,
-                        owner,
-                        status,
-                    });
-                }
+    // Read the lead session ID from ~/.midtown/<repo>/lead-session
+    let lead_session_file = home.join(".midtown").join(&repo_name).join("lead-session");
+    let lead_session_id = match std::fs::read_to_string(&lead_session_file) {
+        Ok(id) => id.trim().to_string(),
+        Err(_) => return tasks,
+    };
+
+    if lead_session_id.is_empty() {
+        return tasks;
+    }
+
+    // Read tasks from ~/.claude/tasks/<lead_session_id>/
+    let tasks_dir = home.join(".claude").join("tasks").join(&lead_session_id);
+    let entries = match std::fs::read_dir(&tasks_dir) {
+        Ok(e) => e,
+        Err(_) => return tasks,
+    };
+
+    // Read each task file (*.json)
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json")
+            && let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(task_data) = serde_json::from_str::<serde_json::Value>(&content)
+        {
+            let id = task_data
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let subject = task_data
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let owner = task_data
+                .get("owner")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let status_str = task_data
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pending");
+
+            let status = match status_str {
+                "in_progress" => TaskStatus::InProgress,
+                "completed" => TaskStatus::Completed,
+                _ => TaskStatus::Pending,
+            };
+
+            if !id.is_empty() {
+                tasks.push(KanbanTask {
+                    id,
+                    subject,
+                    owner,
+                    status,
+                });
             }
         }
     }
+
+    // Sort tasks by ID for consistent display
+    tasks.sort_by(|a, b| {
+        let a_num: i32 = a.id.parse().unwrap_or(i32::MAX);
+        let b_num: i32 = b.id.parse().unwrap_or(i32::MAX);
+        a_num.cmp(&b_num)
+    });
 
     tasks
 }
@@ -383,4 +420,120 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
     // Sort by merged_at descending (most recent first)
     prs.sort_by(|a, b| b.merged_at.cmp(&a.merged_at));
     prs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_status_from_string() {
+        // Test the status parsing logic
+        let status_str = "in_progress";
+        let status = match status_str {
+            "in_progress" => TaskStatus::InProgress,
+            "completed" => TaskStatus::Completed,
+            _ => TaskStatus::Pending,
+        };
+        assert_eq!(status, TaskStatus::InProgress);
+
+        let status_str = "completed";
+        let status = match status_str {
+            "in_progress" => TaskStatus::InProgress,
+            "completed" => TaskStatus::Completed,
+            _ => TaskStatus::Pending,
+        };
+        assert_eq!(status, TaskStatus::Completed);
+
+        let status_str = "pending";
+        let status = match status_str {
+            "in_progress" => TaskStatus::InProgress,
+            "completed" => TaskStatus::Completed,
+            _ => TaskStatus::Pending,
+        };
+        assert_eq!(status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn test_kanban_task_clone() {
+        let task = KanbanTask {
+            id: "1".to_string(),
+            subject: "Test task".to_string(),
+            owner: Some("park".to_string()),
+            status: TaskStatus::InProgress,
+        };
+        let cloned = task.clone();
+        assert_eq!(cloned.id, "1");
+        assert_eq!(cloned.subject, "Test task");
+        assert_eq!(cloned.owner, Some("park".to_string()));
+        assert_eq!(cloned.status, TaskStatus::InProgress);
+    }
+
+    #[test]
+    fn test_tasks_by_status_groups_correctly() {
+        let app = App {
+            messages: Vec::new(),
+            scroll_offset: 0,
+            visible_height: 20,
+            channel: None,
+            last_count: 0,
+            tasks: vec![
+                KanbanTask {
+                    id: "1".to_string(),
+                    subject: "Pending task".to_string(),
+                    owner: None,
+                    status: TaskStatus::Pending,
+                },
+                KanbanTask {
+                    id: "2".to_string(),
+                    subject: "In progress task".to_string(),
+                    owner: Some("park".to_string()),
+                    status: TaskStatus::InProgress,
+                },
+                KanbanTask {
+                    id: "3".to_string(),
+                    subject: "Completed task".to_string(),
+                    owner: Some("lexington".to_string()),
+                    status: TaskStatus::Completed,
+                },
+            ],
+            prs: Vec::new(),
+            merged_prs: Vec::new(),
+            repo_name: "test".to_string(),
+            kanban_last_refresh: Instant::now(),
+        };
+
+        let (pending, in_progress, completed) = app.tasks_by_status();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(in_progress.len(), 1);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(pending[0].id, "1");
+        assert_eq!(in_progress[0].id, "2");
+        assert_eq!(completed[0].id, "3");
+    }
+
+    #[test]
+    fn test_parse_task_json() {
+        let json = r#"{
+            "id": "3",
+            "subject": "Fix Backlog & In Progress kanban columns",
+            "description": "Test description",
+            "owner": "park",
+            "status": "in_progress",
+            "blocks": [],
+            "blockedBy": []
+        }"#;
+
+        let task_data: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let id = task_data.get("id").and_then(|v| v.as_str()).unwrap();
+        let subject = task_data.get("subject").and_then(|v| v.as_str()).unwrap();
+        let owner = task_data.get("owner").and_then(|v| v.as_str());
+        let status_str = task_data.get("status").and_then(|v| v.as_str()).unwrap();
+
+        assert_eq!(id, "3");
+        assert_eq!(subject, "Fix Backlog & In Progress kanban columns");
+        assert_eq!(owner, Some("park"));
+        assert_eq!(status_str, "in_progress");
+    }
 }
