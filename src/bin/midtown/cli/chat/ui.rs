@@ -132,27 +132,30 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
 fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
     let status = &app.repo_status;
 
+    // Background color matching tmux status bar (colour236 = dark gray)
+    let bg = Color::Indexed(236);
+
     let mut spans = Vec::new();
 
     // Repo name (dim)
     spans.push(Span::styled(
         format!(" {}  ", app.repo_name),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::DarkGray).bg(bg),
     ));
 
     // Commit hash and time
     if !status.commit_hash.is_empty() {
         spans.push(Span::styled(
             status.commit_hash.clone(),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(Color::Yellow).bg(bg),
         ));
         if let Some(commit_time) = status.commit_time {
             spans.push(Span::styled(
                 format!("  {}  ", format_relative_time(commit_time)),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::DarkGray).bg(bg),
             ));
         } else {
-            spans.push(Span::raw("  "));
+            spans.push(Span::styled("  ", Style::default().bg(bg)));
         }
     }
 
@@ -163,22 +166,34 @@ fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
         CiStatus::Running => ("●", Color::Yellow),
         CiStatus::Unknown => ("○", Color::DarkGray),
     };
-    spans.push(Span::styled(ci_char, Style::default().fg(ci_color)));
-    spans.push(Span::raw("  "));
+    spans.push(Span::styled(ci_char, Style::default().fg(ci_color).bg(bg)));
+    spans.push(Span::styled("  ", Style::default().bg(bg)));
 
     // Release info
     if let Some(ref tag) = status.release_tag {
         spans.push(Span::styled(
             "Releases: ",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::DarkGray).bg(bg),
         ));
-        spans.push(Span::styled(tag.clone(), Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            tag.clone(),
+            Style::default().fg(Color::Cyan).bg(bg),
+        ));
         if let Some(release_time) = status.release_time {
             spans.push(Span::styled(
                 format!("  {}", format_relative_time(release_time)),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::DarkGray).bg(bg),
             ));
         }
+    }
+
+    // Fill rest of line with background
+    let content_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if content_len < area.width as usize {
+        spans.push(Span::styled(
+            " ".repeat(area.width as usize - content_len),
+            Style::default().bg(bg),
+        ));
     }
 
     let line = Line::from(spans);
