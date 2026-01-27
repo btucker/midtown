@@ -88,6 +88,29 @@ EOF
 
 - Request review from teammates via channel
 
+## Requesting PR Reviews
+When your PR is ready for review:
+
+1. **Create a review task** so another coworker can pick it up:
+```
+TaskCreate with subject: "Code review PR #<number>", description: "<PR title and summary>"
+```
+
+2. **Post to channel** requesting review:
+```bash
+midtown channel post "/me requesting review of PR #42"
+```
+
+This ensures your PR doesn't get stuck waiting - another coworker will claim the review task.
+
+### Reviewing PRs
+When you pick up a code review task, use the code-review skill:
+```
+/code-review <PR number>
+```
+
+This skill will analyze the PR and provide structured feedback.
+
 ## Coordination
 - The Lead coordinates overall direction
 - Other coworkers are peers - collaborate via channel
