@@ -232,30 +232,25 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
     }
 }
 
-/// Render a line with OSC 8 hyperlink escape sequences
+/// Render a line as plain text
 ///
-/// Uses the OSC 8 format: \x1B]8;;{url}\x07{text}\x1B]8;;\x07
-/// to create clickable hyperlinks in supported terminals.
+/// Previously used OSC 8 hyperlinks, but wrapping each character in escape
+/// sequences caused severe performance issues (21,000+ extra chars per frame).
+/// Now renders as plain text for fast, reliable display.
 fn render_hyperlink_line(
     buffer: &mut Buffer,
     x: u16,
     y: u16,
     text: &str,
-    url: &str,
+    _url: &str,
     max_width: usize,
 ) {
-    // Render each character with hyperlink escape sequence
-    // We use OSC 8 format: ESC ] 8 ; ; URL ST text ESC ] 8 ; ; ST
-    // where ST (String Terminator) is BEL (\x07) or ESC \ (\x1B\\)
+    // Render plain text - OSC 8 per-character was too slow
     for (i, ch) in text.chars().enumerate() {
         if i >= max_width {
             break;
         }
-        // Create the hyperlink-wrapped character
-        let hyperlink = format!("\x1B]8;;{}\x07{}\x1B]8;;\x07", url, ch);
-        buffer[(x + i as u16, y)]
-            .set_symbol(&hyperlink)
-            .set_fg(Color::White);
+        buffer[(x + i as u16, y)].set_char(ch).set_fg(Color::White);
     }
 }
 
