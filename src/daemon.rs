@@ -187,6 +187,9 @@ const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
 /// This prevents spawn storms where coworkers are rapidly spawned and killed.
 const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 
+/// How long a coworker must be interrupted before nudging them to continue (60 seconds)
+const INTERRUPTED_NUDGE_DURATION: Duration = Duration::from_secs(60);
+
 /// Cooldown between orphan recovery spawns (5 seconds)
 /// Only spawn one coworker per tick, with a minimum gap between spawns.
 const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
@@ -346,6 +349,8 @@ struct DaemonState {
     nudged_messages: std::sync::RwLock<HashSet<String>>,
     /// Tracks when each coworker became idle (no in_progress tasks)
     idle_since: RwLock<HashMap<String, Instant>>,
+    /// Tracks when each coworker was first detected as interrupted
+    interrupted_since: RwLock<HashMap<String, Instant>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Tracker for PRs assigned for review
@@ -379,6 +384,7 @@ impl DaemonState {
             socket_path,
             nudged_messages: std::sync::RwLock::new(HashSet::new()),
             idle_since: RwLock::new(HashMap::new()),
+            interrupted_since: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
@@ -616,6 +622,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             // Periodically check for idle coworkers and shut them down
             _ = idle_check_interval.tick() => {
                 check_and_shutdown_idle_coworkers(&state).await;
+                check_and_nudge_interrupted_coworkers(&state).await;
             }
 
             // Periodic orphan check and duplicate detection
@@ -789,6 +796,83 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         // Shutdown the coworker
         if let Err(e) = state.coworkers.shutdown(&name) {
             warn!("Failed to shutdown idle coworker {}: {}", name, e);
+        }
+    }
+}
+
+/// Check for coworkers whose Claude Code session is interrupted and nudge them to continue.
+///
+/// Captures each active coworker's tmux pane content and checks for interruption
+/// indicators ("Interrupted" or "What should Claude do instead?"). If the interrupted
+/// state persists for 60 seconds, sends a "continue" nudge to unstick them.
+async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
+    let active_coworkers = state.coworkers.list();
+    if active_coworkers.is_empty() {
+        return;
+    }
+
+    let session_name = state.coworkers.session_name();
+    let now = Instant::now();
+    let mut to_nudge = Vec::new();
+
+    {
+        let mut interrupted_since = state.interrupted_since.write().await;
+
+        for cw in &active_coworkers {
+            let coworker = &cw.name;
+            let target = format!("{}:{}", session_name, coworker);
+
+            let pane_content = match crate::tmux::capture_pane(&target) {
+                Some(content) => content,
+                None => {
+                    // Can't capture pane, remove from tracking
+                    interrupted_since.remove(coworker);
+                    continue;
+                }
+            };
+
+            let is_interrupted = pane_content.contains("Interrupted")
+                || pane_content.contains("What should Claude do instead?");
+
+            if is_interrupted {
+                match interrupted_since.get(coworker) {
+                    Some(since) => {
+                        if now.duration_since(*since) >= INTERRUPTED_NUDGE_DURATION {
+                            to_nudge.push(coworker.clone());
+                            // Reset tracking so we don't spam nudges every 30s
+                            interrupted_since.remove(coworker);
+                        }
+                    }
+                    None => {
+                        interrupted_since.insert(coworker.clone(), now);
+                        debug!("Coworker {} appears interrupted, starting timer", coworker);
+                    }
+                }
+            } else {
+                // Not interrupted, clear tracking
+                if interrupted_since.remove(coworker).is_some() {
+                    debug!("Coworker {} is no longer interrupted", coworker);
+                }
+            }
+        }
+    }
+
+    for name in to_nudge {
+        info!(
+            "Nudging interrupted coworker: {} (interrupted for 60+ seconds)",
+            name
+        );
+
+        let msg = Message::text(
+            "system",
+            format!("🔄 Nudging interrupted coworker: {}", name),
+        );
+        if let Err(e) = state.channel.send(&msg) {
+            warn!("Failed to post interrupted nudge message to channel: {}", e);
+        }
+
+        if let Err(e) = state.coworkers.nudge(&name, "continue") {
+            warn!("Failed to nudge interrupted coworker {}: {}", name, e);
         }
     }
 }
