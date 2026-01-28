@@ -25,11 +25,14 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
 
 use crate::message::{Message, MessageType};
+use crate::web::{self, WebConfig, WebState, WebUpdate};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -42,6 +45,8 @@ pub struct WebhookConfig {
     pub secret: Option<String>,
     /// Repository name for channel routing
     pub repo: String,
+    /// Path to static files for web app (optional)
+    pub web_static_dir: Option<PathBuf>,
 }
 
 impl Default for WebhookConfig {
@@ -50,6 +55,7 @@ impl Default for WebhookConfig {
             port: 8080,
             secret: None,
             repo: "default".to_string(),
+            web_static_dir: None,
         }
     }
 }
@@ -58,6 +64,9 @@ impl Default for WebhookConfig {
 struct WebhookState {
     config: WebhookConfig,
     message_tx: mpsc::Sender<Message>,
+    /// Broadcast channel for web updates (will be used to broadcast webhook events)
+    #[allow(dead_code)]
+    web_updates_tx: broadcast::Sender<WebUpdate>,
 }
 
 /// GitHub webhook event header
@@ -70,19 +79,47 @@ const GITHUB_SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 /// Returns a channel receiver for translated messages.
 pub async fn start_webhook_server(config: WebhookConfig) -> crate::Result<mpsc::Receiver<Message>> {
     let (tx, rx) = mpsc::channel(100);
+    let (web_updates_tx, _) = broadcast::channel(100);
 
-    let state = Arc::new(WebhookState {
+    let webhook_state = Arc::new(WebhookState {
         config: config.clone(),
         message_tx: tx,
+        web_updates_tx: web_updates_tx.clone(),
     });
 
+    // Create web state for mobile app
+    let web_config = WebConfig {
+        static_dir: config.web_static_dir.clone().unwrap_or_else(|| {
+            // Default: look for web/ directory relative to working directory
+            PathBuf::from("web")
+        }),
+        repo: config.repo.clone(),
+    };
+
+    let web_state = Arc::new(WebState {
+        config: web_config,
+        updates_tx: web_updates_tx,
+    });
+
+    // CORS layer for development (allows requests from Vite dev server)
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    // Build the combined router
     let app = Router::new()
+        // GitHub webhook endpoint
         .route("/webhook", post(handle_webhook))
         .route("/health", axum::routing::get(health_check))
-        .with_state(state);
+        .with_state(webhook_state)
+        // Merge the web app router (API + static files)
+        .merge(web::create_web_router(web_state))
+        .layer(cors);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Starting webhook server on {}", addr);
+    info!("Web app available at http://localhost:{}", config.port);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
