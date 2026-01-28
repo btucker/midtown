@@ -2371,6 +2371,15 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 }
             }
 
+            // Nudge lead when mobile messages arrive (from web UI)
+            if from == "mobile" {
+                let nudge_msg = format!("user: {}", content);
+                info!("Nudging Lead about mobile message");
+                if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
+                    warn!("Failed to nudge Lead about mobile message: {}", e);
+                }
+            }
+
             // Nudge the Lead when a coworker explicitly mentions @lead
             if is_coworker_sender(from) && content.to_lowercase().contains("@lead") {
                 // Use message ID to avoid duplicate nudges
