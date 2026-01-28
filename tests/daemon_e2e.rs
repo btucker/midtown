@@ -195,7 +195,7 @@ fn test_nudge_timing_after_spawn() {
     assert!(
         content
             .as_ref()
-            .map_or(false, |c| c.contains(&unique_message)),
+            .is_some_and(|c| c.contains(&unique_message)),
         "Message should appear in pane even with immediate nudge. Content: {:?}",
         content
     );
@@ -309,7 +309,7 @@ fn test_nudge_to_window_with_process() {
     assert!(
         content
             .as_ref()
-            .map_or(false, |c| c.contains(&unique_message)),
+            .is_some_and(|c| c.contains(&unique_message)),
         "Process should have received the nudge. Content: {:?}",
         content
     );
@@ -354,7 +354,7 @@ fn test_verified_nudge_delivery() {
     assert!(
         content
             .as_ref()
-            .map_or(false, |c| c.contains(&unique_message)),
+            .is_some_and(|c| c.contains(&unique_message)),
         "Pane should contain verified nudge. Content: {:?}",
         content
     );
