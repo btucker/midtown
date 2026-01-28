@@ -2287,9 +2287,9 @@ fn check_and_recover_orphans(state: &DaemonState) {
             task_id, owner
         );
 
-        // Try to respawn the coworker
-        match state.coworkers.respawn(&owner) {
-            Ok(()) => {
+        // Try to respawn the coworker with resume=true to preserve context
+        match state.coworkers.spawn_with_name(&owner, true) {
+            Ok(_) => {
                 info!("Respawned coworker {} successfully", owner);
 
                 // Post to channel about the recovery
