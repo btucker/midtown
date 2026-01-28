@@ -392,6 +392,50 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
     Ok(())
 }
 
+/// Capture the current content of a tmux pane.
+///
+/// Returns the pane content as a string, or None if capture fails.
+fn capture_pane(target: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", target, "-p"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Check if the nudge text is still sitting in the input line (not submitted).
+///
+/// Returns true if the nudge appears to be stuck (Enter didn't work).
+/// Looks for the text after the prompt symbol (❯) on any recent line.
+fn is_nudge_stuck(pane_content: &str, nudge_text: &str) -> bool {
+    // Get the last few lines (the prompt line might not be the very last)
+    let lines: Vec<&str> = pane_content.lines().rev().take(5).collect();
+
+    // Look for lines containing the prompt symbol with our nudge text after it
+    for line in lines {
+        if let Some(pos) = line.find('❯') {
+            let after_prompt = &line[pos + '❯'.len_utf8()..];
+            // Check if our nudge text (or a significant portion) is in the input
+            // Use first 20 chars to avoid issues with line wrapping
+            let check_text = if nudge_text.len() > 20 {
+                &nudge_text[..20]
+            } else {
+                nudge_text
+            };
+            if after_prompt.contains(check_text) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Send keys (input) to a tmux window.
 ///
 /// This is used to "nudge" a coworker by sending keyboard input.
@@ -400,11 +444,14 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
 /// 2. Wait 500ms for paste to complete
 /// 3. Send Escape (exits vim INSERT mode if enabled - safe since text is already pasted)
 /// 4. Wait 100ms
-/// 5. Send Enter with retry (up to 3 attempts, 200ms between)
+/// 5. Send Enter with retry and verification (up to 3 attempts, 200ms between)
 ///
 /// The Escape is safe AFTER the text is pasted because the text is already
 /// in the input buffer. This handles vim mode users while not affecting
 /// normal mode users.
+///
+/// After sending Enter, verifies the nudge was submitted by checking if the
+/// text is still on the input line. If stuck, retries Enter.
 pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     use std::thread;
     use std::time::Duration;
@@ -437,30 +484,53 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     // 4. Wait 100ms before sending Enter
     thread::sleep(Duration::from_millis(100));
 
-    // 5. Send Enter with retry (up to 3 attempts, 200ms between)
-    let mut last_err = None;
+    // 5. Send Enter with retry and verification (up to 3 attempts, 200ms between)
     for attempt in 0..3 {
         if attempt > 0 {
+            tracing::debug!(
+                "Nudge verification: retrying Enter for {} (attempt {})",
+                target,
+                attempt + 1
+            );
             thread::sleep(Duration::from_millis(200));
         }
+
         let status = Command::new("tmux")
             .args(["send-keys", "-t", &target, "Enter"])
             .status()
             .map_err(Error::Io)?;
 
-        if status.success() {
+        if !status.success() {
+            continue;
+        }
+
+        // Wait a moment for the Enter to be processed, then verify
+        thread::sleep(Duration::from_millis(100));
+
+        // Check if the nudge is stuck (text still on input line)
+        if let Some(content) = capture_pane(&target) {
+            if !is_nudge_stuck(&content, keys) {
+                // Success - nudge was submitted
+                return Ok(());
+            }
+            // Nudge is stuck, will retry on next iteration
+            tracing::debug!(
+                "Nudge verification: detected stuck nudge for {}, will retry",
+                target
+            );
+        } else {
+            // Couldn't capture pane, assume success
             return Ok(());
         }
-        last_err = Some(format!(
-            "Failed to send Enter to tmux window: {} (attempt {})",
-            target,
-            attempt + 1
-        ));
     }
 
+    // All retries exhausted
     Err(Error::Rpc {
         code: -32603,
-        message: last_err.unwrap_or_else(|| "Failed to send Enter".to_string()),
+        message: format!(
+            "Nudge failed after 3 attempts - text may still be on input line: {}",
+            target
+        ),
     })
 }
 
@@ -1174,4 +1244,49 @@ mod tests {
     // 2. The window dies, but the SESSION still exists (Lead is using it)
     // 3. OLD: has-session returns success (session exists) -> false positive
     // 4. NEW: list-windows returns no match -> correctly detects window is gone
+
+    #[test]
+    fn test_is_nudge_stuck_detects_text_after_prompt() {
+        let pane_content = r#"
+Some previous output
+More output
+❯ You've been assigned task #36: Chat TUI still showing...
+"#;
+        let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
+        assert!(is_nudge_stuck(pane_content, nudge_text));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_no_match_when_submitted() {
+        let pane_content = r#"
+You've been assigned task #36: Chat TUI still showing...
+Claude is now processing the request
+❯
+"#;
+        let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
+        // The nudge text appears earlier but NOT after the prompt
+        assert!(!is_nudge_stuck(pane_content, nudge_text));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_empty_prompt() {
+        let pane_content = "❯ ";
+        let nudge_text = "Some nudge message";
+        assert!(!is_nudge_stuck(pane_content, nudge_text));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_no_prompt() {
+        let pane_content = "Just some output without a prompt";
+        let nudge_text = "Some nudge message";
+        assert!(!is_nudge_stuck(pane_content, nudge_text));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_partial_match() {
+        // Tests that we match on first 20 chars of long messages
+        let pane_content = "❯ You've been assigned";
+        let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
+        assert!(is_nudge_stuck(pane_content, nudge_text));
+    }
 }
