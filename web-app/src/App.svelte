@@ -49,12 +49,11 @@
     </button>
   </nav>
 
-  <Kanban />
-
   <div class="content">
     {#if activeTab === 'channel'}
       <Channel />
     {:else if activeTab === 'status'}
+      <Kanban />
       <Status />
     {:else if activeTab === 'lead'}
       <Lead />
