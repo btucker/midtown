@@ -1400,9 +1400,9 @@ async fn poll_prs_for_issues(
                             "Failed to spawn {} for PR #{} {}: {}",
                             owner, pr_number, issue_type, e
                         );
-                        // Fall back to posting to channel
+                        // Fall back to posting to channel (indicate spawn was attempted)
                         let channel_message = format!(
-                            "PR #{} ({}) owned by {} - {}: {}",
+                            "PR #{} ({}) owned by {} - {}: {} (spawn failed)",
                             pr_number,
                             truncate_str(title, 40),
                             owner,
