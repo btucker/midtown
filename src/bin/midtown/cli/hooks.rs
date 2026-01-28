@@ -4,7 +4,7 @@
 //! and notify when idle.
 
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use clap::Subcommand;
@@ -190,10 +190,34 @@ fn handle_idle_hook() -> Result<Response, String> {
     })
 }
 
-/// Parse insights from transcript JSONL file.
+/// Parse insights from transcript JSONL file, reading only new content since last run.
+///
+/// Uses a cursor file to track the byte offset of the last read. On subsequent
+/// calls, seeks to that offset and only parses new bytes, avoiding the cost of
+/// re-reading the entire (potentially multi-MB) transcript on every tool call.
 fn parse_insights_from_transcript(transcript_path: &str) -> Result<Vec<String>, String> {
-    let content = std::fs::read_to_string(transcript_path)
+    let cursor_offset = read_transcript_cursor(transcript_path);
+
+    let mut file = std::fs::File::open(transcript_path)
+        .map_err(|e| format!("Failed to open transcript: {}", e))?;
+
+    // Seek to where we left off
+    if cursor_offset > 0 {
+        file.seek(SeekFrom::Start(cursor_offset))
+            .map_err(|e| format!("Failed to seek in transcript: {}", e))?;
+    }
+
+    let mut content = String::new();
+    file.read_to_string(&mut content)
         .map_err(|e| format!("Failed to read transcript: {}", e))?;
+
+    // Update cursor to current end of file
+    let new_offset = cursor_offset + content.len() as u64;
+    write_transcript_cursor(transcript_path, new_offset);
+
+    if content.is_empty() {
+        return Ok(Vec::new());
+    }
 
     let mut insights = Vec::new();
 
@@ -226,6 +250,46 @@ fn parse_insights_from_transcript(transcript_path: &str) -> Result<Vec<String>, 
     }
 
     Ok(insights)
+}
+
+/// Get the cursor file path for a given transcript.
+/// Uses a hash of the transcript path to create a unique cursor filename.
+fn transcript_cursor_path(transcript_path: &str) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    transcript_path.hash(&mut hasher);
+    let path_hash = format!("{:016x}", hasher.finish());
+
+    // Store cursors alongside insights in the projects dir
+    if let Some(repo) = detect_git_repo() {
+        let dir = insights_dir_path(&repo);
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join(format!("cursor-{}.txt", path_hash))
+    } else {
+        // Fallback: store in temp dir
+        std::env::temp_dir().join(format!("midtown-cursor-{}.txt", path_hash))
+    }
+}
+
+/// Read the byte offset cursor for a transcript file.
+/// Returns 0 if no cursor exists (first run).
+fn read_transcript_cursor(transcript_path: &str) -> u64 {
+    let cursor_path = transcript_cursor_path(transcript_path);
+    std::fs::read_to_string(cursor_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Write the byte offset cursor for a transcript file.
+fn write_transcript_cursor(transcript_path: &str, offset: u64) {
+    let cursor_path = transcript_cursor_path(transcript_path);
+    if let Some(parent) = cursor_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(cursor_path, offset.to_string());
 }
 
 /// Extract insight blocks from text.
@@ -437,6 +501,77 @@ Second insight
         let hash1 = hash_insight("Insight one");
         let hash2 = hash_insight("Insight two");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_cursor_read_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        std::fs::write(&transcript, "").unwrap();
+        let path_str = transcript.to_str().unwrap();
+
+        // First read should return 0
+        assert_eq!(read_transcript_cursor(path_str), 0);
+
+        // Write a cursor
+        write_transcript_cursor(path_str, 42);
+
+        // Should read back the value
+        assert_eq!(read_transcript_cursor(path_str), 42);
+
+        // Update cursor
+        write_transcript_cursor(path_str, 1024);
+        assert_eq!(read_transcript_cursor(path_str), 1024);
+    }
+
+    #[test]
+    fn test_parse_insights_incremental() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        let path_str = transcript.to_str().unwrap();
+
+        // Write a transcript with one insight
+        let line1 = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": "`★ Insight ─────────────────────────────────────`\nFirst insight\n`─────────────────────────────────────────────────`"
+                }]
+            }
+        });
+        std::fs::write(&transcript, format!("{}\n", line1)).unwrap();
+
+        // First parse should find the insight
+        let insights = parse_insights_from_transcript(path_str).unwrap();
+        assert_eq!(insights.len(), 1);
+        assert!(insights[0].contains("First insight"));
+
+        // Second parse (no new content) should find nothing
+        let insights = parse_insights_from_transcript(path_str).unwrap();
+        assert!(insights.is_empty(), "should find no new insights");
+
+        // Append a second insight
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        let line2 = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": "`★ Insight ─────────────────────────────────────`\nSecond insight\n`─────────────────────────────────────────────────`"
+                }]
+            }
+        });
+        writeln!(file, "{}", line2).unwrap();
+
+        // Third parse should only find the new insight
+        let insights = parse_insights_from_transcript(path_str).unwrap();
+        assert_eq!(insights.len(), 1);
+        assert!(insights[0].contains("Second insight"));
     }
 
     #[test]
