@@ -2208,6 +2208,26 @@ fn is_coworker_sender(from: &str) -> bool {
     !SYSTEM_SENDERS.contains(&from)
 }
 
+/// Check if a message is directed at a coworker but NOT at the lead.
+///
+/// Returns true if the message contains `@<coworker_name>` (for any known coworker)
+/// but does not contain `@lead`. This is used to skip nudging the lead when
+/// coworkers are communicating with each other.
+fn is_directed_at_coworker_only(message: &str) -> bool {
+    let lower = message.to_lowercase();
+
+    // Check if message mentions @lead
+    let mentions_lead = lower.contains("@lead");
+    if mentions_lead {
+        return false;
+    }
+
+    // Check if message mentions any coworker
+    COWORKER_NAMES
+        .iter()
+        .any(|&name| lower.contains(&format!("@{}", name)))
+}
+
 /// Handle channel.post RPC method.
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
@@ -2238,7 +2258,11 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
             }
 
             // Check for feedback requests from coworkers and nudge Lead
-            if is_coworker_sender(from) && is_feedback_request(&content) {
+            // Skip if the message is directed at another coworker (not @lead)
+            if is_coworker_sender(from)
+                && is_feedback_request(&content)
+                && !is_directed_at_coworker_only(&content)
+            {
                 // Use message ID to avoid duplicate nudges
                 let should_nudge = {
                     let nudged = state.nudged_messages.read().unwrap();
@@ -3236,6 +3260,39 @@ mod tests {
         assert!(is_coworker_sender("park"));
         assert!(is_coworker_sender("amsterdam"));
         assert!(is_coworker_sender("madison"));
+    }
+
+    #[test]
+    fn test_is_directed_at_coworker_only() {
+        // Messages directed at a coworker (should return true)
+        assert!(is_directed_at_coworker_only(
+            "@pleasant any progress on task 304?"
+        ));
+        assert!(is_directed_at_coworker_only(
+            "@lexington can you help with this?"
+        ));
+        assert!(is_directed_at_coworker_only(
+            "Hey @amsterdam, what's the status?"
+        ));
+
+        // Messages directed at lead (should return false)
+        assert!(!is_directed_at_coworker_only("@lead what do you think?"));
+        assert!(!is_directed_at_coworker_only("@Lead can you review this?"));
+
+        // Messages mentioning both coworker and lead (should return false)
+        assert!(!is_directed_at_coworker_only(
+            "@lead and @lexington please check this"
+        ));
+
+        // Messages not mentioning anyone (should return false)
+        assert!(!is_directed_at_coworker_only(
+            "What do you think about this?"
+        ));
+        assert!(!is_directed_at_coworker_only("I'm stuck on this issue"));
+
+        // Edge cases
+        assert!(!is_directed_at_coworker_only("lead: what's next?")); // lead: without @
+        assert!(is_directed_at_coworker_only("@york great work!")); // praise to coworker
     }
 
     #[test]
