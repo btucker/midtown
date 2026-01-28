@@ -660,7 +660,7 @@ fn read_user_plugins() -> Option<serde_json::Value> {
         .join("settings.json");
     let content = std::fs::read_to_string(settings_path).ok()?;
     let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
-    settings.get("plugins").cloned()
+    settings.get("enabledPlugins").cloned()
 }
 
 /// JSON settings for coworker Claude Code sessions.
