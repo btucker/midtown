@@ -395,8 +395,16 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
 /// Send keys (input) to a tmux window.
 ///
 /// This is used to "nudge" a coworker by sending keyboard input.
-/// Sends the text literally (with -l flag), waits for paste to process,
-/// then presses Enter. Based on gastown's NudgeSession implementation.
+/// Follows gastown's NudgeSession pattern exactly for reliability:
+/// 1. Send text literally (with -l flag)
+/// 2. Wait 500ms for paste to complete
+/// 3. Send Escape (exits vim INSERT mode if enabled - safe since text is already pasted)
+/// 4. Wait 100ms
+/// 5. Send Enter with retry (up to 3 attempts, 200ms between)
+///
+/// The Escape is safe AFTER the text is pasted because the text is already
+/// in the input buffer. This handles vim mode users while not affecting
+/// normal mode users.
 pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     use std::thread;
     use std::time::Duration;
@@ -419,24 +427,41 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     // 2. Wait 500ms for paste to complete (critical - tested in gastown)
     thread::sleep(Duration::from_millis(500));
 
-    // NOTE: Previously sent Escape here to exit vim INSERT mode, but this
-    // cancels input in Claude's prompt, causing nudge messages to be lost.
-    // Removed to fix daemon orchestration.
+    // 3. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
+    // This is safe AFTER the text is pasted - the text is already in the buffer.
+    // See gastown NudgeSession for reference implementation.
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Escape"])
+        .status();
 
-    // 3. Send Enter key
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Enter"])
-        .status()
-        .map_err(Error::Io)?;
+    // 4. Wait 100ms before sending Enter
+    thread::sleep(Duration::from_millis(100));
 
-    if !status.success() {
-        return Err(Error::Rpc {
-            code: -32603,
-            message: format!("Failed to send Enter to tmux window: {}", target),
-        });
+    // 5. Send Enter with retry (up to 3 attempts, 200ms between)
+    let mut last_err = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            thread::sleep(Duration::from_millis(200));
+        }
+        let status = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .status()
+            .map_err(Error::Io)?;
+
+        if status.success() {
+            return Ok(());
+        }
+        last_err = Some(format!(
+            "Failed to send Enter to tmux window: {} (attempt {})",
+            target,
+            attempt + 1
+        ));
     }
 
-    Ok(())
+    Err(Error::Rpc {
+        code: -32603,
+        message: last_err.unwrap_or_else(|| "Failed to send Enter".to_string()),
+    })
 }
 
 /// Rename a tmux window to show coworker status.
