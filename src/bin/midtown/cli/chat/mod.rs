@@ -74,7 +74,7 @@ async fn run_app_async(
 
     // Fallback timer for kanban/repo status refresh (30 seconds)
     // This ensures periodic refreshes even without file activity
-    let mut refresh_interval = interval(Duration::from_secs(30));
+    let mut refresh_interval = interval(Duration::from_secs(1));
 
     loop {
         // Draw UI
