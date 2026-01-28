@@ -46,6 +46,8 @@ pub struct DaemonConfig {
     pub webhook_restart_interval_secs: u64,
     /// Interval in seconds to poll PRs for actionable issues.
     pub pr_poll_interval_secs: u64,
+    /// Enable chat monitor for @mention routing. Default: true.
+    pub chat_monitor_enabled: bool,
 }
 
 /// Default interval for restarting the webhook forwarder (5 minutes)
@@ -150,6 +152,12 @@ impl Default for DaemonConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_PR_POLL_INTERVAL_SECS);
 
+        // Chat monitor is enabled by default, disable with MIDTOWN_CHAT_MONITOR=0
+        let chat_monitor_enabled = std::env::var("MIDTOWN_CHAT_MONITOR")
+            .ok()
+            .map(|s| s != "0")
+            .unwrap_or(true);
+
         Self {
             // Use repo-specific socket path to isolate daemons per project
             socket_path: crate::paths::daemon_socket(),
@@ -161,6 +169,7 @@ impl Default for DaemonConfig {
             webhook_secret,
             webhook_restart_interval_secs,
             pr_poll_interval_secs,
+            chat_monitor_enabled,
         }
     }
 }
@@ -472,6 +481,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         );
     }
 
+    // Start chat monitor background task if enabled
+    let (chat_monitor_shutdown_tx, chat_monitor_shutdown_rx) = watch::channel(false);
+    if config.chat_monitor_enabled {
+        let state = Arc::clone(&state);
+        let channel_path = state.channel.channel_file_path().to_path_buf();
+        tokio::spawn(async move {
+            chat_monitor_loop(state, channel_path, chat_monitor_shutdown_rx).await;
+        });
+        info!("Chat monitor started (tailf on channel.jsonl)");
+    } else {
+        debug!("Chat monitor disabled (MIDTOWN_CHAT_MONITOR=0)");
+    }
+
     // Timer for periodic orphan checking
     let mut orphan_check_interval =
         tokio::time::interval(std::time::Duration::from_secs(ORPHAN_CHECK_INTERVAL_SECS));
@@ -561,6 +583,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Signal session check task to stop
     info!("Stopping session check task...");
     let _ = session_check_shutdown_tx.send(true);
+
+    // Signal chat monitor task to stop
+    info!("Stopping chat monitor task...");
+    let _ = chat_monitor_shutdown_tx.send(true);
 
     // Shutdown all coworkers
     info!("Shutting down coworkers...");
@@ -961,6 +987,197 @@ fn check_lead_session_change(state: &DaemonState) {
             // No change
         }
     }
+}
+
+// ============================================================================
+// Chat Monitor - @mention routing
+// ============================================================================
+
+/// Senders to skip when routing mentions (loop protection).
+const SKIP_SENDERS: &[&str] = &["daemon", "system", "github"];
+
+/// Background task that monitors the channel for @mentions and routes them.
+///
+/// Uses `tailf` to watch `channel.jsonl` for new messages in real-time.
+/// When a message with @mentions is detected, spawns/nudges the mentioned coworkers.
+async fn chat_monitor_loop(
+    state: Arc<DaemonState>,
+    channel_path: PathBuf,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    // Start tailing from the end of the file (0 = no initial lines)
+    let mut tailer = match tailf::tailf(&channel_path, Some(0)) {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to start tailf on channel file: {}", e);
+            return;
+        }
+    };
+
+    info!("Chat monitor watching: {}", channel_path.display());
+
+    loop {
+        tokio::select! {
+            // New line from tailf
+            Some(result) = async { Some(tailer.next().await) } => {
+                match result {
+                    Ok(Some(bytes)) => {
+                        // Convert bytes to string
+                        let line = match String::from_utf8(bytes) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                debug!("Invalid UTF-8 in channel line: {}", e);
+                                continue;
+                            }
+                        };
+                        // Parse the line as a Message
+                        match serde_json::from_str::<Message>(&line) {
+                            Ok(msg) => {
+                                // Skip messages from protected senders (loop protection)
+                                if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from)) {
+                                    continue;
+                                }
+                                // Route any @mentions in the message
+                                route_mentions(&state, &msg);
+                            }
+                            Err(e) => {
+                                debug!("Failed to parse channel message: {} (line: {})", e, line);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // No new content, continue waiting
+                    }
+                    Err(e) => {
+                        warn!("tailf error: {}", e);
+                    }
+                }
+            }
+
+            // Shutdown signal
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Chat monitor task received shutdown signal");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Extract @mentions from message content and route to coworkers.
+///
+/// For each valid coworker name mentioned:
+/// - If the coworker is not running, spawn them with --resume
+/// - Nudge them with the message context
+fn route_mentions(state: &DaemonState, msg: &Message) {
+    let mentions = extract_mentions(&msg.content);
+
+    if mentions.is_empty() {
+        return;
+    }
+
+    debug!(
+        "Found {} @mention(s) in message from {}: {:?}",
+        mentions.len(),
+        msg.from,
+        mentions
+    );
+
+    for name in mentions {
+        // Skip if mentioned coworker is the sender (don't nudge yourself)
+        if name.eq_ignore_ascii_case(&msg.from) {
+            continue;
+        }
+
+        // Check if coworker is already running
+        let is_running = state.coworkers.get(&name).is_some();
+
+        if !is_running {
+            // Try to spawn the coworker with resume flag
+            info!(
+                "Spawning mentioned coworker {} (not currently running)",
+                name
+            );
+            match state.coworkers.respawn(&name) {
+                Ok(()) => {
+                    info!("Spawned coworker {} via @mention", name);
+                    // Post to channel about the spawn
+                    let spawn_msg = Message::text(
+                        "daemon",
+                        format!("🚀 Spawned {} in response to @mention", name),
+                    );
+                    if let Err(e) = state.channel.send(&spawn_msg) {
+                        warn!("Failed to post spawn message: {}", e);
+                    }
+                }
+                Err(e) => {
+                    // Respawn failed - likely no existing worktree, try regular spawn
+                    debug!("Respawn failed for {}: {}, trying regular spawn", name, e);
+                    match state.coworkers.spawn(false) {
+                        Ok(spawned_name) if spawned_name == name => {
+                            info!("Spawned new coworker {} via @mention", name);
+                        }
+                        Ok(spawned_name) => {
+                            // Got a different name, that's unexpected
+                            warn!(
+                                "Spawn returned different name: expected {}, got {}",
+                                name, spawned_name
+                            );
+                        }
+                        Err(e) => {
+                            warn!("Failed to spawn coworker {}: {}", name, e);
+                            // Post error to channel
+                            let err_msg = Message::text(
+                                "daemon",
+                                format!("⚠️ Failed to spawn {} for @mention: {}", name, e),
+                            );
+                            let _ = state.channel.send(&err_msg);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Nudge the coworker with the message
+        let nudge_text = format!("{} said: {}", msg.from, msg.content);
+        if let Err(e) = state.coworkers.nudge(&name, &nudge_text) {
+            warn!("Failed to nudge {} about @mention: {}", name, e);
+        } else {
+            info!("Nudged {} about @mention from {}", name, msg.from);
+        }
+    }
+}
+
+/// Extract valid coworker @mentions from message content.
+///
+/// Returns a list of coworker names that were mentioned (lowercase).
+/// Uses word boundary detection to avoid false positives.
+fn extract_mentions(content: &str) -> Vec<String> {
+    let mut mentions = Vec::new();
+    let content_lower = content.to_lowercase();
+
+    // Look for @name patterns where name is a valid coworker name
+    for &name in COWORKER_NAMES {
+        let pattern = format!("@{}", name);
+        if let Some(idx) = content_lower.find(&pattern) {
+            // Check that this is at a word boundary (not part of a larger word)
+            let after_idx = idx + pattern.len();
+            let at_word_boundary = after_idx >= content.len()
+                || !content[after_idx..]
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+                    .is_alphanumeric();
+
+            if at_word_boundary && !mentions.contains(&name.to_string()) {
+                mentions.push(name.to_string());
+            }
+        }
+    }
+
+    mentions
 }
 
 /// Poll all open PRs and nudge for actionable issues.
@@ -2643,5 +2860,76 @@ mod tests {
         assert!(tracker.is_assigned(42));
         assert!(tracker.is_assigned(43));
         assert_eq!(tracker.active_count(), 2);
+    }
+
+    // Chat monitor @mention tests
+    #[test]
+    fn test_extract_mentions_single() {
+        let mentions = extract_mentions("@park please review this");
+        assert_eq!(mentions, vec!["park"]);
+    }
+
+    #[test]
+    fn test_extract_mentions_multiple() {
+        let mentions = extract_mentions("@park and @lexington please coordinate");
+        assert_eq!(mentions.len(), 2);
+        assert!(mentions.contains(&"park".to_string()));
+        assert!(mentions.contains(&"lexington".to_string()));
+    }
+
+    #[test]
+    fn test_extract_mentions_case_insensitive() {
+        let mentions = extract_mentions("@PARK please review");
+        assert_eq!(mentions, vec!["park"]);
+    }
+
+    #[test]
+    fn test_extract_mentions_no_duplicates() {
+        let mentions = extract_mentions("@park @park @park");
+        assert_eq!(mentions, vec!["park"]);
+    }
+
+    #[test]
+    fn test_extract_mentions_word_boundary() {
+        // @parkway should not match @park
+        let mentions = extract_mentions("@parkway is not a coworker");
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn test_extract_mentions_at_end() {
+        let mentions = extract_mentions("cc @amsterdam");
+        assert_eq!(mentions, vec!["amsterdam"]);
+    }
+
+    #[test]
+    fn test_extract_mentions_no_mentions() {
+        let mentions = extract_mentions("just a regular message");
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn test_extract_mentions_invalid_names() {
+        // feature is not a valid coworker name
+        let mentions = extract_mentions("@feature @bug @test");
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn test_extract_mentions_all_coworker_names() {
+        // Verify all coworker names work
+        for &name in COWORKER_NAMES {
+            let msg = format!("@{} please help", name);
+            let mentions = extract_mentions(&msg);
+            assert_eq!(mentions, vec![name], "Failed for coworker: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_skip_senders() {
+        // Verify SKIP_SENDERS contains expected values
+        assert!(SKIP_SENDERS.contains(&"daemon"));
+        assert!(SKIP_SENDERS.contains(&"system"));
+        assert!(SKIP_SENDERS.contains(&"github"));
     }
 }
