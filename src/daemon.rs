@@ -1548,6 +1548,13 @@ async fn find_available_reviewer(
     // Get coworkers who are busy (have in_progress tasks)
     let busy_coworkers = get_busy_coworkers(&state.repo_name);
 
+    // Get coworkers who have open PRs — they may be awaiting review and
+    // available to review other PRs despite having an in_progress task
+    let coworkers_with_open_prs: HashSet<String> = get_coworkers_with_open_prs()
+        .into_iter()
+        .map(|name| name.to_lowercase())
+        .collect();
+
     // Get coworkers who are already assigned to review PRs
     let reviewing_coworkers: HashSet<String> = {
         let tracker = state.pr_review_tracker.lock().await;
@@ -1559,7 +1566,7 @@ async fn find_available_reviewer(
             .collect()
     };
 
-    // Find idle coworkers (not busy and not already reviewing)
+    // Find available coworkers: either idle, or busy but awaiting review on their own PR
     for coworker in active_coworkers {
         let coworker_lower = coworker.to_lowercase();
 
@@ -1570,12 +1577,19 @@ async fn find_available_reviewer(
             continue;
         }
 
-        // Skip if busy with a task
-        if busy_coworkers
+        // Skip if busy with a task, UNLESS they have an open PR (likely awaiting review)
+        let is_busy = busy_coworkers
             .iter()
-            .any(|b| b.eq_ignore_ascii_case(coworker))
-        {
-            continue;
+            .any(|b| b.eq_ignore_ascii_case(coworker));
+        if is_busy {
+            if coworkers_with_open_prs.contains(&coworker_lower) {
+                debug!(
+                    "{} is busy but has an open PR — eligible for review assignment",
+                    coworker
+                );
+            } else {
+                continue;
+            }
         }
 
         // Skip if already assigned to review another PR
