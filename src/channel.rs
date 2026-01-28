@@ -67,13 +67,22 @@ pub struct Channel {
 impl Channel {
     /// Create a new channel at the specified base directory
     ///
-    /// Creates the directory structure if it doesn't exist.
+    /// Creates the directory structure and channel file if they don't exist.
+    /// The channel file is created eagerly so that file watchers (tailf) can
+    /// immediately start monitoring it.
     pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self> {
         let base_dir = base_dir.into();
         fs::create_dir_all(&base_dir)?;
         fs::create_dir_all(base_dir.join("cursors"))?;
 
         let channel_file = base_dir.join("channel.jsonl");
+
+        // Create the channel file if it doesn't exist.
+        // This enables file watchers like tailf to start monitoring immediately.
+        // (tailf wraps `tail -f` which requires the file to exist)
+        if !channel_file.exists() {
+            File::create(&channel_file)?;
+        }
 
         Ok(Self {
             base_dir,
@@ -273,7 +282,23 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let channel = Channel::new(temp_dir.path()).unwrap();
         assert!(temp_dir.path().join("cursors").exists());
-        assert!(!channel.exists()); // No messages yet
+        // Channel file should exist (for tailf) but be empty (no messages)
+        assert!(channel.exists());
+        assert_eq!(channel.message_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_channel_file_exists_for_tailf() {
+        // The channel.jsonl file must exist after Channel::new() for tailf to work.
+        // tailf wraps `tail -f` which fails on non-existent files.
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // The channel file should exist (even if empty) so tailf can watch it
+        assert!(
+            channel.channel_file_path().exists(),
+            "channel.jsonl must exist after Channel::new() for tailf compatibility"
+        );
     }
 
     #[test]
