@@ -67,7 +67,7 @@
   <div class="kanban-header">
     <span class="kanban-title">Kanban</span>
     <button class="expand-toggle" onclick={toggleExpand} aria-label={expanded ? 'Collapse' : 'Expand'}>
-      <span class="chevron" class:expanded>{expanded ? '▼' : '▲'}</span>
+      <span class="chevron" class:expanded>▲</span>
     </button>
   </div>
 
