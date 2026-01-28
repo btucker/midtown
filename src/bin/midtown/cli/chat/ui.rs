@@ -538,10 +538,21 @@ fn extract_identifier(s: &str) -> Option<String> {
 
 /// Draw the chat panel showing messages
 fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    // Show selection mode indicator in title
+    let title = if app.selection_mode {
+        " #midtown [SELECT: press 's' to exit] "
+    } else {
+        " #midtown "
+    };
+    let border_color = if app.selection_mode {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
     let block = Block::default()
-        .title(" #midtown ")
+        .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
 

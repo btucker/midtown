@@ -106,6 +106,8 @@ pub struct App {
     repo_status_last_refresh: Instant,
     /// Receiver for async repo status from background thread
     repo_status_receiver: Option<Receiver<RepoStatus>>,
+    /// Selection mode - when true, mouse capture is disabled for text selection
+    pub selection_mode: bool,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -142,6 +144,7 @@ impl App {
             repo_status: RepoStatus::default(),
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
+            selection_mode: false,
         };
 
         // Initial load
@@ -324,6 +327,11 @@ impl App {
     /// Scroll to bottom (newest messages)
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
+    }
+
+    /// Toggle selection mode (disables mouse capture for text selection)
+    pub fn toggle_selection_mode(&mut self) {
+        self.selection_mode = !self.selection_mode;
     }
 
     /// Maximum scroll offset
@@ -834,6 +842,7 @@ mod tests {
             repo_status: RepoStatus::default(),
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
+            selection_mode: false,
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -874,6 +883,7 @@ mod tests {
             repo_status: RepoStatus::default(),
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
+            selection_mode: false,
         };
 
         let visible = app.visible_messages();
