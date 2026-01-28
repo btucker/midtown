@@ -56,8 +56,10 @@ pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
 /// Default port for the webhook server (obscure to avoid conflicts)
 pub const DEFAULT_WEBHOOK_PORT: u16 = 47022;
 
-/// Default interval for polling PRs (1 minute)
-pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 60;
+/// Default interval for polling PRs (5 minutes)
+/// Webhooks handle most events (PR open/close/merge, push, comments/reviews),
+/// so polling is mainly for CI status changes and merge conflict detection.
+pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 300;
 
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
