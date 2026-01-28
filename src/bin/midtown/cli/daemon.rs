@@ -469,25 +469,33 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         // Set up hook to update status bar color based on active window
         let _ = midtown::tmux::setup_status_bar_hook(&session);
 
-        // Split Lead window with chat TUI on the right (30% width)
-        let lead_target = format!("{}:lead", session);
-        let _ = Command::new("tmux")
-            .args(["split-window", "-h", "-t", &lead_target, "-p", "30"])
-            .status();
-
-        // Start chat TUI in the new pane (pane .1)
-        let chat_pane = format!("{}:lead.1", session);
+        // Set up chat TUI based on layout configuration
         let bin_command = midtown::config::get_bin_command();
-        let chat_cmd = format!("{} chat", bin_command);
-        let _ = Command::new("tmux")
-            .args(["send-keys", "-t", &chat_pane, &chat_cmd, "Enter"])
-            .status();
+        let (chat_layout, chat_min_width) = midtown::config::get_chat_layout();
 
-        // Keep focus on the main pane (Claude Code, pane .0)
-        let main_pane = format!("{}:lead.0", session);
-        let _ = Command::new("tmux")
-            .args(["select-pane", "-t", &main_pane])
-            .status();
+        // Determine whether to use split or window layout
+        let use_split = match chat_layout {
+            midtown::config::ChatLayout::Split => true,
+            midtown::config::ChatLayout::Window => false,
+            midtown::config::ChatLayout::Auto => {
+                // Check terminal width and use split if wide enough
+                midtown::tmux::get_session_width(&session)
+                    .map(|w| w >= chat_min_width)
+                    .unwrap_or(true) // Default to split if can't determine width
+            }
+        };
+
+        if use_split {
+            // Split layout: chat pane on the right (30% width)
+            if let Err(e) = midtown::tmux::create_chat_split(&session, &bin_command) {
+                eprintln!("Warning: Failed to create chat split: {}", e);
+            }
+        } else {
+            // Window layout: chat in separate window
+            if let Err(e) = midtown::tmux::create_chat_window(&session, &bin_command) {
+                eprintln!("Warning: Failed to create chat window: {}", e);
+            }
+        }
 
         // Write marker file indicating Lead was initialized by midtown
         let marker_path = lead_initialized_marker(&repo);

@@ -815,6 +815,95 @@ pub fn session_exists(name: &str) -> crate::Result<bool> {
     Ok(status.success())
 }
 
+/// Get the width of a tmux session's terminal in columns.
+///
+/// Uses `tmux display-message` to query the client width.
+/// Returns None if the session doesn't exist or width can't be determined.
+pub fn get_session_width(session: &str) -> Option<u16> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-t", session, "-p", "#{client_width}"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let width_str = String::from_utf8_lossy(&output.stdout);
+    width_str.trim().parse().ok()
+}
+
+/// Create a new window in the session for the chat TUI.
+///
+/// This is used when the terminal is too narrow for a split layout.
+/// The window is named "chat" and starts the chat command.
+pub fn create_chat_window(session: &str, bin_command: &str) -> crate::Result<()> {
+    let chat_cmd = format!("{} chat", bin_command);
+
+    // Create a new window named "chat"
+    let status = Command::new("tmux")
+        .args([
+            "new-window",
+            "-d", // Don't switch to it
+            "-t",
+            session,
+            "-n",
+            "chat",
+        ])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to create chat window in session {}", session),
+        });
+    }
+
+    // Start chat TUI in the new window
+    let chat_target = format!("{}:chat", session);
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &chat_target, &chat_cmd, "Enter"])
+        .status();
+
+    Ok(())
+}
+
+/// Create a split pane for the chat TUI in the lead window.
+///
+/// Splits the lead window horizontally with chat on the right (30% width).
+pub fn create_chat_split(session: &str, bin_command: &str) -> crate::Result<()> {
+    let lead_target = format!("{}:lead", session);
+    let chat_cmd = format!("{} chat", bin_command);
+
+    // Split the lead window horizontally with 30% for chat
+    let status = Command::new("tmux")
+        .args(["split-window", "-h", "-t", &lead_target, "-p", "30"])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to split lead window in session {}", session),
+        });
+    }
+
+    // Start chat TUI in the new pane (pane .1)
+    let chat_pane = format!("{}:lead.1", session);
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &chat_pane, &chat_cmd, "Enter"])
+        .status();
+
+    // Keep focus on the main pane (Claude Code, pane .0)
+    let main_pane = format!("{}:lead.0", session);
+    let _ = Command::new("tmux")
+        .args(["select-pane", "-t", &main_pane])
+        .status();
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
