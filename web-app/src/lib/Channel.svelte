@@ -2,6 +2,7 @@
   import { messages } from './store.js'
   import { sendMessage } from './api.js'
   import { onMount, tick } from 'svelte'
+  import snarkdown from 'snarkdown'
 
   let inputText = $state('')
   let messagesContainer = $state(null)
@@ -52,12 +53,24 @@
     return msg.msg_type === 'action' || msg.content.startsWith('/me ')
   }
 
+  function escapeHtml(text) {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  }
+
   function formatContent(msg) {
     if (isAction(msg)) {
       const content = msg.content.replace(/^\/me\s*/, '')
       return `* ${msg.from} ${content}`
     }
     return msg.content
+  }
+
+  function renderMarkdown(msg) {
+    return snarkdown(escapeHtml(formatContent(msg)))
   }
 </script>
 
@@ -77,8 +90,8 @@
               <span class="time">{formatTime(msg.timestamp)}</span>
             </div>
           {/if}
-          <div class="content" class:action-content={isAction(msg)}>
-            {formatContent(msg)}
+          <div class="content markdown" class:action-content={isAction(msg)}>
+            {@html renderMarkdown(msg)}
           </div>
         </div>
       {/each}
@@ -188,6 +201,76 @@
   .action-content {
     font-style: italic;
     color: #888;
+  }
+
+  /* Markdown content styles */
+  .markdown :global(p) {
+    margin: 0;
+  }
+
+  .markdown :global(p + p) {
+    margin-top: 0.5em;
+  }
+
+  .markdown :global(code) {
+    background: rgba(255, 255, 255, 0.1);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.85em;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+
+  .markdown :global(pre) {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 8px 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 4px 0;
+  }
+
+  .markdown :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+
+  .markdown :global(a) {
+    color: #00d9ff;
+    text-decoration: none;
+  }
+
+  .markdown :global(a:hover) {
+    text-decoration: underline;
+  }
+
+  .markdown :global(strong) {
+    color: #fff;
+  }
+
+  .markdown :global(blockquote) {
+    border-left: 3px solid #444;
+    margin: 4px 0;
+    padding: 2px 0 2px 10px;
+    color: #aaa;
+  }
+
+  .markdown :global(ul),
+  .markdown :global(ol) {
+    margin: 4px 0;
+    padding-left: 1.5em;
+  }
+
+  .markdown :global(li) {
+    margin: 2px 0;
+  }
+
+  .markdown :global(h1),
+  .markdown :global(h2),
+  .markdown :global(h3),
+  .markdown :global(h4) {
+    margin: 4px 0 2px;
+    font-size: 1em;
+    font-weight: 600;
+    color: #fff;
   }
 
   .input-area {
