@@ -8,7 +8,10 @@
 //! - Scroll behavior
 //!
 //! Run with `cargo test -- --ignored` as these require tmux.
+//!
+//! All tests have a 30-second timeout to prevent CI from hanging.
 
+use ntest::timeout;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -186,6 +189,7 @@ impl Drop for TestFixture {
 /// This catches the bug where Review/Done columns show only single characters
 /// when the terminal is narrow.
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_kanban_column_minimum_width_rendering() {
     if !tmux_available() {
@@ -222,6 +226,7 @@ fn test_kanban_column_minimum_width_rendering() {
 ///
 /// When a column is narrow, "PR#97 Fix bug" should show "#97" not "P" or "PR".
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_pr_identifier_preserved_in_narrow_column() {
     // This test documents expected behavior for identifier-preserving truncation.
@@ -236,6 +241,7 @@ fn test_pr_identifier_preserved_in_narrow_column() {
 /// This catches the 15-minute delay bug by writing a message and verifying
 /// it appears in the TUI output.
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_message_appears_promptly() {
     if !tmux_available() {
@@ -275,6 +281,7 @@ fn test_message_appears_promptly() {
 ///
 /// This is a smoke test that the chat subcommand works at all.
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_chat_tui_starts() {
     if !tmux_available() {
@@ -313,6 +320,7 @@ fn test_chat_tui_starts() {
 
 /// Test kanban board with multiple items to verify layout.
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_kanban_multi_item_layout() {
     if !tmux_available() {
@@ -383,6 +391,7 @@ fn test_truncate_str_identifier_behavior() {
 
 /// Test that multiple messages from the same sender are grouped.
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_message_grouping() {
     if !tmux_available() {
@@ -420,6 +429,7 @@ fn test_message_grouping() {
 
 /// Test action messages (IRC /me style).
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_action_message_format() {
     if !tmux_available() {
@@ -464,6 +474,7 @@ fn test_action_message_format() {
 /// - Message display delays
 /// - Scroll position issues
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_full_tui_rendering() {
     if !tmux_available() {
@@ -552,6 +563,7 @@ fn test_full_tui_rendering() {
 
 /// Test that very narrow terminals don't panic and show useful content.
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_narrow_terminal_no_panic() {
     if !tmux_available() {
@@ -643,6 +655,7 @@ fn test_task_json_schema() {
 ///
 /// The poll interval is 250ms, so messages should appear within 500ms typically.
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_message_appears_in_tui_promptly() {
     if !tmux_available() {
@@ -775,6 +788,7 @@ fn test_message_appears_in_tui_promptly() {
 /// - Lock contention prevents reading
 /// - Sorting causes messages to appear in wrong position
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_message_update_in_existing_channel() {
     if !tmux_available() {
