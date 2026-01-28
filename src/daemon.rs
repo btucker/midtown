@@ -71,6 +71,8 @@ pub enum PrIssueType {
     ChangesRequested,
     /// PR is approved and ready to merge
     Approved,
+    /// PR needs code review (no Claude review comment yet)
+    NeedsReview,
 }
 
 impl std::fmt::Display for PrIssueType {
@@ -80,6 +82,7 @@ impl std::fmt::Display for PrIssueType {
             PrIssueType::CiFailed => write!(f, "CI failed"),
             PrIssueType::ChangesRequested => write!(f, "changes requested"),
             PrIssueType::Approved => write!(f, "approved"),
+            PrIssueType::NeedsReview => write!(f, "needs review"),
         }
     }
 }
@@ -94,6 +97,17 @@ pub struct PrIssueTracker {
 impl PrIssueTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Check if a PR has been recently tracked for any issue
+    pub fn is_recently_tracked(&self, pr_number: u64) -> bool {
+        self.nudged.keys().any(|(num, _)| {
+            *num == pr_number
+                && self
+                    .nudged
+                    .get(&(*num, PrIssueType::NeedsReview))
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(PR_NUDGE_COOLDOWN_SECS))
+        })
     }
 
     /// Check if we should nudge for this issue (not nudged recently)
@@ -163,6 +177,64 @@ const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
 /// Interval for checking Lead session changes (10 seconds)
 const SESSION_CHECK_INTERVAL_SECS: u64 = 10;
 
+/// Tracks which PRs have been assigned for review to avoid duplicates.
+#[derive(Debug, Default)]
+pub struct PrReviewTracker {
+    /// Map of pr_number -> (assigned_coworker, assignment_time)
+    assigned: HashMap<u64, (String, Instant)>,
+}
+
+/// How long to wait after PR is opened before auto-reviewing (2 minutes)
+/// This gives CI time to start and allows the author to add context.
+pub const PR_REVIEW_DELAY_SECS: u64 = 120;
+
+/// How long a review assignment is valid before it can be reassigned (30 minutes)
+pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 1800;
+
+/// Maximum number of concurrent review assignments (rate limiting)
+pub const MAX_CONCURRENT_REVIEWS: usize = 2;
+
+impl PrReviewTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if a PR has been assigned for review recently
+    pub fn is_assigned(&self, pr_number: u64) -> bool {
+        match self.assigned.get(&pr_number) {
+            Some((_, assigned_at)) => {
+                assigned_at.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
+            }
+            None => false,
+        }
+    }
+
+    /// Record a review assignment
+    pub fn assign(&mut self, pr_number: u64, coworker: &str) {
+        self.assigned
+            .insert(pr_number, (coworker.to_string(), Instant::now()));
+    }
+
+    /// Get the number of active review assignments
+    pub fn active_count(&self) -> usize {
+        self.assigned
+            .values()
+            .filter(|(_, t)| t.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS))
+            .count()
+    }
+
+    /// Clean up stale assignments
+    pub fn cleanup(&mut self) {
+        let timeout = Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS);
+        self.assigned.retain(|_, (_, t)| t.elapsed() < timeout);
+    }
+
+    /// Mark a PR as reviewed (remove from tracking)
+    pub fn mark_reviewed(&mut self, pr_number: u64) {
+        self.assigned.remove(&pr_number);
+    }
+}
+
 /// Shared daemon state.
 struct DaemonState {
     coworkers: CoworkerManager,
@@ -174,6 +246,8 @@ struct DaemonState {
     idle_since: RwLock<HashMap<String, Instant>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
+    /// Tracker for PRs assigned for review
+    pr_review_tracker: Mutex<PrReviewTracker>,
     /// Current Lead session ID (for detecting changes)
     lead_session_id: std::sync::Mutex<Option<String>>,
     /// Repository name (for reading Lead session file)
@@ -207,6 +281,7 @@ impl DaemonState {
             nudged_messages: std::sync::RwLock::new(HashSet::new()),
             idle_since: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
+            pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             lead_session_id: std::sync::Mutex::new(initial_lead_session),
             repo_name,
         })
@@ -902,13 +977,13 @@ async fn poll_prs_for_issues(
         .map(|c| c.name.clone())
         .collect();
 
-    // Run gh pr list command
+    // Run gh pr list command (include createdAt and isDraft for review filtering)
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
             "list",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt",
         ])
         .output()
         .await?;
@@ -921,13 +996,17 @@ async fn poll_prs_for_issues(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
 
-    // Cleanup old nudge tracking entries
+    // Cleanup old tracking entries
     {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.cleanup();
     }
+    {
+        let mut review_tracker = state.pr_review_tracker.lock().await;
+        review_tracker.cleanup();
+    }
 
-    for pr in prs {
+    for pr in &prs {
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
@@ -936,7 +1015,7 @@ async fn poll_prs_for_issues(
         let owner = head_ref.split('/').next().unwrap_or("");
 
         // Check for actionable issues
-        let issues = detect_pr_issues(&pr);
+        let issues = detect_pr_issues(pr);
 
         for issue_type in issues {
             // Check if we should nudge for this issue
@@ -989,7 +1068,281 @@ async fn poll_prs_for_issues(
         }
     }
 
+    // Auto-spawn reviewers for PRs that need review
+    spawn_reviewers_for_prs(state, &prs, &active_coworkers).await;
+
     Ok(())
+}
+
+/// Spawn reviewers for PRs that need code review.
+///
+/// This function identifies PRs that:
+/// - Are not drafts
+/// - Are old enough (past the review delay)
+/// - Don't have a Claude review comment yet
+/// - Haven't been assigned for review recently
+/// - Aren't owned by the potential reviewer (no self-reviews)
+///
+/// For each eligible PR, it spawns a new coworker (or uses an idle one) and
+/// nudges them to run `/code-review <pr-number>`.
+async fn spawn_reviewers_for_prs(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+    active_coworkers: &[String],
+) {
+    // Check rate limit
+    let current_review_count = {
+        let tracker = state.pr_review_tracker.lock().await;
+        tracker.active_count()
+    };
+
+    if current_review_count >= MAX_CONCURRENT_REVIEWS {
+        debug!(
+            "At max concurrent reviews ({}/{}), skipping auto-review spawn",
+            current_review_count, MAX_CONCURRENT_REVIEWS
+        );
+        return;
+    }
+
+    let reviews_available = MAX_CONCURRENT_REVIEWS - current_review_count;
+    let mut reviews_spawned = 0;
+
+    for pr in prs {
+        if reviews_spawned >= reviews_available {
+            break;
+        }
+
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        if pr_number == 0 {
+            continue;
+        }
+
+        // Skip draft PRs
+        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+        if is_draft {
+            debug!("PR #{} is a draft, skipping auto-review", pr_number);
+            continue;
+        }
+
+        // Check if PR is old enough (enforce review delay)
+        if let Some(age_secs) = get_pr_age_secs(pr)
+            && age_secs < PR_REVIEW_DELAY_SECS
+        {
+            debug!(
+                "PR #{} is too new ({}s < {}s), skipping auto-review",
+                pr_number, age_secs, PR_REVIEW_DELAY_SECS
+            );
+            continue;
+        }
+
+        // Check if already assigned for review
+        {
+            let tracker = state.pr_review_tracker.lock().await;
+            if tracker.is_assigned(pr_number) {
+                debug!("PR #{} already assigned for review", pr_number);
+                continue;
+            }
+        }
+
+        // Check if PR already has a Claude review (expensive, do last)
+        if pr_has_claude_review(pr_number) {
+            debug!("PR #{} already has a Claude review", pr_number);
+            continue;
+        }
+
+        // Get PR owner from branch prefix
+        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+        let pr_owner = coworker_from_branch(head_ref);
+
+        // Find a reviewer (not the PR owner for no self-reviews)
+        let reviewer = find_available_reviewer(state, active_coworkers, pr_owner.as_deref()).await;
+
+        match reviewer {
+            Some(reviewer_name) => {
+                let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+
+                // Record the assignment
+                {
+                    let mut tracker = state.pr_review_tracker.lock().await;
+                    tracker.assign(pr_number, &reviewer_name);
+                }
+
+                // Nudge the reviewer to run /code-review
+                let nudge_msg = format!(
+                    "Please review PR #{}: {}. Run: /code-review {}",
+                    pr_number,
+                    truncate_str(title, 50),
+                    pr_number
+                );
+
+                match state.coworkers.nudge(&reviewer_name, &nudge_msg) {
+                    Ok(()) => {
+                        info!(
+                            "Assigned {} to review PR #{}: {}",
+                            reviewer_name,
+                            pr_number,
+                            truncate_str(title, 40)
+                        );
+
+                        // Post to channel about the assignment
+                        let channel_msg = Message::new(
+                            "daemon",
+                            format!("🔍 {} assigned to review PR #{}", reviewer_name, pr_number),
+                            MessageType::Text,
+                        );
+                        if let Err(e) = state.channel.send(&channel_msg) {
+                            warn!("Failed to post review assignment to channel: {}", e);
+                        }
+
+                        reviews_spawned += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to nudge {} to review PR #{}: {}",
+                            reviewer_name, pr_number, e
+                        );
+                        // Remove the assignment since we couldn't nudge
+                        let mut tracker = state.pr_review_tracker.lock().await;
+                        tracker.mark_reviewed(pr_number);
+                    }
+                }
+            }
+            None => {
+                // No available reviewer - try spawning a new coworker
+                debug!(
+                    "No available reviewer for PR #{}, attempting to spawn new coworker",
+                    pr_number
+                );
+
+                match state.coworkers.spawn(false) {
+                    Ok(new_coworker) => {
+                        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+
+                        // Record the assignment
+                        {
+                            let mut tracker = state.pr_review_tracker.lock().await;
+                            tracker.assign(pr_number, &new_coworker);
+                        }
+
+                        // Give the new coworker a moment to start
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+
+                        // Nudge the new reviewer to run /code-review
+                        let nudge_msg = format!(
+                            "Please review PR #{}: {}. Run: /code-review {}",
+                            pr_number,
+                            truncate_str(title, 50),
+                            pr_number
+                        );
+
+                        match state.coworkers.nudge(&new_coworker, &nudge_msg) {
+                            Ok(()) => {
+                                info!(
+                                    "Spawned {} to review PR #{}: {}",
+                                    new_coworker,
+                                    pr_number,
+                                    truncate_str(title, 40)
+                                );
+
+                                // Post to channel about the spawn
+                                let channel_msg = Message::new(
+                                    "daemon",
+                                    format!(
+                                        "🔍 Spawned {} to review PR #{}",
+                                        new_coworker, pr_number
+                                    ),
+                                    MessageType::Text,
+                                );
+                                if let Err(e) = state.channel.send(&channel_msg) {
+                                    warn!("Failed to post spawn message to channel: {}", e);
+                                }
+
+                                reviews_spawned += 1;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to nudge newly spawned {} to review PR #{}: {}",
+                                    new_coworker, pr_number, e
+                                );
+                                // Remove the assignment since we couldn't nudge
+                                let mut tracker = state.pr_review_tracker.lock().await;
+                                tracker.mark_reviewed(pr_number);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Could not spawn new reviewer for PR #{}: {}", pr_number, e);
+                    }
+                }
+            }
+        }
+    }
+
+    if reviews_spawned > 0 {
+        info!(
+            "Spawned {} reviewers for PRs needing review",
+            reviews_spawned
+        );
+    }
+}
+
+/// Find an available coworker to review a PR.
+///
+/// Prefers idle coworkers (those with no in_progress tasks).
+/// Excludes the PR owner to prevent self-reviews.
+///
+/// Returns None if no suitable reviewer is available.
+async fn find_available_reviewer(
+    state: &DaemonState,
+    active_coworkers: &[String],
+    pr_owner: Option<&str>,
+) -> Option<String> {
+    if active_coworkers.is_empty() {
+        return None;
+    }
+
+    // Get coworkers who are busy (have in_progress tasks)
+    let busy_coworkers = get_busy_coworkers();
+
+    // Get coworkers who are already assigned to review PRs
+    let reviewing_coworkers: HashSet<String> = {
+        let tracker = state.pr_review_tracker.lock().await;
+        tracker
+            .assigned
+            .values()
+            .filter(|(_, t)| t.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS))
+            .map(|(name, _)| name.to_lowercase())
+            .collect()
+    };
+
+    // Find idle coworkers (not busy and not already reviewing)
+    for coworker in active_coworkers {
+        let coworker_lower = coworker.to_lowercase();
+
+        // Skip if this is the PR owner (no self-reviews)
+        if let Some(owner) = pr_owner
+            && coworker_lower == owner.to_lowercase()
+        {
+            continue;
+        }
+
+        // Skip if busy with a task
+        if busy_coworkers
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(coworker))
+        {
+            continue;
+        }
+
+        // Skip if already assigned to review another PR
+        if reviewing_coworkers.contains(&coworker_lower) {
+            continue;
+        }
+
+        return Some(coworker.clone());
+    }
+
+    None
 }
 
 /// Detect actionable issues for a PR.
@@ -1037,6 +1390,7 @@ fn get_issue_action(issue_type: PrIssueType) -> &'static str {
         PrIssueType::CiFailed => "please investigate",
         PrIssueType::ChangesRequested => "please address feedback",
         PrIssueType::Approved => "ready to merge!",
+        PrIssueType::NeedsReview => "spawning reviewer",
     }
 }
 
@@ -1047,6 +1401,47 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
     }
+}
+
+/// Check if a PR has a review comment from a Claude coworker.
+///
+/// Claude reviews are identified by the "🤖 Reviewed by" signature in the review body.
+fn pr_has_claude_review(pr_number: u64) -> bool {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "reviews",
+            "-q",
+            ".reviews[].body",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Check for the Claude review signature
+            stdout.contains("🤖 Reviewed by") || stdout.contains("Reviewed by")
+        }
+        _ => {
+            debug!("Failed to check reviews for PR #{}", pr_number);
+            // Assume no review on error (will try again later)
+            false
+        }
+    }
+}
+
+/// Get the creation time of a PR to enforce review delay.
+///
+/// Returns None if the PR age couldn't be determined.
+fn get_pr_age_secs(pr: &serde_json::Value) -> Option<u64> {
+    let created_at = pr.get("createdAt").and_then(|c| c.as_str())?;
+    let created = chrono::DateTime::parse_from_rfc3339(created_at).ok()?;
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(created);
+    Some(duration.num_seconds().max(0) as u64)
 }
 
 /// Handle a single client connection.
@@ -2097,6 +2492,7 @@ mod tests {
             "changes requested"
         );
         assert_eq!(PrIssueType::Approved.to_string(), "approved");
+        assert_eq!(PrIssueType::NeedsReview.to_string(), "needs review");
     }
 
     #[test]
@@ -2196,6 +2592,10 @@ mod tests {
             "please address feedback"
         );
         assert_eq!(get_issue_action(PrIssueType::Approved), "ready to merge!");
+        assert_eq!(
+            get_issue_action(PrIssueType::NeedsReview),
+            "spawning reviewer"
+        );
     }
 
     #[test]
@@ -2203,5 +2603,45 @@ mod tests {
         assert_eq!(truncate_str("hello", 10), "hello");
         assert_eq!(truncate_str("hello world", 8), "hello...");
         assert_eq!(truncate_str("hi", 2), "hi");
+    }
+
+    // PrReviewTracker tests
+    #[test]
+    fn test_pr_review_tracker_new() {
+        let tracker = PrReviewTracker::new();
+        assert_eq!(tracker.active_count(), 0);
+        assert!(!tracker.is_assigned(42));
+    }
+
+    #[test]
+    fn test_pr_review_tracker_assign() {
+        let mut tracker = PrReviewTracker::new();
+        tracker.assign(42, "lexington");
+
+        assert!(tracker.is_assigned(42));
+        assert!(!tracker.is_assigned(43));
+        assert_eq!(tracker.active_count(), 1);
+    }
+
+    #[test]
+    fn test_pr_review_tracker_mark_reviewed() {
+        let mut tracker = PrReviewTracker::new();
+        tracker.assign(42, "lexington");
+        assert!(tracker.is_assigned(42));
+
+        tracker.mark_reviewed(42);
+        assert!(!tracker.is_assigned(42));
+        assert_eq!(tracker.active_count(), 0);
+    }
+
+    #[test]
+    fn test_pr_review_tracker_multiple_assignments() {
+        let mut tracker = PrReviewTracker::new();
+        tracker.assign(42, "lexington");
+        tracker.assign(43, "park");
+
+        assert!(tracker.is_assigned(42));
+        assert!(tracker.is_assigned(43));
+        assert_eq!(tracker.active_count(), 2);
     }
 }
