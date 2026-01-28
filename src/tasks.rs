@@ -280,6 +280,62 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Reset a task to pending status and clear its owner.
+///
+/// Used when orphan recovery fails to respawn a coworker - the task is reset
+/// so another coworker can claim it instead of being stuck forever.
+pub fn reset_task_to_pending(task_id: &str) -> Result<(), String> {
+    let repo = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    reset_task_to_pending_for_repo(task_id, &repo)
+}
+
+/// Reset a task to pending status and clear its owner for a specific repo.
+///
+/// This is the preferred version for daemon usage where the repo name is already known.
+pub fn reset_task_to_pending_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    // Get the lead session ID
+    let lead_session_file = crate::paths::lead_session_file_for_repo(repo_name);
+    let lead_session_id = std::fs::read_to_string(&lead_session_file)
+        .map_err(|e| format!("Failed to read lead session ID: {}", e))?
+        .trim()
+        .to_string();
+
+    if lead_session_id.is_empty() {
+        return Err("Lead session ID is empty".to_string());
+    }
+
+    // Read the task file
+    let task_file = home
+        .join(".claude")
+        .join("tasks")
+        .join(&lead_session_id)
+        .join(format!("{}.json", task_id));
+
+    let content =
+        std::fs::read_to_string(&task_file).map_err(|e| format!("Failed to read task: {}", e))?;
+
+    // Parse and update
+    let mut task: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse task: {}", e))?;
+
+    // Reset to pending and clear owner
+    task["status"] = serde_json::json!("pending");
+    task["owner"] = serde_json::Value::Null;
+
+    // Write back
+    let updated_content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+
+    std::fs::write(&task_file, updated_content)
+        .map_err(|e| format!("Failed to write task: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
