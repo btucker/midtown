@@ -69,9 +69,29 @@ fn get_sender_color(name: &str) -> Color {
     }
 }
 
-/// Height of the kanban board (including borders)
-/// Increased to accommodate 2-line items in In Progress and Review columns
-const KANBAN_HEIGHT: u16 = 9;
+/// Minimum height of the kanban board (including borders)
+/// Used when In Progress and Review columns are empty
+const MIN_KANBAN_HEIGHT: u16 = 5;
+
+/// Calculate the dynamic kanban board height based on In Progress and Review columns
+///
+/// Only In Progress and Review columns expand the board height since they contain
+/// active work that should always be visible. Backlog and Done columns truncate
+/// because they're expected to have many items.
+fn calculate_kanban_height(in_progress_count: usize, review_count: usize) -> u16 {
+    // Each In Progress and Review item takes 2 lines (title + owner/duration)
+    let in_progress_lines = in_progress_count * 2;
+    let review_lines = review_count * 2;
+
+    // Use the max of the two "important" columns
+    let needed_inner_height = in_progress_lines.max(review_lines);
+
+    // Add 2 for borders (top and bottom)
+    let total_height = (needed_inner_height + 2) as u16;
+
+    // Return at least the minimum height
+    total_height.max(MIN_KANBAN_HEIGHT)
+}
 
 /// Height of the repo status line
 const REPO_STATUS_HEIGHT: u16 = 1;
@@ -82,12 +102,16 @@ const REPO_STATUS_HEIGHT: u16 = 1;
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // Calculate dynamic kanban height based on In Progress and Review columns
+    let (_pending, in_progress, _completed) = app.tasks_by_status();
+    let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
+
     // Split into repo status (top), kanban (middle), and chat (bottom) panels
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(REPO_STATUS_HEIGHT),
-            Constraint::Length(KANBAN_HEIGHT),
+            Constraint::Length(kanban_height),
             Constraint::Min(10),
         ])
         .split(f.area());
@@ -1494,5 +1518,41 @@ mod tests {
             buggy_content, fixed_content,
             "Scrolled content should differ between buggy and fixed implementations"
         );
+    }
+
+    #[test]
+    fn test_calculate_kanban_height_minimum() {
+        // When both columns are empty, should return minimum height
+        assert_eq!(calculate_kanban_height(0, 0), MIN_KANBAN_HEIGHT);
+
+        // With 1 item in each, needed = 2 lines + 2 borders = 4, but min is 5
+        assert_eq!(calculate_kanban_height(1, 1), MIN_KANBAN_HEIGHT);
+    }
+
+    #[test]
+    fn test_calculate_kanban_height_expands_for_in_progress() {
+        // 3 in-progress items = 6 lines + 2 borders = 8
+        assert_eq!(calculate_kanban_height(3, 0), 8);
+
+        // 5 in-progress items = 10 lines + 2 borders = 12
+        assert_eq!(calculate_kanban_height(5, 0), 12);
+    }
+
+    #[test]
+    fn test_calculate_kanban_height_expands_for_review() {
+        // 4 review items = 8 lines + 2 borders = 10
+        assert_eq!(calculate_kanban_height(0, 4), 10);
+
+        // 6 review items = 12 lines + 2 borders = 14
+        assert_eq!(calculate_kanban_height(0, 6), 14);
+    }
+
+    #[test]
+    fn test_calculate_kanban_height_uses_max_column() {
+        // 2 in-progress (4 lines) vs 3 review (6 lines) -> uses 6 + 2 = 8
+        assert_eq!(calculate_kanban_height(2, 3), 8);
+
+        // 5 in-progress (10 lines) vs 3 review (6 lines) -> uses 10 + 2 = 12
+        assert_eq!(calculate_kanban_height(5, 3), 12);
     }
 }
