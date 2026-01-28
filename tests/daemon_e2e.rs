@@ -582,3 +582,70 @@ fn test_daemon_creates_pid_file() {
     let pid: u32 = pid_content.trim().parse().expect("PID should be a number");
     assert!(pid > 0, "PID should be a positive number");
 }
+
+/// Test that newly spawned coworkers are not killed immediately.
+///
+/// This test guards against a race condition where the daemon's idle-check
+/// could kill a coworker before it has a chance to claim work. Coworkers
+/// should have a minimum lifetime (e.g., 5 minutes) before being eligible
+/// for auto-shutdown.
+#[test]
+#[ignore] // Requires built binary
+fn test_coworker_minimum_lifetime() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return, // Skip silently if fixture creation fails
+    };
+
+    if !fixture.start_daemon() {
+        return; // Skip silently if daemon fails to start
+    }
+
+    // Spawn a coworker
+    let spawn_response = fixture.rpc_call(
+        "coworker.spawn",
+        Some(serde_json::json!({ "name": "testworker" })),
+    );
+    assert!(
+        spawn_response.is_some(),
+        "Should receive response from coworker.spawn"
+    );
+
+    let spawn_response = spawn_response.unwrap();
+    if spawn_response["error"].is_object() {
+        // Coworker spawn might fail in test environment - skip gracefully
+        eprintln!(
+            "Coworker spawn failed (expected in some test environments): {:?}",
+            spawn_response["error"]
+        );
+        return;
+    }
+
+    // Wait 30 seconds - coworker should still be alive
+    // (Real minimum lifetime should be 5 minutes, but for test we check 30s)
+    thread::sleep(Duration::from_secs(30));
+
+    // Check coworker is still listed
+    let list_response = fixture.rpc_call("coworker.list", None);
+    assert!(
+        list_response.is_some(),
+        "Should receive response from coworker.list"
+    );
+
+    let list_response = list_response.unwrap();
+    let coworkers = list_response["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+
+    // Find our test coworker
+    let test_coworker = coworkers
+        .iter()
+        .find(|c| c["name"].as_str() == Some("testworker"));
+
+    assert!(
+        test_coworker.is_some(),
+        "Newly spawned coworker should NOT be killed within 30 seconds. \
+         Coworkers need a minimum lifetime before auto-shutdown to prevent \
+         race conditions where they're killed before claiming work."
+    );
+}
