@@ -412,31 +412,55 @@ fn render_plain_line(
     }
 }
 
-/// Render a line as plain text with optional CI dot coloring
+/// Render a line as a clickable OSC 8 hyperlink with optional CI dot coloring
 ///
-/// Previously used OSC 8 hyperlinks, but wrapping each character in escape
-/// sequences caused severe performance issues (21,000+ extra chars per frame).
-/// Now renders as plain text for fast, reliable display.
+/// OSC 8 hyperlinks wrap text in escape sequences:
+/// - Start: \x1b]8;;URL\x07
+/// - End: \x1b]8;;\x07
+///
+/// We only add these at the START and END of the text (2 sequences total),
+/// avoiding the previous performance issue of wrapping each character.
 fn render_hyperlink_line(
     buffer: &mut Buffer,
     x: u16,
     y: u16,
     text: &str,
-    _url: &str,
+    url: &str,
     max_width: usize,
     ci_dot_color: Option<Color>,
 ) {
-    // Render plain text - OSC 8 per-character was too slow
-    for (i, ch) in text.chars().enumerate() {
-        if i >= max_width {
-            break;
-        }
+    let chars: Vec<char> = text.chars().take(max_width).collect();
+    let len = chars.len();
+
+    if len == 0 {
+        return;
+    }
+
+    for (i, ch) in chars.iter().enumerate() {
         // Color the first character (CI dot) if we have a CI status
-        let fg_color = match (i, &ci_dot_color, ch) {
+        let fg_color = match (i, &ci_dot_color, *ch) {
             (0, Some(color), '●' | '○') => *color,
             _ => Color::White,
         };
-        buffer[(x + i as u16, y)].set_char(ch).set_fg(fg_color);
+
+        if len == 1 {
+            // Single character: wrap entirely
+            let symbol = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", url, ch);
+            buffer[(x, y)].set_symbol(&symbol).set_fg(fg_color);
+        } else if i == 0 {
+            // First character: prepend OSC 8 start
+            let symbol = format!("\x1b]8;;{}\x07{}", url, ch);
+            buffer[(x, y)].set_symbol(&symbol).set_fg(fg_color);
+        } else if i == len - 1 {
+            // Last character: append OSC 8 end
+            let symbol = format!("{}\x1b]8;;\x07", ch);
+            buffer[(x + i as u16, y)]
+                .set_symbol(&symbol)
+                .set_fg(fg_color);
+        } else {
+            // Middle characters: plain
+            buffer[(x + i as u16, y)].set_char(*ch).set_fg(fg_color);
+        }
     }
 }
 
