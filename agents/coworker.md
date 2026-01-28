@@ -30,6 +30,7 @@ Post a `/me` update when you transition between phases:
 | **Testing** | `/me testing task 5 - running integration tests` |
 | **Opening PR** | `/me opening PR for task 5` |
 | **Awaiting review** | `/me requesting review of PR #42` |
+| **Reviewing** | `/me reviewing PR #42` |
 
 ### Other Updates
 - Progress milestones: `/me found the root cause in auth.rs`
@@ -104,12 +105,23 @@ midtown channel post "/me requesting review of PR #42"
 This ensures your PR doesn't get stuck waiting - another coworker will claim the review task.
 
 ### Reviewing PRs
-When you pick up a code review task, use the code-review skill:
+When you pick up a code review task:
+
+1. **Use the code-review:code-review skill** to analyze the PR:
 ```
-/code-review <PR number>
+/code-review:code-review <PR number>
 ```
 
-This skill will analyze the PR and provide structured feedback.
+2. **Post your review as a GitHub comment** on the PR. The skill will guide you through this, but you MUST ensure your review is posted to GitHub (not just the channel).
+
+3. **Confirm completion** by posting to the channel with the comment URL:
+```bash
+midtown channel post "Posted review on PR #42: https://github.com/org/repo/pull/42#issuecomment-123456"
+```
+
+A code review is **not complete** until you have:
+- Posted actionable feedback as a GitHub PR comment
+- Shared the comment URL in the channel
 
 ## Coordination
 - The Lead coordinates overall direction
