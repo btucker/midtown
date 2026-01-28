@@ -92,8 +92,17 @@ async fn run_app_async(
             maybe_event = event_stream.next() => {
                 match maybe_event {
                     Some(Ok(event)) => {
-                        if handle_event(app, event) {
-                            return Ok(());
+                        match handle_event(app, event) {
+                            EventResult::Exit => return Ok(()),
+                            EventResult::ToggleSelectionMode => {
+                                // Toggle mouse capture based on selection mode
+                                if app.selection_mode {
+                                    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+                                } else {
+                                    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+                                }
+                            }
+                            EventResult::Continue => {}
                         }
                     }
                     Some(Err(_)) => {
@@ -127,11 +136,25 @@ async fn run_app_async(
     }
 }
 
-/// Handle a terminal event, returns true if the app should exit
-fn handle_event(app: &mut App, event: Event) -> bool {
+/// Result of handling an event
+enum EventResult {
+    /// Continue running
+    Continue,
+    /// Exit the app
+    Exit,
+    /// Toggle selection mode (needs to update terminal mouse capture)
+    ToggleSelectionMode,
+}
+
+/// Handle a terminal event, returns the result
+fn handle_event(app: &mut App, event: Event) -> EventResult {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Char('q') | KeyCode::Esc => return EventResult::Exit,
+            KeyCode::Char('s') => {
+                app.toggle_selection_mode();
+                return EventResult::ToggleSelectionMode;
+            }
             KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
             KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
             KeyCode::PageUp => app.page_up(),
@@ -147,5 +170,5 @@ fn handle_event(app: &mut App, event: Event) -> bool {
         },
         _ => {}
     }
-    false
+    EventResult::Continue
 }
