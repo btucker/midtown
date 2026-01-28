@@ -397,6 +397,29 @@ fn mention_prefix(coworker: Option<&str>) -> String {
     }
 }
 
+/// Determine the commenter identity from a comment body.
+///
+/// If the comment contains a coworker signature (e.g., `<!-- midtown: columbus -->`),
+/// returns the coworker name. Otherwise, returns the GitHub username.
+fn commenter_identity(comment_body: &str, github_username: &str) -> String {
+    if let Some(coworker) = coworker_from_frontmatter(comment_body) {
+        return coworker.to_string();
+    }
+    github_username.to_string()
+}
+
+/// Strip the midtown frontmatter line from a comment body.
+///
+/// Returns the body with the `<!-- midtown: name -->` line removed.
+fn strip_frontmatter(body: &str) -> String {
+    body.lines()
+        .filter(|line| !line.trim().starts_with("<!-- midtown:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 // ============================================================================
 // Event Handlers
 // ============================================================================
@@ -483,10 +506,16 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Erro
         return Ok(None);
     }
 
-    let preview = truncate_comment(&event.comment.body, 50);
+    // Determine commenter: use coworker name from signature if present, else GitHub username
+    let commenter = commenter_identity(&event.comment.body, &event.comment.user.login);
+
+    // Strip frontmatter from comment before preview
+    let clean_body = strip_frontmatter(&event.comment.body);
+    let preview = truncate_comment(&clean_body, 50);
+
     let content = format!(
         "{} commented on PR #{}: {}",
-        event.comment.user.login, event.issue.number, preview
+        commenter, event.issue.number, preview
     );
 
     Ok(Some(Message::new("github", content, MessageType::Text)))
@@ -499,16 +528,22 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Err
         return Ok(None);
     }
 
-    // Determine coworker from PR branch prefix or body frontmatter
+    // Determine coworker from PR branch prefix or body frontmatter (for @mention)
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
     let coworker = determine_pr_coworker(branch, pr_body);
     let mention = mention_prefix(coworker);
 
-    let preview = truncate_comment(&event.comment.body, 50);
+    // Determine commenter: use coworker name from comment signature if present
+    let commenter = commenter_identity(&event.comment.body, &event.comment.user.login);
+
+    // Strip frontmatter from comment before preview
+    let clean_body = strip_frontmatter(&event.comment.body);
+    let preview = truncate_comment(&clean_body, 50);
+
     let action_text = format!(
         "{} left review comment on PR #{}: {}",
-        event.comment.user.login, event.pull_request.number, preview
+        commenter, event.pull_request.number, preview
     );
 
     let content = format!("{}{}", mention, action_text);
@@ -920,6 +955,82 @@ mod tests {
             "@madison reviewer left review comment on PR #77: Nice work!"
         );
         // Sender is always "github"
+        assert_eq!(msg.from, "github");
+    }
+
+    #[test]
+    fn test_handle_issue_comment_with_coworker_signature() {
+        // When a coworker posts a comment with <!-- midtown: name --> signature,
+        // use the coworker name instead of GitHub username
+        let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "pull_request": {}
+            },
+            "comment": {
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: columbus -->\n\nLGTM! Nice fix."
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        // Should use coworker name from signature, not GitHub username
+        assert_eq!(msg.content, "columbus commented on PR #42: LGTM! Nice fix.");
+        assert_eq!(msg.from, "github");
+    }
+
+    #[test]
+    fn test_handle_issue_comment_without_signature() {
+        // When no coworker signature, use the GitHub username as before
+        let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "pull_request": {}
+            },
+            "comment": {
+                "user": {"login": "btucker"},
+                "body": "Regular comment without signature"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        // Should use GitHub username when no signature
+        assert_eq!(
+            msg.content,
+            "btucker commented on PR #42: Regular comment without signature"
+        );
+        assert_eq!(msg.from, "github");
+    }
+
+    #[test]
+    fn test_handle_review_comment_with_coworker_signature() {
+        // When a coworker posts a review comment with signature,
+        // use the coworker name instead of GitHub username
+        let payload = r#"{
+            "action": "created",
+            "pull_request": {
+                "number": 77,
+                "head": {"ref": "madison/refactor"},
+                "body": "PR body here"
+            },
+            "comment": {
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: lexington -->\n\nConsider using a match here."
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
+        // Should use coworker name from comment signature
+        // Note: @mention still uses PR attribution (madison), but commenter is lexington
+        assert_eq!(
+            msg.content,
+            "@madison lexington left review comment on PR #77: Consider using a match here."
+        );
         assert_eq!(msg.from, "github");
     }
 }
