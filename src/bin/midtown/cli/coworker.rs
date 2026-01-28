@@ -10,6 +10,9 @@ pub enum CoworkerCommand {
         /// Resume the previous Claude session (passes --continue to claude)
         #[arg(long)]
         resume: bool,
+        /// Initial prompt to send after spawn (avoids separate nudge step)
+        #[arg(long, short)]
+        prompt: Option<String>,
     },
     /// Shutdown a coworker
     Shutdown {
@@ -69,7 +72,9 @@ pub enum NudgeConfigCommand {
 
 pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        CoworkerCommand::Spawn { resume } => client.coworker_spawn(*resume),
+        CoworkerCommand::Spawn { resume, prompt } => {
+            client.coworker_spawn(*resume, prompt.as_deref())
+        }
         CoworkerCommand::Shutdown { name } => client.coworker_shutdown(name),
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),

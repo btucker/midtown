@@ -1734,13 +1734,16 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "coworker.spawn" => {
-            let resume = request
-                .params
-                .as_ref()
+            let params = request.params.as_ref();
+            let resume = params
                 .and_then(|p| p.get("resume"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            handle_coworker_spawn(request.id, state, resume)
+            let prompt = params
+                .and_then(|p| p.get("prompt"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            handle_coworker_spawn(request.id, state, resume, prompt)
         }
 
         "coworker.shutdown" => {
@@ -1828,10 +1831,29 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
 }
 
 /// Handle coworker.spawn RPC method.
-fn handle_coworker_spawn(id: RequestId, state: &DaemonState, resume: bool) -> Response {
+fn handle_coworker_spawn(
+    id: RequestId,
+    state: &DaemonState,
+    resume: bool,
+    prompt: Option<String>,
+) -> Response {
     match state.coworkers.spawn(resume) {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
+
+            // If a prompt was provided, wait for coworker to start then nudge
+            if let Some(prompt_text) = prompt {
+                // Wait for coworker to initialize
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // Send the initial prompt as a nudge
+                if let Err(e) = state.coworkers.nudge(&name, &prompt_text) {
+                    warn!("Failed to send initial prompt to {}: {}", name, e);
+                } else {
+                    info!("Sent initial prompt to {}", name);
+                }
+            }
+
             Response::success(
                 id,
                 serde_json::json!({

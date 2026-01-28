@@ -135,11 +135,12 @@ impl DaemonClient {
 
     // Coworker commands
 
-    pub fn coworker_spawn(&self, resume: bool) -> Result<Response, String> {
-        self.send(
-            "coworker.spawn",
-            Some(serde_json::json!({ "resume": resume })),
-        )
+    pub fn coworker_spawn(&self, resume: bool, prompt: Option<&str>) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "resume": resume });
+        if let Some(p) = prompt {
+            params["prompt"] = serde_json::json!(p);
+        }
+        self.send("coworker.spawn", Some(params))
     }
 
     pub fn coworker_shutdown(&self, name: &str) -> Result<Response, String> {
