@@ -618,8 +618,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 check_and_shutdown_idle_coworkers(&state).await;
             }
 
-            // Periodic orphan check
+            // Periodic orphan check and duplicate detection
             _ = orphan_check_interval.tick() => {
+                check_for_duplicate_task_workers(&state).await;
                 check_and_recover_orphans(&state).await;
                 spawn_for_pending_tasks(&state);
             }
@@ -2618,6 +2619,119 @@ async fn check_and_recover_orphans(state: &DaemonState) {
     }
 }
 
+/// Detect and kill duplicate task workers.
+///
+/// When multiple coworkers end up working on the same task (e.g., due to race
+/// conditions in task claiming), this function detects the duplicates and kills
+/// all but the earliest-started worker. This prevents wasted effort and duplicate PRs.
+///
+/// The function:
+/// 1. Gets all in_progress tasks with their owners
+/// 2. Groups tasks by task ID to find duplicates
+/// 3. For tasks with multiple workers, keeps the one that started earliest
+/// 4. Shuts down the duplicate workers with an explanatory message
+async fn check_for_duplicate_task_workers(state: &DaemonState) {
+    // Get in_progress tasks with their owners
+    let in_progress = get_in_progress_tasks_with_owners();
+
+    if in_progress.is_empty() {
+        return;
+    }
+
+    // Build a map of task_id -> list of owners
+    let mut task_workers: HashMap<String, Vec<String>> = HashMap::new();
+    for (task_id, _subject, owner) in &in_progress {
+        // Skip empty owners or Lead
+        if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+            continue;
+        }
+        task_workers
+            .entry(task_id.clone())
+            .or_default()
+            .push(owner.clone());
+    }
+
+    // Get all active coworkers with their start times
+    let active_coworkers = state.coworkers.list();
+    let coworker_start_times: HashMap<String, chrono::DateTime<chrono::Utc>> = active_coworkers
+        .iter()
+        .map(|cw| (cw.name.to_lowercase(), cw.started_at))
+        .collect();
+
+    // Find tasks with multiple workers and determine who to kill
+    for (task_id, workers) in task_workers {
+        if workers.len() <= 1 {
+            continue;
+        }
+
+        // Get the task subject for logging
+        let task_subject = in_progress
+            .iter()
+            .find(|(id, _, _)| id == &task_id)
+            .map(|(_, s, _)| s.as_str())
+            .unwrap_or("unknown");
+
+        info!(
+            "Detected {} duplicate workers on task #{} ({}): {:?}",
+            workers.len(),
+            task_id,
+            task_subject,
+            workers
+        );
+
+        // Sort workers by start time (earliest first)
+        // Workers not found in active list go to the end (will be killed)
+        let mut workers_with_times: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = workers
+            .into_iter()
+            .map(|name| {
+                let start_time = coworker_start_times.get(&name.to_lowercase()).copied();
+                (name, start_time)
+            })
+            .collect();
+
+        workers_with_times.sort_by(|a, b| {
+            match (&a.1, &b.1) {
+                (Some(t1), Some(t2)) => t1.cmp(t2),          // Earlier time first
+                (Some(_), None) => std::cmp::Ordering::Less, // Known time beats unknown
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        // Keep the first (earliest) worker, kill the rest
+        let (keeper, keeper_time) = workers_with_times[0].clone();
+        info!(
+            "Keeping {} (started {:?}) for task #{}",
+            keeper, keeper_time, task_id
+        );
+
+        for (duplicate, dup_time) in workers_with_times.into_iter().skip(1) {
+            warn!(
+                "Killing duplicate worker {} (started {:?}) for task #{} - {} is already working on it",
+                duplicate, dup_time, task_id, keeper
+            );
+
+            // Shutdown the duplicate
+            if let Err(e) = state.coworkers.shutdown(&duplicate) {
+                warn!("Failed to shutdown duplicate worker {}: {}", duplicate, e);
+                continue;
+            }
+
+            // Post to channel about the kill
+            let msg = Message::text(
+                "daemon",
+                format!(
+                    "🔪 Killed duplicate worker {} on task #{} ({}) - {} started earlier",
+                    duplicate, task_id, task_subject, keeper
+                ),
+            );
+            if let Err(e) = state.channel.send(&msg) {
+                warn!("Failed to post duplicate kill message: {}", e);
+            }
+        }
+    }
+}
+
 /// Get list of in_progress tasks with their owners and subjects.
 fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
     crate::tasks::get_in_progress_tasks_with_subjects()
@@ -3137,5 +3251,63 @@ mod tests {
         assert!(SKIP_SENDERS.contains(&"daemon"));
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
+    }
+
+    // Duplicate task worker detection tests
+    #[test]
+    fn test_duplicate_worker_sorting_by_start_time() {
+        use chrono::{Duration, Utc};
+
+        // Create workers with different start times
+        let now = Utc::now();
+        let earlier = now - Duration::minutes(5);
+        let later = now + Duration::minutes(5);
+
+        let mut workers: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = vec![
+            ("later_worker".to_string(), Some(later)),
+            ("earlier_worker".to_string(), Some(earlier)),
+            ("now_worker".to_string(), Some(now)),
+        ];
+
+        // Sort by start time (earliest first) - same logic as check_for_duplicate_task_workers
+        workers.sort_by(|a, b| match (&a.1, &b.1) {
+            (Some(t1), Some(t2)) => t1.cmp(t2),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+
+        // Earliest worker should be first (the keeper)
+        assert_eq!(workers[0].0, "earlier_worker");
+        assert_eq!(workers[1].0, "now_worker");
+        assert_eq!(workers[2].0, "later_worker");
+    }
+
+    #[test]
+    fn test_duplicate_worker_sorting_with_unknown_times() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+
+        // Workers with some unknown start times
+        let mut workers: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = vec![
+            ("unknown_worker".to_string(), None),
+            ("known_worker".to_string(), Some(now)),
+            ("another_unknown".to_string(), None),
+        ];
+
+        // Sort by start time - known times beat unknown
+        workers.sort_by(|a, b| match (&a.1, &b.1) {
+            (Some(t1), Some(t2)) => t1.cmp(t2),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+
+        // Known worker should be first (the keeper), unknowns at the end
+        assert_eq!(workers[0].0, "known_worker");
+        // Unknown workers are equal, so their order is preserved (stable sort)
+        assert!(workers[1].1.is_none());
+        assert!(workers[2].1.is_none());
     }
 }
