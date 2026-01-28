@@ -579,7 +579,7 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// Render a single message into one or more Lines
 ///
 /// Layout for action messages:
-/// - " HH:MM * name message" all on one line
+/// - "* HH:MM:SS name message" all on one line
 ///
 /// Layout for regular messages when sender changes:
 /// - Line 1: Actor name alone
@@ -592,6 +592,7 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec<Line<'static>> {
     let local_time = msg.timestamp.with_timezone(&Local);
     let time = local_time.format("%H:%M").to_string();
+    let time_with_seconds = local_time.format("%H:%M:%S").to_string();
     let color = get_sender_color(&msg.from);
 
     // Determine if we need to show the sender name
@@ -605,7 +606,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         _ => Style::default().fg(Color::White),
     };
 
-    // For action messages, use special format: "* name message"
+    // For action messages, use special format: "* HH:MM:SS name message"
     if msg.message_type == MessageType::Action {
         let mut result = Vec::new();
         // Add blank line before action messages (except for first message)
@@ -614,7 +615,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         }
         result.extend(render_action_message(
             msg,
-            &time,
+            &time_with_seconds,
             color,
             content_style,
             width,
@@ -673,17 +674,17 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Render an action message: "* name message" (no timestamp)
+/// Render an action message: "* HH:MM:SS name message"
 fn render_action_message(
     msg: &Message,
-    _time: &str,
+    time: &str,
     color: Color,
     content_style: Style,
     width: usize,
 ) -> Vec<Line<'static>> {
-    // Format: "* name message" (no timestamp for /me actions)
-    // Prefix is "* name " where name varies
-    let prefix_len = 2 + msg.from.len() + 1; // "* " + name + " "
+    // Format: "* HH:MM:SS name message"
+    // Prefix is "* HH:MM:SS name " where name varies
+    let prefix_len = 2 + time.len() + 1 + msg.from.len() + 1; // "* " + time + " " + name + " "
     let content_width = width.saturating_sub(prefix_len);
 
     if content_width == 0 {
@@ -695,9 +696,10 @@ fn render_action_message(
 
     for (i, content) in content_lines.iter().enumerate() {
         if i == 0 {
-            // First line: "* name message"
+            // First line: "* HH:MM:SS name message"
             let spans = vec![
                 Span::styled("* ", Style::default().fg(color)),
+                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     msg.from.clone(),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -1152,20 +1154,39 @@ mod tests {
             message_type: MessageType::Action,
         };
 
-        // Action messages are "* name message" on one line (no timestamp)
+        // Action messages are "* HH:MM:SS name message" on one line
         let lines = render_message(&msg, 80, None);
         assert_eq!(lines.len(), 1);
 
         let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(content.contains("*"));
-        assert!(content.contains("park"));
-        assert!(content.contains("completed task 3"));
-        // Should NOT contain timestamp (no colon like "10:42")
         assert!(
-            !content.contains(":"),
-            "Action message should not contain timestamp, got: {}",
+            content.starts_with("* "),
+            "Should start with '* ', got: {}",
             content
         );
+        assert!(content.contains("park"));
+        assert!(content.contains("completed task 3"));
+
+        // Verify the format: "* HH:MM:SS name message"
+        // The spans should be: "* ", "HH:MM:SS ", "name", " message"
+        assert_eq!(
+            lines[0].spans.len(),
+            4,
+            "Expected 4 spans: '* ', timestamp, name, content"
+        );
+        assert_eq!(lines[0].spans[0].content, "* ");
+        // Timestamp span should have format "HH:MM:SS " (8 chars + space)
+        assert_eq!(
+            lines[0].spans[1].content.len(),
+            9,
+            "Timestamp should be 'HH:MM:SS ' (9 chars)"
+        );
+        assert!(
+            lines[0].spans[1].content.contains(":"),
+            "Timestamp should contain colons"
+        );
+        assert_eq!(lines[0].spans[2].content, "park");
+        assert_eq!(lines[0].spans[3].content, " completed task 3");
     }
 
     #[test]
