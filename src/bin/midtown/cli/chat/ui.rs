@@ -50,7 +50,7 @@ const TIMESTAMP_GUTTER_WIDTH: usize = 7;
 const AVENUE_COLORS: &[(&str, Color)] = &[
     ("lexington", Color::Cyan),
     ("park", Color::Green),
-    ("madison", Color::Yellow),
+    ("madison", Color::LightRed),
     ("broadway", Color::Magenta),
     ("amsterdam", Color::Blue),
     ("columbus", Color::Red),
