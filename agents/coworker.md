@@ -127,17 +127,12 @@ EOF
 ## Requesting PR Reviews
 When your PR is ready for review:
 
-1. **Create a review task** so another coworker can pick it up:
-```
-TaskCreate with subject: "Code review PR #<number>", description: "<PR title and summary>"
-```
-
-2. **Post to channel** requesting review:
+**Post to channel** requesting review:
 ```bash
 midtown channel post "/me requesting review of PR #42"
 ```
 
-This ensures your PR doesn't get stuck waiting - another coworker will claim the review task.
+The daemon automatically detects new PRs and assigns reviewers - you don't need to create review tasks manually. The daemon will nudge an idle coworker or spawn a new one to review your PR.
 
 ### Reviewing PRs
 
