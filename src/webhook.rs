@@ -36,6 +36,29 @@ use crate::web::{self, WebConfig, WebState, WebUpdate};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// A webhook event with an optional structured PR activity payload.
+///
+/// This allows the daemon to act on PR activity (e.g., nudging PR owners)
+/// without parsing message content strings or making extra GitHub API calls.
+#[derive(Debug, Clone)]
+pub struct WebhookEvent {
+    /// The channel message to post
+    pub message: Message,
+    /// Structured PR activity data (if this event relates to a PR)
+    pub pr_activity: Option<PrActivity>,
+}
+
+/// Structured data about PR-related webhook activity.
+#[derive(Debug, Clone)]
+pub struct PrActivity {
+    /// PR number
+    pub pr_number: u64,
+    /// The coworker who owns the PR (from branch prefix or body frontmatter)
+    pub owner_coworker: Option<String>,
+    /// The actor who triggered the event (coworker name or GitHub username)
+    pub actor: String,
+}
+
 /// Configuration for the webhook server
 #[derive(Debug, Clone)]
 pub struct WebhookConfig {
@@ -63,7 +86,7 @@ impl Default for WebhookConfig {
 /// Shared state for the webhook server
 struct WebhookState {
     config: WebhookConfig,
-    message_tx: mpsc::Sender<Message>,
+    event_tx: mpsc::Sender<WebhookEvent>,
     /// Broadcast channel for web updates (will be used to broadcast webhook events)
     #[allow(dead_code)]
     web_updates_tx: broadcast::Sender<WebUpdate>,
@@ -77,13 +100,15 @@ const GITHUB_SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 /// Start the webhook HTTP server
 ///
 /// Returns a channel receiver for translated messages.
-pub async fn start_webhook_server(config: WebhookConfig) -> crate::Result<mpsc::Receiver<Message>> {
+pub async fn start_webhook_server(
+    config: WebhookConfig,
+) -> crate::Result<mpsc::Receiver<WebhookEvent>> {
     let (tx, rx) = mpsc::channel(100);
     let (web_updates_tx, _) = broadcast::channel(100);
 
     let webhook_state = Arc::new(WebhookState {
         config: config.clone(),
-        message_tx: tx,
+        event_tx: tx,
         web_updates_tx: web_updates_tx.clone(),
     });
 
@@ -171,7 +196,7 @@ async fn handle_webhook(
     }
 
     // Parse and handle the event
-    let message = match event_type {
+    let event = match event_type {
         "pull_request" => handle_pull_request(&body),
         "pull_request_review" => handle_pull_request_review(&body),
         "issue_comment" => handle_issue_comment(&body),
@@ -188,10 +213,10 @@ async fn handle_webhook(
         }
     };
 
-    match message {
-        Ok(Some(msg)) => {
-            if let Err(e) = state.message_tx.send(msg).await {
-                error!("Failed to send message: {}", e);
+    match event {
+        Ok(Some(webhook_event)) => {
+            if let Err(e) = state.event_tx.send(webhook_event).await {
+                error!("Failed to send webhook event: {}", e);
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
             Ok(StatusCode::OK)
@@ -461,7 +486,7 @@ fn strip_frontmatter(body: &str) -> String {
 // Event Handlers
 // ============================================================================
 
-fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
+fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: PullRequestEvent = serde_json::from_slice(body)?;
 
     // Determine coworker from branch prefix or PR body frontmatter
@@ -495,10 +520,13 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<Message>, serde_json::Error
     };
 
     let content = format!("{}{}", mention, action_text);
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(WebhookEvent {
+        message: Message::new("github", content, MessageType::Text),
+        pr_activity: None,
+    }))
 }
 
-fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
+fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: PullRequestReviewEvent = serde_json::from_slice(body)?;
 
     if event.action != "submitted" {
@@ -528,10 +556,17 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<Message>, serde_json
     };
 
     let content = format!("{}{}", mention, action_text);
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(WebhookEvent {
+        message: Message::new("github", content, MessageType::Text),
+        pr_activity: Some(PrActivity {
+            pr_number: event.pull_request.number,
+            owner_coworker: coworker.map(|s| s.to_string()),
+            actor: event.review.user.login,
+        }),
+    }))
 }
 
-fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
+fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: IssueCommentEvent = serde_json::from_slice(body)?;
 
     if event.action != "created" {
@@ -555,10 +590,19 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Erro
         commenter, event.issue.number, preview
     );
 
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    // For issue_comment, the payload doesn't include the PR branch,
+    // so owner_coworker is None. The daemon will look it up asynchronously.
+    Ok(Some(WebhookEvent {
+        message: Message::new("github", content, MessageType::Text),
+        pr_activity: Some(PrActivity {
+            pr_number: event.issue.number,
+            owner_coworker: None,
+            actor: commenter,
+        }),
+    }))
 }
 
-fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
+fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: ReviewCommentEvent = serde_json::from_slice(body)?;
 
     if event.action != "created" {
@@ -584,10 +628,17 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Err
     );
 
     let content = format!("{}{}", mention, action_text);
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(WebhookEvent {
+        message: Message::new("github", content, MessageType::Text),
+        pr_activity: Some(PrActivity {
+            pr_number: event.pull_request.number,
+            owner_coworker: coworker.map(|s| s.to_string()),
+            actor: commenter,
+        }),
+    }))
 }
 
-fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
+fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: StatusEvent = serde_json::from_slice(body)?;
 
     // Determine coworker from first branch in the branches array
@@ -620,10 +671,13 @@ fn handle_status(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
     };
 
     let content = format!("{}{}", mention, action_text);
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(WebhookEvent {
+        message: Message::new("github", content, MessageType::Text),
+        pr_activity: None,
+    }))
 }
 
-fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
+fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: CheckRunEvent = serde_json::from_slice(body)?;
 
     // Only report completed check runs
@@ -660,7 +714,10 @@ fn handle_check_run(body: &[u8]) -> Result<Option<Message>, serde_json::Error> {
     };
 
     let content = format!("{}{}", mention, action_text);
-    Ok(Some(Message::new("github", content, MessageType::Text)))
+    Ok(Some(WebhookEvent {
+        message: Message::new("github", content, MessageType::Text),
+        pr_activity: None,
+    }))
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
@@ -736,11 +793,14 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
         // Content includes @mention prefix for coworker
-        assert_eq!(msg.content, "@lexington opened PR #42: Add auth endpoint");
+        assert_eq!(
+            event.message.content,
+            "@lexington opened PR #42: Add auth endpoint"
+        );
         // Sender is always "github"
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -758,11 +818,14 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
         // Content includes @mention from frontmatter (takes priority over branch)
-        assert_eq!(msg.content, "@park opened PR #42: Add auth endpoint");
+        assert_eq!(
+            event.message.content,
+            "@park opened PR #42: Add auth endpoint"
+        );
         // Sender is always "github"
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -779,9 +842,12 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "@lexington merged PR #42: Add auth endpoint");
-        assert_eq!(msg.from, "github");
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.content,
+            "@lexington merged PR #42: Add auth endpoint"
+        );
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -799,10 +865,10 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
         // No @mention when no coworker is identified
-        assert_eq!(msg.content, "opened PR #42: Add auth endpoint");
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.content, "opened PR #42: Add auth endpoint");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -817,10 +883,10 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request_review(payload.as_bytes())
+        let event = handle_pull_request_review(payload.as_bytes())
             .unwrap()
             .unwrap();
-        assert_eq!(msg.content, "madison approved PR #42");
+        assert_eq!(event.message.content, "madison approved PR #42");
     }
 
     #[test]
@@ -833,8 +899,11 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_status(payload.as_bytes()).unwrap().unwrap();
-        assert_eq!(msg.content, "CI passed (ci/tests): All tests passed");
+        let event = handle_status(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.content,
+            "CI passed (ci/tests): All tests passed"
+        );
     }
 
     #[test]
@@ -847,8 +916,8 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_status(payload.as_bytes()).unwrap();
-        assert!(msg.is_none());
+        let event = handle_status(payload.as_bytes()).unwrap();
+        assert!(event.is_none());
     }
 
     #[test]
@@ -867,13 +936,13 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request_review(payload.as_bytes())
+        let event = handle_pull_request_review(payload.as_bytes())
             .unwrap()
             .unwrap();
         // Content includes @mention prefix for coworker from branch
-        assert_eq!(msg.content, "@amsterdam btucker approved PR #42");
+        assert_eq!(event.message.content, "@amsterdam btucker approved PR #42");
         // Sender is always "github"
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -892,16 +961,16 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_pull_request_review(payload.as_bytes())
+        let event = handle_pull_request_review(payload.as_bytes())
             .unwrap()
             .unwrap();
         // Frontmatter takes priority for @mention
         assert_eq!(
-            msg.content,
+            event.message.content,
             "@columbus reviewer requested changes on PR #55"
         );
         // Sender is always "github"
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -915,11 +984,14 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_status(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_status(payload.as_bytes()).unwrap().unwrap();
         // Content includes @mention prefix for coworker from branch
-        assert_eq!(msg.content, "@riverside CI failed (ci/tests): Tests failed");
+        assert_eq!(
+            event.message.content,
+            "@riverside CI failed (ci/tests): Tests failed"
+        );
         // Sender is always "github"
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -939,11 +1011,14 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
         // Content includes @mention prefix for coworker from branch
-        assert_eq!(msg.content, "@park Check 'build' passed on PR #99");
+        assert_eq!(
+            event.message.content,
+            "@park Check 'build' passed on PR #99"
+        );
         // Sender is always "github"
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -963,10 +1038,10 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
         // No PR, so shows branch name instead
-        assert_eq!(msg.content, "Check 'build' passed on main");
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.content, "Check 'build' passed on main");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -985,14 +1060,19 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
         // Content includes @mention prefix for coworker from branch
         assert_eq!(
-            msg.content,
+            event.message.content,
             "@madison reviewer left review comment on PR #77: Nice work!"
         );
         // Sender is always "github"
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
+        // PR activity should identify madison as owner
+        let activity = event.pr_activity.unwrap();
+        assert_eq!(activity.pr_number, 77);
+        assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
+        assert_eq!(activity.actor, "reviewer");
     }
 
     #[test]
@@ -1012,10 +1092,17 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
         // Should use coworker name from signature, not GitHub username
-        assert_eq!(msg.content, "columbus commented on PR #42: LGTM! Nice fix.");
-        assert_eq!(msg.from, "github");
+        assert_eq!(
+            event.message.content,
+            "columbus commented on PR #42: LGTM! Nice fix."
+        );
+        assert_eq!(event.message.from, "github");
+        // PR activity should identify commenter
+        let activity = event.pr_activity.unwrap();
+        assert_eq!(activity.pr_number, 42);
+        assert_eq!(activity.actor, "columbus");
     }
 
     #[test]
@@ -1034,13 +1121,13 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
         // Should use GitHub username when no signature
         assert_eq!(
-            msg.content,
+            event.message.content,
             "btucker commented on PR #42: Regular comment without signature"
         );
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
     }
 
     #[test]
@@ -1061,13 +1148,18 @@ mod tests {
             "repository": {"full_name": "org/repo"}
         }"#;
 
-        let msg = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
         // Should use coworker name from comment signature
         // Note: @mention still uses PR attribution (madison), but commenter is lexington
         assert_eq!(
-            msg.content,
+            event.message.content,
             "@madison lexington left review comment on PR #77: Consider using a match here."
         );
-        assert_eq!(msg.from, "github");
+        assert_eq!(event.message.from, "github");
+        // PR activity should identify madison as owner and lexington as actor
+        let activity = event.pr_activity.unwrap();
+        assert_eq!(activity.pr_number, 77);
+        assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
+        assert_eq!(activity.actor, "lexington");
     }
 }

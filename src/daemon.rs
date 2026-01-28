@@ -75,6 +75,8 @@ pub enum PrIssueType {
     Approved,
     /// PR needs code review (no Claude review comment yet)
     NeedsReview,
+    /// PR has review comments from non-owners
+    ReviewComment,
 }
 
 impl std::fmt::Display for PrIssueType {
@@ -85,6 +87,7 @@ impl std::fmt::Display for PrIssueType {
             PrIssueType::ChangesRequested => write!(f, "changes requested"),
             PrIssueType::Approved => write!(f, "approved"),
             PrIssueType::NeedsReview => write!(f, "needs review"),
+            PrIssueType::ReviewComment => write!(f, "review comment"),
         }
     }
 }
@@ -586,30 +589,24 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             }
 
-            // Forward webhook messages to channel and auto-nudge PR owners
-            Some(msg) = async {
+            // Forward webhook messages to channel and nudge PR owners on comments
+            Some(webhook_event) = async {
                 match webhook_rx.as_mut() {
                     Some(rx) => rx.recv().await,
                     None => std::future::pending().await,
                 }
             } => {
-                debug!("Received webhook message: {}", msg.content);
-                if let Err(e) = state.channel.send(&msg) {
+                debug!("Received webhook message: {}", webhook_event.message.content);
+                if let Err(e) = state.channel.send(&webhook_event.message) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
 
-                // Auto-nudge: notify coworker when their PR gets activity from others
-                if let Some(pr_number) = extract_pr_number(&msg.content)
-                    && let Some(coworker) = get_pr_owner_coworker(pr_number)
-                    && msg.from != coworker
-                    && state.coworkers.get(&coworker).is_some()
-                {
-                    let nudge_msg = format!("PR #{} activity: {}", pr_number, msg.content);
-                    if let Err(e) = state.coworkers.nudge(&coworker, &nudge_msg) {
-                        debug!("Failed to nudge {} about PR activity: {}", coworker, e);
-                    } else {
-                        info!("Nudged {} about activity on their PR #{}", coworker, pr_number);
-                    }
+                // Nudge PR owner when someone else comments on their PR
+                if let Some(activity) = webhook_event.pr_activity {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        handle_pr_comment_nudge(&state, activity).await;
+                    });
                 }
             }
 
@@ -1635,6 +1632,7 @@ fn get_issue_action(issue_type: PrIssueType) -> &'static str {
         PrIssueType::ChangesRequested => "please address feedback",
         PrIssueType::Approved => "ready to merge!",
         PrIssueType::NeedsReview => "spawning reviewer",
+        PrIssueType::ReviewComment => "please address review feedback and merge if appropriate",
     }
 }
 
@@ -2433,6 +2431,7 @@ const COWORKER_NAMES: &[&str] = &[
 /// Extract PR number from a message content.
 ///
 /// Looks for patterns like "PR #42", "#42", "PR #123".
+#[cfg(test)]
 fn extract_pr_number(content: &str) -> Option<u64> {
     // Look for "PR #N" pattern first
     if let Some(idx) = content.find("PR #") {
@@ -2459,12 +2458,18 @@ fn extract_pr_number(content: &str) -> Option<u64> {
     None
 }
 
-/// Look up the coworker who owns a PR by checking its branch name.
-///
-/// Uses `gh pr view N --json headRefName` to get the branch, then
-/// extracts the coworker name from the branch prefix (e.g., "lexington/fix-auth" -> "lexington").
-fn get_pr_owner_coworker(pr_number: u64) -> Option<String> {
-    let output = std::process::Command::new("gh")
+/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
+fn coworker_from_branch(branch: &str) -> Option<String> {
+    let prefix = branch.split('/').next()?;
+    COWORKER_NAMES
+        .iter()
+        .find(|&&name| name.eq_ignore_ascii_case(prefix))
+        .map(|&s| s.to_string())
+}
+
+/// Async version of `get_pr_owner_coworker` that doesn't block the Tokio runtime.
+async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
+    let output = tokio::process::Command::new("gh")
         .args([
             "pr",
             "view",
@@ -2475,6 +2480,7 @@ fn get_pr_owner_coworker(pr_number: u64) -> Option<String> {
             ".headRefName",
         ])
         .output()
+        .await
         .ok()?;
 
     if !output.status.success() {
@@ -2485,13 +2491,106 @@ fn get_pr_owner_coworker(pr_number: u64) -> Option<String> {
     coworker_from_branch(&branch)
 }
 
-/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
-fn coworker_from_branch(branch: &str) -> Option<String> {
-    let prefix = branch.split('/').next()?;
-    COWORKER_NAMES
-        .iter()
-        .find(|&&name| name.eq_ignore_ascii_case(prefix))
-        .map(|&s| s.to_string())
+/// Handle nudging a PR owner when a comment/review is posted on their PR.
+///
+/// This is called from the webhook event loop when a `PrActivity` is present.
+/// It resolves the PR owner (from webhook data or async lookup), checks cooldowns,
+/// and either nudges an active coworker or spawns an inactive one.
+async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::PrActivity) {
+    let pr_number = activity.pr_number;
+
+    // Resolve the PR owner: use webhook data if available, otherwise look up async
+    let owner = match activity.owner_coworker {
+        Some(ref o) => Some(o.clone()),
+        None => get_pr_owner_coworker_async(pr_number).await,
+    };
+
+    let Some(owner) = owner else {
+        debug!("PR #{} has no coworker owner, skipping nudge", pr_number);
+        return;
+    };
+
+    // Don't nudge the owner about their own comments
+    if owner == activity.actor {
+        debug!(
+            "PR #{} comment is from owner {}, skipping self-nudge",
+            pr_number, owner
+        );
+        return;
+    }
+
+    // Check cooldown to avoid spamming
+    {
+        let tracker = state.pr_issue_tracker.lock().await;
+        if !tracker.should_nudge(pr_number, PrIssueType::ReviewComment) {
+            debug!(
+                "PR #{} review comment nudge on cooldown, skipping",
+                pr_number
+            );
+            return;
+        }
+    }
+
+    let nudge_msg = format!(
+        "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.",
+        pr_number, activity.actor
+    );
+
+    // Try to nudge an active coworker, or spawn them if inactive
+    let is_active = state.coworkers.get(&owner).is_some();
+
+    if is_active {
+        match state.coworkers.nudge(&owner, &nudge_msg) {
+            Ok(()) => {
+                info!(
+                    "Nudged {} about review comment on PR #{} from {}",
+                    owner, pr_number, activity.actor
+                );
+            }
+            Err(e) => {
+                warn!("Failed to nudge {} about PR #{}: {}", owner, pr_number, e);
+                return;
+            }
+        }
+    } else {
+        // Owner is not active — spawn them with the review feedback prompt
+        info!(
+            "PR #{} owner {} is not active, spawning to address review feedback",
+            pr_number, owner
+        );
+        match state
+            .coworkers
+            .spawn_with_name(&owner, true, Some(&nudge_msg))
+        {
+            Ok(_) => {
+                info!(
+                    "Spawned {} to address review feedback on PR #{}",
+                    owner, pr_number
+                );
+                let msg = Message::text(
+                    "daemon",
+                    format!(
+                        "Spawned {} to address review feedback on PR #{}",
+                        owner, pr_number
+                    ),
+                );
+                if let Err(e) = state.channel.send(&msg) {
+                    warn!("Failed to post spawn message: {}", e);
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to spawn {} for PR #{} review feedback: {}",
+                    owner, pr_number, e
+                );
+                return;
+            }
+        }
+    }
+
+    // Record the nudge to prevent spamming
+    let mut tracker = state.pr_issue_tracker.lock().await;
+    tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
 }
 
 // ============================================================================
