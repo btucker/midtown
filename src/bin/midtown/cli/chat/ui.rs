@@ -572,7 +572,18 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
         prev_sender = Some(&msg.from);
     }
 
-    let paragraph = Paragraph::new(lines);
+    // Take only the last visible_height lines to show newest messages at bottom.
+    // Each message can render to multiple lines (sender + content + continuations),
+    // so the total rendered lines often exceeds visible_height. Without this,
+    // Paragraph would show the first N lines (oldest messages) instead of the
+    // last N lines (newest messages).
+    let visible_lines = if lines.len() > inner.height as usize {
+        lines.split_off(lines.len() - inner.height as usize)
+    } else {
+        lines
+    };
+
+    let paragraph = Paragraph::new(visible_lines);
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
@@ -1223,5 +1234,102 @@ mod tests {
         // Days ago
         assert_eq!(format_relative_time(now - Duration::days(1)), "1 day ago");
         assert_eq!(format_relative_time(now - Duration::days(7)), "7 days ago");
+    }
+
+    #[test]
+    fn test_chat_shows_newest_messages_when_content_exceeds_height() {
+        // Bug reproduction: When messages render to more lines than visible_height,
+        // the chat should show the NEWEST messages at the bottom, not the oldest.
+        //
+        // Each message from a different sender renders to ~3 lines:
+        // - blank line (separator)
+        // - sender name line
+        // - timestamp + content line
+        //
+        // So 10 messages from different senders = ~30 lines of content.
+        // If visible_height is 10, we should see the LAST 10 lines (newest messages),
+        // not the FIRST 10 lines (oldest messages).
+        use chrono::Utc;
+
+        // Create 10 messages from different senders (each will take ~3 lines)
+        let messages: Vec<Message> = (0..10)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: format!("user{}", i), // Different sender each time = new sender line
+                content: format!("message content {}", i),
+                timestamp: Utc::now(),
+                message_type: MessageType::Text,
+            })
+            .collect();
+
+        // Render all messages
+        let mut all_lines: Vec<Line> = Vec::new();
+        let mut prev_sender: Option<&str> = None;
+        for msg in &messages {
+            let msg_lines = render_message(msg, 80, prev_sender);
+            all_lines.extend(msg_lines);
+            prev_sender = Some(&msg.from);
+        }
+
+        // Verify we have more lines than a typical visible_height
+        assert!(
+            all_lines.len() > 10,
+            "Expected more than 10 lines, got {}",
+            all_lines.len()
+        );
+
+        // The LAST line should contain content from the LAST message (message 9)
+        let last_line: String = all_lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            last_line.contains("message content 9"),
+            "Last line should contain newest message, got: {}",
+            last_line
+        );
+
+        // Now simulate what draw_chat_panel does: take only visible_height lines
+        // BUG: Currently it would show the FIRST 10 lines (oldest messages)
+        // FIX: It should show the LAST 10 lines (newest messages)
+        let visible_height = 10;
+
+        // Current buggy behavior: takes from beginning
+        let buggy_visible: Vec<_> = all_lines.iter().take(visible_height).collect();
+
+        // Fixed behavior: takes from end
+        let fixed_visible: Vec<_> = all_lines
+            .iter()
+            .skip(all_lines.len().saturating_sub(visible_height))
+            .collect();
+
+        // The buggy version would show oldest messages (message 0)
+        let buggy_content: String = buggy_visible
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        // The fixed version shows newest messages (message 9)
+        let fixed_content: String = fixed_visible
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        // Verify the bug: buggy shows old, fixed shows new
+        assert!(
+            buggy_content.contains("message content 0"),
+            "Buggy version should contain oldest message"
+        );
+        assert!(
+            !buggy_content.contains("message content 9"),
+            "Buggy version should NOT contain newest message"
+        );
+        assert!(
+            fixed_content.contains("message content 9"),
+            "Fixed version should contain newest message"
+        );
     }
 }
