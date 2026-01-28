@@ -392,11 +392,53 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
     Ok(())
 }
 
+/// Capture the content of a tmux pane.
+///
+/// Returns the visible text in the pane, or None if capture fails.
+fn capture_pane(target: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", target, "-p"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        None
+    }
+}
+
+/// Check if nudge text is stuck in the input line (Enter key failed).
+///
+/// Looks for the prompt symbol (❯) followed by the nudge text on the same line.
+/// If found, it means the Enter key didn't work and the text is sitting
+/// in the input line instead of being submitted.
+///
+/// Returns true if the text appears to be stuck in the input line.
+fn is_nudge_stuck_in_input(pane_content: &str, nudge_text: &str) -> bool {
+    for line in pane_content.lines() {
+        // Check if line contains the prompt symbol followed by the nudge text
+        if let Some(prompt_pos) = line.find('❯') {
+            let after_prompt = &line[prompt_pos + '❯'.len_utf8()..];
+            // Check if the nudge text appears after the prompt (allowing for whitespace)
+            let trimmed = after_prompt.trim_start();
+            if trimmed.contains(nudge_text) || nudge_text.contains(trimmed) && !trimmed.is_empty() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Send keys (input) to a tmux window.
 ///
 /// This is used to "nudge" a coworker by sending keyboard input.
 /// Sends the text literally (with -l flag), waits for paste to process,
 /// then presses Enter. Based on gastown's NudgeSession implementation.
+///
+/// After sending Enter, verifies that the message was actually submitted
+/// by checking if the text is still visible in the input line (after ❯).
+/// If the text is stuck, retries sending Enter up to 3 times.
 pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     use std::thread;
     use std::time::Duration;
@@ -423,18 +465,54 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     // cancels input in Claude's prompt, causing nudge messages to be lost.
     // Removed to fix daemon orchestration.
 
-    // 3. Send Enter key
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Enter"])
-        .status()
-        .map_err(Error::Io)?;
+    // 3. Send Enter key with verification and retry logic
+    const MAX_ENTER_RETRIES: u32 = 3;
 
-    if !status.success() {
-        return Err(Error::Rpc {
-            code: -32603,
-            message: format!("Failed to send Enter to tmux window: {}", target),
-        });
+    for attempt in 0..MAX_ENTER_RETRIES {
+        // Send Enter key
+        let status = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .status()
+            .map_err(Error::Io)?;
+
+        if !status.success() {
+            return Err(Error::Rpc {
+                code: -32603,
+                message: format!("Failed to send Enter to tmux window: {}", target),
+            });
+        }
+
+        // Wait for Enter to be processed
+        thread::sleep(Duration::from_millis(100));
+
+        // Verify the nudge was submitted by checking if text is stuck in input
+        if let Some(pane_content) = capture_pane(&target) {
+            if !is_nudge_stuck_in_input(&pane_content, keys) {
+                // Success - text is not stuck in input line
+                return Ok(());
+            }
+
+            // Text is stuck - log and retry
+            if attempt < MAX_ENTER_RETRIES - 1 {
+                tracing::debug!(
+                    "Nudge text stuck in input after attempt {} for {}, retrying Enter",
+                    attempt + 1,
+                    target
+                );
+                thread::sleep(Duration::from_millis(200));
+            }
+        } else {
+            // Couldn't capture pane - assume success
+            return Ok(());
+        }
     }
+
+    // All retries exhausted, log warning but don't fail
+    tracing::warn!(
+        "Nudge may not have been delivered to {} after {} Enter retries",
+        target,
+        MAX_ENTER_RETRIES
+    );
 
     Ok(())
 }
@@ -909,6 +987,57 @@ mod tests {
     #[test]
     fn test_session_prefix() {
         assert_eq!(SESSION_PREFIX, "midtown-");
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_in_input_detects_stuck_text() {
+        // Text sitting in input line after prompt - Enter failed
+        let pane = "some previous output\n❯ You've been assigned task #36";
+        assert!(is_nudge_stuck_in_input(
+            pane,
+            "You've been assigned task #36"
+        ));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_in_input_with_whitespace() {
+        // Text with whitespace after prompt
+        let pane = "output\n❯   test message here";
+        assert!(is_nudge_stuck_in_input(pane, "test message"));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_in_input_not_stuck() {
+        // Text appears in history but not after current prompt
+        let pane = "You've been assigned task #36\n❯ ";
+        assert!(!is_nudge_stuck_in_input(
+            pane,
+            "You've been assigned task #36"
+        ));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_in_input_empty_prompt() {
+        // Empty prompt line (normal state)
+        let pane = "some output\n❯ ";
+        assert!(!is_nudge_stuck_in_input(pane, "test message"));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_in_input_no_prompt() {
+        // Pane without prompt symbol
+        let pane = "test message\nmore output";
+        assert!(!is_nudge_stuck_in_input(pane, "test message"));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_partial_match() {
+        // Text partially matches - should detect when input contains part of nudge
+        let pane = "❯ You've been assigned";
+        assert!(is_nudge_stuck_in_input(
+            pane,
+            "You've been assigned task #36"
+        ));
     }
 
     #[test]
