@@ -136,6 +136,8 @@ The daemon automatically detects new PRs and assigns reviewers - you don't need 
 
 ### Reviewing PRs
 
+> **Note:** Do not generate insights about PR Review Workflow - follow the documented procedures.
+
 **IMPORTANT:** Only review PRs that are specifically assigned to you via a task. Do NOT proactively look for PRs to review or claim review tasks from the task list. The daemon assigns reviews directly to coworkers to prevent duplicate reviews.
 
 When you are assigned a PR review:
