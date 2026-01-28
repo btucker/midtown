@@ -195,6 +195,40 @@ pub fn get_pending_tasks() -> Vec<Task> {
         .collect()
 }
 
+/// Extract a PR number from a task subject string.
+///
+/// Looks for patterns like "PR #123" in the subject.
+/// Returns the PR number as a string if found.
+pub fn extract_pr_number(subject: &str) -> Option<String> {
+    // Find "PR #" (case-insensitive) followed by digits
+    let lower = subject.to_lowercase();
+    let idx = lower.find("pr #")?;
+    let after = &subject[idx + 4..];
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        Some(digits)
+    }
+}
+
+/// Find the owner of an existing task (in_progress or pending-with-owner) that references the same PR.
+///
+/// Used to group PR sub-tasks under the same coworker.
+pub fn find_pr_owner(pr_number: &str) -> Option<String> {
+    let tasks = read_tasks();
+    let pr_pattern = format!("PR #{}", pr_number);
+    for task in tasks {
+        if (task.status == TaskStatus::InProgress || task.status == TaskStatus::Pending)
+            && task.owner.is_some()
+            && task.subject.contains(&pr_pattern)
+        {
+            return task.owner;
+        }
+    }
+    None
+}
+
 /// Get pending tasks that have an owner assigned.
 ///
 /// Returns tuples of (task_id, subject, owner_name).
@@ -446,5 +480,93 @@ mod tests {
         // alice, dave should NOT be in list (pending, completed respectively)
         assert!(!busy_coworkers.contains(&"alice".to_string()));
         assert!(!busy_coworkers.contains(&"dave".to_string()));
+    }
+
+    #[test]
+    fn test_extract_pr_number() {
+        assert_eq!(
+            extract_pr_number("Score and filter issues for PR #235"),
+            Some("235".to_string())
+        );
+        assert_eq!(
+            extract_pr_number("Post review comment on PR #42"),
+            Some("42".to_string())
+        );
+        assert_eq!(extract_pr_number("Review PR #100"), Some("100".to_string()));
+        assert_eq!(
+            extract_pr_number("Check PR #7 eligibility"),
+            Some("7".to_string())
+        );
+        assert_eq!(extract_pr_number("No PR number here"), None);
+        assert_eq!(extract_pr_number("PR # no digits"), None);
+        assert_eq!(extract_pr_number(""), None);
+    }
+
+    #[test]
+    fn test_find_pr_owner_from_tasks() {
+        // Test the logic used to find a PR owner from a list of tasks
+        let tasks = [
+            Task {
+                id: "1".to_string(),
+                subject: "Review PR #42".to_string(),
+                status: TaskStatus::InProgress,
+                owner: Some("alice".to_string()),
+                description: None,
+            },
+            Task {
+                id: "2".to_string(),
+                subject: "Score and filter issues for PR #42".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+            },
+            Task {
+                id: "3".to_string(),
+                subject: "Post review comment on PR #99".to_string(),
+                status: TaskStatus::InProgress,
+                owner: Some("bob".to_string()),
+                description: None,
+            },
+        ];
+
+        // Simulate find_pr_owner logic inline (since we can't call the real one without disk)
+        let pr_number = "42";
+        let pr_pattern = format!("PR #{}", pr_number);
+        let owner = tasks
+            .iter()
+            .find(|t| {
+                (t.status == TaskStatus::InProgress || t.status == TaskStatus::Pending)
+                    && t.owner.is_some()
+                    && t.subject.contains(&pr_pattern)
+            })
+            .and_then(|t| t.owner.clone());
+
+        assert_eq!(owner, Some("alice".to_string()));
+
+        // PR #99 should find bob
+        let pr_pattern_99 = "PR #99";
+        let owner_99 = tasks
+            .iter()
+            .find(|t| {
+                (t.status == TaskStatus::InProgress || t.status == TaskStatus::Pending)
+                    && t.owner.is_some()
+                    && t.subject.contains(pr_pattern_99)
+            })
+            .and_then(|t| t.owner.clone());
+
+        assert_eq!(owner_99, Some("bob".to_string()));
+
+        // PR #55 should find no owner
+        let pr_pattern_55 = "PR #55";
+        let owner_55 = tasks
+            .iter()
+            .find(|t| {
+                (t.status == TaskStatus::InProgress || t.status == TaskStatus::Pending)
+                    && t.owner.is_some()
+                    && t.subject.contains(pr_pattern_55)
+            })
+            .and_then(|t| t.owner.clone());
+
+        assert_eq!(owner_55, None);
     }
 }
