@@ -139,7 +139,7 @@ const COWORKER_COLORS: &[(&str, &str)] = &[
     ("lead", "brightyellow"),
     ("lexington", "cyan"),
     ("park", "green"),
-    ("madison", "yellow"),
+    ("madison", "brightred"),
     ("broadway", "magenta"),
     ("amsterdam", "blue"),
     ("columbus", "red"),
@@ -1070,7 +1070,7 @@ mod tests {
         assert_eq!(get_coworker_color("lead"), Some("brightyellow"));
         assert_eq!(get_coworker_color("lexington"), Some("cyan"));
         assert_eq!(get_coworker_color("park"), Some("green"));
-        assert_eq!(get_coworker_color("madison"), Some("yellow"));
+        assert_eq!(get_coworker_color("madison"), Some("brightred"));
         assert_eq!(get_coworker_color("broadway"), Some("magenta"));
         assert_eq!(get_coworker_color("amsterdam"), Some("blue"));
         assert_eq!(get_coworker_color("columbus"), Some("red"));

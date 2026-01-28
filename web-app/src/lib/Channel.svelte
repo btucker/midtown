@@ -11,7 +11,7 @@
   const AVENUE_COLORS = {
     lexington: '#5fafaf',   // Cyan
     park: '#5faf5f',        // Green
-    madison: '#d7af5f',     // Yellow
+    madison: '#ff5f5f',     // LightRed
     broadway: '#af5faf',    // Magenta
     amsterdam: '#5f87af',   // Blue
     columbus: '#af5f5f',    // Red
