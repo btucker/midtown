@@ -81,6 +81,9 @@ pub mod tasks;
 // Path utilities (socket paths, repo detection)
 pub mod paths;
 
+// Persistent GitHub state (PR reviewer assignments)
+pub mod github_state;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;

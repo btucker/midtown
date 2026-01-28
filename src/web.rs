@@ -215,7 +215,7 @@ async fn api_channel_history(
 }
 
 /// Get daemon/coworker status including tasks and PRs for kanban board
-async fn api_status(State(_state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
+async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
     // Read tasks directly from Claude Code task storage
     let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
         .into_iter()
@@ -234,48 +234,62 @@ async fn api_status(State(_state): State<Arc<WebState>>) -> Result<impl IntoResp
         })
         .collect();
 
+    // Load GitHub state to get reviewer assignments
+    let github_state =
+        crate::github_state::load_state_for_repo(&state.config.repo).unwrap_or_default();
+
     // Get open PRs via gh CLI (spawn blocking to avoid blocking async runtime)
-    let pull_requests = tokio::task::spawn_blocking(|| {
+    let raw_prs = tokio::task::spawn_blocking(|| {
         let output = std::process::Command::new("gh")
-            .args(["pr", "list", "--json", "number,title,author,state,isDraft,reviewDecision"])
+            .args([
+                "pr",
+                "list",
+                "--json",
+                "number,title,author,state,isDraft,reviewDecision",
+            ])
             .output();
         match output {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let prs: Vec<serde_json::Value> =
-                    serde_json::from_str(&stdout).unwrap_or_default();
-                prs.into_iter()
-                    .map(|pr| {
-                        let is_draft =
-                            pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-                        let status = if is_draft {
-                            "draft"
-                        } else {
-                            match pr
-                                .get("reviewDecision")
-                                .and_then(|r| r.as_str())
-                                .unwrap_or("")
-                            {
-                                "APPROVED" => "approved",
-                                "CHANGES_REQUESTED" => "changes requested",
-                                "REVIEW_REQUIRED" => "awaiting review",
-                                _ => "open",
-                            }
-                        };
-                        serde_json::json!({
-                            "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
-                            "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
-                            "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
-                            "status": status,
-                        })
-                    })
-                    .collect::<Vec<_>>()
+                serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
             }
             _ => Vec::new(),
         }
     })
     .await
     .unwrap_or_default();
+
+    // Transform PRs and add reviewer info
+    let pull_requests: Vec<serde_json::Value> = raw_prs
+        .into_iter()
+        .map(|pr| {
+            let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+            let status = if is_draft {
+                "draft"
+            } else {
+                match pr
+                    .get("reviewDecision")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("")
+                {
+                    "APPROVED" => "approved",
+                    "CHANGES_REQUESTED" => "changes requested",
+                    "REVIEW_REQUIRED" => "awaiting review",
+                    _ => "open",
+                }
+            };
+            // Look up reviewer from persistent state
+            let reviewer = github_state.get_reviewer(pr_number);
+            serde_json::json!({
+                "number": pr_number,
+                "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                "status": status,
+                "reviewer": reviewer,
+            })
+        })
+        .collect();
 
     // Get merged PRs via gh CLI
     let merged_prs = tokio::task::spawn_blocking(|| {
