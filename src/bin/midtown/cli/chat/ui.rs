@@ -68,8 +68,19 @@ const AVENUE_COLORS: &[(&str, Color)] = &[
 ];
 
 /// Check if a sender is a "system-like" sender that should be grouped together
-/// (daemon, github, system) without blank lines between consecutive messages.
+/// (daemon, system) without blank lines between consecutive messages.
+///
+/// Note: "github" was previously included here but is now treated like a regular
+/// sender for spacing purposes, so github messages get blank line separation
+/// matching coworker messages. GitHub content is still styled DarkGray via
+/// `is_dim_sender`.
 fn is_system_like_sender(sender: &str) -> bool {
+    matches!(sender.to_lowercase().as_str(), "daemon" | "system")
+}
+
+/// Check if a sender's message content should be rendered in DarkGray.
+/// This includes system-like senders and github.
+fn is_dim_sender(sender: &str) -> bool {
     matches!(
         sender.to_lowercase().as_str(),
         "daemon" | "github" | "system"
@@ -714,7 +725,7 @@ fn render_message(
     let content_style = match msg.message_type {
         MessageType::Action => Style::default().fg(color),
         MessageType::System => Style::default().fg(Color::DarkGray),
-        _ if is_system_like_sender(&msg.from) => Style::default().fg(Color::DarkGray),
+        _ if is_dim_sender(&msg.from) => Style::default().fg(Color::DarkGray),
         _ => Style::default().fg(Color::White),
     };
 
@@ -1669,7 +1680,7 @@ mod tests {
             "Should NOT have blank line between consecutive daemon messages"
         );
 
-        // Test 3: daemon -> github (both system-like) should NOT add blank
+        // Test 3: daemon -> github should add blank (github is not system-like)
         let github_msg = Message {
             id: "4".to_string(),
             from: "github".to_string(),
@@ -1680,8 +1691,8 @@ mod tests {
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks);
         assert_eq!(
             count_blank_lines(&github_lines),
-            0,
-            "Should NOT have blank line between daemon and github messages"
+            1,
+            "Should have blank line between daemon and github messages"
         );
 
         // Test 4: daemon -> regular (park) SHOULD add blank line (different sender types)
@@ -1701,11 +1712,100 @@ mod tests {
 
         // Test 5: Verify is_system_like_sender helper
         assert!(is_system_like_sender("daemon"));
-        assert!(is_system_like_sender("github"));
+        assert!(!is_system_like_sender("github")); // github is NOT system-like (gets blank lines)
         assert!(is_system_like_sender("system"));
         assert!(is_system_like_sender("DAEMON")); // case insensitive
         assert!(!is_system_like_sender("madison"));
         assert!(!is_system_like_sender("park"));
+    }
+
+    #[test]
+    fn test_github_messages_have_blank_line_spacing() {
+        use chrono::Utc;
+
+        // GitHub messages should have blank lines separating them from other senders,
+        // just like coworker messages. They should NOT be grouped with daemon/system.
+
+        fn count_blank_lines(lines: &[Line]) -> usize {
+            lines
+                .iter()
+                .filter(|l| l.spans.iter().all(|s| s.content.is_empty()))
+                .count()
+        }
+
+        let current_tasks = HashMap::new();
+
+        // Test 1: daemon -> github should have a blank line (github is not system-like)
+        let github_msg = Message {
+            id: "1".to_string(),
+            from: "github".to_string(),
+            content: "Check passed".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks);
+        assert_eq!(
+            count_blank_lines(&github_lines),
+            1,
+            "Should have blank line between daemon and github messages"
+        );
+
+        // Test 2: github -> daemon should have a blank line
+        let daemon_msg = Message {
+            id: "2".to_string(),
+            from: "daemon".to_string(),
+            content: "Spawned coworker".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let daemon_lines = render_message(&daemon_msg, 80, Some("github"), &current_tasks);
+        assert_eq!(
+            count_blank_lines(&daemon_lines),
+            1,
+            "Should have blank line between github and daemon messages"
+        );
+
+        // Test 3: coworker -> github should have a blank line
+        let github_lines2 = render_message(&github_msg, 80, Some("park"), &current_tasks);
+        assert_eq!(
+            count_blank_lines(&github_lines2),
+            1,
+            "Should have blank line between coworker and github messages"
+        );
+
+        // Test 4: github -> coworker should have a blank line
+        let park_msg = Message {
+            id: "3".to_string(),
+            from: "park".to_string(),
+            content: "working".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks);
+        assert_eq!(
+            count_blank_lines(&park_lines),
+            1,
+            "Should have blank line between github and coworker messages"
+        );
+
+        // Test 5: github content should still be DarkGray (visual distinction preserved)
+        let github_lines3 = render_message(&github_msg, 80, None, &current_tasks);
+        // The content line is line index 1 (after sender line)
+        // Content spans should be DarkGray
+        assert!(
+            github_lines3.len() >= 2,
+            "Github message should have sender + content lines"
+        );
+        let content_line = &github_lines3[1];
+        // Find the content span (not the timestamp span)
+        let has_dark_gray_content = content_line
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(Color::DarkGray) && !s.content.contains(':'));
+        assert!(
+            has_dark_gray_content,
+            "Github message content should be DarkGray"
+        );
     }
 
     #[test]
