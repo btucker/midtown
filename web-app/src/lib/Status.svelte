@@ -1,6 +1,7 @@
 <script>
   import { coworkers, daemonStatus } from './store.js'
   import { fetchStatus } from './api.js'
+  import Kanban from './Kanban.svelte'
 
   function getStatusColor(status) {
     switch (status?.toLowerCase()) {
@@ -50,6 +51,8 @@
       <span class="status-text">{$daemonStatus?.daemon || 'Unknown'}</span>
     </div>
   </div>
+
+  <Kanban />
 
   <div class="section">
     <h2>Coworkers ({$coworkers.length})</h2>
@@ -243,6 +246,10 @@
 
   .task-subject {
     flex: 1;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
   .task-status {
