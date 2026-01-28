@@ -1,5 +1,7 @@
 //! UI rendering for the chat TUI
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
@@ -11,6 +13,8 @@ use ratatui::{
 };
 
 use midtown::{Message, MessageType};
+
+use super::app::TaskStatus;
 
 use super::app::{App, CiStatus};
 
@@ -541,12 +545,20 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Get visible messages
     let visible = app.visible_messages();
 
+    // Build a map of owner -> current task subject for in-progress tasks
+    let owner_tasks: HashMap<String, String> = app
+        .tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::InProgress && t.owner.is_some())
+        .map(|t| (t.owner.clone().unwrap(), t.subject.clone()))
+        .collect();
+
     // Build lines for messages, tracking previous sender for grouping
     let mut lines: Vec<Line> = Vec::new();
     let mut prev_sender: Option<&str> = None;
 
     for msg in visible.iter() {
-        let msg_lines = render_message(msg, inner.width as usize, prev_sender);
+        let msg_lines = render_message(msg, inner.width as usize, prev_sender, &owner_tasks);
         lines.extend(msg_lines);
         prev_sender = Some(&msg.from);
     }
@@ -593,7 +605,12 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// Layout for system/daemon messages:
 /// - Line 1: "  HH:MM message" (all gray)
 /// - Line 2+: "        continuation" (8 spaces, all gray)
-fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec<Line<'static>> {
+fn render_message(
+    msg: &Message,
+    width: usize,
+    prev_sender: Option<&str>,
+    owner_tasks: &HashMap<String, String>,
+) -> Vec<Line<'static>> {
     let local_time = msg.timestamp.with_timezone(&Local);
     let time = local_time.format("%H:%M").to_string();
     let color = get_sender_color(&msg.from);
@@ -657,7 +674,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
             result.push(Line::from(""));
         }
-        result.push(build_sender_line(msg, color));
+        result.push(build_sender_line(msg, color, owner_tasks));
     }
 
     // Add content lines with timestamp/indent prefix
@@ -745,17 +762,35 @@ fn render_system_message(content: &str, time: &str, width: usize) -> Vec<Line<'s
         .collect()
 }
 
-/// Build a line with just the sender name
-fn build_sender_line(msg: &Message, color: Color) -> Line<'static> {
+/// Build a line with the sender name and optionally their current task
+///
+/// Format: "**name** - Current task subject" or just "**name**" if no task
+fn build_sender_line(
+    msg: &Message,
+    color: Color,
+    owner_tasks: &HashMap<String, String>,
+) -> Line<'static> {
     match msg.message_type {
         MessageType::System => Line::from(vec![Span::styled(
             String::from("<system>"),
             Style::default().fg(Color::DarkGray),
         )]),
-        _ => Line::from(vec![Span::styled(
-            msg.from.clone(),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )]),
+        _ => {
+            let mut spans = vec![Span::styled(
+                msg.from.clone(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )];
+
+            // Add current task if the sender has one in progress
+            if let Some(task_subject) = owner_tasks.get(&msg.from) {
+                spans.push(Span::styled(
+                    format!(" - {}", task_subject),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            Line::from(spans)
+        }
     }
 }
 
@@ -1089,8 +1124,9 @@ mod tests {
 
         // New layout: name line, then 3 content lines (timestamp + 2 continuations)
         // Total = 4 lines: sender, timestamp+line1, indent+line2, indent+line3
-        let short_lines = render_message(&short_name_msg, 80, None);
-        let long_lines = render_message(&long_name_msg, 80, None);
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+        let short_lines = render_message(&short_name_msg, 80, None, &empty_tasks);
+        let long_lines = render_message(&long_name_msg, 80, None, &empty_tasks);
 
         assert_eq!(short_lines.len(), 4, "Expected 4 lines: sender + 3 content");
         assert_eq!(long_lines.len(), 4, "Expected 4 lines: sender + 3 content");
@@ -1133,16 +1169,18 @@ mod tests {
             message_type: MessageType::Text,
         };
 
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+
         // First message (no previous sender) - shows sender line + timestamp line
-        let lines1 = render_message(&msg1, 80, None);
+        let lines1 = render_message(&msg1, 80, None, &empty_tasks);
         assert_eq!(lines1.len(), 2); // sender line + timestamp+content line
 
         // Second message from same sender - shows only timestamp + content (no sender)
-        let lines2 = render_message(&msg2, 80, Some("columbus"));
+        let lines2 = render_message(&msg2, 80, Some("columbus"), &empty_tasks);
         assert_eq!(lines2.len(), 1); // just timestamp + content
 
         // Different sender - shows blank line + sender line + timestamp line
-        let lines3 = render_message(&msg2, 80, Some("lexington"));
+        let lines3 = render_message(&msg2, 80, Some("lexington"), &empty_tasks);
         assert_eq!(lines3.len(), 3); // blank + sender line + timestamp+content line
 
         // Verify first message has sender name on first line
@@ -1158,6 +1196,55 @@ mod tests {
     }
 
     #[test]
+    fn test_sender_line_shows_current_task() {
+        use chrono::Utc;
+
+        let msg = Message {
+            id: "1".to_string(),
+            from: "park".to_string(),
+            content: "working on feature".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        // With a task assigned to the sender
+        let mut tasks_with_owner: HashMap<String, String> = HashMap::new();
+        tasks_with_owner.insert(
+            "park".to_string(),
+            "Fix chat TUI timestamp formatting".to_string(),
+        );
+
+        let lines = render_message(&msg, 80, None, &tasks_with_owner);
+        assert_eq!(lines.len(), 2); // sender line + content line
+
+        // First line should contain sender name AND task subject
+        let sender_line: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(sender_line.contains("park"), "Should contain sender name");
+        assert!(
+            sender_line.contains("Fix chat TUI timestamp formatting"),
+            "Should contain task subject"
+        );
+        assert!(
+            sender_line.contains(" - "),
+            "Should have separator between name and task"
+        );
+
+        // Without a task - should just show name
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+        let lines_no_task = render_message(&msg, 80, None, &empty_tasks);
+        let sender_line_no_task: String = lines_no_task[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(sender_line_no_task.contains("park"));
+        assert!(
+            !sender_line_no_task.contains(" - "),
+            "Should NOT have separator when no task"
+        );
+    }
+
+    #[test]
     fn test_action_message_format() {
         use chrono::Utc;
 
@@ -1169,8 +1256,10 @@ mod tests {
             message_type: MessageType::Action,
         };
 
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+
         // Action messages are "* HH:MM name message" on one line
-        let lines = render_message(&msg, 80, None);
+        let lines = render_message(&msg, 80, None, &empty_tasks);
         assert_eq!(lines.len(), 1);
 
         let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1216,8 +1305,10 @@ mod tests {
             message_type: MessageType::System,
         };
 
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+
         // System messages are gray with timestamp: "  HH:MM content"
-        let lines = render_message(&msg, 80, None);
+        let lines = render_message(&msg, 80, None, &empty_tasks);
         assert_eq!(lines.len(), 1);
 
         // Should have timestamp and content
@@ -1301,11 +1392,13 @@ mod tests {
             })
             .collect();
 
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+
         // Render all messages
         let mut all_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in &messages {
-            let msg_lines = render_message(msg, 80, prev_sender);
+            let msg_lines = render_message(msg, 80, prev_sender, &empty_tasks);
             all_lines.extend(msg_lines);
             prev_sender = Some(&msg.from);
         }
@@ -1392,12 +1485,14 @@ mod tests {
             })
             .collect();
 
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+
         // Simulate scroll_offset=0 (bottom): visible_messages returns messages 10..20
         let at_bottom_messages = &messages[10..20];
         let mut at_bottom_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in at_bottom_messages {
-            at_bottom_lines.extend(render_message(msg, 80, prev_sender));
+            at_bottom_lines.extend(render_message(msg, 80, prev_sender, &empty_tasks));
             prev_sender = Some(&msg.from);
         }
 
@@ -1406,7 +1501,7 @@ mod tests {
         let mut scrolled_up_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in scrolled_up_messages {
-            scrolled_up_lines.extend(render_message(msg, 80, prev_sender));
+            scrolled_up_lines.extend(render_message(msg, 80, prev_sender, &empty_tasks));
             prev_sender = Some(&msg.from);
         }
 
@@ -1517,7 +1612,9 @@ mod tests {
             message_type: MessageType::Text,
         };
 
-        let daemon_lines = render_message(&daemon_msg, 80, Some("madison"));
+        let empty_tasks: HashMap<String, String> = HashMap::new();
+
+        let daemon_lines = render_message(&daemon_msg, 80, Some("madison"), &empty_tasks);
         assert!(
             count_blank_lines(&daemon_lines) == 1,
             "Should have blank line before daemon message after regular sender"
@@ -1531,7 +1628,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
-        let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"));
+        let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"), &empty_tasks);
         assert_eq!(
             count_blank_lines(&daemon_lines2),
             0,
@@ -1546,7 +1643,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
-        let github_lines = render_message(&github_msg, 80, Some("daemon"));
+        let github_lines = render_message(&github_msg, 80, Some("daemon"), &empty_tasks);
         assert_eq!(
             count_blank_lines(&github_lines),
             0,
@@ -1561,7 +1658,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
-        let park_lines = render_message(&park_msg, 80, Some("daemon"));
+        let park_lines = render_message(&park_msg, 80, Some("daemon"), &empty_tasks);
         assert_eq!(
             count_blank_lines(&park_lines),
             0,
