@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn test_find_pr_owner_from_tasks() {
         // Test the logic used to find a PR owner from a list of tasks
-        let tasks = vec![
+        let tasks = [
             Task {
                 id: "1".to_string(),
                 subject: "Review PR #42".to_string(),
