@@ -2697,12 +2697,39 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                 break;
             }
             Err(e) => {
-                // Could not respawn - log and continue to next orphan
-                // This might happen if the worktree doesn't exist
-                debug!(
-                    "Could not respawn {} for orphaned task #{}: {}",
+                // Could not respawn - reset task to pending so another coworker can claim it
+                // This might happen if the worktree doesn't exist after restart
+                warn!(
+                    "Could not respawn {} for orphaned task #{}: {} - resetting task to pending",
                     owner, task_id, e
                 );
+
+                // Reset the task so it can be picked up by another coworker
+                if let Err(reset_err) =
+                    crate::tasks::reset_task_to_pending_for_repo(&task_id, &state.repo_name)
+                {
+                    warn!(
+                        "Failed to reset orphaned task #{} to pending: {}",
+                        task_id, reset_err
+                    );
+                } else {
+                    info!(
+                        "Reset orphaned task #{} to pending (original owner {} could not be respawned)",
+                        task_id, owner
+                    );
+
+                    // Post to channel so team knows the task is available
+                    let msg = Message::text(
+                        "daemon",
+                        format!(
+                            "🔄 Task #{} reset to pending - {} could not be respawned",
+                            task_id, owner
+                        ),
+                    );
+                    if let Err(e) = state.channel.send(&msg) {
+                        warn!("Failed to post task reset message: {}", e);
+                    }
+                }
             }
         }
     }
