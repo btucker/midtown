@@ -125,13 +125,12 @@ const REPO_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 impl App {
     pub fn new() -> Self {
-        // Determine the repo name from current directory (for channel)
-        let dir_name = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "default".to_string());
+        // Use detect_repo_name() which correctly handles worktrees by using
+        // git-common-dir, ensuring we read from the same channel as the daemon
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
 
-        let channel = Channel::for_repo(&dir_name).ok();
+        let channel = Channel::for_repo(&channel_repo).ok();
 
         // Get repo name with owner from gh CLI (e.g., "btucker/midtown")
         let repo_name = fetch_repo_name();
