@@ -26,6 +26,7 @@ use tracing::{debug, error, info, warn};
 use crate::channel::Channel;
 use crate::message::Message;
 use crate::paths;
+use crate::tmux;
 
 /// Configuration for the web server
 #[derive(Debug, Clone)]
@@ -121,6 +122,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             .route("/api/health", get(api_health))
             .route("/api/channel", get(api_channel_history))
             .route("/api/status", get(api_status))
+            .route("/api/lead-pane", get(api_lead_pane))
             .fallback_service(serve_dir)
             .with_state(state)
     } else {
@@ -134,6 +136,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             .route("/api/health", get(api_health))
             .route("/api/channel", get(api_channel_history))
             .route("/api/status", get(api_status))
+            .route("/api/lead-pane", get(api_lead_pane))
             .route("/", get(dev_placeholder))
             .with_state(state)
     }
@@ -320,6 +323,30 @@ fn call_daemon_status(repo: &str) -> serde_json::Value {
                 "tasks": []
             })
         }
+    }
+}
+
+/// Get the lead's tmux pane content
+///
+/// Captures the current content of the lead window's pane via tmux.
+/// The frontend polls this endpoint to stream the lead's terminal output.
+async fn api_lead_pane(
+    State(state): State<Arc<WebState>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let session = format!("{}{}", tmux::SESSION_PREFIX, state.config.repo);
+    let target = format!("{}:lead", session);
+
+    // capture_pane is blocking (spawns a process), so run on blocking thread pool
+    let content = tokio::task::spawn_blocking(move || tmux::capture_pane(&target))
+        .await
+        .map_err(|e| {
+            error!("Failed to spawn blocking task: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    match content {
+        Some(text) => Ok(axum::Json(serde_json::json!({ "content": text }))),
+        None => Err(StatusCode::NOT_FOUND),
     }
 }
 
