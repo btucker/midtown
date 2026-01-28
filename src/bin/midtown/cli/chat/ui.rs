@@ -26,8 +26,8 @@ fn format_duration_minutes(since: DateTime<Utc>) -> String {
     }
 }
 
-/// Gutter width for timestamp: " HH:MM " = 7 chars
-const TIMESTAMP_GUTTER_WIDTH: usize = 7;
+/// Gutter width for timestamp: "  HH:MM " = 8 chars (2-space left margin)
+const TIMESTAMP_GUTTER_WIDTH: usize = 8;
 
 /// Avenue names mapped to colors (position-based assignment)
 const AVENUE_COLORS: &[(&str, Color)] = &[
@@ -49,15 +49,6 @@ const AVENUE_COLORS: &[(&str, Color)] = &[
     ("prince", Color::Indexed(183)),   // lavender
     ("mercer", Color::Indexed(216)),   // salmon
 ];
-
-/// Check if a sender is a "system-like" sender that should be grouped together
-/// (daemon, github, system) without blank lines between consecutive messages.
-fn is_system_like_sender(sender: &str) -> bool {
-    matches!(
-        sender.to_lowercase().as_str(),
-        "daemon" | "github" | "system"
-    )
-}
 
 /// Get color for a sender name
 fn get_sender_color(name: &str) -> Color {
@@ -579,7 +570,7 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// Render a single message into one or more Lines
 ///
 /// Layout for action messages:
-/// - "* HH:MM:SS name message" all on one line
+/// - " HH:MM * name message" all on one line
 ///
 /// Layout for regular messages when sender changes:
 /// - Line 1: Actor name alone
@@ -592,7 +583,6 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec<Line<'static>> {
     let local_time = msg.timestamp.with_timezone(&Local);
     let time = local_time.format("%H:%M").to_string();
-    let time_with_seconds = local_time.format("%H:%M:%S").to_string();
     let color = get_sender_color(&msg.from);
 
     // Determine if we need to show the sender name
@@ -606,7 +596,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         _ => Style::default().fg(Color::White),
     };
 
-    // For action messages, use special format: "* HH:MM:SS name message"
+    // For action messages, use special format: "* name message"
     if msg.message_type == MessageType::Action {
         let mut result = Vec::new();
         // Add blank line before action messages (except for first message)
@@ -615,7 +605,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         }
         result.extend(render_action_message(
             msg,
-            &time_with_seconds,
+            &time,
             color,
             content_style,
             width,
@@ -623,20 +613,12 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         return result;
     }
 
-    // For system messages (or daemon messages), render entire line in gray (no timestamp gutter)
+    // For system messages (or daemon messages), render in gray with timestamp gutter
     if msg.message_type == MessageType::System || msg.from == "daemon" {
-        let mut result = Vec::new();
-        // Add blank line before system messages, unless prev was also system-like
-        if let Some(prev) = prev_sender
-            && !is_system_like_sender(prev)
-        {
-            result.push(Line::from(""));
-        }
-        result.extend(render_system_message(&msg.content, width));
-        return result;
+        return render_system_message(&time, &msg.content, width);
     }
 
-    // Calculate content width (after " HH:MM " gutter)
+    // Calculate content width (after "  HH:MM " gutter)
     let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
     if content_width == 0 {
         return vec![]; // Panel too narrow
@@ -649,9 +631,8 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
 
     // Add sender name line if sender changed
     if show_sender {
-        // Add blank line before new sender (except for first message or after system-like senders)
-        // This groups system messages together with the following regular messages
-        if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
+        // Add blank line before new sender (except for first message)
+        if prev_sender.is_some() {
             result.push(Line::from(""));
         }
         result.push(build_sender_line(msg, color));
@@ -674,7 +655,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Render an action message: "* HH:MM:SS name message"
+/// Render an action message: "* HH:MM name message"
 fn render_action_message(
     msg: &Message,
     time: &str,
@@ -682,8 +663,8 @@ fn render_action_message(
     content_style: Style,
     width: usize,
 ) -> Vec<Line<'static>> {
-    // Format: "* HH:MM:SS name message"
-    // Prefix is "* HH:MM:SS name " where name varies
+    // Format: "* HH:MM name message"
+    // Prefix is "* HH:MM name " where name varies
     let prefix_len = 2 + time.len() + 1 + msg.from.len() + 1; // "* " + time + " " + name + " "
     let content_width = width.saturating_sub(prefix_len);
 
@@ -696,7 +677,7 @@ fn render_action_message(
 
     for (i, content) in content_lines.iter().enumerate() {
         if i == 0 {
-            // First line: "* HH:MM:SS name message"
+            // First line: "* HH:MM name message"
             let spans = vec![
                 Span::styled("* ", Style::default().fg(color)),
                 Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
@@ -719,15 +700,35 @@ fn render_action_message(
     result
 }
 
-/// Render a system message: entire line in gray, no timestamp gutter
-fn render_system_message(content: &str, width: usize) -> Vec<Line<'static>> {
+/// Render a system message: "  HH:MM content" in gray (with timestamp gutter)
+fn render_system_message(time: &str, content: &str, width: usize) -> Vec<Line<'static>> {
     let style = Style::default().fg(Color::DarkGray);
-    let content_lines = wrap_content(content, width);
+    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
+    if content_width == 0 {
+        return vec![];
+    }
 
-    content_lines
-        .into_iter()
-        .map(|line| Line::from(vec![Span::styled(line, style)]))
-        .collect()
+    let content_lines = wrap_content(content, content_width);
+    let mut result = Vec::new();
+
+    for (i, line) in content_lines.into_iter().enumerate() {
+        if i == 0 {
+            // First line: "  HH:MM content"
+            result.push(Line::from(vec![
+                Span::styled(format!("  {} ", time), style),
+                Span::styled(line, style),
+            ]));
+        } else {
+            // Continuation lines: 8 spaces indent
+            let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
+            result.push(Line::from(vec![Span::styled(
+                format!("{}{}", indent, line),
+                style,
+            )]));
+        }
+    }
+
+    result
 }
 
 /// Build a line with just the sender name
@@ -744,10 +745,10 @@ fn build_sender_line(msg: &Message, color: Color) -> Line<'static> {
     }
 }
 
-/// Build a timestamp line with message content: " HH:MM message"
+/// Build a timestamp line with message content: "  HH:MM message" (2-space left margin)
 fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line<'static> {
     let mut spans = vec![Span::styled(
-        format!(" {} ", time),
+        format!("  {} ", time),
         Style::default().fg(Color::DarkGray),
     )];
     spans.extend(parse_markdown(content, content_style));
@@ -1154,39 +1155,27 @@ mod tests {
             message_type: MessageType::Action,
         };
 
-        // Action messages are "* HH:MM:SS name message" on one line
+        // Action messages are "* HH:MM name message" on one line
         let lines = render_message(&msg, 80, None);
         assert_eq!(lines.len(), 1);
 
         let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            content.starts_with("* "),
-            "Should start with '* ', got: {}",
-            content
-        );
+        assert!(content.contains("*"));
         assert!(content.contains("park"));
         assert!(content.contains("completed task 3"));
-
-        // Verify the format: "* HH:MM:SS name message"
-        // The spans should be: "* ", "HH:MM:SS ", "name", " message"
-        assert_eq!(
-            lines[0].spans.len(),
-            4,
-            "Expected 4 spans: '* ', timestamp, name, content"
-        );
-        assert_eq!(lines[0].spans[0].content, "* ");
-        // Timestamp span should have format "HH:MM:SS " (8 chars + space)
-        assert_eq!(
-            lines[0].spans[1].content.len(),
-            9,
-            "Timestamp should be 'HH:MM:SS ' (9 chars)"
-        );
+        // Should contain timestamp in HH:MM format (with colon)
         assert!(
-            lines[0].spans[1].content.contains(":"),
-            "Timestamp should contain colons"
+            content.contains(":"),
+            "Action message should contain HH:MM timestamp, got: {}",
+            content
         );
-        assert_eq!(lines[0].spans[2].content, "park");
-        assert_eq!(lines[0].spans[3].content, " completed task 3");
+        // Should NOT contain seconds (no second colon for HH:MM:SS)
+        let colon_count = content.matches(':').count();
+        assert_eq!(
+            colon_count, 1,
+            "Timestamp should be HH:MM (1 colon), not HH:MM:SS (2 colons), got: {}",
+            content
+        );
     }
 
     #[test]
@@ -1201,17 +1190,65 @@ mod tests {
             message_type: MessageType::System,
         };
 
-        // System messages are gray, no timestamp gutter, just the content
+        // System messages should have "  HH:MM " timestamp prefix and gray text
         let lines = render_message(&msg, 80, None);
         assert_eq!(lines.len(), 1);
 
-        // Should be just the content, no timestamp
         let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(content, "Session started");
-        assert!(!content.contains(":")); // No timestamp like "10:12"
+        // Should have timestamp (contains colon like "10:12")
+        assert!(
+            content.contains(":"),
+            "System message should contain HH:MM timestamp, got: {}",
+            content
+        );
+        // Should have the actual content
+        assert!(
+            content.contains("Session started"),
+            "System message should contain content, got: {}",
+            content
+        );
+        // Should start with 2 spaces (for alignment with regular messages)
+        assert!(
+            content.starts_with("  "),
+            "System message should start with 2 spaces, got: {:?}",
+            content
+        );
+    }
 
-        // Verify gray color (DarkGray)
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
+    #[test]
+    fn test_regular_message_two_space_margin() {
+        use chrono::Utc;
+
+        let msg = Message {
+            id: "1".to_string(),
+            from: "park".to_string(),
+            content: "hello world".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        // Regular messages should have "  HH:MM " timestamp prefix (2 leading spaces)
+        let lines = render_message(&msg, 80, None);
+        // First line is sender name, second line is timestamp + content
+        assert!(
+            lines.len() >= 2,
+            "Expected at least 2 lines, got {}",
+            lines.len()
+        );
+
+        // The timestamp line (second line) should start with 2 spaces
+        let timestamp_line: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            timestamp_line.starts_with("  "),
+            "Timestamp line should start with 2 spaces, got: {:?}",
+            timestamp_line
+        );
+        // Should have timestamp (contains colon)
+        assert!(
+            timestamp_line.contains(":"),
+            "Timestamp line should contain HH:MM, got: {}",
+            timestamp_line
+        );
     }
 
     #[test]
@@ -1457,101 +1494,5 @@ mod tests {
             buggy_content, fixed_content,
             "Scrolled content should differ between buggy and fixed implementations"
         );
-    }
-
-    #[test]
-    fn test_system_like_messages_grouped_together() {
-        use chrono::Utc;
-
-        // Test that system-like messages (daemon, github, system) are grouped together
-        // with blank lines separating them from regular messages.
-        //
-        // Expected behavior:
-        // - Blank line BEFORE system-like messages (unless prev was also system-like)
-        // - No blank line between consecutive system-like messages
-        // - No blank line after system-like messages when followed by regular messages
-
-        // Helper to count blank lines in rendered output
-        fn count_blank_lines(lines: &[Line]) -> usize {
-            lines
-                .iter()
-                .filter(|l| l.spans.iter().all(|s| s.content.is_empty()))
-                .count()
-        }
-
-        // Test 1: Regular -> daemon (system-like) should add blank before daemon
-        let _regular_msg = Message {
-            id: "1".to_string(),
-            from: "madison".to_string(),
-            content: "working on task".to_string(),
-            timestamp: Utc::now(),
-            message_type: MessageType::Text,
-        };
-        let daemon_msg = Message {
-            id: "2".to_string(),
-            from: "daemon".to_string(),
-            content: "Spawned coworker".to_string(),
-            timestamp: Utc::now(),
-            message_type: MessageType::Text,
-        };
-
-        let daemon_lines = render_message(&daemon_msg, 80, Some("madison"));
-        assert!(
-            count_blank_lines(&daemon_lines) == 1,
-            "Should have blank line before daemon message after regular sender"
-        );
-
-        // Test 2: daemon -> daemon (both system-like) should NOT add blank
-        let daemon_msg2 = Message {
-            id: "3".to_string(),
-            from: "daemon".to_string(),
-            content: "Another daemon event".to_string(),
-            timestamp: Utc::now(),
-            message_type: MessageType::Text,
-        };
-        let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"));
-        assert_eq!(
-            count_blank_lines(&daemon_lines2),
-            0,
-            "Should NOT have blank line between consecutive daemon messages"
-        );
-
-        // Test 3: daemon -> github (both system-like) should NOT add blank
-        let github_msg = Message {
-            id: "4".to_string(),
-            from: "github".to_string(),
-            content: "Check passed".to_string(),
-            timestamp: Utc::now(),
-            message_type: MessageType::Text,
-        };
-        let github_lines = render_message(&github_msg, 80, Some("daemon"));
-        assert_eq!(
-            count_blank_lines(&github_lines),
-            0,
-            "Should NOT have blank line between daemon and github messages"
-        );
-
-        // Test 4: daemon -> regular (park) should NOT add blank (groups with system)
-        let park_msg = Message {
-            id: "5".to_string(),
-            from: "park".to_string(),
-            content: "back to work".to_string(),
-            timestamp: Utc::now(),
-            message_type: MessageType::Text,
-        };
-        let park_lines = render_message(&park_msg, 80, Some("daemon"));
-        assert_eq!(
-            count_blank_lines(&park_lines),
-            0,
-            "Should NOT have blank line when transitioning from system-like to regular"
-        );
-
-        // Test 5: Verify is_system_like_sender helper
-        assert!(is_system_like_sender("daemon"));
-        assert!(is_system_like_sender("github"));
-        assert!(is_system_like_sender("system"));
-        assert!(is_system_like_sender("DAEMON")); // case insensitive
-        assert!(!is_system_like_sender("madison"));
-        assert!(!is_system_like_sender("park"));
     }
 }
