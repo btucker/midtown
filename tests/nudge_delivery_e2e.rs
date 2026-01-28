@@ -360,6 +360,75 @@ fn test_verified_nudge_delivery() {
     );
 }
 
+/// Test that nudge_lead() delivers a message to the Lead window.
+///
+/// This verifies the coworker → lead communication path used when coworkers
+/// need to notify the lead about feedback requests, PR status, etc.
+/// The lead always runs in a window named "Lead" in the midtown session.
+#[test]
+#[ignore] // Requires tmux to be running
+fn test_nudge_reaches_lead() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    let session = test_session_name();
+    let _cleanup = Cleanup(&session);
+
+    // Setup: Create session with a "Lead" window (matching the real layout)
+    assert!(
+        create_test_session(&session),
+        "Failed to create test session"
+    );
+    create_test_window(&session, "Lead");
+
+    // Also create a coworker window to simulate the real session layout
+    create_test_window(&session, "lexington");
+
+    // Wait for windows to be ready
+    thread::sleep(Duration::from_millis(500));
+
+    // Build a CoworkerManager pointing at this test session
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+
+    // Initialize a git repo (required by CoworkerManager)
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to init git repo");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "Initial commit"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to create initial commit");
+
+    let worktree_manager = midtown::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+        .expect("Failed to create worktree manager");
+    let manager = midtown::coworker::CoworkerManager::new(session.clone(), worktree_manager);
+
+    // Send a nudge to the Lead via nudge_lead()
+    let unique_message = format!("lead-nudge-{}", std::process::id());
+    let result = manager.nudge_lead(&unique_message);
+
+    assert!(
+        result.is_ok(),
+        "nudge_lead should succeed: {:?}",
+        result.err()
+    );
+
+    // Verify the message appears in the Lead pane
+    let content = capture_pane(&session, "Lead");
+    assert!(
+        content
+            .as_ref()
+            .is_some_and(|c| c.contains(&unique_message)),
+        "Lead pane should contain the nudge message. Content: {:?}",
+        content
+    );
+}
+
 /// Test that chat monitor can route @mentions to coworkers.
 ///
 /// This simulates the flow: channel message with @mention -> route_mentions -> nudge

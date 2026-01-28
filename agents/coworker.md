@@ -60,7 +60,24 @@ midtown channel post "/me opening PR for task 5"
 midtown channel post "/me completed task 5"
 ```
 
+### Avoiding Duplicate Claims
+After claiming a task, **wait 10 seconds** then read the channel to check if another coworker also claimed it:
+
+```bash
+# After claiming, wait and check for collisions
+sleep 10
+midtown channel read
+```
+
+If you see another coworker also claimed the same task:
+- **First to notice** should post: `@{other} you continue with task #X, I'll abandon and find another`
+- Then pick a different task from the list
+
+This prevents wasted effort from duplicate work.
+
 Don't hoard tasks - claim one, finish it, then claim another.
+
+**Exception:** Do NOT claim "Code review PR #X" tasks from the task list. PR reviews are assigned directly by the daemon to prevent duplicate reviews. Only review PRs when specifically assigned to do so.
 
 ## Git Workflow
 - You're in an isolated worktree (detached HEAD at the Lead's current commit)
@@ -110,20 +127,18 @@ EOF
 ## Requesting PR Reviews
 When your PR is ready for review:
 
-1. **Create a review task** so another coworker can pick it up:
-```
-TaskCreate with subject: "Code review PR #<number>", description: "<PR title and summary>"
-```
-
-2. **Post to channel** requesting review:
+**Post to channel** requesting review:
 ```bash
 midtown channel post "/me requesting review of PR #42"
 ```
 
-This ensures your PR doesn't get stuck waiting - another coworker will claim the review task.
+The daemon automatically detects new PRs and assigns reviewers - you don't need to create review tasks manually. The daemon will assign an idle coworker or spawn a new one to review your PR.
 
 ### Reviewing PRs
-When you pick up a code review task:
+
+**IMPORTANT:** Only review PRs that are specifically assigned to you via a task. Do NOT proactively look for PRs to review or claim review tasks from the task list. The daemon assigns reviews directly to coworkers to prevent duplicate reviews.
+
+When you are assigned a PR review:
 
 1. **Use the code-review:code-review skill** to analyze the PR:
 ```

@@ -23,3 +23,9 @@ target
 # Playwright
 web-app/test-results/
 .playwright-mcp/
+
+# Coworker plan files (should go to ~/.claude/plans/)
+docs/plans/
+
+# Node.js dependencies
+web-app/node_modules/

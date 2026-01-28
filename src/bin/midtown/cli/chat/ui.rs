@@ -1,5 +1,7 @@
 //! UI rendering for the chat TUI
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
@@ -12,7 +14,22 @@ use ratatui::{
 
 use midtown::{Message, MessageType};
 
-use super::app::{App, CiStatus};
+use super::app::{App, CiStatus, TaskStatus};
+
+/// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
+#[derive(Debug, Clone)]
+pub struct Hyperlink {
+    /// Screen x coordinate
+    pub x: u16,
+    /// Screen y coordinate
+    pub y: u16,
+    /// Text to display (will be rewritten with OSC 8 wrapping)
+    pub text: String,
+    /// URL to link to
+    pub url: String,
+    /// Optional color for the first character (CI status dot)
+    pub first_char_color: Option<Color>,
+}
 
 /// Format duration as (Xm) or (Xh) for display
 fn format_duration_minutes(since: DateTime<Utc>) -> String {
@@ -63,6 +80,7 @@ fn is_system_like_sender(sender: &str) -> bool {
 fn get_sender_color(name: &str) -> Color {
     match name.to_lowercase().as_str() {
         "lead" => Color::LightYellow,
+        "daemon" => Color::DarkGray,
         "github" => Color::DarkGray,
         "system" => Color::DarkGray,
         _ => {
@@ -78,32 +96,61 @@ fn get_sender_color(name: &str) -> Color {
     }
 }
 
-/// Height of the kanban board (including borders)
-/// Increased to accommodate 2-line items in In Progress and Review columns
-const KANBAN_HEIGHT: u16 = 9;
+/// Minimum height of the kanban board (including borders)
+const MIN_KANBAN_HEIGHT: u16 = 5;
+
+/// Calculate the dynamic kanban board height based on In Progress and Review columns
+///
+/// Only In Progress and Review columns expand the board height since they contain
+/// active work that should always be visible. Backlog and Done columns truncate
+/// because they're expected to have many items.
+fn calculate_kanban_height(in_progress_count: usize, review_count: usize) -> u16 {
+    // Each In Progress and Review item takes 2 lines (title + owner/duration)
+    let in_progress_lines = in_progress_count * 2;
+    let review_lines = review_count * 2;
+
+    // Use the max of the two "important" columns
+    let needed_inner_height = in_progress_lines.max(review_lines);
+
+    // Add 2 for borders (top and bottom)
+    let total_height = (needed_inner_height + 2) as u16;
+
+    // Return at least the minimum height
+    total_height.max(MIN_KANBAN_HEIGHT)
+}
 
 /// Height of the repo status line
 const REPO_STATUS_HEIGHT: u16 = 1;
 
 /// Draw the main UI
 ///
+/// Returns a list of hyperlinks that should be rendered after ratatui draws.
+/// These hyperlinks need to be written directly to the terminal using OSC 8
+/// sequences, bypassing ratatui's buffer system (which doesn't support hyperlinks).
+///
 /// Note: The Team panel has been removed - coworker status is now shown
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
-pub fn draw(f: &mut Frame, app: &mut App) {
+pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
+    // Calculate dynamic kanban height based on In Progress and Review columns
+    let (_pending, in_progress, _completed) = app.tasks_by_status();
+    let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
+
     // Split into repo status (top), kanban (middle), and chat (bottom) panels
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(REPO_STATUS_HEIGHT),
-            Constraint::Length(KANBAN_HEIGHT),
+            Constraint::Length(kanban_height),
             Constraint::Min(10),
         ])
         .split(f.area());
 
     draw_repo_status_line(f, app, chunks[0]);
-    draw_kanban_panel(f, app, chunks[1]);
+    let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
     draw_chat_panel(f, app, chunks[2]);
+
+    hyperlinks
 }
 
 /// Format relative time (e.g., "3 minutes ago", "2 hours ago", "1 day ago")
@@ -241,7 +288,9 @@ fn ci_status_color(status: &CiStatus) -> Color {
 }
 
 /// Draw the kanban board with 4 columns
-fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
+///
+/// Returns hyperlinks for PR items in Review and Done columns
+fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
     // Split into 4 equal columns
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -292,6 +341,8 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         &in_progress_items,
     );
 
+    let mut hyperlinks = Vec::new();
+
     // Review column (open PRs with repo#XX format, CI status dot, and duration) - 2-line items
     let review_items: Vec<KanbanItem> = app
         .prs
@@ -309,7 +360,9 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             }
         })
         .collect();
-    draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
+    let review_hyperlinks =
+        draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
+    hyperlinks.extend(review_hyperlinks);
 
     // Done column (merged PRs with repo#XX format) - single line, reverse chronological, max 10
     let done_items: Vec<KanbanItem> = app
@@ -325,11 +378,24 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             }
         })
         .collect();
-    draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
+    let done_hyperlinks = draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
+    hyperlinks.extend(done_hyperlinks);
+
+    hyperlinks
 }
 
 /// Draw a single kanban column with multi-line item support and optional hyperlinks
-fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[KanbanItem]) {
+///
+/// Returns hyperlinks for items that have URLs (these will be rendered post-draw)
+fn draw_kanban_column(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    color: Color,
+    items: &[KanbanItem],
+) -> Vec<Hyperlink> {
+    let mut hyperlinks = Vec::new();
+
     let block = Block::default()
         .title(format!(" {} ({}) ", title, items.len()))
         .borders(Borders::ALL)
@@ -341,7 +407,7 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
     if items.is_empty() {
         let paragraph = Paragraph::new("-").style(Style::default().fg(Color::White));
         f.render_widget(paragraph, inner);
-        return;
+        return hyperlinks;
     }
 
     let available_width = inner.width as usize;
@@ -373,6 +439,37 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
 
             // Only apply hyperlink to the first line of items that have URLs
             if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
+                // Extract the PR identifier as the clickable target.
+                // Prefer "PR#XX" but fall back to "#XX" for narrow columns
+                // where truncate_str strips the "PR" prefix.
+                let (link_start, link_text) = if let Some(start) = truncated.find("PR#") {
+                    let text: String = truncated[start..]
+                        .chars()
+                        .take_while(|c| *c != ' ')
+                        .collect();
+                    (start, text)
+                } else if let Some(start) = truncated.find('#') {
+                    let text: String = truncated[start..]
+                        .chars()
+                        .take_while(|c| *c != ' ')
+                        .collect();
+                    (start, text)
+                } else {
+                    (0, String::new())
+                };
+
+                if !link_text.is_empty() {
+                    let char_offset = truncated[..link_start].chars().count() as u16;
+                    hyperlinks.push(Hyperlink {
+                        x: inner.x + char_offset,
+                        y,
+                        text: link_text,
+                        url: url.clone(),
+                        first_char_color: None,
+                    });
+                }
+
+                // Render the full line to ratatui's buffer (PR#XX will get OSC 8 post-render)
                 render_hyperlink_line(
                     buffer,
                     inner.x,
@@ -397,6 +494,8 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
             lines_used += 1;
         }
     }
+
+    hyperlinks
 }
 
 /// Render a plain text line with optional CI status dot coloring
@@ -541,12 +640,21 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Get visible messages
     let visible = app.visible_messages();
 
+    // Build a lookup map of coworker name -> current task subject
+    // A coworker's "current task" is an in_progress task where they're the owner
+    let current_tasks: HashMap<String, String> = app
+        .tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::InProgress && t.owner.is_some())
+        .map(|t| (t.owner.clone().unwrap().to_lowercase(), t.subject.clone()))
+        .collect();
+
     // Build lines for messages, tracking previous sender for grouping
     let mut lines: Vec<Line> = Vec::new();
     let mut prev_sender: Option<&str> = None;
 
     for msg in visible.iter() {
-        let msg_lines = render_message(msg, inner.width as usize, prev_sender);
+        let msg_lines = render_message(msg, inner.width as usize, prev_sender, &current_tasks);
         lines.extend(msg_lines);
         prev_sender = Some(&msg.from);
     }
@@ -582,17 +690,21 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// - "* HH:MM:SS name message" all on one line
 ///
 /// Layout for regular messages when sender changes:
-/// - Line 1: Actor name alone
+/// - Line 1: Actor name (bold) + current task (if any, not bold)
 /// - Line 2: " HH:MM message"
 /// - Line 3+: "       continuation" (7 spaces)
 ///
 /// Layout for regular messages when sender is same:
 /// - Line 1: " HH:MM message"
 /// - Line 2+: "       continuation" (7 spaces)
-fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec<Line<'static>> {
+fn render_message(
+    msg: &Message,
+    width: usize,
+    prev_sender: Option<&str>,
+    current_tasks: &HashMap<String, String>,
+) -> Vec<Line<'static>> {
     let local_time = msg.timestamp.with_timezone(&Local);
     let time = local_time.format("%H:%M").to_string();
-    let time_with_seconds = local_time.format("%H:%M:%S").to_string();
     let color = get_sender_color(&msg.from);
 
     // Determine if we need to show the sender name
@@ -602,37 +714,50 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     let content_style = match msg.message_type {
         MessageType::Action => Style::default().fg(color),
         MessageType::System => Style::default().fg(Color::DarkGray),
-        _ if msg.from == "github" => Style::default().fg(Color::DarkGray),
+        _ if is_system_like_sender(&msg.from) => Style::default().fg(Color::DarkGray),
         _ => Style::default().fg(Color::White),
     };
 
-    // For action messages, use special format: "* HH:MM:SS name message"
+    // For action messages (/me), use standard format with "* " prefix before content
+    // Format: actor line (if sender changed) + " HH:MM * message"
     if msg.message_type == MessageType::Action {
-        let mut result = Vec::new();
-        // Add blank line before action messages (except for first message)
-        if prev_sender.is_some() {
-            result.push(Line::from(""));
+        // Calculate content width (after " HH:MM " gutter and "* " prefix)
+        let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + 2); // +2 for "* "
+        if content_width == 0 {
+            return vec![];
         }
-        result.extend(render_action_message(
-            msg,
-            &time_with_seconds,
-            color,
-            content_style,
-            width,
-        ));
-        return result;
-    }
 
-    // For system messages (or daemon messages), render entire line in gray (no timestamp gutter)
-    if msg.message_type == MessageType::System || msg.from == "daemon" {
+        let content_lines = wrap_content(&msg.content, content_width);
         let mut result = Vec::new();
-        // Add blank line before system messages, unless prev was also system-like
-        if let Some(prev) = prev_sender
-            && !is_system_like_sender(prev)
-        {
-            result.push(Line::from(""));
+
+        // Add sender name line if sender changed (same as regular messages)
+        if show_sender {
+            if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
+                result.push(Line::from(""));
+            }
+            let current_task = current_tasks.get(&msg.from.to_lowercase());
+            result.push(build_sender_line(msg, color, current_task, width));
         }
-        result.extend(render_system_message(&msg.content, width));
+
+        // Add content lines with timestamp and "* " prefix
+        for (i, content) in content_lines.iter().enumerate() {
+            if i == 0 {
+                // First line: " HH:MM * message" with * in actor color
+                result.push(build_action_timestamp_line(
+                    &time,
+                    content,
+                    color,
+                    content_style,
+                ));
+            } else {
+                // Continuation lines: "         message" (7 + 2 spaces for "* " alignment)
+                let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + 2);
+                let mut spans = vec![Span::raw(indent)];
+                spans.extend(parse_markdown(content, content_style));
+                result.push(Line::from(spans));
+            }
+        }
+
         return result;
     }
 
@@ -649,12 +774,15 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
 
     // Add sender name line if sender changed
     if show_sender {
-        // Add blank line before new sender (except for first message or after system-like senders)
-        // This groups system messages together with the following regular messages
-        if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
+        // Add blank line before new sender, except between consecutive system-like senders
+        if let Some(prev) = prev_sender
+            && !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
+        {
             result.push(Line::from(""));
         }
-        result.push(build_sender_line(msg, color));
+        // Look up the sender's current task (case-insensitive)
+        let current_task = current_tasks.get(&msg.from.to_lowercase());
+        result.push(build_sender_line(msg, color, current_task, width));
     }
 
     // Add content lines with timestamp/indent prefix
@@ -674,73 +802,53 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Render an action message: "* HH:MM:SS name message"
-fn render_action_message(
+/// Build a line with the sender name and optionally their current task
+///
+/// Format: "**name**" or "**name** - Task subject" (task is not bold)
+fn build_sender_line(
     msg: &Message,
-    time: &str,
     color: Color,
-    content_style: Style,
+    current_task: Option<&String>,
     width: usize,
-) -> Vec<Line<'static>> {
-    // Format: "* HH:MM:SS name message"
-    // Prefix is "* HH:MM:SS name " where name varies
-    let prefix_len = 2 + time.len() + 1 + msg.from.len() + 1; // "* " + time + " " + name + " "
-    let content_width = width.saturating_sub(prefix_len);
-
-    if content_width == 0 {
-        return vec![];
-    }
-
-    let content_lines = wrap_content(&msg.content, content_width);
-    let mut result = Vec::new();
-
-    for (i, content) in content_lines.iter().enumerate() {
-        if i == 0 {
-            // First line: "* HH:MM:SS name message"
-            let spans = vec![
-                Span::styled("* ", Style::default().fg(color)),
-                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    msg.from.clone(),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!(" {}", content), content_style),
-            ];
-            result.push(Line::from(spans));
-        } else {
-            // Continuation: indent to align with message content
-            let indent = " ".repeat(prefix_len);
-            let mut spans = vec![Span::raw(indent)];
-            spans.extend(parse_markdown(content, content_style));
-            result.push(Line::from(spans));
-        }
-    }
-
-    result
-}
-
-/// Render a system message: entire line in gray, no timestamp gutter
-fn render_system_message(content: &str, width: usize) -> Vec<Line<'static>> {
-    let style = Style::default().fg(Color::DarkGray);
-    let content_lines = wrap_content(content, width);
-
-    content_lines
-        .into_iter()
-        .map(|line| Line::from(vec![Span::styled(line, style)]))
-        .collect()
-}
-
-/// Build a line with just the sender name
-fn build_sender_line(msg: &Message, color: Color) -> Line<'static> {
+) -> Line<'static> {
     match msg.message_type {
         MessageType::System => Line::from(vec![Span::styled(
             String::from("<system>"),
             Style::default().fg(Color::DarkGray),
         )]),
-        _ => Line::from(vec![Span::styled(
-            msg.from.clone(),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )]),
+        _ => {
+            let mut spans = vec![Span::styled(
+                msg.from.clone(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )];
+
+            // Add current task if available
+            if let Some(task) = current_task {
+                // Calculate available space for task (width - name - " - ")
+                // Use chars().count() for UTF-8 safe length calculation
+                let prefix_len = msg.from.chars().count() + 3; // " - " = 3 chars
+                let available = width.saturating_sub(prefix_len);
+
+                if available > 5 {
+                    // Only show if we have reasonable space
+                    // Use chars() for UTF-8 safe truncation to avoid panics on multi-byte chars
+                    let truncated_task = if task.chars().count() > available {
+                        let truncated: String =
+                            task.chars().take(available.saturating_sub(1)).collect();
+                        format!("{}…", truncated)
+                    } else {
+                        task.clone()
+                    };
+
+                    spans.push(Span::styled(
+                        format!(" - {}", truncated_task),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+            }
+
+            Line::from(spans)
+        }
     }
 }
 
@@ -750,6 +858,22 @@ fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line
         format!(" {} ", time),
         Style::default().fg(Color::DarkGray),
     )];
+    spans.extend(parse_markdown(content, content_style));
+    Line::from(spans)
+}
+
+/// Build a timestamp line for action messages: " HH:MM * message"
+/// The "*" is in the actor's color to indicate this is an action/status message
+fn build_action_timestamp_line(
+    time: &str,
+    content: &str,
+    actor_color: Color,
+    content_style: Style,
+) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(format!(" {} ", time), Style::default().fg(Color::DarkGray)),
+        Span::styled("* ", Style::default().fg(actor_color)),
+    ];
     spans.extend(parse_markdown(content, content_style));
     Line::from(spans)
 }
@@ -1072,10 +1196,12 @@ mod tests {
             message_type: MessageType::Text,
         };
 
+        let current_tasks = HashMap::new();
+
         // New layout: name line, then 3 content lines (timestamp + 2 continuations)
         // Total = 4 lines: sender, timestamp+line1, indent+line2, indent+line3
-        let short_lines = render_message(&short_name_msg, 80, None);
-        let long_lines = render_message(&long_name_msg, 80, None);
+        let short_lines = render_message(&short_name_msg, 80, None, &current_tasks);
+        let long_lines = render_message(&long_name_msg, 80, None, &current_tasks);
 
         assert_eq!(short_lines.len(), 4, "Expected 4 lines: sender + 3 content");
         assert_eq!(long_lines.len(), 4, "Expected 4 lines: sender + 3 content");
@@ -1118,16 +1244,18 @@ mod tests {
             message_type: MessageType::Text,
         };
 
+        let current_tasks = HashMap::new();
+
         // First message (no previous sender) - shows sender line + timestamp line
-        let lines1 = render_message(&msg1, 80, None);
+        let lines1 = render_message(&msg1, 80, None, &current_tasks);
         assert_eq!(lines1.len(), 2); // sender line + timestamp+content line
 
         // Second message from same sender - shows only timestamp + content (no sender)
-        let lines2 = render_message(&msg2, 80, Some("columbus"));
+        let lines2 = render_message(&msg2, 80, Some("columbus"), &current_tasks);
         assert_eq!(lines2.len(), 1); // just timestamp + content
 
         // Different sender - shows blank line + sender line + timestamp line
-        let lines3 = render_message(&msg2, 80, Some("lexington"));
+        let lines3 = render_message(&msg2, 80, Some("lexington"), &current_tasks);
         assert_eq!(lines3.len(), 3); // blank + sender line + timestamp+content line
 
         // Verify first message has sender name on first line
@@ -1154,39 +1282,55 @@ mod tests {
             message_type: MessageType::Action,
         };
 
-        // Action messages are "* HH:MM:SS name message" on one line
-        let lines = render_message(&msg, 80, None);
-        assert_eq!(lines.len(), 1);
+        let current_tasks = HashMap::new();
 
-        let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // Action messages now follow standard format:
+        // Line 0: actor name (when sender changes)
+        // Line 1: " HH:MM * message" with * in actor color
+        let lines = render_message(&msg, 80, None, &current_tasks);
+        assert_eq!(lines.len(), 2, "Expected 2 lines: actor name + message");
+
+        // First line should be actor name
+        let first_line: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
-            content.starts_with("* "),
-            "Should start with '* ', got: {}",
-            content
+            first_line.contains("park"),
+            "First line should contain actor name, got: {}",
+            first_line
         );
-        assert!(content.contains("park"));
-        assert!(content.contains("completed task 3"));
 
-        // Verify the format: "* HH:MM:SS name message"
-        // The spans should be: "* ", "HH:MM:SS ", "name", " message"
-        assert_eq!(
-            lines[0].spans.len(),
-            4,
-            "Expected 4 spans: '* ', timestamp, name, content"
-        );
-        assert_eq!(lines[0].spans[0].content, "* ");
-        // Timestamp span should have format "HH:MM:SS " (8 chars + space)
-        assert_eq!(
-            lines[0].spans[1].content.len(),
-            9,
-            "Timestamp should be 'HH:MM:SS ' (9 chars)"
+        // Second line should have format " HH:MM * message"
+        let second_line: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            second_line.contains("* "),
+            "Message line should contain '* ', got: {}",
+            second_line
         );
         assert!(
-            lines[0].spans[1].content.contains(":"),
-            "Timestamp should contain colons"
+            second_line.contains("completed task 3"),
+            "Message line should contain content, got: {}",
+            second_line
         );
-        assert_eq!(lines[0].spans[2].content, "park");
-        assert_eq!(lines[0].spans[3].content, " completed task 3");
+        assert!(
+            second_line.contains(":"),
+            "Message line should contain timestamp, got: {}",
+            second_line
+        );
+
+        // Verify the spans on the message line: timestamp, "* ", content
+        assert!(
+            lines[1].spans.len() >= 3,
+            "Expected at least 3 spans: timestamp, '* ', content"
+        );
+        // First span should be timestamp " HH:MM "
+        assert!(
+            lines[1].spans[0].content.contains(":"),
+            "First span should be timestamp"
+        );
+        // Second span should be "* "
+        assert_eq!(
+            lines[1].spans[1].content, "* ",
+            "Second span should be '* '"
+        );
     }
 
     #[test]
@@ -1201,17 +1345,20 @@ mod tests {
             message_type: MessageType::System,
         };
 
-        // System messages are gray, no timestamp gutter, just the content
-        let lines = render_message(&msg, 80, None);
-        assert_eq!(lines.len(), 1);
+        let current_tasks = HashMap::new();
 
-        // Should be just the content, no timestamp
-        let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(content, "Session started");
-        assert!(!content.contains(":")); // No timestamp like "10:12"
+        // System messages now render through standard path: sender line + timestamp line
+        let lines = render_message(&msg, 80, None, &current_tasks);
+        assert_eq!(lines.len(), 2); // sender line + content line
 
-        // Verify gray color (DarkGray)
+        // First line is the sender name (<system>)
+        let sender: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(sender, "<system>");
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
+
+        // Second line has timestamp + content in DarkGray
+        let content: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(content.contains("Session started"));
     }
 
     #[test]
@@ -1279,11 +1426,13 @@ mod tests {
             })
             .collect();
 
+        let current_tasks = HashMap::new();
+
         // Render all messages
         let mut all_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in &messages {
-            let msg_lines = render_message(msg, 80, prev_sender);
+            let msg_lines = render_message(msg, 80, prev_sender, &current_tasks);
             all_lines.extend(msg_lines);
             prev_sender = Some(&msg.from);
         }
@@ -1370,12 +1519,14 @@ mod tests {
             })
             .collect();
 
+        let current_tasks = HashMap::new();
+
         // Simulate scroll_offset=0 (bottom): visible_messages returns messages 10..20
         let at_bottom_messages = &messages[10..20];
         let mut at_bottom_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in at_bottom_messages {
-            at_bottom_lines.extend(render_message(msg, 80, prev_sender));
+            at_bottom_lines.extend(render_message(msg, 80, prev_sender, &current_tasks));
             prev_sender = Some(&msg.from);
         }
 
@@ -1384,7 +1535,7 @@ mod tests {
         let mut scrolled_up_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
         for msg in scrolled_up_messages {
-            scrolled_up_lines.extend(render_message(msg, 80, prev_sender));
+            scrolled_up_lines.extend(render_message(msg, 80, prev_sender, &current_tasks));
             prev_sender = Some(&msg.from);
         }
 
@@ -1479,6 +1630,8 @@ mod tests {
                 .count()
         }
 
+        let current_tasks = HashMap::new();
+
         // Test 1: Regular -> daemon (system-like) should add blank before daemon
         let _regular_msg = Message {
             id: "1".to_string(),
@@ -1495,7 +1648,7 @@ mod tests {
             message_type: MessageType::Text,
         };
 
-        let daemon_lines = render_message(&daemon_msg, 80, Some("madison"));
+        let daemon_lines = render_message(&daemon_msg, 80, Some("madison"), &current_tasks);
         assert!(
             count_blank_lines(&daemon_lines) == 1,
             "Should have blank line before daemon message after regular sender"
@@ -1509,7 +1662,7 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
-        let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"));
+        let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks);
         assert_eq!(
             count_blank_lines(&daemon_lines2),
             0,
@@ -1524,14 +1677,14 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
-        let github_lines = render_message(&github_msg, 80, Some("daemon"));
+        let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks);
         assert_eq!(
             count_blank_lines(&github_lines),
             0,
             "Should NOT have blank line between daemon and github messages"
         );
 
-        // Test 4: daemon -> regular (park) should NOT add blank (groups with system)
+        // Test 4: daemon -> regular (park) SHOULD add blank line (different sender types)
         let park_msg = Message {
             id: "5".to_string(),
             from: "park".to_string(),
@@ -1539,11 +1692,11 @@ mod tests {
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
-        let park_lines = render_message(&park_msg, 80, Some("daemon"));
+        let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks);
         assert_eq!(
             count_blank_lines(&park_lines),
-            0,
-            "Should NOT have blank line when transitioning from system-like to regular"
+            1,
+            "Should have blank line when transitioning from system-like to regular"
         );
 
         // Test 5: Verify is_system_like_sender helper
@@ -1553,5 +1706,118 @@ mod tests {
         assert!(is_system_like_sender("DAEMON")); // case insensitive
         assert!(!is_system_like_sender("madison"));
         assert!(!is_system_like_sender("park"));
+    }
+
+    #[test]
+    fn test_sender_line_shows_current_task() {
+        use chrono::Utc;
+
+        let msg = Message {
+            id: "1".to_string(),
+            from: "park".to_string(),
+            content: "working on feature".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        // Test with a current task
+        let mut current_tasks = HashMap::new();
+        current_tasks.insert(
+            "park".to_string(),
+            "Fix chat TUI timestamp formatting".to_string(),
+        );
+
+        let lines = render_message(&msg, 80, None, &current_tasks);
+
+        // First line should be sender name with task
+        let first_line_content: String =
+            lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            first_line_content.contains("park"),
+            "Should contain sender name"
+        );
+        assert!(
+            first_line_content.contains("Fix chat TUI timestamp formatting"),
+            "Should contain current task"
+        );
+        assert!(
+            first_line_content.contains(" - "),
+            "Should have separator between name and task"
+        );
+
+        // Test without a current task - should just show name
+        let empty_tasks = HashMap::new();
+        let lines_no_task = render_message(&msg, 80, None, &empty_tasks);
+        let first_line_no_task: String = lines_no_task[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            first_line_no_task.contains("park"),
+            "Should contain sender name"
+        );
+        assert!(
+            !first_line_no_task.contains(" - "),
+            "Should NOT have task separator when no task"
+        );
+    }
+
+    #[test]
+    fn test_sender_line_truncates_long_task() {
+        use chrono::Utc;
+
+        let msg = Message {
+            id: "1".to_string(),
+            from: "park".to_string(),
+            content: "test".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        let mut current_tasks = HashMap::new();
+        current_tasks.insert(
+            "park".to_string(),
+            "This is a very long task description that should be truncated".to_string(),
+        );
+
+        // Narrow width should truncate the task
+        let lines = render_message(&msg, 30, None, &current_tasks);
+        let first_line_content: String =
+            lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+
+        // Should be truncated (contains ellipsis)
+        assert!(
+            first_line_content.contains("…") || first_line_content.len() <= 30,
+            "Long task should be truncated"
+        );
+    }
+
+    #[test]
+    fn test_sender_line_case_insensitive_lookup() {
+        use chrono::Utc;
+
+        // Message from "Park" (capitalized)
+        let msg = Message {
+            id: "1".to_string(),
+            from: "Park".to_string(),
+            content: "test".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        // Task stored with lowercase "park"
+        let mut current_tasks = HashMap::new();
+        current_tasks.insert("park".to_string(), "Fix something".to_string());
+
+        let lines = render_message(&msg, 80, None, &current_tasks);
+        let first_line_content: String =
+            lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+
+        // Should find the task despite case difference
+        assert!(
+            first_line_content.contains("Fix something"),
+            "Should find task with case-insensitive lookup"
+        );
     }
 }

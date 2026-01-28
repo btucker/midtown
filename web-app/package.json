@@ -14,5 +14,8 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "svelte": "^5.0.0",
     "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "snarkdown": "^2.0.0"
   }
 }

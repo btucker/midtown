@@ -290,11 +290,11 @@ pub struct PrReviewTracker {
 /// This gives CI time to start and allows the author to add context.
 pub const PR_REVIEW_DELAY_SECS: u64 = 120;
 
-/// How long a review assignment is valid before it can be reassigned (30 minutes)
-pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 1800;
+/// How long a review assignment is valid before it can be reassigned (10 minutes)
+pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
 
 /// Maximum number of concurrent review assignments (rate limiting)
-pub const MAX_CONCURRENT_REVIEWS: usize = 2;
+pub const MAX_CONCURRENT_REVIEWS: usize = 4;
 
 impl PrReviewTracker {
     pub fn new() -> Self {
@@ -354,6 +354,8 @@ struct DaemonState {
     repo_name: String,
     /// Last time a coworker was spawned for orphan recovery (rate limiting)
     last_orphan_spawn: Mutex<Option<Instant>>,
+    /// Tracks when each pending task was last nudged (task_id -> last nudge time)
+    pending_task_nudge_cooldowns: std::sync::Mutex<HashMap<String, Instant>>,
 }
 
 impl DaemonState {
@@ -383,6 +385,7 @@ impl DaemonState {
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
             last_orphan_spawn: Mutex::new(None),
+            pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
         })
     }
 }
@@ -615,11 +618,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodically check for idle coworkers and shut them down
             _ = idle_check_interval.tick() => {
+                // Sync internal state with actual tmux windows first
+                if let Err(e) = state.coworkers.sync_with_tmux() {
+                    warn!("Failed to sync coworker state with tmux: {}", e);
+                }
                 check_and_shutdown_idle_coworkers(&state).await;
             }
 
-            // Periodic orphan check
+            // Periodic orphan check and duplicate detection
             _ = orphan_check_interval.tick() => {
+                check_for_duplicate_task_workers(&state).await;
                 check_and_recover_orphans(&state).await;
                 spawn_for_pending_tasks(&state);
             }
@@ -651,12 +659,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Signal chat monitor task to stop
     info!("Stopping chat monitor task...");
     let _ = chat_monitor_shutdown_tx.send(true);
-
-    // Shutdown all coworkers
-    info!("Shutting down coworkers...");
-    if let Err(e) = state.coworkers.shutdown_all() {
-        warn!("Error shutting down coworkers: {}", e);
-    }
 
     // Clean up socket file
     if config.socket_path.exists() {
@@ -1318,7 +1320,7 @@ async fn poll_prs_for_issues(
 /// - Aren't owned by the potential reviewer (no self-reviews)
 ///
 /// For each eligible PR, it spawns a new coworker (or uses an idle one) and
-/// nudges them to run `/code-review <pr-number>`.
+/// nudges them to run `/code-review:code-review <pr-number>`.
 async fn spawn_reviewers_for_prs(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -1381,6 +1383,15 @@ async fn spawn_reviewers_for_prs(
         // Check if PR already has a Claude review (expensive, do last)
         if pr_has_claude_review(pr_number) {
             debug!("PR #{} already has a Claude review", pr_number);
+            // Free the tracker slot if this PR was assigned — the review completed
+            // but mark_reviewed() was never called (it only fires on nudge failure)
+            {
+                let mut tracker = state.pr_review_tracker.lock().await;
+                if tracker.is_assigned(pr_number) {
+                    debug!("PR #{} review completed, freeing tracker slot", pr_number);
+                    tracker.mark_reviewed(pr_number);
+                }
+            }
             continue;
         }
 
@@ -1401,9 +1412,9 @@ async fn spawn_reviewers_for_prs(
                     tracker.assign(pr_number, &reviewer_name);
                 }
 
-                // Nudge the reviewer to run /code-review
+                // Nudge the reviewer to run /code-review:code-review
                 let nudge_msg = format!(
-                    "Please review PR #{}: {}. Run: /code-review {}",
+                    "Please review PR #{}: {}. Run: /code-review:code-review {}",
                     pr_number,
                     truncate_str(title, 50),
                     pr_number
@@ -1463,9 +1474,9 @@ async fn spawn_reviewers_for_prs(
                         // Give the new coworker time to start (async sleep)
                         tokio::time::sleep(Duration::from_secs(3)).await;
 
-                        // Nudge the new reviewer to run /code-review
+                        // Nudge the new reviewer to run /code-review:code-review
                         let nudge_msg = format!(
-                            "Please review PR #{}: {}. Run: /code-review {}",
+                            "Please review PR #{}: {}. Run: /code-review:code-review {}",
                             pr_number,
                             truncate_str(title, 50),
                             pr_number
@@ -1540,6 +1551,13 @@ async fn find_available_reviewer(
     // Get coworkers who are busy (have in_progress tasks)
     let busy_coworkers = get_busy_coworkers(&state.repo_name);
 
+    // Get coworkers who have open PRs — they may be awaiting review and
+    // available to review other PRs despite having an in_progress task
+    let coworkers_with_open_prs: HashSet<String> = get_coworkers_with_open_prs()
+        .into_iter()
+        .map(|name| name.to_lowercase())
+        .collect();
+
     // Get coworkers who are already assigned to review PRs
     let reviewing_coworkers: HashSet<String> = {
         let tracker = state.pr_review_tracker.lock().await;
@@ -1551,7 +1569,7 @@ async fn find_available_reviewer(
             .collect()
     };
 
-    // Find idle coworkers (not busy and not already reviewing)
+    // Find available coworkers: either idle, or busy but awaiting review on their own PR
     for coworker in active_coworkers {
         let coworker_lower = coworker.to_lowercase();
 
@@ -1562,12 +1580,19 @@ async fn find_available_reviewer(
             continue;
         }
 
-        // Skip if busy with a task
-        if busy_coworkers
+        // Skip if busy with a task, UNLESS they have an open PR (likely awaiting review)
+        let is_busy = busy_coworkers
             .iter()
-            .any(|b| b.eq_ignore_ascii_case(coworker))
-        {
-            continue;
+            .any(|b| b.eq_ignore_ascii_case(coworker));
+        if is_busy {
+            if coworkers_with_open_prs.contains(&coworker_lower) {
+                debug!(
+                    "{} is busy but has an open PR — eligible for review assignment",
+                    coworker
+                );
+            } else {
+                continue;
+            }
         }
 
         // Skip if already assigned to review another PR
@@ -1958,22 +1983,15 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 
 /// Handle coworker.nudge RPC method.
 ///
-/// Posts the nudge as a channel message in the format `from: @name message`
-/// so nudges are visible in the chat, then sends the nudge to the coworker's tmux window.
+/// Sends the nudge directly to the coworker's tmux window without posting to the channel,
+/// to avoid the chat monitor seeing the @mention and creating a duplicate nudge.
 fn handle_coworker_nudge(
     id: RequestId,
-    from: &str,
+    _from: &str,
     name: &str,
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    // Post to channel first as an @mention message
-    let channel_content = format!("@{} {}", name, message);
-    let channel_msg = Message::new(from, channel_content, MessageType::Text);
-    if let Err(e) = state.channel.send(&channel_msg) {
-        warn!("Failed to post nudge to channel: {}", e);
-    }
-
     match state.coworkers.nudge(name, message) {
         Ok(()) => {
             info!("Nudged coworker {}: {}", name, message);
@@ -2618,6 +2636,119 @@ async fn check_and_recover_orphans(state: &DaemonState) {
     }
 }
 
+/// Detect and kill duplicate task workers.
+///
+/// When multiple coworkers end up working on the same task (e.g., due to race
+/// conditions in task claiming), this function detects the duplicates and kills
+/// all but the earliest-started worker. This prevents wasted effort and duplicate PRs.
+///
+/// The function:
+/// 1. Gets all in_progress tasks with their owners
+/// 2. Groups tasks by task ID to find duplicates
+/// 3. For tasks with multiple workers, keeps the one that started earliest
+/// 4. Shuts down the duplicate workers with an explanatory message
+async fn check_for_duplicate_task_workers(state: &DaemonState) {
+    // Get in_progress tasks with their owners
+    let in_progress = get_in_progress_tasks_with_owners();
+
+    if in_progress.is_empty() {
+        return;
+    }
+
+    // Build a map of task_id -> list of owners
+    let mut task_workers: HashMap<String, Vec<String>> = HashMap::new();
+    for (task_id, _subject, owner) in &in_progress {
+        // Skip empty owners or Lead
+        if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+            continue;
+        }
+        task_workers
+            .entry(task_id.clone())
+            .or_default()
+            .push(owner.clone());
+    }
+
+    // Get all active coworkers with their start times
+    let active_coworkers = state.coworkers.list();
+    let coworker_start_times: HashMap<String, chrono::DateTime<chrono::Utc>> = active_coworkers
+        .iter()
+        .map(|cw| (cw.name.to_lowercase(), cw.started_at))
+        .collect();
+
+    // Find tasks with multiple workers and determine who to kill
+    for (task_id, workers) in task_workers {
+        if workers.len() <= 1 {
+            continue;
+        }
+
+        // Get the task subject for logging
+        let task_subject = in_progress
+            .iter()
+            .find(|(id, _, _)| id == &task_id)
+            .map(|(_, s, _)| s.as_str())
+            .unwrap_or("unknown");
+
+        info!(
+            "Detected {} duplicate workers on task #{} ({}): {:?}",
+            workers.len(),
+            task_id,
+            task_subject,
+            workers
+        );
+
+        // Sort workers by start time (earliest first)
+        // Workers not found in active list go to the end (will be killed)
+        let mut workers_with_times: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = workers
+            .into_iter()
+            .map(|name| {
+                let start_time = coworker_start_times.get(&name.to_lowercase()).copied();
+                (name, start_time)
+            })
+            .collect();
+
+        workers_with_times.sort_by(|a, b| {
+            match (&a.1, &b.1) {
+                (Some(t1), Some(t2)) => t1.cmp(t2),          // Earlier time first
+                (Some(_), None) => std::cmp::Ordering::Less, // Known time beats unknown
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        // Keep the first (earliest) worker, kill the rest
+        let (keeper, keeper_time) = workers_with_times[0].clone();
+        info!(
+            "Keeping {} (started {:?}) for task #{}",
+            keeper, keeper_time, task_id
+        );
+
+        for (duplicate, dup_time) in workers_with_times.into_iter().skip(1) {
+            warn!(
+                "Killing duplicate worker {} (started {:?}) for task #{} - {} is already working on it",
+                duplicate, dup_time, task_id, keeper
+            );
+
+            // Shutdown the duplicate
+            if let Err(e) = state.coworkers.shutdown(&duplicate) {
+                warn!("Failed to shutdown duplicate worker {}: {}", duplicate, e);
+                continue;
+            }
+
+            // Post to channel about the kill
+            let msg = Message::text(
+                "daemon",
+                format!(
+                    "🔪 Killed duplicate worker {} on task #{} ({}) - {} started earlier",
+                    duplicate, task_id, task_subject, keeper
+                ),
+            );
+            if let Err(e) = state.channel.send(&msg) {
+                warn!("Failed to post duplicate kill message: {}", e);
+            }
+        }
+    }
+}
+
 /// Get list of in_progress tasks with their owners and subjects.
 fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
     crate::tasks::get_in_progress_tasks_with_subjects()
@@ -2649,8 +2780,32 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             continue;
         }
 
-        // Skip if coworker is already active
+        // If coworker is already active, nudge them about the pending task (with cooldown)
         if active_names.contains(&owner.to_lowercase()) {
+            let task_key = format!("pending-{}", task_id);
+            let should_nudge = {
+                let cooldowns = state.pending_task_nudge_cooldowns.lock().unwrap();
+                match cooldowns.get(&task_key) {
+                    Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(300),
+                    None => true,
+                }
+            };
+            if should_nudge {
+                let nudge_msg = format!(
+                    "You have pending task #{}: {}. Get started!",
+                    task_id, task_subject
+                );
+                if let Err(e) = state.coworkers.nudge(&owner, &nudge_msg) {
+                    debug!(
+                        "Failed to nudge {} about pending task #{}: {}",
+                        owner, task_id, e
+                    );
+                } else {
+                    info!("Nudged {} about pending task #{}", owner, task_id);
+                    let mut cooldowns = state.pending_task_nudge_cooldowns.lock().unwrap();
+                    cooldowns.insert(task_key, Instant::now());
+                }
+            }
             continue;
         }
 
@@ -3137,5 +3292,63 @@ mod tests {
         assert!(SKIP_SENDERS.contains(&"daemon"));
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
+    }
+
+    // Duplicate task worker detection tests
+    #[test]
+    fn test_duplicate_worker_sorting_by_start_time() {
+        use chrono::{Duration, Utc};
+
+        // Create workers with different start times
+        let now = Utc::now();
+        let earlier = now - Duration::minutes(5);
+        let later = now + Duration::minutes(5);
+
+        let mut workers: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = vec![
+            ("later_worker".to_string(), Some(later)),
+            ("earlier_worker".to_string(), Some(earlier)),
+            ("now_worker".to_string(), Some(now)),
+        ];
+
+        // Sort by start time (earliest first) - same logic as check_for_duplicate_task_workers
+        workers.sort_by(|a, b| match (&a.1, &b.1) {
+            (Some(t1), Some(t2)) => t1.cmp(t2),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+
+        // Earliest worker should be first (the keeper)
+        assert_eq!(workers[0].0, "earlier_worker");
+        assert_eq!(workers[1].0, "now_worker");
+        assert_eq!(workers[2].0, "later_worker");
+    }
+
+    #[test]
+    fn test_duplicate_worker_sorting_with_unknown_times() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+
+        // Workers with some unknown start times
+        let mut workers: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = vec![
+            ("unknown_worker".to_string(), None),
+            ("known_worker".to_string(), Some(now)),
+            ("another_unknown".to_string(), None),
+        ];
+
+        // Sort by start time - known times beat unknown
+        workers.sort_by(|a, b| match (&a.1, &b.1) {
+            (Some(t1), Some(t2)) => t1.cmp(t2),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+
+        // Known worker should be first (the keeper), unknowns at the end
+        assert_eq!(workers[0].0, "known_worker");
+        // Unknown workers are equal, so their order is preserved (stable sort)
+        assert!(workers[1].1.is_none());
+        assert!(workers[2].1.is_none());
     }
 }
