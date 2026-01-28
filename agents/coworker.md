@@ -77,7 +77,7 @@ This prevents wasted effort from duplicate work.
 
 Don't hoard tasks - claim one, finish it, then claim another.
 
-**Exception:** Do NOT claim "Code review PR #X" tasks from the task list. PR reviews are assigned directly by the daemon to prevent duplicate reviews. Only review PRs when specifically nudged to do so.
+**Exception:** Do NOT claim "Code review PR #X" tasks from the task list. PR reviews are assigned directly by the daemon to prevent duplicate reviews. Only review PRs when specifically assigned to do so.
 
 ## Git Workflow
 - You're in an isolated worktree (detached HEAD at the Lead's current commit)
@@ -132,11 +132,11 @@ When your PR is ready for review:
 midtown channel post "/me requesting review of PR #42"
 ```
 
-The daemon automatically detects new PRs and assigns reviewers - you don't need to create review tasks manually. The daemon will nudge an idle coworker or spawn a new one to review your PR.
+The daemon automatically detects new PRs and assigns reviewers - you don't need to create review tasks manually. The daemon will assign an idle coworker or spawn a new one to review your PR.
 
 ### Reviewing PRs
 
-**IMPORTANT:** Only review PRs that are specifically assigned to you via a nudge or task. Do NOT proactively look for PRs to review or claim review tasks from the task list. The daemon assigns reviews directly to coworkers to prevent duplicate reviews.
+**IMPORTANT:** Only review PRs that are specifically assigned to you via a task. Do NOT proactively look for PRs to review or claim review tasks from the task list. The daemon assigns reviews directly to coworkers to prevent duplicate reviews.
 
 When you are assigned a PR review:
 
