@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import Channel from './lib/Channel.svelte'
   import Status from './lib/Status.svelte'
+  import Lead from './lib/Lead.svelte'
   import { messages, connected, coworkers } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus } from './lib/api.js'
 
@@ -36,6 +37,12 @@
     >
       Status
     </button>
+    <button
+      class:active={activeTab === 'lead'}
+      onclick={() => (activeTab = 'lead')}
+    >
+      Lead
+    </button>
   </nav>
 
   <div class="content">
@@ -43,6 +50,8 @@
       <Channel />
     {:else if activeTab === 'status'}
       <Status />
+    {:else if activeTab === 'lead'}
+      <Lead />
     {/if}
   </div>
 </main>

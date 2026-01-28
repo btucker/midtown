@@ -341,7 +341,7 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
 /// Capture the current content of a tmux pane.
 ///
 /// Returns the pane content as a string, or None if capture fails.
-fn capture_pane(target: &str) -> Option<String> {
+pub fn capture_pane(target: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["capture-pane", "-t", target, "-p"])
         .output()
