@@ -68,7 +68,19 @@ Don't hoard tasks - claim one, finish it, then claim another.
 - Commit frequently with clear messages
 - When done, push and create a PR
 
-**IMPORTANT**: When creating PRs, add this frontmatter to the PR body so GitHub events are attributed to you:
+**IMPORTANT**: Always include your name in GitHub content so events are attributed to you:
+
+1. **PR bodies** - add frontmatter:
+```
+<!-- midtown: {name} -->
+```
+
+2. **PR comments and reviews** - include your name in the comment:
+```
+## Code Review by {name}
+...
+```
+or add the HTML comment anywhere in your comment:
 ```
 <!-- midtown: {name} -->
 ```
