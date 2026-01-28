@@ -23,6 +23,23 @@ fn test_repo_name() -> String {
     format!("daemon-e2e-test-{}-{}", std::process::id(), counter)
 }
 
+/// Kill any orphaned daemon-e2e-test daemons from previous test runs.
+///
+/// This is a safety measure to ensure tests don't interfere with each other
+/// if a previous test run crashed without cleaning up properly.
+fn cleanup_orphaned_test_daemons() {
+    // Use pkill to find and kill any midtown daemon processes with test workdirs
+    // The pattern matches daemons started with --workdir containing "daemon-e2e-test"
+    let _ = Command::new("pkill")
+        .args(["-f", "midtown daemon.*daemon-e2e-test"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    // Give processes a moment to die
+    thread::sleep(Duration::from_millis(50));
+}
+
 /// Test fixture for daemon e2e tests.
 ///
 /// Creates an isolated environment with a fake git repo and manages
@@ -44,6 +61,9 @@ struct DaemonFixture {
 impl DaemonFixture {
     /// Create a new test fixture with a fake git repository.
     fn new() -> Option<Self> {
+        // Clean up any orphaned daemons from previous test runs
+        cleanup_orphaned_test_daemons();
+
         let repo_name = test_repo_name();
         let temp_dir = std::env::temp_dir().join(&repo_name);
 
@@ -219,6 +239,15 @@ impl DaemonFixture {
             let _ = child.wait();
         }
         self.daemon_process = None;
+
+        // As a final fallback, use pkill to ensure any daemon for this repo is stopped
+        // This catches cases where the Child handle might not have tracked the process correctly
+        let pattern = format!("midtown daemon.*{}", self.repo_name);
+        let _ = Command::new("pkill")
+            .args(["-f", &pattern])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
