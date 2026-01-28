@@ -730,13 +730,16 @@ pub fn spawn_claude(
     // Set CLAUDE_CODE_TASK_LIST_ID so all coworkers share the same task list
     // Use --setting-sources project,local (plugins are now in --settings file)
     // Add --continue flag if resuming a previous session
-    let continue_flag = if resume { " --continue" } else { "" };
+    let session_flag = if resume {
+        " --continue".to_string()
+    } else {
+        format!(" --session-id {}", coworker_session_id)
+    };
     let command = format!(
-        "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --session-id {}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
         name,
         task_list_id,
-        coworker_session_id,
-        continue_flag,
+        session_flag,
         settings_file.display(),
         prompt_file.display()
     );
