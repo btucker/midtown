@@ -31,21 +31,6 @@ pub struct Hyperlink {
     pub first_char_color: Option<Color>,
 }
 
-/// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
-#[derive(Debug, Clone)]
-pub struct Hyperlink {
-    /// Screen x coordinate
-    pub x: u16,
-    /// Screen y coordinate
-    pub y: u16,
-    /// Text to display (will be rewritten with OSC 8 wrapping)
-    pub text: String,
-    /// URL to link to
-    pub url: String,
-    /// Optional color for the first character (CI status dot)
-    pub first_char_color: Option<Color>,
-}
-
 /// Format duration as (Xm) or (Xh) for display
 fn format_duration_minutes(since: DateTime<Utc>) -> String {
     let now = Utc::now();
@@ -453,16 +438,23 @@ fn draw_kanban_column(
 
             // Only apply hyperlink to the first line of items that have URLs
             if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
-                // Record hyperlink for post-render writing
-                hyperlinks.push(Hyperlink {
-                    x: inner.x,
-                    y,
-                    text: truncated.clone(),
-                    url: url.clone(),
-                    first_char_color: ci_dot_color,
-                });
+                // Extract just the "PR#XX" portion as the clickable target
+                if let Some(pr_start) = truncated.find("PR#") {
+                    let pr_text: String = truncated[pr_start..]
+                        .chars()
+                        .take_while(|c| *c != ' ')
+                        .collect();
+                    let char_offset = truncated[..pr_start].chars().count() as u16;
+                    hyperlinks.push(Hyperlink {
+                        x: inner.x + char_offset,
+                        y,
+                        text: pr_text,
+                        url: url.clone(),
+                        first_char_color: None,
+                    });
+                }
 
-                // Still render to ratatui's buffer (will be overwritten post-render)
+                // Render the full line to ratatui's buffer (PR#XX will get OSC 8 post-render)
                 render_hyperlink_line(
                     buffer,
                     inner.x,
