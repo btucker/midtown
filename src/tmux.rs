@@ -420,17 +420,10 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     // 2. Wait 500ms for paste to complete (critical - tested in gastown)
     thread::sleep(Duration::from_millis(500));
 
-    // 3. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-    // This is safe AFTER the text is pasted - the text is already in the buffer.
-    // See gastown NudgeSession for reference implementation.
-    let _ = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Escape"])
-        .status();
-
-    // 4. Wait 100ms before sending Enter
+    // 3. Wait 100ms before sending Enter
     thread::sleep(Duration::from_millis(100));
 
-    // 5. Send Enter with retry and verification (up to 3 attempts, 200ms between)
+    // 4. Send Enter with retry and verification (up to 3 attempts, 200ms between)
     for attempt in 0..3 {
         if attempt > 0 {
             tracing::debug!(
