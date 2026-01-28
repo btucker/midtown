@@ -324,9 +324,9 @@ impl Channel {
         if all_messages.len() > n {
             let to_skip = all_messages.len() - n;
             all_messages = all_messages.split_off(to_skip);
-            // We can't easily recalculate the exact byte position, but we
-            // can estimate. For load_more_history, we'll re-read anyway.
-            actual_start = 0; // Signal that there's more history available
+            // Signal that there's more history available by using non-zero position
+            // (0 means "all history loaded", non-zero means "more history exists")
+            actual_start = actual_start.max(1);
         } else if start_estimate == 0 {
             actual_start = 0;
         }
