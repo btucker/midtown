@@ -41,6 +41,33 @@
     }
   }
 
+  // Muted avenue colors matching terminal TUI palette (AVENUE_COLORS from ui.rs)
+  const AVENUE_COLORS = {
+    lexington: '#5fafaf',   // Cyan
+    park: '#5faf5f',        // Green
+    madison: '#d7af5f',     // Yellow
+    broadway: '#af5faf',    // Magenta
+    amsterdam: '#5f87af',   // Blue
+    columbus: '#af5f5f',    // Red
+    riverside: '#87d7d7',   // LightCyan
+    york: '#87d787',        // LightGreen
+    pleasant: '#d7afd7',    // LightMagenta
+    vernon: '#87afd7',      // LightBlue
+    bleecker: '#d7875f',    // orange (Indexed 208)
+    houston: '#ff87d7',     // pink (Indexed 213)
+    canal: '#87d7ff',       // light blue (Indexed 117)
+    spring: '#afff87',      // light green (Indexed 156)
+    prince: '#d7afff',      // lavender (Indexed 183)
+    mercer: '#ffaf87',      // salmon (Indexed 216)
+    lead: '#d7d787',        // LightYellow
+    github: '#585858',      // DarkGray
+    system: '#585858',      // DarkGray
+  }
+
+  function getSenderColor(name) {
+    return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
+  }
+
   function getMessageClass(msg) {
     if (msg.from === 'mobile') return 'message-self'
     if (msg.from === 'github') return 'message-github'
@@ -86,7 +113,7 @@
         <div class="message {getMessageClass(msg)}" class:action={isAction(msg)}>
           {#if !isAction(msg)}
             <div class="message-header">
-              <span class="from">{msg.from}</span>
+              <span class="from" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
               <span class="time">{formatTime(msg.timestamp)}</span>
             </div>
           {/if}
@@ -127,7 +154,7 @@
 
   .empty-state {
     text-align: center;
-    color: #666;
+    color: #585858;
     padding: 40px 20px;
   }
 
@@ -138,7 +165,7 @@
 
   .message {
     padding: 8px 12px;
-    background: #16213e;
+    background: #262626;
     border-radius: 8px;
     max-width: 85%;
   }
@@ -150,16 +177,16 @@
 
   .message-self {
     align-self: flex-end;
-    background: #0f3460;
-    border: 1px solid #00d9ff;
+    background: #303030;
+    border: 1px solid #5fafaf;
   }
 
   .message-github {
-    border-left: 3px solid #e94560;
+    border-left: 3px solid #585858;
   }
 
   .message-lead {
-    border-left: 3px solid #4ade80;
+    border-left: 3px solid #d7d787;
   }
 
   .message-header {
@@ -172,24 +199,11 @@
   .from {
     font-weight: 600;
     font-size: 0.8rem;
-    color: #00d9ff;
-  }
-
-  .message-self .from {
-    color: #ccc;
-  }
-
-  .message-github .from {
-    color: #e94560;
-  }
-
-  .message-lead .from {
-    color: #4ade80;
   }
 
   .time {
     font-size: 0.7rem;
-    color: #666;
+    color: #585858;
   }
 
   .content {
@@ -200,7 +214,7 @@
 
   .action-content {
     font-style: italic;
-    color: #888;
+    color: #585858;
   }
 
   /* Markdown content styles */
@@ -234,7 +248,7 @@
   }
 
   .markdown :global(a) {
-    color: #00d9ff;
+    color: #5fafaf;
     text-decoration: none;
   }
 
@@ -277,35 +291,35 @@
     display: flex;
     gap: 8px;
     padding: 12px;
-    background: #16213e;
-    border-top: 1px solid #0f3460;
+    background: #262626;
+    border-top: 1px solid #3a3a3a;
   }
 
   input {
     flex: 1;
     padding: 12px 16px;
-    border: 1px solid #0f3460;
+    border: 1px solid #3a3a3a;
     border-radius: 24px;
-    background: #1a1a2e;
-    color: #eee;
+    background: #1c1c1c;
+    color: #d0d0d0;
     font-size: 1rem;
     outline: none;
   }
 
   input:focus {
-    border-color: #00d9ff;
+    border-color: #5fafaf;
   }
 
   input::placeholder {
-    color: #666;
+    color: #585858;
   }
 
   button {
     padding: 12px 20px;
     border: none;
     border-radius: 24px;
-    background: #00d9ff;
-    color: #1a1a2e;
+    background: #5fafaf;
+    color: #1c1c1c;
     font-weight: 600;
     cursor: pointer;
     transition: opacity 0.2s;

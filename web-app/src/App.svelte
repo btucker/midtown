@@ -70,9 +70,9 @@
   }
 
   :global(body) {
-    font-family: system-ui, -apple-system, sans-serif;
-    background: #1a1a2e;
-    color: #eee;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    background: #1c1c1c;
+    color: #d0d0d0;
     min-height: 100vh;
     overscroll-behavior: none;
   }
@@ -91,31 +91,32 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    background: #262626;
+    border-bottom: 1px solid #3a3a3a;
   }
 
   h1 {
     font-size: 1.25rem;
-    color: #00d9ff;
+    color: #5fafaf;
   }
 
   .connection-status {
     font-size: 0.75rem;
     padding: 4px 8px;
     border-radius: 12px;
-    background: #e94560;
+    background: #af5f5f;
+    color: #1c1c1c;
   }
 
   .connection-status.connected {
-    background: #4ade80;
-    color: #1a1a2e;
+    background: #5faf5f;
+    color: #1c1c1c;
   }
 
   nav {
     display: flex;
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    background: #262626;
+    border-bottom: 1px solid #3a3a3a;
   }
 
   nav button {
@@ -123,19 +124,19 @@
     padding: 12px;
     border: none;
     background: transparent;
-    color: #888;
+    color: #585858;
     font-size: 0.875rem;
     cursor: pointer;
     transition: all 0.2s;
   }
 
   nav button.active {
-    color: #00d9ff;
-    border-bottom: 2px solid #00d9ff;
+    color: #5fafaf;
+    border-bottom: 2px solid #5fafaf;
   }
 
   nav button:hover:not(.active) {
-    color: #ccc;
+    color: #a8a8a8;
   }
 
   .content {
