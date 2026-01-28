@@ -231,6 +231,17 @@ impl Channel {
         Ok(())
     }
 
+    /// Set an agent's cursor to the end of the file
+    ///
+    /// This is useful after initial load to ensure subsequent reads
+    /// only pick up new messages.
+    pub fn set_cursor_to_end(&self, agent: &str) -> Result<()> {
+        let mut cursor = Cursor::load_or_create(&self.base_dir, agent)?;
+        cursor.update(self.file_size(), None);
+        cursor.save(&self.base_dir)?;
+        Ok(())
+    }
+
     /// Get the total number of messages in the channel
     pub fn message_count(&self) -> Result<usize> {
         Ok(self.read_all()?.len())

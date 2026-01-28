@@ -177,8 +177,9 @@ impl App {
                     self.history_fully_loaded = start_pos == 0;
                     self.scroll_offset = 0; // Start at bottom (most recent)
                 }
+                // Position cursor at EOF so read_since_cursor only gets NEW messages
+                let _ = channel.set_cursor_to_end("chat-tui");
                 self.initial_load_done = true;
-                // Don't reset cursor - we'll set it up on next refresh
                 return;
             }
 
