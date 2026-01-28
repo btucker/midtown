@@ -253,24 +253,15 @@ fn parse_insights_from_transcript(transcript_path: &str) -> Result<Vec<String>, 
 }
 
 /// Get the cursor file path for a given transcript.
-/// Uses a hash of the transcript path to create a unique cursor filename.
+/// Stores the cursor in the same directory as the transcript for isolation.
 fn transcript_cursor_path(transcript_path: &str) -> PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    transcript_path.hash(&mut hasher);
-    let path_hash = format!("{:016x}", hasher.finish());
-
-    // Store cursors alongside insights in the projects dir
-    if let Some(repo) = detect_git_repo() {
-        let dir = insights_dir_path(&repo);
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join(format!("cursor-{}.txt", path_hash))
-    } else {
-        // Fallback: store in temp dir
-        std::env::temp_dir().join(format!("midtown-cursor-{}.txt", path_hash))
-    }
+    let transcript = PathBuf::from(transcript_path);
+    let parent = transcript.parent().unwrap_or(std::path::Path::new("."));
+    let filename = transcript
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("transcript");
+    parent.join(format!(".{}.cursor", filename))
 }
 
 /// Read the byte offset cursor for a transcript file.
@@ -286,9 +277,7 @@ fn read_transcript_cursor(transcript_path: &str) -> u64 {
 /// Write the byte offset cursor for a transcript file.
 fn write_transcript_cursor(transcript_path: &str, offset: u64) {
     let cursor_path = transcript_cursor_path(transcript_path);
-    if let Some(parent) = cursor_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    // Parent directory should exist since it's where the transcript lives
     let _ = std::fs::write(cursor_path, offset.to_string());
 }
 
