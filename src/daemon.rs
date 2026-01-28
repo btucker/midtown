@@ -22,6 +22,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
+use crate::haiku::{SCORE_THRESHOLD, filter_by_threshold, score_issues};
 use crate::message::{Message, MessageType};
 use crate::rpc::{Request, RequestId, Response, RpcError};
 use crate::webhook::{WebhookConfig, start_webhook_server};
@@ -1337,8 +1338,24 @@ async fn poll_prs_for_issues(
 
         // Check for actionable issues
         let issues = detect_pr_issues(pr);
+        let issue_count = issues.len();
 
-        for issue_type in issues {
+        // Score issues using Haiku and filter by threshold
+        let scored_issues = score_issues(pr_number, title, issues, pr).await;
+        let high_priority_issues = filter_by_threshold(scored_issues);
+
+        if high_priority_issues.len() < issue_count {
+            debug!(
+                "PR #{}: filtered {} issues to {} high-priority (threshold {})",
+                pr_number,
+                issue_count,
+                high_priority_issues.len(),
+                SCORE_THRESHOLD
+            );
+        }
+
+        for scored in high_priority_issues {
+            let issue_type = scored.issue_type;
             // Check if we should nudge for this issue
             let should_nudge = {
                 let tracker = state.pr_issue_tracker.lock().await;

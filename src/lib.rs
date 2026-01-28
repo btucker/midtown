@@ -78,6 +78,9 @@ pub mod agents;
 // Claude Code task storage integration
 pub mod tasks;
 
+// Haiku LLM scoring for issue prioritization
+pub mod haiku;
+
 // Path utilities (socket paths, repo detection)
 pub mod paths;
 
