@@ -277,9 +277,20 @@ mod tests {
         unreachable!()
     }
 
-    /// Retry message_count with backoff to handle transient lock contention in CI
+    /// Retry helper for message_count to handle transient lock contention in CI
     fn message_count_with_retry(channel: &Channel, max_attempts: u32) -> Result<usize> {
-        Ok(read_all_with_retry(channel, max_attempts)?.len())
+        for attempt in 0..max_attempts {
+            match channel.message_count() {
+                Ok(count) => return Ok(count),
+                Err(e) if attempt < max_attempts - 1 => {
+                    // WouldBlock is expected under lock contention, retry after backoff
+                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
     }
 
     #[test]
@@ -373,13 +384,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let channel = Channel::new(temp_dir.path()).unwrap();
 
+        // Use retry helper to handle transient lock contention in CI
         assert_eq!(message_count_with_retry(&channel, 5).unwrap(), 0);
 
         channel.send(&Message::text("agent1", "1")).unwrap();
         channel.send(&Message::text("agent1", "2")).unwrap();
         channel.send(&Message::text("agent1", "3")).unwrap();
 
-        // Use retry helper to handle transient lock contention in CI
         assert_eq!(message_count_with_retry(&channel, 5).unwrap(), 3);
     }
 
