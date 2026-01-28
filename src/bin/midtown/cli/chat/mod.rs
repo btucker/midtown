@@ -67,10 +67,13 @@ async fn run_app_async(
     let mut event_stream = EventStream::new();
 
     // Set up file tailer for channel.jsonl if available
-    // We start from line 0 because we use cursor-based reading for message parsing
+    // We use num_lines=None (no -n flag) to avoid a race condition on macOS where
+    // `tail -n 0 -f` seeks to EOF before registering its kqueue file watcher,
+    // causing the first write after tailer creation to be lost forever.
+    // The actual content from tail is ignored; we only use it as a change notification.
     let mut tailer = app
         .channel_file_path()
-        .and_then(|path| tailf::tailf(&path, Some(0)).ok());
+        .and_then(|path| tailf::tailf(&path, None).ok());
 
     // Fallback timer for message/kanban/repo status refresh (1 second)
     // This ensures responsive updates if tailf isn't triggering
