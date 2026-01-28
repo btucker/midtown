@@ -26,8 +26,8 @@ fn format_duration_minutes(since: DateTime<Utc>) -> String {
     }
 }
 
-/// Gutter width for timestamp: " HH:MM " = 7 chars
-const TIMESTAMP_GUTTER_WIDTH: usize = 7;
+/// Gutter width for timestamp: "  HH:MM " = 8 chars (2 space indent + 5 char time + 1 space)
+const TIMESTAMP_GUTTER_WIDTH: usize = 8;
 
 /// Avenue names mapped to colors (position-based assignment)
 const AVENUE_COLORS: &[(&str, Color)] = &[
@@ -579,20 +579,23 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// Render a single message into one or more Lines
 ///
 /// Layout for action messages:
-/// - "* HH:MM:SS name message" all on one line
+/// - "* HH:MM name message" all on one line
 ///
 /// Layout for regular messages when sender changes:
 /// - Line 1: Actor name alone
-/// - Line 2: " HH:MM message"
-/// - Line 3+: "       continuation" (7 spaces)
+/// - Line 2: "  HH:MM message"
+/// - Line 3+: "        continuation" (8 spaces)
 ///
 /// Layout for regular messages when sender is same:
-/// - Line 1: " HH:MM message"
-/// - Line 2+: "       continuation" (7 spaces)
+/// - Line 1: "  HH:MM message"
+/// - Line 2+: "        continuation" (8 spaces)
+///
+/// Layout for system/daemon messages:
+/// - Line 1: "  HH:MM message" (all gray)
+/// - Line 2+: "        continuation" (8 spaces, all gray)
 fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec<Line<'static>> {
     let local_time = msg.timestamp.with_timezone(&Local);
     let time = local_time.format("%H:%M").to_string();
-    let time_with_seconds = local_time.format("%H:%M:%S").to_string();
     let color = get_sender_color(&msg.from);
 
     // Determine if we need to show the sender name
@@ -606,7 +609,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         _ => Style::default().fg(Color::White),
     };
 
-    // For action messages, use special format: "* HH:MM:SS name message"
+    // For action messages, use special format: "* HH:MM name message"
     if msg.message_type == MessageType::Action {
         let mut result = Vec::new();
         // Add blank line before action messages (except for first message)
@@ -615,7 +618,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         }
         result.extend(render_action_message(
             msg,
-            &time_with_seconds,
+            &time,
             color,
             content_style,
             width,
@@ -623,7 +626,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         return result;
     }
 
-    // For system messages (or daemon messages), render entire line in gray (no timestamp gutter)
+    // For system messages (or daemon messages), render with timestamp in gray
     if msg.message_type == MessageType::System || msg.from == "daemon" {
         let mut result = Vec::new();
         // Add blank line before system messages, unless prev was also system-like
@@ -632,7 +635,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         {
             result.push(Line::from(""));
         }
-        result.extend(render_system_message(&msg.content, width));
+        result.extend(render_system_message(&msg.content, &time, width));
         return result;
     }
 
@@ -674,7 +677,7 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
     result
 }
 
-/// Render an action message: "* HH:MM:SS name message"
+/// Render an action message: "* HH:MM name message"
 fn render_action_message(
     msg: &Message,
     time: &str,
@@ -682,8 +685,8 @@ fn render_action_message(
     content_style: Style,
     width: usize,
 ) -> Vec<Line<'static>> {
-    // Format: "* HH:MM:SS name message"
-    // Prefix is "* HH:MM:SS name " where name varies
+    // Format: "* HH:MM name message"
+    // Prefix is "* HH:MM name " where name varies
     let prefix_len = 2 + time.len() + 1 + msg.from.len() + 1; // "* " + time + " " + name + " "
     let content_width = width.saturating_sub(prefix_len);
 
@@ -696,7 +699,7 @@ fn render_action_message(
 
     for (i, content) in content_lines.iter().enumerate() {
         if i == 0 {
-            // First line: "* HH:MM:SS name message"
+            // First line: "* HH:MM name message"
             let spans = vec![
                 Span::styled("* ", Style::default().fg(color)),
                 Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
@@ -719,14 +722,26 @@ fn render_action_message(
     result
 }
 
-/// Render a system message: entire line in gray, no timestamp gutter
-fn render_system_message(content: &str, width: usize) -> Vec<Line<'static>> {
+/// Render a system message: "  HH:MM content" in gray with timestamp
+fn render_system_message(content: &str, time: &str, width: usize) -> Vec<Line<'static>> {
     let style = Style::default().fg(Color::DarkGray);
-    let content_lines = wrap_content(content, width);
+    // Account for timestamp gutter when wrapping content
+    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
+    let content_lines = wrap_content(content, content_width);
 
     content_lines
         .into_iter()
-        .map(|line| Line::from(vec![Span::styled(line, style)]))
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                // First line: "  HH:MM content"
+                Line::from(vec![Span::styled(format!("  {} {}", time, line), style)])
+            } else {
+                // Continuation lines: indent to match
+                let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
+                Line::from(vec![Span::styled(format!("{}{}", indent, line), style)])
+            }
+        })
         .collect()
 }
 
@@ -744,10 +759,10 @@ fn build_sender_line(msg: &Message, color: Color) -> Line<'static> {
     }
 }
 
-/// Build a timestamp line with message content: " HH:MM message"
+/// Build a timestamp line with message content: "  HH:MM message"
 fn build_timestamp_line(time: &str, content: &str, content_style: Style) -> Line<'static> {
     let mut spans = vec![Span::styled(
-        format!(" {} ", time),
+        format!("  {} ", time),
         Style::default().fg(Color::DarkGray),
     )];
     spans.extend(parse_markdown(content, content_style));
@@ -1154,7 +1169,7 @@ mod tests {
             message_type: MessageType::Action,
         };
 
-        // Action messages are "* HH:MM:SS name message" on one line
+        // Action messages are "* HH:MM name message" on one line
         let lines = render_message(&msg, 80, None);
         assert_eq!(lines.len(), 1);
 
@@ -1167,23 +1182,23 @@ mod tests {
         assert!(content.contains("park"));
         assert!(content.contains("completed task 3"));
 
-        // Verify the format: "* HH:MM:SS name message"
-        // The spans should be: "* ", "HH:MM:SS ", "name", " message"
+        // Verify the format: "* HH:MM name message"
+        // The spans should be: "* ", "HH:MM ", "name", " message"
         assert_eq!(
             lines[0].spans.len(),
             4,
             "Expected 4 spans: '* ', timestamp, name, content"
         );
         assert_eq!(lines[0].spans[0].content, "* ");
-        // Timestamp span should have format "HH:MM:SS " (8 chars + space)
+        // Timestamp span should have format "HH:MM " (5 chars + space)
         assert_eq!(
             lines[0].spans[1].content.len(),
-            9,
-            "Timestamp should be 'HH:MM:SS ' (9 chars)"
+            6,
+            "Timestamp should be 'HH:MM ' (6 chars)"
         );
         assert!(
             lines[0].spans[1].content.contains(":"),
-            "Timestamp should contain colons"
+            "Timestamp should contain colon"
         );
         assert_eq!(lines[0].spans[2].content, "park");
         assert_eq!(lines[0].spans[3].content, " completed task 3");
@@ -1201,14 +1216,21 @@ mod tests {
             message_type: MessageType::System,
         };
 
-        // System messages are gray, no timestamp gutter, just the content
+        // System messages are gray with timestamp: "  HH:MM content"
         let lines = render_message(&msg, 80, None);
         assert_eq!(lines.len(), 1);
 
-        // Should be just the content, no timestamp
+        // Should have timestamp and content
         let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(content, "Session started");
-        assert!(!content.contains(":")); // No timestamp like "10:12"
+        assert!(
+            content.contains("Session started"),
+            "Should contain the message content"
+        );
+        assert!(content.contains(":"), "Should have timestamp with colon");
+        assert!(
+            content.starts_with("  "),
+            "Should start with 2-space indent"
+        );
 
         // Verify gray color (DarkGray)
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
