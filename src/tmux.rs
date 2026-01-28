@@ -536,15 +536,31 @@ pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
 }
 
 /// Check if a window exists in the session.
+///
+/// Note: Window names may include a status suffix (e.g., "lexington:dev#3"),
+/// so this checks if any window's base name matches the given name.
 pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
-    let target = format!("{}:{}", session, name);
-
-    let status = Command::new("tmux")
-        .args(["has-session", "-t", &target])
-        .status()
+    // Use list-windows to get actual window names
+    // has-session only checks if the SESSION exists, not the WINDOW
+    let output = Command::new("tmux")
+        .args(["list-windows", "-t", session, "-F", "#{window_name}"])
+        .output()
         .map_err(Error::Io)?;
 
-    Ok(status.success())
+    // If tmux returns non-zero, session doesn't exist (so window doesn't either)
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let name_lower = name.to_lowercase();
+
+    // Check if any window matches the name
+    // Window names might have status suffix like "lexington:dev#3", so check base name
+    Ok(stdout.lines().any(|window| {
+        let base_name = window.split(':').next().unwrap_or(window).to_lowercase();
+        base_name == name_lower
+    }))
 }
 
 /// Read plugins from user's ~/.claude/settings.json
@@ -1036,4 +1052,14 @@ mod tests {
             "this is way too l..."
         );
     }
+
+    // Integration tests for window_exists require actual tmux
+    // The key fix: window_exists now uses list-windows instead of has-session
+    // This ensures we check for the actual WINDOW, not just the SESSION
+    //
+    // Bug scenario that was fixed:
+    // 1. spawn_claude creates a window with a command that immediately fails
+    // 2. The window dies, but the SESSION still exists (Lead is using it)
+    // 3. OLD: has-session returns success (session exists) -> false positive
+    // 4. NEW: list-windows returns no match -> correctly detects window is gone
 }
