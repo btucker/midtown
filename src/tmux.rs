@@ -419,13 +419,11 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     // 2. Wait 500ms for paste to complete (critical - tested in gastown)
     thread::sleep(Duration::from_millis(500));
 
-    // 3. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-    let _ = Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Escape"])
-        .status();
-    thread::sleep(Duration::from_millis(100));
+    // NOTE: Previously sent Escape here to exit vim INSERT mode, but this
+    // cancels input in Claude's prompt, causing nudge messages to be lost.
+    // Removed to fix daemon orchestration.
 
-    // 4. Send Enter key
+    // 3. Send Enter key
     let status = Command::new("tmux")
         .args(["send-keys", "-t", &target, "Enter"])
         .status()
