@@ -173,21 +173,19 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         status_items.extend(pr_messages);
     }
 
-    // Check for mergeable PRs with passing CI
-    let mergeable_prs = find_mergeable_prs();
+    // Check for stuck PRs (CI passed + approved + no activity for 10+ minutes)
+    let stuck_prs = find_stuck_prs(&repo);
 
-    if !mergeable_prs.is_empty() {
-        let pr_messages: Vec<String> = mergeable_prs
-            .iter()
-            .map(|pr| {
-                format!(
-                    "PR #{} \"{}\" has passing CI and is ready to merge.\nPlease review it and ask the human if you should merge.",
-                    pr.number, pr.title
-                )
-            })
-            .collect();
-
-        status_items.extend(pr_messages);
+    for pr in stuck_prs {
+        let message = midtown::Message::text(
+            "lead",
+            format!(
+                "🔔 PR #{} \"{}\" appears ready to merge - CI passed, has approval, no blockers. Consider merging or noting why it's blocked.",
+                pr.number, pr.title
+            ),
+        );
+        let _ = channel.send(&message);
+        status_items.push(format!("Flagged stuck PR #{}", pr.number));
     }
 
     // Build the response message
@@ -209,6 +207,13 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
 /// Information about a mergeable PR.
 #[derive(Debug, PartialEq)]
 struct MergeablePr {
+    number: u64,
+    title: String,
+}
+
+/// Information about a PR that appears stuck and ready to merge.
+#[derive(Debug, PartialEq)]
+struct StuckPr {
     number: u64,
     title: String,
 }
@@ -280,6 +285,156 @@ fn parse_mergeable_prs(json_str: &str) -> Vec<MergeablePr> {
             }
         })
         .collect()
+}
+
+/// Find PRs that appear stuck: CI passing, approved, no changes requested, and inactive.
+fn find_stuck_prs(repo_name: &str) -> Vec<StuckPr> {
+    // Query GitHub for PRs with review info and timestamps
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,title,reviews,statusCheckRollup,updatedAt",
+        ])
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let candidates = parse_stuck_prs(&stdout);
+
+    // Filter out PRs we've already flagged recently (within last hour)
+    let flagged = get_flagged_prs(repo_name);
+    candidates
+        .into_iter()
+        .filter(|pr| !flagged.contains(&pr.number))
+        .inspect(|pr| {
+            // Mark as flagged for next time
+            mark_pr_flagged(repo_name, pr.number);
+        })
+        .collect()
+}
+
+/// Parse PR JSON output and filter for stuck PRs.
+/// A PR is "stuck" if:
+/// - All CI checks pass
+/// - Has at least one approving review
+/// - No reviews with changes_requested
+/// - Last activity was more than 10 minutes ago
+fn parse_stuck_prs(json_str: &str) -> Vec<StuckPr> {
+    let prs: Vec<serde_json::Value> = match serde_json::from_str(json_str) {
+        Ok(prs) => prs,
+        Err(_) => return Vec::new(),
+    };
+
+    let ten_minutes_ago = chrono::Utc::now() - chrono::Duration::minutes(10);
+
+    prs.iter()
+        .filter_map(|pr| {
+            let number = pr.get("number")?.as_u64()?;
+            let title = pr.get("title")?.as_str()?.to_string();
+
+            // Check if all status checks passed
+            let checks = pr.get("statusCheckRollup")?.as_array()?;
+            if checks.is_empty() {
+                return None;
+            }
+            let all_checks_passed = checks.iter().all(|check| {
+                if let Some(conclusion) = check.get("conclusion").and_then(|c| c.as_str()) {
+                    return conclusion == "SUCCESS";
+                }
+                if let Some(state) = check.get("state").and_then(|s| s.as_str()) {
+                    return state == "SUCCESS";
+                }
+                false
+            });
+            if !all_checks_passed {
+                return None;
+            }
+
+            // Check reviews
+            let reviews = pr.get("reviews").and_then(|r| r.as_array())?;
+
+            // Must have at least one APPROVED review
+            let has_approval = reviews.iter().any(|review| {
+                review
+                    .get("state")
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| s == "APPROVED")
+            });
+            if !has_approval {
+                return None;
+            }
+
+            // Must not have any CHANGES_REQUESTED reviews
+            let has_changes_requested = reviews.iter().any(|review| {
+                review
+                    .get("state")
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| s == "CHANGES_REQUESTED")
+            });
+            if has_changes_requested {
+                return None;
+            }
+
+            // Check if last activity was more than 10 minutes ago
+            let updated_at = pr.get("updatedAt")?.as_str()?;
+            let updated_time = chrono::DateTime::parse_from_rfc3339(updated_at).ok()?;
+            if updated_time > ten_minutes_ago {
+                return None; // Still active, not stuck
+            }
+
+            Some(StuckPr { number, title })
+        })
+        .collect()
+}
+
+/// Get the path to the flagged PRs directory for tracking.
+fn flagged_prs_dir_path(repo_name: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".midtown")
+        .join("flagged_prs")
+        .join(repo_name)
+}
+
+/// Get set of recently flagged PR numbers (within the last hour).
+fn get_flagged_prs(repo_name: &str) -> HashSet<u64> {
+    let dir_path = flagged_prs_dir_path(repo_name);
+    let one_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+
+    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+        entries
+            .filter_map(|e| e.ok())
+            .filter_map(|entry| {
+                // Check if file is recent (within last hour)
+                let metadata = entry.metadata().ok()?;
+                let modified = metadata.modified().ok()?;
+                if modified < one_hour_ago {
+                    // Clean up old flagged entries
+                    let _ = std::fs::remove_file(entry.path());
+                    return None;
+                }
+                // Parse PR number from filename
+                entry.file_name().into_string().ok()?.parse().ok()
+            })
+            .collect()
+    } else {
+        HashSet::new()
+    }
+}
+
+/// Mark a PR as flagged to avoid spam.
+fn mark_pr_flagged(repo_name: &str, pr_number: u64) {
+    let dir_path = flagged_prs_dir_path(repo_name);
+    let _ = std::fs::create_dir_all(&dir_path);
+    let flag_path = dir_path.join(pr_number.to_string());
+    // Create empty file - modification time is used for staleness check
+    let _ = std::fs::write(&flag_path, "");
 }
 
 /// Find tasks that are in_progress but owned by coworkers that aren't running.
@@ -808,5 +963,144 @@ Second insight
         assert_eq!(prs.len(), 2);
         assert_eq!(prs[0].number, 42);
         assert_eq!(prs[1].number, 44);
+    }
+
+    #[test]
+    fn test_parse_stuck_prs_approved_and_passing() {
+        // PR is old (20 minutes ago), has approval, CI passes - should be stuck
+        let old_time = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+        let json = format!(
+            r#"[
+            {{
+                "number": 42,
+                "title": "feat: Add widget",
+                "updatedAt": "{}",
+                "statusCheckRollup": [{{"conclusion": "SUCCESS"}}],
+                "reviews": [{{"state": "APPROVED"}}]
+            }}
+        ]"#,
+            old_time
+        );
+
+        let prs = parse_stuck_prs(&json);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(
+            prs[0],
+            StuckPr {
+                number: 42,
+                title: "feat: Add widget".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_stuck_prs_recent_activity_not_stuck() {
+        // PR was updated 5 minutes ago - not stuck yet
+        let recent_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        let json = format!(
+            r#"[
+            {{
+                "number": 42,
+                "title": "feat: Add widget",
+                "updatedAt": "{}",
+                "statusCheckRollup": [{{"conclusion": "SUCCESS"}}],
+                "reviews": [{{"state": "APPROVED"}}]
+            }}
+        ]"#,
+            recent_time
+        );
+
+        let prs = parse_stuck_prs(&json);
+        assert!(prs.is_empty(), "Recent PRs should not be considered stuck");
+    }
+
+    #[test]
+    fn test_parse_stuck_prs_no_approval() {
+        // PR is old but has no approval
+        let old_time = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+        let json = format!(
+            r#"[
+            {{
+                "number": 42,
+                "title": "feat: Add widget",
+                "updatedAt": "{}",
+                "statusCheckRollup": [{{"conclusion": "SUCCESS"}}],
+                "reviews": [{{"state": "COMMENTED"}}]
+            }}
+        ]"#,
+            old_time
+        );
+
+        let prs = parse_stuck_prs(&json);
+        assert!(prs.is_empty(), "PRs without approval should not be stuck");
+    }
+
+    #[test]
+    fn test_parse_stuck_prs_changes_requested() {
+        // PR is old, has approval, but also has changes requested
+        let old_time = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+        let json = format!(
+            r#"[
+            {{
+                "number": 42,
+                "title": "feat: Add widget",
+                "updatedAt": "{}",
+                "statusCheckRollup": [{{"conclusion": "SUCCESS"}}],
+                "reviews": [
+                    {{"state": "APPROVED"}},
+                    {{"state": "CHANGES_REQUESTED"}}
+                ]
+            }}
+        ]"#,
+            old_time
+        );
+
+        let prs = parse_stuck_prs(&json);
+        assert!(
+            prs.is_empty(),
+            "PRs with changes_requested should not be stuck"
+        );
+    }
+
+    #[test]
+    fn test_parse_stuck_prs_failing_ci() {
+        // PR is old with approval but CI is failing
+        let old_time = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+        let json = format!(
+            r#"[
+            {{
+                "number": 42,
+                "title": "feat: Add widget",
+                "updatedAt": "{}",
+                "statusCheckRollup": [{{"conclusion": "FAILURE"}}],
+                "reviews": [{{"state": "APPROVED"}}]
+            }}
+        ]"#,
+            old_time
+        );
+
+        let prs = parse_stuck_prs(&json);
+        assert!(prs.is_empty(), "PRs with failing CI should not be stuck");
+    }
+
+    #[test]
+    fn test_parse_stuck_prs_no_checks() {
+        // PR is old with approval but no CI checks
+        let old_time = (chrono::Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+        let json = format!(
+            r#"[
+            {{
+                "number": 42,
+                "title": "feat: Add widget",
+                "updatedAt": "{}",
+                "statusCheckRollup": [],
+                "reviews": [{{"state": "APPROVED"}}]
+            }}
+        ]"#,
+            old_time
+        );
+
+        let prs = parse_stuck_prs(&json);
+        assert!(prs.is_empty(), "PRs with no CI checks should not be stuck");
     }
 }
