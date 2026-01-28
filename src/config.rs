@@ -6,6 +6,12 @@
 //! [default]
 //! bin_command = "midtown"
 //!
+//! [plugins]
+//! required = [
+//!     "superpowers@claude-plugins-official",
+//!     "code-review@claude-plugins-official",
+//! ]
+//!
 //! [midtown]  # project name from repo
 //! bin_command = "cargo run --release --"
 //! ```
@@ -61,12 +67,24 @@ impl Default for ProjectConfig {
     }
 }
 
+/// Configuration for Claude Code plugins.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PluginsConfig {
+    /// List of required plugin names (e.g., "superpowers@claude-plugins-official")
+    #[serde(default)]
+    pub required: Vec<String>,
+}
+
 /// Root configuration containing default and per-project settings.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
     /// Default settings for all projects
     #[serde(default)]
     pub default: ProjectConfig,
+
+    /// Plugin configuration
+    #[serde(default)]
+    pub plugins: PluginsConfig,
 
     /// Per-project settings (key is project/repo name)
     #[serde(flatten)]
@@ -95,6 +113,11 @@ impl Config {
     /// Falls back to default if no project-specific config exists.
     pub fn for_project(&self, project_name: &str) -> &ProjectConfig {
         self.projects.get(project_name).unwrap_or(&self.default)
+    }
+
+    /// Get the list of required plugins.
+    pub fn required_plugins(&self) -> &[String] {
+        &self.plugins.required
     }
 }
 
@@ -134,6 +157,12 @@ pub fn get_chat_layout() -> (ChatLayout, u16) {
     };
 
     (project_config.chat_layout, project_config.chat_min_width)
+}
+
+/// Get the list of required plugins from config.
+pub fn get_required_plugins() -> Vec<String> {
+    let config = Config::load();
+    config.plugins.required.clone()
 }
 
 /// Get the current project name from git repo root directory.
@@ -227,5 +256,54 @@ chat_layout = "auto"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.default.chat_layout, ChatLayout::Auto);
+    }
+
+    #[test]
+    fn test_plugins_config_default() {
+        let config = Config::default();
+        assert!(config.plugins.required.is_empty());
+        assert!(config.required_plugins().is_empty());
+    }
+
+    #[test]
+    fn test_plugins_config_parse() {
+        let toml = r#"
+[plugins]
+required = [
+    "superpowers@claude-plugins-official",
+    "code-review@claude-plugins-official",
+    "commit-commands@claude-plugins-official",
+]
+
+[default]
+bin_command = "midtown"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.plugins.required.len(), 3);
+        assert_eq!(
+            config.plugins.required[0],
+            "superpowers@claude-plugins-official"
+        );
+        assert_eq!(
+            config.required_plugins(),
+            &[
+                "superpowers@claude-plugins-official",
+                "code-review@claude-plugins-official",
+                "commit-commands@claude-plugins-official",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_plugins_config_empty() {
+        let toml = r#"
+[plugins]
+
+[default]
+bin_command = "midtown"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.plugins.required.is_empty());
     }
 }
