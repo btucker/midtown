@@ -570,7 +570,7 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// Render a single message into one or more Lines
 ///
 /// Layout for action messages:
-/// - " HH:MM * name message" all on one line
+/// - "* HH:MM:SS name message" all on one line
 ///
 /// Layout for regular messages when sender changes:
 /// - Line 1: Actor name alone
