@@ -85,6 +85,12 @@ or add the HTML comment anywhere in your comment:
 <!-- midtown: {name} -->
 ```
 
+**DO NOT use @mentions in GitHub** (PR descriptions, comments, reviews). GitHub interprets `@name` as GitHub usernames, not coworker names. Use @mentions only in the IRC channel chat where the daemon routes them.
+
+- ❌ GitHub: "Thanks @vernon for the review"
+- ✅ GitHub: "Thanks vernon for the review"
+- ✅ Channel: "@vernon please check the tests"
+
 Example PR creation:
 ```bash
 gh pr create --title "feat: Add auth endpoint" --body "$(cat <<'EOF'
