@@ -286,6 +286,9 @@ fn read_transcript_cursor(transcript_path: &str) -> u64 {
 /// Write the byte offset cursor for a transcript file.
 fn write_transcript_cursor(transcript_path: &str, offset: u64) {
     let cursor_path = transcript_cursor_path(transcript_path);
+    if let Some(parent) = cursor_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let _ = std::fs::write(cursor_path, offset.to_string());
 }
 
