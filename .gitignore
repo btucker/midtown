@@ -20,3 +20,8 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Coworker plan files (should go to ~/.claude/plans/)
+docs/plans/
+
+# Node.js dependencies
+web-app/node_modules/
