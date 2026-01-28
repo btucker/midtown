@@ -732,7 +732,7 @@ pub fn spawn_claude(
     // Add --continue flag if resuming a previous session
     let continue_flag = if resume { " --continue" } else { "" };
     let command = format!(
-        "export MIDTOWN_AGENT={} CLAUDE_CODE_TASK_LIST_ID={}; claude --dangerously-skip-permissions --session-id {}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --session-id {}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
         name,
         task_list_id,
         coworker_session_id,

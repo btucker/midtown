@@ -274,7 +274,7 @@ fn build_lead_claude_command(
     if is_existing {
         // Resume existing session, but still inject system prompt and settings
         Ok(format!(
-            "export CLAUDE_CODE_TASK_LIST_ID={}; claude --dangerously-skip-permissions --resume {} --settings {} --append-system-prompt \"$(cat {})\"",
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --resume {} --settings {} --append-system-prompt \"$(cat {})\"",
             task_list_id,
             session_id,
             settings_file.display(),
@@ -283,7 +283,7 @@ fn build_lead_claude_command(
     } else {
         // New session: use specific session ID, settings, and inject system prompt
         Ok(format!(
-            "export CLAUDE_CODE_TASK_LIST_ID={}; claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
             task_list_id,
             session_id,
             settings_file.display(),
@@ -1098,7 +1098,7 @@ mod tests {
         let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
 
         assert!(
-            cmd.contains("CLAUDE_CODE_TASK_LIST_ID=midtown-myrepo"),
+            cmd.contains("CLAUDE_CODE_TASK_LIST_ID='midtown-myrepo'"),
             "Command must set CLAUDE_CODE_TASK_LIST_ID, got: {}",
             cmd
         );
