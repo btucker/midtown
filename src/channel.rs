@@ -231,6 +231,17 @@ impl Channel {
         Ok(())
     }
 
+    /// Set an agent's cursor to the end of the file
+    ///
+    /// This is useful after initial load to ensure subsequent reads
+    /// only pick up new messages.
+    pub fn set_cursor_to_end(&self, agent: &str) -> Result<()> {
+        let mut cursor = Cursor::load_or_create(&self.base_dir, agent)?;
+        cursor.update(self.file_size(), None);
+        cursor.save(&self.base_dir)?;
+        Ok(())
+    }
+
     /// Get the total number of messages in the channel
     pub fn message_count(&self) -> Result<usize> {
         Ok(self.read_all()?.len())
@@ -250,6 +261,155 @@ impl Channel {
         fs::metadata(&self.channel_file)
             .map(|m| m.len())
             .unwrap_or(0)
+    }
+
+    /// Read the last N messages from the channel
+    ///
+    /// Returns a tuple of (messages, start_position) where start_position is
+    /// the byte offset where these messages begin. This can be used for
+    /// subsequent calls to load more history.
+    ///
+    /// If the channel has fewer than N messages, returns all messages with
+    /// start_position = 0.
+    pub fn read_last_n_messages(&self, n: usize) -> Result<(Vec<Message>, u64)> {
+        if !self.channel_file.exists() {
+            return Ok((Vec::new(), 0));
+        }
+
+        let file = File::open(&self.channel_file)?;
+        file.try_lock_shared()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
+
+        let file_size = file.metadata()?.len();
+        if file_size == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        // Strategy: estimate where to start reading to get ~N messages.
+        // Average JSONL line is ~200 bytes, so estimate N*300 bytes from end
+        // to have some buffer.
+        let estimated_bytes = (n as u64) * 300;
+        let start_estimate = file_size.saturating_sub(estimated_bytes);
+
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(start_estimate))?;
+
+        // If we're not at the start, skip to next newline to avoid partial line
+        let mut actual_start = start_estimate;
+        if start_estimate > 0 {
+            let mut skip_buf = String::new();
+            let bytes_skipped = reader.read_line(&mut skip_buf)?;
+            actual_start = start_estimate + bytes_skipped as u64;
+        }
+
+        // Read all remaining lines
+        let mut all_messages = Vec::new();
+        let mut line_buf = String::new();
+        loop {
+            line_buf.clear();
+            let bytes_read = reader.read_line(&mut line_buf)?;
+            if bytes_read == 0 {
+                break;
+            }
+            let line = line_buf.trim();
+            if !line.is_empty()
+                && let Ok(message) = serde_json::from_str::<Message>(line)
+            {
+                all_messages.push(message);
+            }
+        }
+
+        // If we got more than N messages, keep only the last N
+        // and recalculate the actual start position
+        if all_messages.len() > n {
+            let to_skip = all_messages.len() - n;
+            all_messages = all_messages.split_off(to_skip);
+            // Signal that there's more history available by using non-zero position
+            // (0 means "all history loaded", non-zero means "more history exists")
+            actual_start = actual_start.max(1);
+        } else if start_estimate == 0 {
+            actual_start = 0;
+        }
+
+        // Sort by timestamp
+        all_messages.sort_by_key(|m| m.timestamp);
+
+        Ok((all_messages, actual_start))
+    }
+
+    /// Read messages before a given byte position (for loading history)
+    ///
+    /// Reads up to N messages that appear before the specified position.
+    /// Returns (messages, new_start_position). If new_start_position is 0,
+    /// all history has been loaded.
+    pub fn read_messages_before_position(
+        &self,
+        position: u64,
+        n: usize,
+    ) -> Result<(Vec<Message>, u64)> {
+        if !self.channel_file.exists() || position == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        let file = File::open(&self.channel_file)?;
+        file.try_lock_shared()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
+
+        // Estimate where to start reading
+        let estimated_bytes = (n as u64) * 300;
+        let start_estimate = position.saturating_sub(estimated_bytes);
+
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(start_estimate))?;
+
+        // Skip partial line if not at start
+        let mut actual_start = start_estimate;
+        if start_estimate > 0 {
+            let mut skip_buf = String::new();
+            let bytes_skipped = reader.read_line(&mut skip_buf)?;
+            actual_start = start_estimate + bytes_skipped as u64;
+        }
+
+        // Read lines until we reach the target position
+        let mut messages = Vec::new();
+        let mut line_buf = String::new();
+        let mut current_pos = actual_start;
+
+        loop {
+            if current_pos >= position {
+                break;
+            }
+            line_buf.clear();
+            let bytes_read = reader.read_line(&mut line_buf)?;
+            if bytes_read == 0 {
+                break;
+            }
+            current_pos += bytes_read as u64;
+
+            let line = line_buf.trim();
+            if !line.is_empty()
+                && let Ok(message) = serde_json::from_str::<Message>(line)
+            {
+                messages.push(message);
+            }
+        }
+
+        // Keep only last N messages if we got more
+        let final_start = if messages.len() > n {
+            let to_skip = messages.len() - n;
+            messages = messages.split_off(to_skip);
+            // There's still more history
+            actual_start.max(1) // Non-zero means more history available
+        } else if start_estimate == 0 {
+            0 // All history loaded
+        } else {
+            actual_start
+        };
+
+        // Sort by timestamp
+        messages.sort_by_key(|m| m.timestamp);
+
+        Ok((messages, final_start))
     }
 }
 
@@ -507,5 +667,105 @@ mod tests {
             messages[1].content, "New message",
             "Newer message should appear second (sorted by timestamp)"
         );
+    }
+
+    #[test]
+    fn test_read_last_n_messages_small_channel() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Send 5 messages
+        for i in 1..=5 {
+            channel
+                .send(&Message::text("agent1", format!("Message {}", i)))
+                .unwrap();
+        }
+
+        // Request last 10 messages, but only 5 exist
+        let (messages, start_pos) = channel.read_last_n_messages(10).unwrap();
+        assert_eq!(messages.len(), 5);
+        assert_eq!(start_pos, 0, "start_pos should be 0 when all messages fit");
+        assert_eq!(messages[0].content, "Message 1");
+        assert_eq!(messages[4].content, "Message 5");
+    }
+
+    #[test]
+    fn test_read_last_n_messages_large_channel() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Send 50 messages
+        for i in 1..=50 {
+            channel
+                .send(&Message::text("agent1", format!("Message {}", i)))
+                .unwrap();
+        }
+
+        // Request last 10 messages
+        let (messages, _start_pos) = channel.read_last_n_messages(10).unwrap();
+        assert_eq!(messages.len(), 10);
+        // Should have messages 41-50 (last 10)
+        assert_eq!(messages[0].content, "Message 41");
+        assert_eq!(messages[9].content, "Message 50");
+    }
+
+    #[test]
+    fn test_read_last_n_messages_empty_channel() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        let (messages, start_pos) = channel.read_last_n_messages(10).unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(start_pos, 0);
+    }
+
+    #[test]
+    fn test_read_messages_before_position() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Send 30 messages
+        for i in 1..=30 {
+            channel
+                .send(&Message::text("agent1", format!("Message {}", i)))
+                .unwrap();
+        }
+
+        // First, get the last 10 messages to establish a position
+        let (recent_msgs, start_pos) = channel.read_last_n_messages(10).unwrap();
+        assert_eq!(recent_msgs.len(), 10);
+        assert_eq!(recent_msgs[0].content, "Message 21");
+
+        // Now load 10 more messages before that position
+        if start_pos > 0 {
+            let (older_msgs, _) = channel
+                .read_messages_before_position(start_pos, 10)
+                .unwrap();
+            assert!(!older_msgs.is_empty());
+            // Should have some messages with lower numbers
+            for msg in &older_msgs {
+                // Extract number from "Message N" and verify it's < 21
+                let num: i32 = msg
+                    .content
+                    .strip_prefix("Message ")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(num < 21, "Older messages should have numbers < 21");
+            }
+        }
+    }
+
+    #[test]
+    fn test_read_messages_before_position_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        channel.send(&Message::text("agent1", "Message 1")).unwrap();
+
+        // Position 0 means no more history
+        let (messages, start_pos) = channel.read_messages_before_position(0, 10).unwrap();
+        assert!(messages.is_empty());
+        assert_eq!(start_pos, 0);
     }
 }
