@@ -34,11 +34,6 @@ pub fn handle_task_hook(event: &HookEvent) -> Result<Response, String> {
     task::handle_hook_standalone(event)
 }
 
-/// Handle coworker stop hook directly (no daemon required)
-pub fn handle_coworker_stop_hook() -> Result<Response, String> {
-    coworker::handle_stop_hook_standalone()
-}
-
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
     client.status()
 }

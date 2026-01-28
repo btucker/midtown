@@ -669,12 +669,6 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
         "editorMode": "normal",
         "enabledPlugins": user_plugins,
         "hooks": {
-            "Stop": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("{} --format json coworker stop-hook", bin_command)
-                }]
-            }],
             "PostToolUse": [{
                 "matcher": "TaskUpdate",
                 "hooks": [{
@@ -999,15 +993,8 @@ mod tests {
         // Verify editorMode is normal (not vim)
         assert_eq!(settings["editorMode"], "normal");
 
-        // Verify Stop hook structure
-        assert!(settings["hooks"]["Stop"].is_array());
-        let stop_hooks = &settings["hooks"]["Stop"][0]["hooks"];
-        assert!(stop_hooks.is_array());
-        assert_eq!(stop_hooks[0]["type"], "command");
-        assert_eq!(
-            stop_hooks[0]["command"],
-            "midtown --format json coworker stop-hook"
-        );
+        // Verify no Stop hook (removed - daemon handles work assignment)
+        assert!(settings["hooks"]["Stop"].is_null());
 
         // Verify PostToolUse hooks for task operations, questions, and insights
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
@@ -1049,17 +1036,6 @@ mod tests {
         assert_eq!(
             notification_hooks[0]["hooks"][0]["command"],
             "midtown hook idle"
-        );
-    }
-
-    #[test]
-    fn test_coworker_settings_json_custom_bin() {
-        let settings = coworker_settings_json("cargo run --release --");
-
-        let stop_hooks = &settings["hooks"]["Stop"][0]["hooks"];
-        assert_eq!(
-            stop_hooks[0]["command"],
-            "cargo run --release -- --format json coworker stop-hook"
         );
     }
 

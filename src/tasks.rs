@@ -186,19 +186,6 @@ pub fn get_in_progress_tasks_with_subjects() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Get pending tasks that have no owner (unclaimed).
-pub fn get_unclaimed_tasks() -> Vec<Task> {
-    read_tasks()
-        .into_iter()
-        .filter(|t| t.status == TaskStatus::Pending && t.owner.is_none())
-        .collect()
-}
-
-/// Count unclaimed pending tasks.
-pub fn count_unclaimed_tasks() -> usize {
-    get_unclaimed_tasks().len()
-}
-
 /// Get pending tasks (ready to work on).
 pub fn get_pending_tasks() -> Vec<Task> {
     read_tasks()
