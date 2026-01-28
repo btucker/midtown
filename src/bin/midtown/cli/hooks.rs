@@ -190,15 +190,20 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         status_items.extend(pr_messages);
     }
 
-    if status_items.is_empty() {
-        Ok(Response::Message {
-            message: "Channel synced, no orphaned tasks, no mergeable PRs".to_string(),
-        })
+    // Build the response message
+    let base_message = if status_items.is_empty() {
+        "Channel synced, no orphaned tasks, no mergeable PRs".to_string()
     } else {
-        Ok(Response::Message {
-            message: status_items.join("\n\n"),
-        })
-    }
+        status_items.join("\n\n")
+    };
+
+    // Always append test coverage reminder
+    let message = format!(
+        "{}\n\n📊 Test coverage: Keep an eye on test coverage. If new code lacks tests or coverage gaps are emerging, create tasks to close them.",
+        base_message
+    );
+
+    Ok(Response::Message { message })
 }
 
 /// Information about a mergeable PR.
