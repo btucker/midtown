@@ -254,25 +254,58 @@ impl CoworkerManager {
                     });
                 }
 
-                // Stale worktree - clean it up and retry
-                tracing::info!("Cleaning up stale worktree for {}", name);
-                self.worktree_manager
-                    .force_cleanup(&name)
-                    .map_err(|e| crate::Error::Rpc {
-                        code: -32603,
-                        message: format!("Failed to cleanup stale worktree for {}: {}", name, e),
-                    })?;
+                // Worktree exists but no window - validate it's a valid git worktree
+                let worktree_path = self.worktree_manager.worktree_path(&name);
+                if !is_valid_git_worktree(&worktree_path) {
+                    // Worktree is corrupted - clean up and recreate
+                    tracing::warn!(
+                        "Worktree for {} is corrupted (git metadata missing), recreating",
+                        name
+                    );
+                    self.worktree_manager
+                        .force_cleanup(&name)
+                        .map_err(|e| crate::Error::Rpc {
+                            code: -32603,
+                            message: format!(
+                                "Failed to cleanup corrupted worktree for {}: {}",
+                                name, e
+                            ),
+                        })?;
 
-                // Retry creating the worktree
-                self.worktree_manager
-                    .create(&name)
-                    .map_err(|e| crate::Error::Rpc {
-                        code: -32603,
-                        message: format!(
-                            "Failed to create worktree for {} after cleanup: {}",
-                            name, e
-                        ),
-                    })?
+                    // Retry creating the worktree
+                    self.worktree_manager
+                        .create(&name)
+                        .map_err(|e| crate::Error::Rpc {
+                            code: -32603,
+                            message: format!(
+                                "Failed to recreate worktree for {} after cleanup: {}",
+                                name, e
+                            ),
+                        })?
+                } else {
+                    // Valid worktree but stale (no window) - clean it up and recreate
+                    tracing::info!("Cleaning up stale worktree for {}", name);
+                    self.worktree_manager
+                        .force_cleanup(&name)
+                        .map_err(|e| crate::Error::Rpc {
+                            code: -32603,
+                            message: format!(
+                                "Failed to cleanup stale worktree for {}: {}",
+                                name, e
+                            ),
+                        })?;
+
+                    // Retry creating the worktree
+                    self.worktree_manager
+                        .create(&name)
+                        .map_err(|e| crate::Error::Rpc {
+                            code: -32603,
+                            message: format!(
+                                "Failed to create worktree for {} after cleanup: {}",
+                                name, e
+                            ),
+                        })?
+                }
             }
             Err(e) => {
                 return Err(crate::Error::Rpc {
@@ -508,22 +541,26 @@ impl CoworkerManager {
                         "Worktree for {} is corrupted (git metadata missing), recreating",
                         name
                     );
-                    if let Err(e) = self.worktree_manager.force_cleanup(name) {
-                        tracing::warn!("Failed to clean up corrupted worktree: {}", e);
-                    }
-                    // Try to create fresh worktree
-                    match self.worktree_manager.create(name) {
-                        Ok(path) => path,
-                        Err(e) => {
-                            return Err(crate::Error::Rpc {
-                                code: -32603,
-                                message: format!(
-                                    "Failed to recreate worktree for {} after cleanup: {}",
-                                    name, e
-                                ),
-                            });
-                        }
-                    }
+                    self.worktree_manager
+                        .force_cleanup(name)
+                        .map_err(|e| crate::Error::Rpc {
+                            code: -32603,
+                            message: format!(
+                                "Failed to cleanup corrupted worktree for {}: {}",
+                                name, e
+                            ),
+                        })?;
+
+                    // Retry creating the worktree
+                    self.worktree_manager
+                        .create(name)
+                        .map_err(|e| crate::Error::Rpc {
+                            code: -32603,
+                            message: format!(
+                                "Failed to recreate worktree for {} after cleanup: {}",
+                                name, e
+                            ),
+                        })?
                 } else {
                     worktree_path
                 }
@@ -985,5 +1022,46 @@ mod tests {
         // The worktree directory still exists but is now invalid
         assert!(worktree_path.exists());
         assert!(!is_valid_git_worktree(&worktree_path));
+    }
+
+    #[test]
+    fn test_worktree_recovery_flow() {
+        // Test the full recovery flow: detect corrupted → cleanup → recreate
+        let (manager, temp_dir) = test_manager();
+
+        // Create a worktree
+        let worktree_path = manager.worktree_manager.create("testworker").unwrap();
+        assert!(worktree_path.exists());
+        assert!(is_valid_git_worktree(&worktree_path));
+
+        // Simulate corruption by removing the git worktree metadata
+        let git_worktrees_dir = temp_dir.path().join(".git").join("worktrees");
+        if git_worktrees_dir.exists() {
+            std::fs::remove_dir_all(&git_worktrees_dir)
+                .expect("Failed to remove worktrees metadata");
+        }
+
+        // Verify it's now corrupted
+        assert!(worktree_path.exists());
+        assert!(!is_valid_git_worktree(&worktree_path));
+
+        // Now test recovery: force_cleanup should remove the directory
+        manager
+            .worktree_manager
+            .force_cleanup("testworker")
+            .expect("force_cleanup should succeed");
+
+        // Worktree directory should be gone
+        assert!(!worktree_path.exists());
+
+        // Recreate should now succeed
+        let new_path = manager
+            .worktree_manager
+            .create("testworker")
+            .expect("create should succeed after cleanup");
+
+        // New worktree should be valid
+        assert!(new_path.exists());
+        assert!(is_valid_git_worktree(&new_path));
     }
 }
