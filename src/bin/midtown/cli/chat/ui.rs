@@ -80,6 +80,7 @@ fn is_system_like_sender(sender: &str) -> bool {
 fn get_sender_color(name: &str) -> Color {
     match name.to_lowercase().as_str() {
         "lead" => Color::LightYellow,
+        "daemon" => Color::DarkGray,
         "github" => Color::DarkGray,
         "system" => Color::DarkGray,
         _ => {
@@ -713,7 +714,7 @@ fn render_message(
     let content_style = match msg.message_type {
         MessageType::Action => Style::default().fg(color),
         MessageType::System => Style::default().fg(Color::DarkGray),
-        _ if msg.from == "github" => Style::default().fg(Color::DarkGray),
+        _ if is_system_like_sender(&msg.from) => Style::default().fg(Color::DarkGray),
         _ => Style::default().fg(Color::White),
     };
 
@@ -760,19 +761,6 @@ fn render_message(
         return result;
     }
 
-    // For system messages (or daemon messages), render entire line in gray (no timestamp gutter)
-    if msg.message_type == MessageType::System || msg.from == "daemon" {
-        let mut result = Vec::new();
-        // Add blank line before system messages, unless prev was also system-like
-        if let Some(prev) = prev_sender
-            && !is_system_like_sender(prev)
-        {
-            result.push(Line::from(""));
-        }
-        result.extend(render_system_message(&msg.content, width));
-        return result;
-    }
-
     // Calculate content width (after " HH:MM " gutter)
     let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
     if content_width == 0 {
@@ -786,9 +774,10 @@ fn render_message(
 
     // Add sender name line if sender changed
     if show_sender {
-        // Add blank line before new sender (except for first message or after system-like senders)
-        // This groups system messages together with the following regular messages
-        if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
+        // Add blank line before new sender, except between consecutive system-like senders
+        if let Some(prev) = prev_sender
+            && !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
+        {
             result.push(Line::from(""));
         }
         // Look up the sender's current task (case-insensitive)
@@ -811,17 +800,6 @@ fn render_message(
     }
 
     result
-}
-
-/// Render a system message: entire line in gray, no timestamp gutter
-fn render_system_message(content: &str, width: usize) -> Vec<Line<'static>> {
-    let style = Style::default().fg(Color::DarkGray);
-    let content_lines = wrap_content(content, width);
-
-    content_lines
-        .into_iter()
-        .map(|line| Line::from(vec![Span::styled(line, style)]))
-        .collect()
 }
 
 /// Build a line with the sender name and optionally their current task
@@ -1369,17 +1347,18 @@ mod tests {
 
         let current_tasks = HashMap::new();
 
-        // System messages are gray, no timestamp gutter, just the content
+        // System messages now render through standard path: sender line + timestamp line
         let lines = render_message(&msg, 80, None, &current_tasks);
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 2); // sender line + content line
 
-        // Should be just the content, no timestamp
-        let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(content, "Session started");
-        assert!(!content.contains(":")); // No timestamp like "10:12"
-
-        // Verify gray color (DarkGray)
+        // First line is the sender name (<system>)
+        let sender: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(sender, "<system>");
         assert_eq!(lines[0].spans[0].style.fg, Some(Color::DarkGray));
+
+        // Second line has timestamp + content in DarkGray
+        let content: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(content.contains("Session started"));
     }
 
     #[test]
@@ -1705,7 +1684,7 @@ mod tests {
             "Should NOT have blank line between daemon and github messages"
         );
 
-        // Test 4: daemon -> regular (park) should NOT add blank (groups with system)
+        // Test 4: daemon -> regular (park) SHOULD add blank line (different sender types)
         let park_msg = Message {
             id: "5".to_string(),
             from: "park".to_string(),
@@ -1716,8 +1695,8 @@ mod tests {
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks);
         assert_eq!(
             count_blank_lines(&park_lines),
-            0,
-            "Should NOT have blank line when transitioning from system-like to regular"
+            1,
+            "Should have blank line when transitioning from system-like to regular"
         );
 
         // Test 5: Verify is_system_like_sender helper
