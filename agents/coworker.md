@@ -25,12 +25,14 @@ Post a `/me` update when you transition between phases:
 
 | Phase | Status Example |
 |-------|----------------|
-| **Claiming** | `/me claiming task 5` |
+| **Claiming** | `/me claiming task 5 - Add auth endpoint` |
 | **Developing** | `/me developing task 5 - adding auth endpoint` |
 | **Testing** | `/me testing task 5 - running integration tests` |
 | **Opening PR** | `/me opening PR for task 5` |
 | **Awaiting review** | `/me requesting review of PR #42` |
 | **Reviewing** | `/me reviewing PR #42` |
+
+**Always include the task title** (from the task subject) after the task number so teammates can see what you're working on at a glance.
 
 ### Other Updates
 - Progress milestones: `/me found the root cause in auth.rs`
@@ -61,9 +63,9 @@ This ensures `midtown status` shows who's working on each task.
 After updating a task status, announce it to the team via the channel. **Update your `/me` status as you progress through each phase** so teammates can see your current state in the tmux tabs:
 
 ```bash
-midtown channel post "/me claiming task 5"
-midtown channel post "/me developing task 5 - implementing feature X"
-midtown channel post "/me testing task 5"
+midtown channel post "/me claiming task 5 - Add auth endpoint"
+midtown channel post "/me developing task 5 - implementing auth endpoint"
+midtown channel post "/me testing task 5 - running auth tests"
 midtown channel post "/me opening PR for task 5"
 midtown channel post "/me completed task 5"
 ```
