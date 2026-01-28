@@ -438,17 +438,31 @@ fn draw_kanban_column(
 
             // Only apply hyperlink to the first line of items that have URLs
             if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
-                // Extract just the "PR#XX" portion as the clickable target
-                if let Some(pr_start) = truncated.find("PR#") {
-                    let pr_text: String = truncated[pr_start..]
+                // Extract the PR identifier as the clickable target.
+                // Prefer "PR#XX" but fall back to "#XX" for narrow columns
+                // where truncate_str strips the "PR" prefix.
+                let (link_start, link_text) = if let Some(start) = truncated.find("PR#") {
+                    let text: String = truncated[start..]
                         .chars()
                         .take_while(|c| *c != ' ')
                         .collect();
-                    let char_offset = truncated[..pr_start].chars().count() as u16;
+                    (start, text)
+                } else if let Some(start) = truncated.find('#') {
+                    let text: String = truncated[start..]
+                        .chars()
+                        .take_while(|c| *c != ' ')
+                        .collect();
+                    (start, text)
+                } else {
+                    (0, String::new())
+                };
+
+                if !link_text.is_empty() {
+                    let char_offset = truncated[..link_start].chars().count() as u16;
                     hyperlinks.push(Hyperlink {
                         x: inner.x + char_offset,
                         y,
-                        text: pr_text,
+                        text: link_text,
                         url: url.clone(),
                         first_char_color: None,
                     });
