@@ -31,6 +31,21 @@ pub struct Hyperlink {
     pub first_char_color: Option<Color>,
 }
 
+/// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
+#[derive(Debug, Clone)]
+pub struct Hyperlink {
+    /// Screen x coordinate
+    pub x: u16,
+    /// Screen y coordinate
+    pub y: u16,
+    /// Text to display (will be rewritten with OSC 8 wrapping)
+    pub text: String,
+    /// URL to link to
+    pub url: String,
+    /// Optional color for the first character (CI status dot)
+    pub first_char_color: Option<Color>,
+}
+
 /// Format duration as (Xm) or (Xh) for display
 fn format_duration_minutes(since: DateTime<Utc>) -> String {
     let now = Utc::now();
