@@ -1762,11 +1762,27 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Check if text contains a coworker review signature.
+///
+/// Coworker reviews are identified by:
+/// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
+/// - The "<!-- midtown:" frontmatter (comment-based reviews)
+/// - The "## Code Review by" header (comment-based reviews)
+fn text_contains_review_signature(text: &str) -> bool {
+    text.contains("🤖 Reviewed by")
+        || text.contains("Reviewed by")
+        || text.contains("<!-- midtown:")
+        || text.contains("## Code Review by")
+}
+
 /// Check if a PR has a review comment from a Claude coworker.
 ///
-/// Claude reviews are identified by the "🤖 Reviewed by" signature in the review body.
+/// Checks both formal reviews (`.reviews[].body`) and comments (`.comments[].body`)
+/// since coworkers use comments for reviews (they share one GitHub user and can't
+/// approve their own PRs).
 fn pr_has_claude_review(pr_number: u64) -> bool {
-    let output = std::process::Command::new("gh")
+    // Check formal reviews first
+    let reviews_output = std::process::Command::new("gh")
         .args([
             "pr",
             "view",
@@ -1778,14 +1794,35 @@ fn pr_has_claude_review(pr_number: u64) -> bool {
         ])
         .output();
 
-    match output {
+    if let Ok(output) = reviews_output
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if text_contains_review_signature(&stdout) {
+            return true;
+        }
+    }
+
+    // Check comments (where coworkers post their reviews)
+    let comments_output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "comments",
+            "-q",
+            ".comments[].body",
+        ])
+        .output();
+
+    match comments_output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // Check for the Claude review signature
-            stdout.contains("🤖 Reviewed by") || stdout.contains("Reviewed by")
+            text_contains_review_signature(&stdout)
         }
         _ => {
-            debug!("Failed to check reviews for PR #{}", pr_number);
+            debug!("Failed to check comments for PR #{}", pr_number);
             // Assume no review on error (will try again later)
             false
         }
@@ -3613,5 +3650,59 @@ mod tests {
         // Unknown workers are equal, so their order is preserved (stable sort)
         assert!(workers[1].1.is_none());
         assert!(workers[2].1.is_none());
+    }
+
+    // Review signature detection tests
+    #[test]
+    fn test_text_contains_review_signature_emoji() {
+        // Legacy formal review signature
+        assert!(text_contains_review_signature("🤖 Reviewed by lexington"));
+        assert!(text_contains_review_signature(
+            "Some preamble\n🤖 Reviewed by park\nMore text"
+        ));
+    }
+
+    #[test]
+    fn test_text_contains_review_signature_plain() {
+        // Plain "Reviewed by" without emoji
+        assert!(text_contains_review_signature("Reviewed by columbus"));
+        assert!(text_contains_review_signature("LGTM! Reviewed by york"));
+    }
+
+    #[test]
+    fn test_text_contains_review_signature_frontmatter() {
+        // Coworker comment frontmatter (used in gh pr comment)
+        assert!(text_contains_review_signature(
+            "<!-- midtown: lexington -->"
+        ));
+        assert!(text_contains_review_signature(
+            "<!-- midtown: park -->\n\n## Summary\nLooks good!"
+        ));
+        assert!(text_contains_review_signature(
+            "Some text\n<!-- midtown: york -->\nMore text"
+        ));
+    }
+
+    #[test]
+    fn test_text_contains_review_signature_code_review_header() {
+        // Code review header used by review agent
+        assert!(text_contains_review_signature("## Code Review by madison"));
+        assert!(text_contains_review_signature(
+            "<!-- midtown: madison -->\n\n## Code Review by madison\n\nNice work!"
+        ));
+    }
+
+    #[test]
+    fn test_text_contains_review_signature_none() {
+        // Text without any review signature should return false
+        assert!(!text_contains_review_signature("Just a regular comment"));
+        assert!(!text_contains_review_signature("LGTM!"));
+        assert!(!text_contains_review_signature(
+            "Thanks for the changes, looks good to me."
+        ));
+        assert!(!text_contains_review_signature(""));
+        // Partial matches shouldn't count
+        assert!(!text_contains_review_signature("midtown"));
+        assert!(!text_contains_review_signature("Code Review"));
     }
 }
