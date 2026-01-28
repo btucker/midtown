@@ -615,6 +615,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodically check for idle coworkers and shut them down
             _ = idle_check_interval.tick() => {
+                // Sync internal state with actual tmux windows first
+                if let Err(e) = state.coworkers.sync_with_tmux() {
+                    warn!("Failed to sync coworker state with tmux: {}", e);
+                }
                 check_and_shutdown_idle_coworkers(&state).await;
             }
 
