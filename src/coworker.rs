@@ -406,16 +406,16 @@ impl CoworkerManager {
     ///
     /// This is used to notify the Lead about coworker feedback requests.
     pub fn nudge_lead(&self, message: &str) -> crate::Result<()> {
-        // Check if Lead window exists
-        if !tmux::window_exists(&self.session_name, "Lead")? {
+        // Check if lead window exists
+        if !tmux::window_exists(&self.session_name, "lead")? {
             return Err(crate::Error::Rpc {
                 code: -32602,
                 message: "Lead session not found".to_string(),
             });
         }
 
-        // Send keys to the Lead window
-        tmux::send_keys(&self.session_name, "Lead", message)
+        // Send keys to the lead window
+        tmux::send_keys(&self.session_name, "lead", message)
     }
 
     /// Spawn a coworker with a specific name.
