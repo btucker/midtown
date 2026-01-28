@@ -37,6 +37,14 @@ Post a `/me` update when you transition between phases:
 - Blocked: `blocked on task 3, need API spec clarified`
 - Questions: `@Lead should this handle the edge case?`
 
+### Idle Status (No Feedback Needed)
+When you become idle, simply post your status without requesting feedback:
+- `/me idle - waiting for tasks`
+- `/me idle - pending tasks are blocked`
+- `Acknowledged @lead - standing by for auto-shutdown`
+
+These are **informational only** - do not ask questions or request confirmation. The daemon will auto-shutdown idle coworkers or assign new work when available.
+
 ## Task Workflow
 Use Claude Code's built-in task tools to manage tasks:
 - `TaskList` - See available tasks
