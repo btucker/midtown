@@ -3,7 +3,10 @@
 //! These tests require tmux to be running and are marked as ignored
 //! by default for CI environments. Run with `cargo test -- --ignored`
 //! to execute them locally.
+//!
+//! All tests have a 30-second timeout to prevent CI from hanging.
 
+use ntest::timeout;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -68,6 +71,7 @@ fn tmux_available() -> bool {
 }
 
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux to be running
 fn test_nudge_verification_success() {
     if !tmux_available() {
@@ -121,6 +125,7 @@ fn test_nudge_verification_success() {
 }
 
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux to be running
 fn test_nudge_verification_returns_error_for_missing_message() {
     if !tmux_available() {
@@ -164,6 +169,7 @@ fn test_nudge_verification_returns_error_for_missing_message() {
 }
 
 #[test]
+#[timeout(30000)]
 #[ignore] // Requires tmux to be running
 fn test_nudge_pane_verification_with_special_characters() {
     if !tmux_available() {
