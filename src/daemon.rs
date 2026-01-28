@@ -290,11 +290,11 @@ pub struct PrReviewTracker {
 /// This gives CI time to start and allows the author to add context.
 pub const PR_REVIEW_DELAY_SECS: u64 = 120;
 
-/// How long a review assignment is valid before it can be reassigned (30 minutes)
-pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 1800;
+/// How long a review assignment is valid before it can be reassigned (10 minutes)
+pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
 
 /// Maximum number of concurrent review assignments (rate limiting)
-pub const MAX_CONCURRENT_REVIEWS: usize = 2;
+pub const MAX_CONCURRENT_REVIEWS: usize = 4;
 
 impl PrReviewTracker {
     pub fn new() -> Self {
@@ -1376,6 +1376,15 @@ async fn spawn_reviewers_for_prs(
         // Check if PR already has a Claude review (expensive, do last)
         if pr_has_claude_review(pr_number) {
             debug!("PR #{} already has a Claude review", pr_number);
+            // Free the tracker slot if this PR was assigned — the review completed
+            // but mark_reviewed() was never called (it only fires on nudge failure)
+            {
+                let mut tracker = state.pr_review_tracker.lock().await;
+                if tracker.is_assigned(pr_number) {
+                    debug!("PR #{} review completed, freeing tracker slot", pr_number);
+                    tracker.mark_reviewed(pr_number);
+                }
+            }
             continue;
         }
 
