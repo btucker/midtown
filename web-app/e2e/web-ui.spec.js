@@ -27,7 +27,8 @@ test.describe('Web UI', () => {
       await expect(messageContainer).toBeVisible()
 
       // Check that at least one message is rendered (from channel history)
-      const messages = page.locator('.message')
+      // Uses .message-line for regular messages or .system-message for system messages
+      const messages = page.locator('.message-line, .system-message')
       await expect(messages.first()).toBeVisible({ timeout: 5000 })
     })
 
