@@ -15,8 +15,6 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -25,7 +23,6 @@ use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
 use crate::message::Message;
-use crate::paths;
 use crate::tmux;
 
 /// Configuration for the web server
@@ -315,102 +312,6 @@ async fn api_status(State(_state): State<Arc<WebState>>) -> Result<impl IntoResp
 
     Ok(axum::Json(status))
 }
-
-/// Call the daemon's "status" RPC method over Unix socket.
-///
-/// Returns the daemon's status response, or a fallback JSON if the daemon is unreachable.
-fn call_daemon_status(repo: &str) -> serde_json::Value {
-    let socket_path = paths::daemon_socket_for_repo(repo);
-
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("Cannot connect to daemon socket: {}", e);
-            return serde_json::json!({
-                "daemon": "stopped",
-                "coworkers": [],
-                "tasks": []
-            });
-        }
-    };
-
-    // Set a timeout so we don't hang forever
-    let timeout = std::time::Duration::from_secs(5);
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "status",
-        "id": 1
-    });
-
-    if let Err(e) = writeln!(stream, "{}", request) {
-        warn!("Failed to write to daemon socket: {}", e);
-        return serde_json::json!({
-            "daemon": "error",
-            "coworkers": [],
-            "tasks": []
-        });
-    }
-
-    if let Err(e) = stream.flush() {
-        warn!("Failed to flush daemon socket: {}", e);
-        return serde_json::json!({
-            "daemon": "error",
-            "coworkers": [],
-            "tasks": []
-        });
-    }
-
-    let mut reader = BufReader::new(stream);
-    let mut response_line = String::new();
-    if let Err(e) = reader.read_line(&mut response_line) {
-        warn!("Failed to read from daemon socket: {}", e);
-        return serde_json::json!({
-            "daemon": "error",
-            "coworkers": [],
-            "tasks": []
-        });
-    }
-
-    // Parse the JSON-RPC response and extract the result
-    match serde_json::from_str::<serde_json::Value>(&response_line) {
-        Ok(rpc_response) => {
-            if let Some(result) = rpc_response.get("result") {
-                // Add top-level "daemon" field for the frontend
-                let mut status = result.clone();
-                if let Some(obj) = status.as_object_mut() {
-                    obj.entry("daemon".to_string())
-                        .or_insert(serde_json::json!("running"));
-                }
-                status
-            } else if let Some(error) = rpc_response.get("error") {
-                warn!("Daemon RPC error: {:?}", error);
-                serde_json::json!({
-                    "daemon": "error",
-                    "coworkers": [],
-                    "tasks": []
-                })
-            } else {
-                serde_json::json!({
-                    "daemon": "running",
-                    "coworkers": [],
-                    "tasks": []
-                })
-            }
-        }
-        Err(e) => {
-            warn!("Failed to parse daemon response: {}", e);
-            serde_json::json!({
-                "daemon": "error",
-                "coworkers": [],
-                "tasks": []
-            })
-        }
-    }
-}
-
 /// Get the lead's tmux pane content
 ///
 /// Captures the current content of the lead window's pane via tmux.
