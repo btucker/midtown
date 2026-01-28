@@ -617,6 +617,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         handle_pr_comment_nudge(&state, activity).await;
                     });
                 }
+
+                // Route @mentions in webhook messages directly (chat monitor skips
+                // "github" sender for loop protection, so we handle it here)
+                route_mentions(&state, &webhook_event.message);
             }
 
             // Periodically check for idle coworkers and shut them down
@@ -3487,6 +3491,30 @@ mod tests {
         assert!(SKIP_SENDERS.contains(&"midtown"));
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
+    }
+
+    #[test]
+    fn test_webhook_mentions_should_be_extracted() {
+        // Webhook messages from "github" contain @mentions that should be routed.
+        // The chat monitor skips "github" messages for loop protection, so the
+        // webhook handler must call route_mentions directly.
+        //
+        // Example: "@riverside merged PR #178" from sender "github"
+        // The @riverside mention should be extracted and routed.
+        let webhook_content = "@riverside merged PR #178";
+        let mentions = extract_mentions(webhook_content);
+        assert_eq!(mentions, vec!["riverside"]);
+
+        // PR merge notifications often include PR author in the message
+        let merge_content = "@lexington PR #42 was merged by btucker";
+        let mentions = extract_mentions(merge_content);
+        assert_eq!(mentions, vec!["lexington"]);
+
+        // Multiple mentions in webhook messages
+        let review_content = "@park @madison please review PR #99";
+        let mentions = extract_mentions(review_content);
+        assert!(mentions.contains(&"park".to_string()));
+        assert!(mentions.contains(&"madison".to_string()));
     }
 
     // Duplicate task worker detection tests
