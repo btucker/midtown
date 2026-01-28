@@ -652,12 +652,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     info!("Stopping chat monitor task...");
     let _ = chat_monitor_shutdown_tx.send(true);
 
-    // Shutdown all coworkers
-    info!("Shutting down coworkers...");
-    if let Err(e) = state.coworkers.shutdown_all() {
-        warn!("Error shutting down coworkers: {}", e);
-    }
-
     // Clean up socket file
     if config.socket_path.exists() {
         std::fs::remove_file(&config.socket_path)?;
