@@ -100,7 +100,10 @@ impl CoworkerManager {
     ///
     /// Randomly selects from available primary avenue names first.
     /// Falls back to overflow names only when all primary names are in use.
-    fn next_name(&self) -> Option<String> {
+    ///
+    /// This can be used to get a name before spawning, e.g., to assign
+    /// task ownership atomically before the coworker starts.
+    pub fn next_available_name(&self) -> Option<String> {
         let coworkers = self.coworkers.read().unwrap();
 
         // Collect available primary avenue names
@@ -142,10 +145,12 @@ impl CoworkerManager {
     /// If `resume` is true, passes `--continue` to claude to resume the previous
     /// session from this worktree (useful for recovering orphaned tasks).
     pub fn spawn(&self, resume: bool) -> crate::Result<String> {
-        let name = self.next_name().ok_or_else(|| crate::Error::Rpc {
-            code: -32603,
-            message: "No available coworker slots (all avenue names in use)".to_string(),
-        })?;
+        let name = self
+            .next_available_name()
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32603,
+                message: "No available coworker slots (all avenue names in use)".to_string(),
+            })?;
 
         // Try to create an isolated worktree for this coworker
         let worktree_path = match self.worktree_manager.create(&name) {
@@ -598,16 +603,16 @@ mod tests {
     }
 
     #[test]
-    fn test_next_name_empty() {
+    fn test_next_available_name_empty() {
         let (manager, _temp_dir) = test_manager();
-        let name = manager.next_name();
+        let name = manager.next_available_name();
         assert!(name.is_some());
         // Should be one of the primary avenue names
         assert!(AVENUE_NAMES.contains(&name.as_ref().unwrap().as_str()));
     }
 
     #[test]
-    fn test_next_name_with_used_names() {
+    fn test_next_available_name_with_used_names() {
         let (manager, _temp_dir) = test_manager();
 
         // Manually insert a coworker to simulate "lexington" being in use
@@ -627,7 +632,7 @@ mod tests {
         }
 
         // Should return a name that is NOT "lexington"
-        let name = manager.next_name();
+        let name = manager.next_available_name();
         assert!(name.is_some());
         let name = name.unwrap();
         assert_ne!(name, "lexington");
@@ -636,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_next_name_overflow() {
+    fn test_next_available_name_overflow() {
         let (manager, _temp_dir) = test_manager();
 
         // Fill all primary avenue names
@@ -658,13 +663,13 @@ mod tests {
         }
 
         // Should return an overflow name (randomized)
-        let name = manager.next_name();
+        let name = manager.next_available_name();
         assert!(name.is_some());
         assert!(OVERFLOW_NAMES.contains(&name.as_ref().unwrap().as_str()));
     }
 
     #[test]
-    fn test_next_name_exhausted() {
+    fn test_next_available_name_exhausted() {
         let (manager, _temp_dir) = test_manager();
 
         // Fill all names (primary and overflow)
@@ -686,7 +691,7 @@ mod tests {
         }
 
         // Should return None when all names exhausted
-        assert_eq!(manager.next_name(), None);
+        assert_eq!(manager.next_available_name(), None);
     }
 
     #[test]
