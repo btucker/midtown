@@ -709,6 +709,18 @@ mod tests {
             .output()
             .expect("Failed to init git repo");
 
+        // Configure git user (required in CI where no global config exists)
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to set git user.email");
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to set git user.name");
+
         // Create an initial commit (required for worktrees)
         Command::new("git")
             .args(["commit", "--allow-empty", "-m", "Initial commit"])
@@ -921,6 +933,18 @@ mod tests {
             .current_dir(temp_dir.path())
             .output()
             .expect("Failed to init git repo");
+
+        // Configure git user (required in CI)
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to set git user.email");
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to set git user.name");
 
         Command::new("git")
             .args(["commit", "--allow-empty", "-m", "Initial commit"])
