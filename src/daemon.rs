@@ -555,6 +555,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             // Periodic orphan check
             _ = orphan_check_interval.tick() => {
                 check_and_recover_orphans(&state);
+                spawn_for_pending_tasks(&state);
             }
 
             // Handle SIGTERM
@@ -2536,6 +2537,149 @@ fn check_and_recover_orphans(state: &DaemonState) {
 /// Get list of in_progress tasks with their owners and subjects.
 fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
     crate::tasks::get_in_progress_tasks_with_subjects()
+}
+
+// ============================================================================
+// Pending task auto-spawn
+// ============================================================================
+
+/// Spawn coworkers for pending tasks.
+///
+/// Handles two cases:
+/// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
+/// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
+fn spawn_for_pending_tasks(state: &DaemonState) {
+    // Get list of currently active coworkers
+    let active_names: std::collections::HashSet<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|cw| cw.name.to_lowercase())
+        .collect();
+
+    // Case 1: Pending tasks with owners assigned but coworker not running
+    let pending_with_owners = crate::tasks::get_pending_tasks_with_owners();
+    for (task_id, task_subject, owner) in pending_with_owners {
+        // Skip if owner is Lead or empty
+        if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+            continue;
+        }
+
+        // Skip if coworker is already active
+        if active_names.contains(&owner.to_lowercase()) {
+            continue;
+        }
+
+        // Coworker is assigned but not running - spawn and nudge them
+        info!(
+            "Pending task #{} is assigned to {} but coworker not running - spawning",
+            task_id, owner
+        );
+
+        match state.coworkers.spawn_with_name(&owner, true) {
+            Ok(_) => {
+                info!("Spawned coworker {} for pending task #{}", owner, task_id);
+
+                // Post to channel
+                let msg = Message::text(
+                    "daemon",
+                    format!(
+                        "🚀 Spawned coworker {} for pending task #{}",
+                        owner, task_id
+                    ),
+                );
+                if let Err(e) = state.channel.send(&msg) {
+                    warn!("Failed to post spawn message: {}", e);
+                }
+
+                // Give coworker time to start
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // Nudge them about the task
+                let nudge_msg = format!(
+                    "You've been assigned task #{}: {}. Get started!",
+                    task_id, task_subject
+                );
+
+                if let Err(e) = state.coworkers.nudge(&owner, &nudge_msg) {
+                    warn!("Failed to nudge {} about task #{}: {}", owner, task_id, e);
+                } else {
+                    info!("Nudged {} about pending task #{}", owner, task_id);
+                }
+            }
+            Err(e) => {
+                debug!(
+                    "Could not spawn {} for pending task #{}: {}",
+                    owner, task_id, e
+                );
+            }
+        }
+    }
+
+    // Case 2: Pending tasks without owners - spawn a new coworker and assign
+    let pending_unowned = crate::tasks::get_pending_tasks_without_owners();
+    for task in pending_unowned {
+        // Spawn a new coworker
+        match state.coworkers.spawn(false) {
+            Ok(coworker_name) => {
+                info!(
+                    "Spawned new coworker {} for unowned task #{}",
+                    coworker_name, task.id
+                );
+
+                // Assign the task to this coworker
+                if let Err(e) = crate::tasks::update_task_owner(&task.id, &coworker_name) {
+                    warn!(
+                        "Failed to assign task #{} to {}: {}",
+                        task.id, coworker_name, e
+                    );
+                    continue;
+                }
+
+                // Post to channel
+                let msg = Message::text(
+                    "daemon",
+                    format!(
+                        "🚀 Spawned coworker {} and assigned task #{}: {}",
+                        coworker_name, task.id, task.subject
+                    ),
+                );
+                if let Err(e) = state.channel.send(&msg) {
+                    warn!("Failed to post assignment message: {}", e);
+                }
+
+                // Give coworker time to start
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // Nudge them about the task
+                let nudge_msg = format!(
+                    "You've been assigned task #{}: {}. Get started!",
+                    task.id, task.subject
+                );
+
+                if let Err(e) = state.coworkers.nudge(&coworker_name, &nudge_msg) {
+                    warn!(
+                        "Failed to nudge {} about task #{}: {}",
+                        coworker_name, task.id, e
+                    );
+                } else {
+                    info!(
+                        "Nudged {} about newly assigned task #{}",
+                        coworker_name, task.id
+                    );
+                }
+            }
+            Err(e) => {
+                // Could not spawn - might be out of coworker slots
+                debug!(
+                    "Could not spawn coworker for unowned task #{}: {}",
+                    task.id, e
+                );
+                // Stop trying - if we're out of slots we'll try again next tick
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
