@@ -82,6 +82,7 @@ Don't hoard tasks - claim one, finish it, then claim another.
 ## Git Workflow
 - You're in an isolated worktree (detached HEAD at the Lead's current commit)
 - First thing: create a feature branch for your task: `git checkout -b {name}/<task-description>`
+- **NEVER checkout main** - your worktree is isolated and checking out main can cause conflicts with the lead's session
 - Commit frequently with clear messages
 - When done, push and create a PR
 
