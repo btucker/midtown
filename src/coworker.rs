@@ -219,7 +219,11 @@ impl CoworkerManager {
     ///
     /// If `resume` is true, passes `--continue` to claude to resume the previous
     /// session from this worktree (useful for recovering orphaned tasks).
-    pub fn spawn(&self, resume: bool) -> crate::Result<String> {
+    ///
+    /// If `prompt` is provided, waits for the coworker to initialize and sends the
+    /// prompt as the initial nudge. This is the preferred way to send initial
+    /// instructions as it avoids the race condition of spawning then nudging separately.
+    pub fn spawn(&self, resume: bool, prompt: Option<&str>) -> crate::Result<String> {
         let name = self
             .next_available_name()
             .ok_or_else(|| crate::Error::Rpc {
@@ -305,6 +309,11 @@ impl CoworkerManager {
         {
             let mut coworkers = self.coworkers.write().unwrap();
             coworkers.insert(name.clone(), coworker);
+        }
+
+        // If a prompt was provided, wait for initialization and send it
+        if let Some(prompt_text) = prompt {
+            self.send_initial_prompt(&name, prompt_text);
         }
 
         Ok(name)
@@ -402,6 +411,23 @@ impl CoworkerManager {
         tmux::send_keys(&self.session_name, name, message)
     }
 
+    /// Wait for a coworker to initialize and send an initial prompt.
+    ///
+    /// This is a helper method used by `spawn()` and `spawn_with_name()` to avoid
+    /// code duplication. It waits 2 seconds for the coworker to initialize, then
+    /// sends the prompt as a nudge.
+    fn send_initial_prompt(&self, name: &str, prompt: &str) {
+        // Wait for coworker to initialize before sending prompt
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Send the initial prompt as a nudge
+        if let Err(e) = self.nudge(name, prompt) {
+            tracing::warn!("Failed to send initial prompt to {}: {}", name, e);
+        } else {
+            tracing::info!("Sent initial prompt to {}", name);
+        }
+    }
+
     /// Send a nudge (input) to the Lead session.
     ///
     /// This is used to notify the Lead about coworker feedback requests.
@@ -429,8 +455,17 @@ impl CoworkerManager {
     /// If `resume` is true, passes `--continue` to claude to resume the previous
     /// session from this worktree (preserving context).
     ///
+    /// If `prompt` is provided, waits for the coworker to initialize and sends the
+    /// prompt as the initial nudge. This is the preferred way to send initial
+    /// instructions as it avoids the race condition of spawning then nudging separately.
+    ///
     /// Returns the coworker name on success.
-    pub fn spawn_with_name(&self, name: &str, resume: bool) -> crate::Result<String> {
+    pub fn spawn_with_name(
+        &self,
+        name: &str,
+        resume: bool,
+        prompt: Option<&str>,
+    ) -> crate::Result<String> {
         // Check if already running
         {
             let coworkers = self.coworkers.read().unwrap();
@@ -505,6 +540,12 @@ impl CoworkerManager {
         }
 
         tracing::info!("Spawned coworker {} with resume={}", name, resume);
+
+        // If a prompt was provided, wait for initialization and send it
+        if let Some(prompt_text) = prompt {
+            self.send_initial_prompt(name, prompt_text);
+        }
+
         Ok(name.to_string())
     }
 
@@ -516,7 +557,7 @@ impl CoworkerManager {
     ///
     /// The worktree is reused if it exists, allowing the coworker to resume
     /// where they left off.
-    #[deprecated(note = "Use spawn_with_name(name, true) instead")]
+    #[deprecated(note = "Use spawn_with_name(name, true, None) instead")]
     pub fn respawn(&self, name: &str) -> crate::Result<()> {
         // Check if already running
         {
@@ -833,12 +874,12 @@ mod tests {
         }
 
         // spawn_with_name should fail if coworker is already running
-        let result = manager.spawn_with_name("lexington", false);
+        let result = manager.spawn_with_name("lexington", false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
 
         // Also test with resume=true
-        let result = manager.spawn_with_name("lexington", true);
+        let result = manager.spawn_with_name("lexington", true, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
     }

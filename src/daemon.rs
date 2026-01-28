@@ -1213,13 +1213,20 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
         // Check if coworker is already running
         let is_running = state.coworkers.get(&name).is_some();
 
+        // Build the message to send to the coworker
+        let nudge_text = format!("{} said: {}", msg.from, msg.content);
+
         if !is_running {
-            // Spawn the coworker with resume flag (creates worktree if needed, reuses if exists)
+            // Spawn the coworker with resume flag and the @mention message as prompt
             info!(
                 "Spawning mentioned coworker {} (not currently running)",
                 name
             );
-            match state.coworkers.spawn_with_name(&name, true) {
+            // spawn_with_name handles waiting and sending the prompt internally
+            match state
+                .coworkers
+                .spawn_with_name(&name, true, Some(&nudge_text))
+            {
                 Ok(_) => {
                     info!("Spawned coworker {} via @mention", name);
                     // Post to channel about the spawn
@@ -1242,14 +1249,13 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                     continue;
                 }
             }
-        }
-
-        // Nudge the coworker with the message
-        let nudge_text = format!("{} said: {}", msg.from, msg.content);
-        if let Err(e) = state.coworkers.nudge(&name, &nudge_text) {
-            warn!("Failed to nudge {} about @mention: {}", name, e);
         } else {
-            info!("Nudged {} about @mention from {}", name, msg.from);
+            // Coworker is already running - just nudge them
+            if let Err(e) = state.coworkers.nudge(&name, &nudge_text) {
+                warn!("Failed to nudge {} about @mention: {}", name, e);
+            } else {
+                info!("Nudged {} about @mention from {}", name, msg.from);
+            }
         }
     }
 }
@@ -1535,7 +1541,9 @@ async fn spawn_reviewers_for_prs(
                     pr_number
                 );
 
-                match state.coworkers.spawn(false) {
+                // Spawn without prompt - we'll handle the async wait and nudge ourselves
+                // to avoid blocking the tokio runtime with std::thread::sleep
+                match state.coworkers.spawn(false, None) {
                     Ok(new_coworker) => {
                         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
@@ -1545,7 +1553,7 @@ async fn spawn_reviewers_for_prs(
                             tracker.assign(pr_number, &new_coworker);
                         }
 
-                        // Give the new coworker a moment to start
+                        // Give the new coworker time to start (async sleep)
                         tokio::time::sleep(Duration::from_secs(3)).await;
 
                         // Nudge the new reviewer to run /code-review
@@ -1955,22 +1963,10 @@ fn handle_coworker_spawn(
     resume: bool,
     prompt: Option<String>,
 ) -> Response {
-    match state.coworkers.spawn(resume) {
+    // Pass prompt to spawn() - it handles waiting and nudging internally
+    match state.coworkers.spawn(resume, prompt.as_deref()) {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
-
-            // If a prompt was provided, wait for coworker to start then nudge
-            if let Some(prompt_text) = prompt {
-                // Wait for coworker to initialize
-                std::thread::sleep(std::time::Duration::from_secs(2));
-
-                // Send the initial prompt as a nudge
-                if let Err(e) = state.coworkers.nudge(&name, &prompt_text) {
-                    warn!("Failed to send initial prompt to {}: {}", name, e);
-                } else {
-                    info!("Sent initial prompt to {}", name);
-                }
-            }
 
             Response::success(
                 id,
@@ -2644,8 +2640,14 @@ async fn check_and_recover_orphans(state: &DaemonState) {
             task_id, owner
         );
 
-        // Try to respawn the coworker with resume=true to preserve context
-        match state.coworkers.spawn_with_name(&owner, true) {
+        // Build the prompt message to send during spawn
+        let prompt = format!(
+            "Resume task #{}: {}. You were working on this task before your session was interrupted. Check your git status and continue where you left off.",
+            task_id, task_subject
+        );
+
+        // spawn_with_name handles waiting and sending the prompt internally
+        match state.coworkers.spawn_with_name(&owner, true, Some(&prompt)) {
             Ok(_) => {
                 info!("Respawned coworker {} successfully", owner);
 
@@ -2653,20 +2655,6 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                 {
                     let mut last_spawn = state.last_orphan_spawn.lock().await;
                     *last_spawn = Some(Instant::now());
-                }
-
-                // Give the coworker a moment to start up
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-                // Verify the window actually exists before proceeding
-                let session_name = format!("midtown-{}", state.repo_name);
-                if !crate::tmux::window_exists(&session_name, &owner).unwrap_or(false) {
-                    warn!(
-                        "Coworker {} window did not appear after spawn - skipping nudge",
-                        owner
-                    );
-                    // Still break to respect rate limit - we tried
-                    break;
                 }
 
                 // Post to channel about the recovery
@@ -2679,18 +2667,6 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                 );
                 if let Err(e) = state.channel.send(&recovery_msg) {
                     warn!("Failed to post recovery message: {}", e);
-                }
-
-                // Nudge them to resume their task
-                let nudge_msg = format!(
-                    "Resume task #{}: {}. You were working on this task before your session was interrupted. Check your git status and continue where you left off.",
-                    task_id, task_subject
-                );
-
-                if let Err(e) = state.coworkers.nudge(&owner, &nudge_msg) {
-                    warn!("Failed to nudge {} to resume: {}", owner, e);
-                } else {
-                    info!("Nudged {} to resume task #{}", owner, task_id);
                 }
 
                 // Rate limit: only spawn ONE coworker per tick
@@ -2744,13 +2720,20 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             continue;
         }
 
-        // Coworker is assigned but not running - spawn and nudge them
+        // Coworker is assigned but not running - spawn with prompt
         info!(
             "Pending task #{} is assigned to {} but coworker not running - spawning",
             task_id, owner
         );
 
-        match state.coworkers.spawn_with_name(&owner, true) {
+        // Build the prompt message to send during spawn
+        let prompt = format!(
+            "You've been assigned task #{}: {}. Get started!",
+            task_id, task_subject
+        );
+
+        // spawn_with_name handles waiting and sending the prompt internally
+        match state.coworkers.spawn_with_name(&owner, true, Some(&prompt)) {
             Ok(_) => {
                 info!("Spawned coworker {} for pending task #{}", owner, task_id);
 
@@ -2764,21 +2747,6 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 );
                 if let Err(e) = state.channel.send(&msg) {
                     warn!("Failed to post spawn message: {}", e);
-                }
-
-                // Give coworker time to start
-                std::thread::sleep(std::time::Duration::from_secs(2));
-
-                // Nudge them about the task
-                let nudge_msg = format!(
-                    "You've been assigned task #{}: {}. Get started!",
-                    task_id, task_subject
-                );
-
-                if let Err(e) = state.coworkers.nudge(&owner, &nudge_msg) {
-                    warn!("Failed to nudge {} about task #{}: {}", owner, task_id, e);
-                } else {
-                    info!("Nudged {} about pending task #{}", owner, task_id);
                 }
             }
             Err(e) => {
@@ -2815,8 +2783,18 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             task.id, coworker_name
         );
 
-        // Step 3: Now spawn the coworker with the pre-assigned name
-        match state.coworkers.spawn_with_name(&coworker_name, false) {
+        // Build the prompt message to send during spawn
+        let prompt = format!(
+            "You've been assigned task #{}: {}. Get started!",
+            task.id, task.subject
+        );
+
+        // Step 3: Now spawn the coworker with the pre-assigned name and prompt
+        // spawn_with_name handles waiting and sending the prompt internally
+        match state
+            .coworkers
+            .spawn_with_name(&coworker_name, false, Some(&prompt))
+        {
             Ok(_) => {
                 info!(
                     "Spawned coworker {} for pre-assigned task #{}",
@@ -2833,27 +2811,6 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 );
                 if let Err(e) = state.channel.send(&msg) {
                     warn!("Failed to post assignment message: {}", e);
-                }
-
-                // Give coworker time to start
-                std::thread::sleep(std::time::Duration::from_secs(2));
-
-                // Nudge them about their assigned task
-                let nudge_msg = format!(
-                    "You've been assigned task #{}: {}. Get started!",
-                    task.id, task.subject
-                );
-
-                if let Err(e) = state.coworkers.nudge(&coworker_name, &nudge_msg) {
-                    warn!(
-                        "Failed to nudge {} about task #{}: {}",
-                        coworker_name, task.id, e
-                    );
-                } else {
-                    info!(
-                        "Nudged {} about their assigned task #{}",
-                        coworker_name, task.id
-                    );
                 }
             }
             Err(e) => {
