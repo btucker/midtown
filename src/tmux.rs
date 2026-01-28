@@ -489,8 +489,6 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
 ///
 /// Status is truncated to keep the tab readable (max 20 chars).
 pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::Result<()> {
-    let target = format!("{}:{}", session, name);
-
     // Build the new window name with parsed/abbreviated status
     let new_name = match status {
         Some(s) if !s.is_empty() => {
@@ -499,6 +497,16 @@ pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::
             format!("{}:{}", name, parsed)
         }
         _ => name.to_string(),
+    };
+
+    // Find the window by base name, since it may already have a status suffix
+    // (e.g., "york:dev#3" instead of "york")
+    let target = match find_window_target(session, name) {
+        Some(t) => t,
+        None => {
+            tracing::debug!("Window {} not found in session {}", name, session);
+            return Ok(());
+        }
     };
 
     let status = Command::new("tmux")
@@ -512,6 +520,42 @@ pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::
     }
 
     Ok(())
+}
+
+/// Find a tmux window target by base name (stripping any status suffix).
+///
+/// Returns `Some("session:index")` if found, `None` otherwise.
+/// Uses window index for targeting since the window name may contain colons
+/// that conflict with tmux's `session:window` target syntax.
+fn find_window_target(session: &str, base_name: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args([
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_index}:#{window_name}",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let base_lower = base_name.to_lowercase();
+
+    for line in stdout.lines() {
+        // Format: "index:window_name" (e.g., "2:york:done#204")
+        let (index, window_name) = line.split_once(':')?;
+        let window_base = window_name.split(':').next().unwrap_or(window_name);
+        if window_base.to_lowercase() == base_lower {
+            return Some(format!("{}:{}", session, index));
+        }
+    }
+
+    None
 }
 
 /// Send raw keys without appending Enter.
@@ -561,7 +605,11 @@ pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
     let windows: Vec<String> = stdout
         .lines()
         .filter(|name| *name != "lead") // Exclude the lead window
-        .map(|s| s.to_string())
+        .map(|s| {
+            // Strip status suffix (e.g., "york:done#204" -> "york")
+            // Windows get renamed via rename_window() with status info after a colon
+            s.split(':').next().unwrap_or(s).to_string()
+        })
         .collect();
 
     Ok(windows)
