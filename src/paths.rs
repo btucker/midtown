@@ -169,6 +169,23 @@ pub fn lead_session_file() -> PathBuf {
     lead_session_file_for_repo(&repo)
 }
 
+/// Get the task list ID for a specific repository.
+///
+/// Returns `midtown-<repo>` which should be set as `CLAUDE_CODE_TASK_LIST_ID`
+/// for all Claude sessions (Lead and coworkers) to share the same task storage.
+pub fn task_list_id_for_repo(repo: &str) -> String {
+    format!("midtown-{}", repo)
+}
+
+/// Get the task list ID for the current repository.
+///
+/// Detects the repo name from the current git working directory.
+/// Falls back to "default" if not in a git repository.
+pub fn task_list_id() -> String {
+    let repo = detect_repo_name().unwrap_or_else(|| "default".to_string());
+    task_list_id_for_repo(&repo)
+}
+
 /// Get the channel file path for a specific repository.
 ///
 /// Returns `~/.midtown/projects/<repo>/channel.jsonl`.
@@ -422,6 +439,12 @@ mod tests {
         assert!(path.to_string_lossy().contains("lead"));
         assert!(path.to_string_lossy().contains("myproject"));
         assert!(path.to_string_lossy().ends_with("session-id"));
+    }
+
+    #[test]
+    fn test_task_list_id_for_repo() {
+        let id = task_list_id_for_repo("myproject");
+        assert_eq!(id, "midtown-myproject");
     }
 
     #[test]

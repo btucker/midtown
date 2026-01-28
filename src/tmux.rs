@@ -129,56 +129,6 @@ fn write_coworker_prompt_file(name: &str, prompt: &str) -> crate::Result<PathBuf
     Ok(path)
 }
 
-/// Read the Lead's session ID for a repository.
-///
-/// Returns None if no Lead session has been started for this repo.
-pub fn get_lead_session_id(repo_name: &str) -> Option<String> {
-    let session_file = crate::paths::lead_session_file_for_repo(repo_name);
-
-    std::fs::read_to_string(&session_file)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Create a symlink so the coworker's task storage points to the Lead's tasks.
-///
-/// This allows coworkers to see and modify the same task list as the Lead.
-/// Creates: ~/.claude/tasks/<coworker_session_id> -> ~/.claude/tasks/<lead_session_id>
-///
-/// This function is public so the daemon can update symlinks when the Lead session changes.
-pub fn symlink_tasks_to_lead(
-    coworker_session_id: &str,
-    lead_session_id: &str,
-) -> crate::Result<()> {
-    let home = std::env::var("HOME").map_err(|e| Error::Io(std::io::Error::other(e)))?;
-    let tasks_dir = PathBuf::from(&home).join(".claude").join("tasks");
-
-    // Ensure the tasks directory exists
-    std::fs::create_dir_all(&tasks_dir).map_err(Error::Io)?;
-
-    let coworker_tasks = tasks_dir.join(coworker_session_id);
-    let lead_tasks = tasks_dir.join(lead_session_id);
-
-    // Ensure Lead's task directory exists
-    std::fs::create_dir_all(&lead_tasks).map_err(Error::Io)?;
-
-    // Remove existing symlink or directory if it exists
-    if coworker_tasks.exists() || coworker_tasks.is_symlink() {
-        if coworker_tasks.is_symlink() {
-            std::fs::remove_file(&coworker_tasks).map_err(Error::Io)?;
-        } else if coworker_tasks.is_dir() {
-            std::fs::remove_dir_all(&coworker_tasks).map_err(Error::Io)?;
-        }
-    }
-
-    // Create symlink: coworker -> lead
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&lead_tasks, &coworker_tasks).map_err(Error::Io)?;
-
-    Ok(())
-}
-
 /// Prefix for all midtown tmux sessions.
 pub const SESSION_PREFIX: &str = "midtown-";
 
@@ -769,26 +719,22 @@ pub fn spawn_claude(
     // Generate a unique session ID for this coworker
     let coworker_session_id = uuid::Uuid::new_v4().to_string();
 
-    // If we have the repo name, try to symlink tasks to the Lead's task storage
-    if let Some(repo) = repo_name
-        && let Some(lead_session_id) = get_lead_session_id(repo)
-    {
-        // Symlink coworker tasks -> lead tasks
-        if let Err(e) = symlink_tasks_to_lead(&coworker_session_id, &lead_session_id) {
-            // Log but don't fail - task sharing is nice-to-have
-            eprintln!("Warning: Failed to symlink tasks for {}: {}", name, e);
-        }
-    }
+    // Get the shared task list ID for this repo (all coworkers use the same task list)
+    let task_list_id = repo_name
+        .map(crate::paths::task_list_id_for_repo)
+        .unwrap_or_else(crate::paths::task_list_id);
 
     // Build the claude command with session ID for task persistence
     // Use file paths for settings and prompt to avoid shell quoting issues
     // Set MIDTOWN_AGENT env var so the coworker's name appears in messages
+    // Set CLAUDE_CODE_TASK_LIST_ID so all coworkers share the same task list
     // Use --setting-sources project,local (plugins are now in --settings file)
     // Add --continue flag if resuming a previous session
     let continue_flag = if resume { " --continue" } else { "" };
     let command = format!(
-        "export MIDTOWN_AGENT={}; claude --dangerously-skip-permissions --session-id {}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        "export MIDTOWN_AGENT={} CLAUDE_CODE_TASK_LIST_ID={}; claude --dangerously-skip-permissions --session-id {}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
         name,
+        task_list_id,
         coworker_session_id,
         continue_flag,
         settings_file.display(),
@@ -1074,42 +1020,6 @@ mod tests {
     }
 
     // Note: coworker_system_prompt tests moved to src/agents.rs
-
-    #[test]
-    fn test_get_lead_session_id_returns_none_for_missing_repo() {
-        // Non-existent repo should return None
-        let result = get_lead_session_id("nonexistent-test-repo-12345");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_symlink_tasks_to_lead() {
-        use tempfile::TempDir;
-
-        // Create temp directory to simulate ~/.claude/tasks/
-        let temp = TempDir::new().unwrap();
-        let tasks_dir = temp.path();
-
-        let lead_id = "lead-session-123";
-        let coworker_id = "coworker-session-456";
-
-        let lead_tasks = tasks_dir.join(lead_id);
-        let coworker_tasks = tasks_dir.join(coworker_id);
-
-        // Create lead's task directory with a test file
-        std::fs::create_dir_all(&lead_tasks).unwrap();
-        std::fs::write(lead_tasks.join("1.json"), "{}").unwrap();
-
-        // Create symlink manually (since symlink_tasks_to_lead uses HOME)
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&lead_tasks, &coworker_tasks).unwrap();
-
-        // Verify the symlink works - coworker can see lead's file
-        assert!(coworker_tasks.join("1.json").exists());
-
-        // Verify it's actually a symlink
-        assert!(coworker_tasks.is_symlink());
-    }
 
     #[test]
     fn test_get_coworker_color_known_names() {

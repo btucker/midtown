@@ -157,16 +157,6 @@ fn main() {
         return;
     }
 
-    // Link tasks also works standalone (SessionStart hook)
-    if let Commands::Coworker {
-        command: CoworkerCommand::LinkTasks,
-    } = &command
-    {
-        let result = cli::handle_coworker_link_tasks();
-        handle_result(format, result);
-        return;
-    }
-
     // Daemon command (runs the daemon server - internal use)
     if let Commands::Daemon {
         socket,
