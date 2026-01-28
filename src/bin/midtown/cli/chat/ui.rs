@@ -619,6 +619,10 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
 
     // Add sender name line if sender changed
     if show_sender {
+        // Add blank line before new sender (except for first message)
+        if prev_sender.is_some() {
+            result.push(Line::from(""));
+        }
         result.push(build_sender_line(msg, color));
     }
 
@@ -1090,9 +1094,9 @@ mod tests {
         let lines2 = render_message(&msg2, 80, Some("columbus"));
         assert_eq!(lines2.len(), 1); // just timestamp + content
 
-        // Different sender - shows sender line + timestamp line
+        // Different sender - shows blank line + sender line + timestamp line
         let lines3 = render_message(&msg2, 80, Some("lexington"));
-        assert_eq!(lines3.len(), 2); // sender line + timestamp+content line
+        assert_eq!(lines3.len(), 3); // blank + sender line + timestamp+content line
 
         // Verify first message has sender name on first line
         let first_line_content: String =
