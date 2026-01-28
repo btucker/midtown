@@ -1023,7 +1023,7 @@ async fn pr_poll_task(
 // ============================================================================
 
 /// Senders to skip when routing mentions (loop protection).
-const SKIP_SENDERS: &[&str] = &["daemon", "system", "github"];
+const SKIP_SENDERS: &[&str] = &["midtown", "system", "github"];
 
 /// Background task that monitors the channel for @mentions and routes them.
 ///
@@ -1140,7 +1140,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                     info!("Spawned coworker {} via @mention", name);
                     // Post to channel about the spawn
                     let spawn_msg = Message::text(
-                        "daemon",
+                        "midtown",
                         format!("🚀 Spawned {} in response to @mention", name),
                     );
                     if let Err(e) = state.channel.send(&spawn_msg) {
@@ -1151,7 +1151,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                     warn!("Failed to spawn coworker {}: {}", name, e);
                     // Post error to channel
                     let err_msg = Message::text(
-                        "daemon",
+                        "midtown",
                         format!("⚠️ Failed to spawn {} for @mention: {}", name, e),
                     );
                     let _ = state.channel.send(&err_msg);
@@ -1287,8 +1287,20 @@ async fn poll_prs_for_issues(
                     }
                 }
             } else {
-                // Owner not active, post to channel
-                let msg = Message::new("daemon", message.clone(), MessageType::Text);
+                // Owner not active, post to channel with owner info
+                let channel_message = if owner.is_empty() {
+                    message.clone()
+                } else {
+                    format!(
+                        "PR #{} ({}) owned by {} - {}: {}",
+                        pr_number,
+                        truncate_str(title, 40),
+                        owner,
+                        issue_type,
+                        get_issue_action(issue_type)
+                    )
+                };
+                let msg = Message::new("midtown", channel_message, MessageType::Text);
                 if let Err(e) = state.channel.send(&msg) {
                     warn!("Failed to post PR issue to channel: {}", e);
                 }
@@ -1431,7 +1443,7 @@ async fn spawn_reviewers_for_prs(
 
                         // Post to channel about the assignment
                         let channel_msg = Message::new(
-                            "daemon",
+                            "midtown",
                             format!("🔍 {} assigned to review PR #{}", reviewer_name, pr_number),
                             MessageType::Text,
                         );
@@ -1493,7 +1505,7 @@ async fn spawn_reviewers_for_prs(
 
                                 // Post to channel about the spawn
                                 let channel_msg = Message::new(
-                                    "daemon",
+                                    "midtown",
                                     format!(
                                         "🔍 Spawned {} to review PR #{}",
                                         new_coworker, pr_number
@@ -2584,7 +2596,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
 
                 // Post to channel about the recovery
                 let recovery_msg = Message::text(
-                    "daemon",
+                    "midtown",
                     format!(
                         "♻️ Recovered coworker {} for orphaned task #{}",
                         owner, task_id
@@ -2621,7 +2633,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
 
                     // Post to channel so team knows the task is available
                     let msg = Message::text(
-                        "daemon",
+                        "midtown",
                         format!(
                             "🔄 Task #{} reset to pending - {} could not be respawned",
                             task_id, owner
@@ -2736,7 +2748,7 @@ async fn check_for_duplicate_task_workers(state: &DaemonState) {
 
             // Post to channel about the kill
             let msg = Message::text(
-                "daemon",
+                "midtown",
                 format!(
                     "🔪 Killed duplicate worker {} on task #{} ({}) - {} started earlier",
                     duplicate, task_id, task_subject, keeper
@@ -2828,7 +2840,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
 
                 // Post to channel
                 let msg = Message::text(
-                    "daemon",
+                    "midtown",
                     format!(
                         "🚀 Spawned coworker {} for pending task #{}",
                         owner, task_id
@@ -2892,7 +2904,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
 
                 // Post to channel
                 let msg = Message::text(
-                    "daemon",
+                    "midtown",
                     format!(
                         "🚀 Spawned coworker {} for assigned task #{}: {}",
                         coworker_name, task.id, task.subject
@@ -3289,7 +3301,7 @@ mod tests {
     #[test]
     fn test_skip_senders() {
         // Verify SKIP_SENDERS contains expected values
-        assert!(SKIP_SENDERS.contains(&"daemon"));
+        assert!(SKIP_SENDERS.contains(&"midtown"));
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
     }
