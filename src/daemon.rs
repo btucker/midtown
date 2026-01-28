@@ -354,6 +354,8 @@ struct DaemonState {
     repo_name: String,
     /// Last time a coworker was spawned for orphan recovery (rate limiting)
     last_orphan_spawn: Mutex<Option<Instant>>,
+    /// Tracks when each pending task was last nudged (task_id -> last nudge time)
+    pending_task_nudge_cooldowns: std::sync::Mutex<HashMap<String, Instant>>,
 }
 
 impl DaemonState {
@@ -383,6 +385,7 @@ impl DaemonState {
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
             last_orphan_spawn: Mutex::new(None),
+            pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
         })
     }
 }
@@ -2763,8 +2766,32 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             continue;
         }
 
-        // Skip if coworker is already active
+        // If coworker is already active, nudge them about the pending task (with cooldown)
         if active_names.contains(&owner.to_lowercase()) {
+            let task_key = format!("pending-{}", task_id);
+            let should_nudge = {
+                let cooldowns = state.pending_task_nudge_cooldowns.lock().unwrap();
+                match cooldowns.get(&task_key) {
+                    Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(300),
+                    None => true,
+                }
+            };
+            if should_nudge {
+                let nudge_msg = format!(
+                    "You have pending task #{}: {}. Get started!",
+                    task_id, task_subject
+                );
+                if let Err(e) = state.coworkers.nudge(&owner, &nudge_msg) {
+                    debug!(
+                        "Failed to nudge {} about pending task #{}: {}",
+                        owner, task_id, e
+                    );
+                } else {
+                    info!("Nudged {} about pending task #{}", owner, task_id);
+                    let mut cooldowns = state.pending_task_nudge_cooldowns.lock().unwrap();
+                    cooldowns.insert(task_key, Instant::now());
+                }
+            }
             continue;
         }
 
