@@ -774,13 +774,17 @@ fn build_sender_line(
             // Add current task if available
             if let Some(task) = current_task {
                 // Calculate available space for task (width - name - " - ")
-                let prefix_len = msg.from.len() + 3; // " - " = 3 chars
+                // Use chars().count() for UTF-8 safe length calculation
+                let prefix_len = msg.from.chars().count() + 3; // " - " = 3 chars
                 let available = width.saturating_sub(prefix_len);
 
                 if available > 5 {
                     // Only show if we have reasonable space
-                    let truncated_task = if task.len() > available {
-                        format!("{}…", &task[..available.saturating_sub(1)])
+                    // Use chars() for UTF-8 safe truncation to avoid panics on multi-byte chars
+                    let truncated_task = if task.chars().count() > available {
+                        let truncated: String =
+                            task.chars().take(available.saturating_sub(1)).collect();
+                        format!("{}…", truncated)
                     } else {
                         task.clone()
                     };
