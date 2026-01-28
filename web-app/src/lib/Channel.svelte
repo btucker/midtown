@@ -41,10 +41,16 @@
     }
   }
 
+  function isSystemSender(from) {
+    const name = from.toLowerCase()
+    return name === 'midtown' || name === 'daemon' || name === 'system'
+  }
+
   function getMessageClass(msg) {
     if (msg.from === 'mobile') return 'message-self'
     if (msg.from === 'github') return 'message-github'
     if (msg.from === 'lead') return 'message-lead'
+    if (isSystemSender(msg.from)) return 'message-system'
     if (msg.msg_type === 'action') return 'message-action'
     return ''
   }
@@ -154,6 +160,12 @@
     border: 1px solid #00d9ff;
   }
 
+  .message-system {
+    background: transparent;
+    border-left: 3px solid #555;
+    padding: 4px 12px;
+  }
+
   .message-github {
     border-left: 3px solid #e94560;
   }
@@ -183,6 +195,10 @@
     color: #e94560;
   }
 
+  .message-system .from {
+    color: #888;
+  }
+
   .message-lead .from {
     color: #4ade80;
   }
@@ -196,6 +212,10 @@
     font-size: 0.9rem;
     line-height: 1.4;
     word-break: break-word;
+  }
+
+  .message-system .content {
+    color: #999;
   }
 
   .action-content {
