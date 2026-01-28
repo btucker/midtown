@@ -14,12 +14,37 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Chat layout mode for the Lead session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatLayout {
+    /// Automatically choose based on terminal width
+    #[default]
+    Auto,
+    /// Always use split pane (side-by-side)
+    Split,
+    /// Always use separate window
+    Window,
+}
+
 /// Configuration for a single project.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     /// Command to invoke midtown (e.g., "midtown" or "cargo run --release --")
     #[serde(default = "default_bin_command")]
     pub bin_command: String,
+
+    /// Chat pane layout mode (auto, split, or window)
+    #[serde(default)]
+    pub chat_layout: ChatLayout,
+
+    /// Minimum terminal width for split layout in auto mode (default: 160)
+    #[serde(default = "default_chat_min_width")]
+    pub chat_min_width: u16,
+}
+
+fn default_chat_min_width() -> u16 {
+    160
 }
 
 fn default_bin_command() -> String {
@@ -30,6 +55,8 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             bin_command: default_bin_command(),
+            chat_layout: ChatLayout::default(),
+            chat_min_width: default_chat_min_width(),
         }
     }
 }
@@ -95,6 +122,20 @@ pub fn get_bin_command() -> String {
     }
 }
 
+/// Get the chat layout configuration for the current project.
+pub fn get_chat_layout() -> (ChatLayout, u16) {
+    let config = Config::load();
+    let project_name = get_project_name().unwrap_or_default();
+
+    let project_config = if project_name.is_empty() {
+        &config.default
+    } else {
+        config.for_project(&project_name)
+    };
+
+    (project_config.chat_layout, project_config.chat_min_width)
+}
+
 /// Get the current project name from git repo root directory.
 fn get_project_name() -> Option<String> {
     let output = std::process::Command::new("git")
@@ -147,5 +188,44 @@ bin_command = "cargo run --release --"
         let path = config_path();
         assert!(path.to_string_lossy().contains(".midtown"));
         assert!(path.to_string_lossy().ends_with("config.toml"));
+    }
+
+    #[test]
+    fn test_chat_layout_default() {
+        let config = Config::default();
+        assert_eq!(config.default.chat_layout, ChatLayout::Auto);
+        assert_eq!(config.default.chat_min_width, 160);
+    }
+
+    #[test]
+    fn test_chat_layout_parse() {
+        let toml = r#"
+[default]
+chat_layout = "split"
+chat_min_width = 200
+
+[narrow-project]
+chat_layout = "window"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.default.chat_layout, ChatLayout::Split);
+        assert_eq!(config.default.chat_min_width, 200);
+        assert_eq!(
+            config.for_project("narrow-project").chat_layout,
+            ChatLayout::Window
+        );
+        // Narrow project should inherit default min_width
+        assert_eq!(config.for_project("narrow-project").chat_min_width, 160);
+    }
+
+    #[test]
+    fn test_chat_layout_auto() {
+        let toml = r#"
+[default]
+chat_layout = "auto"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.default.chat_layout, ChatLayout::Auto);
     }
 }
