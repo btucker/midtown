@@ -160,6 +160,18 @@ pub fn get_busy_coworkers() -> Vec<String> {
         .collect()
 }
 
+/// Get names of coworkers who have in_progress tasks for a specific repo.
+///
+/// This is the preferred version for daemon usage where the repo name is already known,
+/// avoiding the need to detect it via git commands which may fail in background processes.
+pub fn get_busy_coworkers_for_repo(repo_name: &str) -> Vec<String> {
+    read_tasks_for_repo(Some(repo_name))
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::InProgress)
+        .filter_map(|t| t.owner)
+        .collect()
+}
+
 /// Get in_progress tasks with their owners.
 ///
 /// Returns tuples of (task_id, owner_name).
@@ -353,5 +365,34 @@ mod tests {
         assert_eq!(pending_without_owners.len(), 2);
         assert_eq!(pending_without_owners[0].id, "1");
         assert_eq!(pending_without_owners[1].id, "3");
+    }
+
+    #[test]
+    fn test_busy_coworkers_from_in_progress_tasks() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Create various tasks - only in_progress with owners should count as busy
+        create_task_file(&tasks_dir, "1", "pending", Some("alice")); // Not busy (pending)
+        create_task_file(&tasks_dir, "2", "in_progress", Some("bob")); // Busy
+        create_task_file(&tasks_dir, "3", "in_progress", Some("carol")); // Busy
+        create_task_file(&tasks_dir, "4", "completed", Some("dave")); // Not busy (completed)
+        create_task_file(&tasks_dir, "5", "in_progress", None); // Not counted (no owner)
+
+        let tasks = read_tasks_from_dir(&tasks_dir);
+
+        // Simulate get_busy_coworkers logic
+        let busy_coworkers: Vec<String> = tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::InProgress)
+            .filter_map(|t| t.owner)
+            .collect();
+
+        assert_eq!(busy_coworkers.len(), 2);
+        assert!(busy_coworkers.contains(&"bob".to_string()));
+        assert!(busy_coworkers.contains(&"carol".to_string()));
+        // alice, dave should NOT be in list (pending, completed respectively)
+        assert!(!busy_coworkers.contains(&"alice".to_string()));
+        assert!(!busy_coworkers.contains(&"dave".to_string()));
     }
 }
