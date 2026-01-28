@@ -20,6 +20,10 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Playwright
+web-app/test-results/
+.playwright-mcp/
+
 # Coworker plan files (should go to ~/.claude/plans/)
 docs/plans/
 
