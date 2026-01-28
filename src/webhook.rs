@@ -368,6 +368,34 @@ fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
         .copied()
 }
 
+/// Extract coworker name from comment body patterns.
+/// Looks for:
+/// - "<!-- midtown: name -->" (frontmatter)
+/// - "Code Review by name" (review header)
+/// - "## Code Review by name" (markdown header)
+fn coworker_from_comment(body: &str) -> Option<&'static str> {
+    // Try frontmatter first
+    if let Some(name) = coworker_from_frontmatter(body) {
+        return Some(name);
+    }
+
+    // Look for "Code Review by name" pattern (case insensitive)
+    let body_lower = body.to_lowercase();
+    if let Some(pos) = body_lower.find("code review by ") {
+        let after = &body[pos + 15..];
+        // Extract the name (first word after "by ")
+        let name = after.split_whitespace().next()?;
+        // Clean up any markdown formatting or punctuation
+        let name = name.trim_matches(|c: char| !c.is_alphanumeric());
+        return COWORKER_NAMES
+            .iter()
+            .find(|&&n| n.eq_ignore_ascii_case(name))
+            .copied();
+    }
+
+    None
+}
+
 /// Determine the coworker associated with a PR-related event.
 /// Priority: frontmatter > branch prefix
 /// Returns None if no coworker can be determined.
@@ -483,10 +511,15 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Erro
         return Ok(None);
     }
 
+    // Use coworker name from comment body if available, otherwise GitHub username
+    let author = coworker_from_comment(&event.comment.body)
+        .map(String::from)
+        .unwrap_or_else(|| event.comment.user.login.clone());
+
     let preview = truncate_comment(&event.comment.body, 50);
     let content = format!(
         "{} commented on PR #{}: {}",
-        event.comment.user.login, event.issue.number, preview
+        author, event.issue.number, preview
     );
 
     Ok(Some(Message::new("github", content, MessageType::Text)))
@@ -505,10 +538,15 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<Message>, serde_json::Err
     let coworker = determine_pr_coworker(branch, pr_body);
     let mention = mention_prefix(coworker);
 
+    // Use coworker name from comment body if available, otherwise GitHub username
+    let author = coworker_from_comment(&event.comment.body)
+        .map(String::from)
+        .unwrap_or_else(|| event.comment.user.login.clone());
+
     let preview = truncate_comment(&event.comment.body, 50);
     let action_text = format!(
         "{} left review comment on PR #{}: {}",
-        event.comment.user.login, event.pull_request.number, preview
+        author, event.pull_request.number, preview
     );
 
     let content = format!("{}{}", mention, action_text);
@@ -920,6 +958,72 @@ mod tests {
             "@madison reviewer left review comment on PR #77: Nice work!"
         );
         // Sender is always "github"
+        assert_eq!(msg.from, "github");
+    }
+
+    #[test]
+    fn test_coworker_from_comment_frontmatter() {
+        let body = "<!-- midtown: lexington -->\n\n## Summary\nSome review";
+        assert_eq!(coworker_from_comment(body), Some("lexington"));
+    }
+
+    #[test]
+    fn test_coworker_from_comment_code_review_header() {
+        let body = "## Code Review by park\n\nThis looks good!";
+        assert_eq!(coworker_from_comment(body), Some("park"));
+
+        let body = "Code Review by madison\n\nSome feedback";
+        assert_eq!(coworker_from_comment(body), Some("madison"));
+    }
+
+    #[test]
+    fn test_coworker_from_comment_no_match() {
+        let body = "Just a regular comment without any signature";
+        assert_eq!(coworker_from_comment(body), None);
+
+        let body = "Code Review by unknown_user\n\nSome feedback";
+        assert_eq!(coworker_from_comment(body), None);
+    }
+
+    #[test]
+    fn test_handle_issue_comment_with_coworker_signature() {
+        let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "pull_request": {"url": "..."}
+            },
+            "comment": {
+                "user": {"login": "btucker"},
+                "body": "Code Review by columbus\n\nOverall: Looks good!"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        // Author should be coworker name, not GitHub username
+        assert!(msg.content.starts_with("columbus commented on PR #42:"));
+        assert_eq!(msg.from, "github");
+    }
+
+    #[test]
+    fn test_handle_issue_comment_no_coworker_signature() {
+        let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "pull_request": {"url": "..."}
+            },
+            "comment": {
+                "user": {"login": "someuser"},
+                "body": "Just a regular comment"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let msg = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        // Author should be GitHub username when no coworker signature
+        assert!(msg.content.starts_with("someuser commented on PR #42:"));
         assert_eq!(msg.from, "github");
     }
 }
