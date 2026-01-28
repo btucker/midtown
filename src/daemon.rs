@@ -1371,25 +1371,61 @@ async fn poll_prs_for_issues(
                         false
                     }
                 }
+            } else if !owner.is_empty() {
+                // Owner is not active — spawn them with the issue prompt
+                info!(
+                    "PR #{} owner {} is not active, spawning to address {}",
+                    pr_number, owner, issue_type
+                );
+                match state.coworkers.spawn_with_name(owner, true, Some(&message)) {
+                    Ok(_) => {
+                        info!(
+                            "Spawned {} to address {} on PR #{}",
+                            owner, issue_type, pr_number
+                        );
+                        let msg = Message::text(
+                            "midtown",
+                            format!(
+                                "🚀 Spawned {} to address {} on PR #{}",
+                                owner, issue_type, pr_number
+                            ),
+                        );
+                        if let Err(e) = state.channel.send(&msg) {
+                            warn!("Failed to post spawn message: {}", e);
+                        }
+                        true
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to spawn {} for PR #{} {}: {}",
+                            owner, pr_number, issue_type, e
+                        );
+                        // Fall back to posting to channel (indicate spawn was attempted)
+                        let channel_message = format!(
+                            "PR #{} ({}) owned by {} - {}: {} (spawn failed)",
+                            pr_number,
+                            truncate_str(title, 40),
+                            owner,
+                            issue_type,
+                            get_issue_action(issue_type)
+                        );
+                        let msg = Message::new("midtown", channel_message, MessageType::Text);
+                        if let Err(e) = state.channel.send(&msg) {
+                            warn!("Failed to post PR issue to channel: {}", e);
+                        }
+                        true
+                    }
+                }
             } else {
-                // Owner not active, post to channel with owner info
-                let channel_message = if owner.is_empty() {
-                    message.clone()
-                } else {
-                    format!(
-                        "PR #{} ({}) owned by {} - {}: {}",
-                        pr_number,
-                        truncate_str(title, 40),
-                        owner,
-                        issue_type,
-                        get_issue_action(issue_type)
-                    )
-                };
-                let msg = Message::new("midtown", channel_message, MessageType::Text);
+                // No owner, post to channel
+                let msg = Message::new("midtown", message.clone(), MessageType::Text);
                 if let Err(e) = state.channel.send(&msg) {
                     warn!("Failed to post PR issue to channel: {}", e);
                 }
-                info!("Posted PR #{} issue to channel: {}", pr_number, issue_type);
+                info!(
+                    "Posted PR #{} issue to channel (no owner): {}",
+                    pr_number, issue_type
+                );
                 true
             };
 
