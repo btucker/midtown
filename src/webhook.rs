@@ -87,9 +87,6 @@ impl Default for WebhookConfig {
 struct WebhookState {
     config: WebhookConfig,
     event_tx: mpsc::Sender<WebhookEvent>,
-    /// Broadcast channel for web updates (will be used to broadcast webhook events)
-    #[allow(dead_code)]
-    web_updates_tx: broadcast::Sender<WebUpdate>,
 }
 
 /// GitHub webhook event header
@@ -99,17 +96,17 @@ const GITHUB_SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 
 /// Start the webhook HTTP server
 ///
-/// Returns a channel receiver for translated messages.
+/// Returns a channel receiver for translated messages and a broadcast sender
+/// for pushing real-time updates to WebSocket clients.
 pub async fn start_webhook_server(
     config: WebhookConfig,
-) -> crate::Result<mpsc::Receiver<WebhookEvent>> {
+) -> crate::Result<(mpsc::Receiver<WebhookEvent>, broadcast::Sender<WebUpdate>)> {
     let (tx, rx) = mpsc::channel(100);
     let (web_updates_tx, _) = broadcast::channel(100);
 
     let webhook_state = Arc::new(WebhookState {
         config: config.clone(),
         event_tx: tx,
-        web_updates_tx: web_updates_tx.clone(),
     });
 
     // Create web state for mobile app
@@ -123,7 +120,7 @@ pub async fn start_webhook_server(
 
     let web_state = Arc::new(WebState {
         config: web_config,
-        updates_tx: web_updates_tx,
+        updates_tx: web_updates_tx.clone(),
     });
 
     // CORS layer for development (allows requests from Vite dev server)
@@ -154,7 +151,7 @@ pub async fn start_webhook_server(
         }
     });
 
-    Ok(rx)
+    Ok((rx, web_updates_tx))
 }
 
 /// Health check endpoint
