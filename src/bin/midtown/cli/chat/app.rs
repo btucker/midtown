@@ -146,6 +146,8 @@ impl App {
 
         // Initial load
         app.refresh();
+        // Ensure we start at the bottom (most recent messages)
+        app.scroll_to_bottom();
         app
     }
 
