@@ -338,6 +338,96 @@ impl CoworkerManager {
         tmux::send_keys(&self.session_name, "Lead", message)
     }
 
+    /// Spawn a coworker with a specific name.
+    ///
+    /// Unlike `spawn()` which picks a random available name, this takes an explicit
+    /// name parameter. This is useful for:
+    /// - @mention routing where the mentioned coworker name is known
+    /// - Orphan task recovery where the task owner's name is known
+    ///
+    /// Creates a new worktree if one doesn't exist, or reuses an existing one.
+    /// If `resume` is true, passes `--continue` to claude to resume the previous
+    /// session from this worktree (preserving context).
+    ///
+    /// Returns the coworker name on success.
+    pub fn spawn_with_name(&self, name: &str, resume: bool) -> crate::Result<String> {
+        // Check if already running
+        {
+            let coworkers = self.coworkers.read().unwrap();
+            if coworkers.contains_key(name) {
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!("Coworker {} is already running", name),
+                });
+            }
+        }
+
+        // Try to get or create the worktree
+        let worktree_path = match self.worktree_manager.create(name) {
+            Ok(path) => path,
+            Err(WorktreeError::AlreadyExists(_)) => {
+                // Worktree exists - check if there's a corresponding tmux window
+                let window_exists = tmux::window_exists(&self.session_name, name).unwrap_or(false);
+
+                if window_exists {
+                    // There's an active window, so the coworker is actually running
+                    return Err(crate::Error::Rpc {
+                        code: -32603,
+                        message: format!(
+                            "Coworker {} is already running (worktree and window exist)",
+                            name
+                        ),
+                    });
+                }
+
+                // Worktree exists but no window - reuse it
+                self.worktree_manager.worktree_path(name)
+            }
+            Err(e) => {
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!("Failed to create worktree for {}: {}", name, e),
+                });
+            }
+        };
+
+        let working_dir = worktree_path
+            .to_str()
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32603,
+                message: "Worktree path is not valid UTF-8".to_string(),
+            })?
+            .to_string();
+
+        // Create the tmux window and spawn claude in the worktree
+        let repo_name = self.worktree_manager.repo_name();
+        let session_id = tmux::spawn_claude(
+            &self.session_name,
+            name,
+            &working_dir,
+            Some(repo_name),
+            resume,
+        )?;
+
+        // Record the coworker with their session ID for symlink management
+        let coworker = Coworker {
+            name: name.to_string(),
+            status: CoworkerStatus::Running,
+            working_dir,
+            started_at: Utc::now(),
+            current_task: None,
+            session_id: Some(session_id),
+        };
+
+        {
+            let mut coworkers = self.coworkers.write().unwrap();
+            coworkers.insert(name.to_string(), coworker);
+        }
+
+        tracing::info!("Spawned coworker {} with resume={}", name, resume);
+        Ok(name.to_string())
+    }
+
     /// Respawn a coworker with a specific name.
     ///
     /// This is used to recover orphaned coworkers whose tmux windows died but
@@ -346,6 +436,7 @@ impl CoworkerManager {
     ///
     /// The worktree is reused if it exists, allowing the coworker to resume
     /// where they left off.
+    #[deprecated(note = "Use spawn_with_name(name, true) instead")]
     pub fn respawn(&self, name: &str) -> crate::Result<()> {
         // Check if already running
         {
@@ -599,6 +690,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_respawn_fails_without_worktree() {
         let (manager, _temp_dir) = test_manager();
 
@@ -614,6 +706,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_respawn_fails_if_already_running() {
         let (manager, _temp_dir) = test_manager();
 
@@ -635,6 +728,37 @@ mod tests {
 
         // Respawn should fail if coworker is already running
         let result = manager.respawn("lexington");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already running"));
+    }
+
+    #[test]
+    fn test_spawn_with_name_fails_if_already_running() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Manually insert a running coworker
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "lexington".to_string(),
+                Coworker {
+                    name: "lexington".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None,
+                },
+            );
+        }
+
+        // spawn_with_name should fail if coworker is already running
+        let result = manager.spawn_with_name("lexington", false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already running"));
+
+        // Also test with resume=true
+        let result = manager.spawn_with_name("lexington", true);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
     }
