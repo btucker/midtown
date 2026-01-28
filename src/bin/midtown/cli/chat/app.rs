@@ -754,11 +754,11 @@ fn fetch_repo_status() -> RepoStatus {
         }
     }
 
-    // Fetch CI status from latest workflow run
+    // Fetch CI status from latest workflow run on main branch
     if let Ok(output) = std::process::Command::new("gh")
         .args([
             "api",
-            "repos/{owner}/{repo}/actions/runs",
+            "repos/{owner}/{repo}/actions/runs?branch=main&per_page=1",
             "--jq",
             ".workflow_runs[0] | {status: .status, conclusion: .conclusion}",
         ])
