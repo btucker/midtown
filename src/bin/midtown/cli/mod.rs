@@ -39,11 +39,6 @@ pub fn handle_coworker_stop_hook() -> Result<Response, String> {
     coworker::handle_stop_hook_standalone()
 }
 
-/// Handle coworker link-tasks directly (no daemon required)
-pub fn handle_coworker_link_tasks() -> Result<Response, String> {
-    coworker::handle_link_tasks_standalone()
-}
-
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
     client.status()
 }

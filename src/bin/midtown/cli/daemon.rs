@@ -262,14 +262,20 @@ fn lead_session_file(repo: &Path) -> PathBuf {
 /// Returns the full command string to launch Claude Code with appropriate flags.
 /// Always includes the system prompt via --append-system-prompt, whether new or resuming.
 /// Also includes settings file with stop hook for channel sync.
-fn build_lead_claude_command(session_id: &str, is_existing: bool) -> Result<String, String> {
+/// Sets CLAUDE_CODE_TASK_LIST_ID so Lead shares tasks with coworkers.
+fn build_lead_claude_command(
+    session_id: &str,
+    is_existing: bool,
+    task_list_id: &str,
+) -> Result<String, String> {
     let prompt_file = write_lead_prompt_file()?;
     let settings_file = write_lead_settings_file()?;
 
     if is_existing {
         // Resume existing session, but still inject system prompt and settings
         Ok(format!(
-            "claude --dangerously-skip-permissions --resume {} --settings {} --append-system-prompt \"$(cat {})\"",
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --resume {} --settings {} --append-system-prompt \"$(cat {})\"",
+            task_list_id,
             session_id,
             settings_file.display(),
             prompt_file.display()
@@ -277,7 +283,8 @@ fn build_lead_claude_command(session_id: &str, is_existing: bool) -> Result<Stri
     } else {
         // New session: use specific session ID, settings, and inject system prompt
         Ok(format!(
-            "claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
+            task_list_id,
             session_id,
             settings_file.display(),
             prompt_file.display()
@@ -373,8 +380,15 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         // Get or create the Lead's persistent session ID
         let (lead_session_id, is_existing) = get_or_create_lead_session_id(&repo)?;
 
+        // Get the shared task list ID for this repo
+        let repo_name = repo
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".to_string());
+        let task_list_id = midtown::paths::task_list_id_for_repo(&repo_name);
+
         // Build the claude command (always includes system prompt)
-        let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing)?;
+        let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing, &task_list_id)?;
 
         // Get project name for status bar (uppercase)
         let project_name = repo
@@ -679,8 +693,15 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
     // Get the Lead session ID
     let (lead_session_id, is_existing) = get_or_create_lead_session_id(repo)?;
 
+    // Get the shared task list ID for this repo
+    let repo_name = repo
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "default".to_string());
+    let task_list_id = midtown::paths::task_list_id_for_repo(&repo_name);
+
     // Build the claude command with settings
-    let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing)?;
+    let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing, &task_list_id)?;
 
     // Kill the current Lead pane content and restart with proper settings
     let lead_pane = format!("{}:lead.0", session);
@@ -1021,8 +1042,9 @@ mod tests {
         // The command should ALWAYS include --append-system-prompt
         let session_id = "test-session-123";
         let is_existing = true; // Resuming an existing session
+        let task_list_id = "midtown-test";
 
-        let cmd = build_lead_claude_command(session_id, is_existing).unwrap();
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
 
         // Must include system prompt even when resuming
         assert!(
@@ -1036,8 +1058,9 @@ mod tests {
     fn test_build_lead_claude_command_new_includes_system_prompt() {
         let session_id = "test-session-456";
         let is_existing = false; // New session
+        let task_list_id = "midtown-test";
 
-        let cmd = build_lead_claude_command(session_id, is_existing).unwrap();
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
 
         assert!(
             cmd.contains("--append-system-prompt"),
@@ -1055,12 +1078,28 @@ mod tests {
     fn test_build_lead_claude_command_resume_uses_resume_flag() {
         let session_id = "test-session-789";
         let is_existing = true;
+        let task_list_id = "midtown-test";
 
-        let cmd = build_lead_claude_command(session_id, is_existing).unwrap();
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
 
         assert!(
             cmd.contains("--resume"),
             "Resume command must include --resume flag, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_includes_task_list_id() {
+        let session_id = "test-session-abc";
+        let is_existing = false;
+        let task_list_id = "midtown-myrepo";
+
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
+
+        assert!(
+            cmd.contains("CLAUDE_CODE_TASK_LIST_ID='midtown-myrepo'"),
+            "Command must set CLAUDE_CODE_TASK_LIST_ID, got: {}",
             cmd
         );
     }

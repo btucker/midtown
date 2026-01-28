@@ -416,13 +416,9 @@ impl App {
 
 /// Fetch tasks from Claude Code's task storage.
 ///
-/// Reads tasks from `~/.claude/tasks/<lead_session_id>/` where the lead session ID
-/// is stored in `~/.midtown/<repo>/lead-session-id`.
+/// Reads tasks from `~/.claude/tasks/midtown-<repo>/` using the shared task list ID.
 fn fetch_tasks() -> Vec<KanbanTask> {
     let mut tasks = Vec::new();
-
-    // Get repo name to find the lead session file
-    let repo_name = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
 
     // Get home directory
     let home = match dirs::home_dir() {
@@ -430,19 +426,11 @@ fn fetch_tasks() -> Vec<KanbanTask> {
         None => return tasks,
     };
 
-    // Read the lead session ID from ~/.midtown/lead/<repo>/session-id
-    let lead_session_file = midtown::paths::lead_session_file_for_repo(&repo_name);
-    let lead_session_id = match std::fs::read_to_string(&lead_session_file) {
-        Ok(id) => id.trim().to_string(),
-        Err(_) => return tasks,
-    };
+    // Use the shared task list ID (midtown-<repo>)
+    let task_list_id = midtown::paths::task_list_id();
 
-    if lead_session_id.is_empty() {
-        return tasks;
-    }
-
-    // Read tasks from ~/.claude/tasks/<lead_session_id>/
-    let tasks_dir = home.join(".claude").join("tasks").join(&lead_session_id);
+    // Read tasks from ~/.claude/tasks/midtown-<repo>/
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
     let entries = match std::fs::read_dir(&tasks_dir) {
         Ok(e) => e,
         Err(_) => return tasks,

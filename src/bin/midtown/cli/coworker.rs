@@ -41,8 +41,6 @@ pub enum CoworkerCommand {
     /// Reads tool use context from stdin and posts task activity to channel.
     /// Called automatically by Claude Code when TaskUpdate or TaskCreate tools are used.
     TaskHook,
-    /// Link this session's tasks to the Lead's task directory (SessionStart hook)
-    LinkTasks,
     /// Handle Claude Code PostToolUse hook for AskUserQuestion
     ///
     /// Reads tool use context from stdin and notifies daemon to nudge Lead.
@@ -81,7 +79,6 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
         CoworkerCommand::NudgeConfig { command } => handle_nudge_config(command, client),
         CoworkerCommand::StopHook => handle_stop_hook_standalone(),
         CoworkerCommand::TaskHook => handle_task_hook_standalone(),
-        CoworkerCommand::LinkTasks => handle_link_tasks_standalone(),
         CoworkerCommand::AskHook => handle_ask_hook_standalone(),
     }
 }
@@ -514,81 +511,4 @@ fn handle_nudge_config(
         NudgeConfigCommand::Enable => client.nudge_config_enable(true),
         NudgeConfigCommand::Disable => client.nudge_config_enable(false),
     }
-}
-
-/// Link this coworker's task directory to the Lead's.
-///
-/// Called by SessionStart hook to share tasks across sessions.
-pub fn handle_link_tasks_standalone() -> Result<Response, String> {
-    use std::fs;
-    use std::os::unix::fs::symlink;
-
-    // Get repo name to find Lead's session file
-    let repo = detect_git_repo().ok_or("Not in a git repository")?;
-
-    // Read Lead's session UUID from ~/.midtown/lead/<repo>/session-id
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let lead_session_file = midtown::paths::lead_session_file_for_repo(&repo);
-
-    let lead_uuid = fs::read_to_string(&lead_session_file)
-        .map_err(|_| {
-            format!(
-                "Lead session not found at {:?}. Is midtown running?",
-                lead_session_file
-            )
-        })?
-        .trim()
-        .to_string();
-
-    // Find this session's task directory (newest in ~/.claude/tasks/)
-    let tasks_dir = home.join(".claude").join("tasks");
-    let my_uuid = find_newest_task_dir(&tasks_dir)?;
-
-    // Don't link to ourselves
-    if my_uuid == lead_uuid {
-        return Ok(Response::Message {
-            message: "Already using Lead's task directory".to_string(),
-        });
-    }
-
-    let my_task_dir = tasks_dir.join(&my_uuid);
-    let lead_task_dir = tasks_dir.join(&lead_uuid);
-
-    // Verify Lead's task dir exists
-    if !lead_task_dir.exists() {
-        return Err(format!(
-            "Lead's task directory not found: {:?}",
-            lead_task_dir
-        ));
-    }
-
-    // Remove our task dir and replace with symlink
-    if my_task_dir.exists() {
-        fs::remove_dir_all(&my_task_dir)
-            .map_err(|e| format!("Failed to remove task directory: {}", e))?;
-    }
-
-    symlink(&lead_task_dir, &my_task_dir)
-        .map_err(|e| format!("Failed to create symlink: {}", e))?;
-
-    Ok(Response::Message {
-        message: format!("Linked tasks: {} -> {}", my_uuid, lead_uuid),
-    })
-}
-
-/// Find the most recently created directory in the given path.
-fn find_newest_task_dir(tasks_dir: &std::path::Path) -> Result<String, String> {
-    use std::fs;
-
-    let entries: Vec<_> = fs::read_dir(tasks_dir)
-        .map_err(|e| format!("Cannot read tasks directory: {}", e))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .collect();
-
-    entries
-        .iter()
-        .max_by_key(|e| e.metadata().and_then(|m| m.created()).ok())
-        .and_then(|e| e.file_name().to_str().map(|s| s.to_string()))
-        .ok_or_else(|| "No task directories found".to_string())
 }

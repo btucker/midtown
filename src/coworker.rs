@@ -640,29 +640,6 @@ impl CoworkerManager {
         let coworkers = self.coworkers.read().unwrap();
         coworkers.len()
     }
-
-    /// Update task symlinks for all coworkers to point to a new Lead session.
-    ///
-    /// Called when the Lead's session changes to ensure coworkers see the updated task list.
-    pub fn update_task_symlinks(&self, new_lead_session_id: &str) -> crate::Result<()> {
-        let coworkers = self.coworkers.read().unwrap();
-
-        for coworker in coworkers.values() {
-            if let Some(ref session_id) = coworker.session_id {
-                if let Err(e) = tmux::symlink_tasks_to_lead(session_id, new_lead_session_id) {
-                    tracing::warn!("Failed to update task symlink for {}: {}", coworker.name, e);
-                } else {
-                    tracing::info!(
-                        "Updated task symlink for {} to Lead session {}",
-                        coworker.name,
-                        new_lead_session_id
-                    );
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]

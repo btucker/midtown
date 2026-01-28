@@ -31,8 +31,8 @@ pub enum TaskStatus {
 
 /// Read all tasks from Claude Code's task storage for the current session.
 ///
-/// Looks up the lead session ID from `~/.midtown/lead/<repo>/session-id` and
-/// reads all task JSON files from `~/.claude/tasks/<session_id>/`.
+/// Uses `CLAUDE_CODE_TASK_LIST_ID=midtown-<repo>` to locate the shared task storage
+/// at `~/.claude/tasks/midtown-<repo>/`.
 pub fn read_tasks() -> Vec<Task> {
     read_tasks_for_repo(None)
 }
@@ -40,24 +40,16 @@ pub fn read_tasks() -> Vec<Task> {
 /// Read all tasks for a specific repository.
 ///
 /// If `repo_name` is None, attempts to detect the current repository.
+/// Tasks are stored in `~/.claude/tasks/midtown-<repo>/`.
 pub fn read_tasks_for_repo(repo_name: Option<&str>) -> Vec<Task> {
     let repo = repo_name
         .map(String::from)
         .or_else(crate::paths::detect_repo_name)
         .unwrap_or_else(|| "default".to_string());
 
-    // Read the lead session ID from ~/.midtown/lead/<repo>/session-id
-    let lead_session_file = crate::paths::lead_session_file_for_repo(&repo);
-    let Ok(lead_session_id) = std::fs::read_to_string(&lead_session_file) else {
-        return Vec::new();
-    };
-    let lead_session_id = lead_session_id.trim();
-
-    if lead_session_id.is_empty() {
-        return Vec::new();
-    }
-
-    read_tasks_for_session(lead_session_id)
+    // Use the shared task list ID (midtown-<repo>)
+    let task_list_id = crate::paths::task_list_id_for_repo(&repo);
+    read_tasks_for_session(&task_list_id)
 }
 
 /// Read all tasks for a specific Claude Code session ID.
@@ -242,23 +234,14 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
         return Err("Could not determine home directory".to_string());
     };
 
-    // Get the lead session ID
-    let repo = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let lead_session_file = crate::paths::lead_session_file_for_repo(&repo);
-    let lead_session_id = std::fs::read_to_string(&lead_session_file)
-        .map_err(|e| format!("Failed to read lead session ID: {}", e))?
-        .trim()
-        .to_string();
-
-    if lead_session_id.is_empty() {
-        return Err("Lead session ID is empty".to_string());
-    }
+    // Use the shared task list ID (midtown-<repo>)
+    let task_list_id = crate::paths::task_list_id();
 
     // Read the task file
     let task_file = home
         .join(".claude")
         .join("tasks")
-        .join(&lead_session_id)
+        .join(&task_list_id)
         .join(format!("{}.json", task_id));
 
     let content =
