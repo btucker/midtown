@@ -160,6 +160,17 @@ pub fn get_busy_coworkers() -> Vec<String> {
         .collect()
 }
 
+/// Get names of coworkers who have in_progress tasks for a specific repo.
+///
+/// Use this from daemon context where detect_repo_name() may not work correctly.
+pub fn get_busy_coworkers_for_repo(repo_name: &str) -> Vec<String> {
+    read_tasks_for_repo(Some(repo_name))
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::InProgress)
+        .filter_map(|t| t.owner)
+        .collect()
+}
+
 /// Get in_progress tasks with their owners.
 ///
 /// Returns tuples of (task_id, owner_name).

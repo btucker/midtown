@@ -733,7 +733,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     }
 
     // Get in_progress tasks to determine who is busy
-    let busy_coworkers = get_busy_coworkers();
+    let busy_coworkers = get_busy_coworkers(&state.repo_name);
 
     // Get coworkers with open PRs - they should NEVER be auto-killed
     let coworkers_with_open_prs = get_coworkers_with_open_prs();
@@ -834,9 +834,12 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     }
 }
 
-/// Get list of coworker names who have in_progress tasks.
-fn get_busy_coworkers() -> Vec<String> {
-    crate::tasks::get_busy_coworkers()
+/// Get list of coworker names who have in_progress tasks for a specific repo.
+///
+/// This explicitly passes the repo_name rather than relying on detect_repo_name(),
+/// which may not work correctly from the daemon's async context.
+fn get_busy_coworkers(repo_name: &str) -> Vec<String> {
+    crate::tasks::get_busy_coworkers_for_repo(repo_name)
 }
 
 /// Get list of coworker names who have open PRs.
@@ -1620,7 +1623,7 @@ async fn find_available_reviewer(
     }
 
     // Get coworkers who are busy (have in_progress tasks)
-    let busy_coworkers = get_busy_coworkers();
+    let busy_coworkers = get_busy_coworkers(&state.repo_name);
 
     // Get coworkers who are already assigned to review PRs
     let reviewing_coworkers: HashSet<String> = {
