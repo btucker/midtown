@@ -649,7 +649,7 @@ mod tests {
         // Send 5 messages
         for i in 1..=5 {
             channel
-                .send(&Message::text("agent1", &format!("Message {}", i)))
+                .send(&Message::text("agent1", format!("Message {}", i)))
                 .unwrap();
         }
 
@@ -669,7 +669,7 @@ mod tests {
         // Send 50 messages
         for i in 1..=50 {
             channel
-                .send(&Message::text("agent1", &format!("Message {}", i)))
+                .send(&Message::text("agent1", format!("Message {}", i)))
                 .unwrap();
         }
 
@@ -699,7 +699,7 @@ mod tests {
         // Send 30 messages
         for i in 1..=30 {
             channel
-                .send(&Message::text("agent1", &format!("Message {}", i)))
+                .send(&Message::text("agent1", format!("Message {}", i)))
                 .unwrap();
         }
 
