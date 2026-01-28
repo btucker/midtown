@@ -15,8 +15,6 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -25,7 +23,6 @@ use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
 use crate::message::Message;
-use crate::paths;
 use crate::tmux;
 
 /// Configuration for the web server
@@ -217,115 +214,104 @@ async fn api_channel_history(
     Ok(axum::Json(response))
 }
 
-/// Get daemon/coworker status by calling the daemon RPC over Unix socket.
-async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
-    let repo = state.config.repo.clone();
+/// Get daemon/coworker status including tasks and PRs for kanban board
+async fn api_status(State(_state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
+    // Read tasks directly from Claude Code task storage
+    let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
+        .into_iter()
+        .map(|task| {
+            let status = match task.status {
+                crate::tasks::TaskStatus::Pending => "pending",
+                crate::tasks::TaskStatus::InProgress => "in_progress",
+                crate::tasks::TaskStatus::Completed => "completed",
+            };
+            serde_json::json!({
+                "id": task.id,
+                "subject": task.subject,
+                "status": status,
+                "owner": task.owner,
+            })
+        })
+        .collect();
 
-    let status = tokio::task::spawn_blocking(move || call_daemon_status(&repo))
-        .await
-        .map_err(|e| {
-            error!("Status task join error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    // Get open PRs via gh CLI (spawn blocking to avoid blocking async runtime)
+    let pull_requests = tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("gh")
+            .args(["pr", "list", "--json", "number,title,author,state,isDraft,reviewDecision"])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let prs: Vec<serde_json::Value> =
+                    serde_json::from_str(&stdout).unwrap_or_default();
+                prs.into_iter()
+                    .map(|pr| {
+                        let is_draft =
+                            pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+                        let status = if is_draft {
+                            "draft"
+                        } else {
+                            match pr
+                                .get("reviewDecision")
+                                .and_then(|r| r.as_str())
+                                .unwrap_or("")
+                            {
+                                "APPROVED" => "approved",
+                                "CHANGES_REQUESTED" => "changes requested",
+                                "REVIEW_REQUIRED" => "awaiting review",
+                                _ => "open",
+                            }
+                        };
+                        serde_json::json!({
+                            "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
+                            "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                            "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                            "status": status,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        }
+    })
+    .await
+    .unwrap_or_default();
+
+    // Get merged PRs via gh CLI
+    let merged_prs = tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("gh")
+            .args([
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--limit",
+                "10",
+                "--json",
+                "number,title,mergedAt",
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    })
+    .await
+    .unwrap_or_default();
+
+    let status = serde_json::json!({
+        "daemon": "running",
+        "coworkers": [],
+        "tasks": tasks,
+        "pull_requests": pull_requests,
+        "merged_prs": merged_prs,
+    });
 
     Ok(axum::Json(status))
 }
-
-/// Call the daemon's "status" RPC method over Unix socket.
-///
-/// Returns the daemon's status response, or a fallback JSON if the daemon is unreachable.
-fn call_daemon_status(repo: &str) -> serde_json::Value {
-    let socket_path = paths::daemon_socket_for_repo(repo);
-
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("Cannot connect to daemon socket: {}", e);
-            return serde_json::json!({
-                "daemon": "stopped",
-                "coworkers": [],
-                "tasks": []
-            });
-        }
-    };
-
-    // Set a timeout so we don't hang forever
-    let timeout = std::time::Duration::from_secs(5);
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "status",
-        "id": 1
-    });
-
-    if let Err(e) = writeln!(stream, "{}", request) {
-        warn!("Failed to write to daemon socket: {}", e);
-        return serde_json::json!({
-            "daemon": "error",
-            "coworkers": [],
-            "tasks": []
-        });
-    }
-
-    if let Err(e) = stream.flush() {
-        warn!("Failed to flush daemon socket: {}", e);
-        return serde_json::json!({
-            "daemon": "error",
-            "coworkers": [],
-            "tasks": []
-        });
-    }
-
-    let mut reader = BufReader::new(stream);
-    let mut response_line = String::new();
-    if let Err(e) = reader.read_line(&mut response_line) {
-        warn!("Failed to read from daemon socket: {}", e);
-        return serde_json::json!({
-            "daemon": "error",
-            "coworkers": [],
-            "tasks": []
-        });
-    }
-
-    // Parse the JSON-RPC response and extract the result
-    match serde_json::from_str::<serde_json::Value>(&response_line) {
-        Ok(rpc_response) => {
-            if let Some(result) = rpc_response.get("result") {
-                // Add top-level "daemon" field for the frontend
-                let mut status = result.clone();
-                if let Some(obj) = status.as_object_mut() {
-                    obj.entry("daemon".to_string())
-                        .or_insert(serde_json::json!("running"));
-                }
-                status
-            } else if let Some(error) = rpc_response.get("error") {
-                warn!("Daemon RPC error: {:?}", error);
-                serde_json::json!({
-                    "daemon": "error",
-                    "coworkers": [],
-                    "tasks": []
-                })
-            } else {
-                serde_json::json!({
-                    "daemon": "running",
-                    "coworkers": [],
-                    "tasks": []
-                })
-            }
-        }
-        Err(e) => {
-            warn!("Failed to parse daemon response: {}", e);
-            serde_json::json!({
-                "daemon": "error",
-                "coworkers": [],
-                "tasks": []
-            })
-        }
-    }
-}
-
 /// Get the lead's tmux pane content
 ///
 /// Captures the current content of the lead window's pane via tmux.

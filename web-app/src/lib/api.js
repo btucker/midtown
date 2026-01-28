@@ -1,4 +1,4 @@
-import { messages, connected, coworkers, daemonStatus } from './store.js'
+import { messages, connected, coworkers, daemonStatus, kanbanData } from './store.js'
 
 let ws = null
 let reconnectTimeout = null
@@ -18,7 +18,7 @@ export async function fetchHistory() {
   }
 }
 
-// Fetch daemon/coworker status
+// Fetch daemon/coworker status and update kanban data
 export async function fetchStatus() {
   try {
     const res = await fetch(`${API_BASE}/status`)
@@ -26,10 +26,33 @@ export async function fetchStatus() {
       const data = await res.json()
       daemonStatus.set(data)
       coworkers.set(data.coworkers || [])
+      updateKanbanData(data)
     }
   } catch (err) {
     console.error('Failed to fetch status:', err)
   }
+}
+
+function updateKanbanData(data) {
+  const tasks = data.tasks || []
+  const prs = data.pull_requests || []
+  const mergedPrs = data.merged_prs || []
+
+  kanbanData.set({
+    backlog: tasks.filter((t) => t.status === 'pending'),
+    inProgress: tasks.filter((t) => t.status === 'in_progress'),
+    review: prs.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      author: pr.author,
+      status: pr.status,
+    })),
+    done: mergedPrs.slice(0, 10).map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      mergedAt: pr.mergedAt,
+    })),
+  })
 }
 
 // Connect to WebSocket for live updates

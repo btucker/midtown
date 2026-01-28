@@ -3,6 +3,7 @@
   import Channel from './lib/Channel.svelte'
   import Status from './lib/Status.svelte'
   import Lead from './lib/Lead.svelte'
+  import Kanban from './lib/Kanban.svelte'
   import { messages, connected, coworkers } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus } from './lib/api.js'
 
@@ -13,6 +14,9 @@
     await Promise.all([fetchHistory(), fetchStatus()])
     // Connect WebSocket for live updates
     connectWebSocket()
+    // Refresh status every 30s for kanban updates
+    const interval = setInterval(fetchStatus, 30000)
+    return () => clearInterval(interval)
   })
 </script>
 
@@ -44,6 +48,8 @@
       Lead
     </button>
   </nav>
+
+  <Kanban />
 
   <div class="content">
     {#if activeTab === 'channel'}

@@ -2361,8 +2361,15 @@ fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     // Get open PRs from GitHub via gh CLI
     let pull_requests = get_open_prs();
 
-    // Get pending tasks from Claude Code task storage
-    let tasks = get_open_tasks();
+    // Get all tasks from Claude Code task storage (all statuses)
+    let tasks = get_all_tasks();
+    let pending_count = tasks
+        .iter()
+        .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
+        .count();
+
+    // Get recently merged PRs
+    let merged_prs = get_merged_prs();
 
     // Get recent channel activity
     let recent_activity = get_recent_channel_activity();
@@ -2373,11 +2380,12 @@ fn handle_status(id: RequestId, state: &DaemonState) -> Response {
             "success": true,
             "daemon_running": true,
             "active_coworkers": state.coworkers.count(),
-            "pending_tasks": tasks.len(),
+            "pending_tasks": pending_count,
             "socket_path": state.socket_path.to_string_lossy(),
             "coworkers": coworkers,
             "tasks": tasks,
             "pull_requests": pull_requests,
+            "merged_prs": merged_prs,
             "recent_activity": recent_activity,
         }),
     )
@@ -2440,19 +2448,51 @@ fn format_pr_status(pr: &serde_json::Value) -> String {
     }
 }
 
-/// Get pending tasks from Claude Code task storage.
-fn get_open_tasks() -> Vec<serde_json::Value> {
-    crate::tasks::get_pending_tasks()
+/// Get all tasks from Claude Code task storage with their status.
+fn get_all_tasks() -> Vec<serde_json::Value> {
+    crate::tasks::read_tasks()
         .into_iter()
         .map(|task| {
+            let status = match task.status {
+                crate::tasks::TaskStatus::Pending => "pending",
+                crate::tasks::TaskStatus::InProgress => "in_progress",
+                crate::tasks::TaskStatus::Completed => "completed",
+            };
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,
-                "status": "pending",
-                "assignee": task.owner,
+                "status": status,
+                "owner": task.owner,
             })
         })
         .collect()
+}
+
+/// Get recently merged PRs from GitHub using gh CLI.
+fn get_merged_prs() -> Vec<serde_json::Value> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--limit",
+            "10",
+            "--json",
+            "number,title,mergedAt",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
+        }
+        _ => {
+            debug!("Failed to get merged PRs from gh CLI");
+            Vec::new()
+        }
+    }
 }
 
 /// Get recent channel activity.
