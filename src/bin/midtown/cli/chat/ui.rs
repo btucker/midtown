@@ -50,6 +50,15 @@ const AVENUE_COLORS: &[(&str, Color)] = &[
     ("mercer", Color::Indexed(216)),   // salmon
 ];
 
+/// Check if a sender is a "system-like" sender that should be grouped together
+/// (daemon, github, system) without blank lines between consecutive messages.
+fn is_system_like_sender(sender: &str) -> bool {
+    matches!(
+        sender.to_lowercase().as_str(),
+        "daemon" | "github" | "system"
+    )
+}
+
 /// Get color for a sender name
 fn get_sender_color(name: &str) -> Color {
     match name.to_lowercase().as_str() {
@@ -615,7 +624,15 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
 
     // For system messages (or daemon messages), render entire line in gray (no timestamp gutter)
     if msg.message_type == MessageType::System || msg.from == "daemon" {
-        return render_system_message(&msg.content, width);
+        let mut result = Vec::new();
+        // Add blank line before system messages, unless prev was also system-like
+        if let Some(prev) = prev_sender
+            && !is_system_like_sender(prev)
+        {
+            result.push(Line::from(""));
+        }
+        result.extend(render_system_message(&msg.content, width));
+        return result;
     }
 
     // Calculate content width (after " HH:MM " gutter)
@@ -631,8 +648,9 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
 
     // Add sender name line if sender changed
     if show_sender {
-        // Add blank line before new sender (except for first message)
-        if prev_sender.is_some() {
+        // Add blank line before new sender (except for first message or after system-like senders)
+        // This groups system messages together with the following regular messages
+        if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
             result.push(Line::from(""));
         }
         result.push(build_sender_line(msg, color));
@@ -1418,5 +1436,101 @@ mod tests {
             buggy_content, fixed_content,
             "Scrolled content should differ between buggy and fixed implementations"
         );
+    }
+
+    #[test]
+    fn test_system_like_messages_grouped_together() {
+        use chrono::Utc;
+
+        // Test that system-like messages (daemon, github, system) are grouped together
+        // with blank lines separating them from regular messages.
+        //
+        // Expected behavior:
+        // - Blank line BEFORE system-like messages (unless prev was also system-like)
+        // - No blank line between consecutive system-like messages
+        // - No blank line after system-like messages when followed by regular messages
+
+        // Helper to count blank lines in rendered output
+        fn count_blank_lines(lines: &[Line]) -> usize {
+            lines
+                .iter()
+                .filter(|l| l.spans.iter().all(|s| s.content.is_empty()))
+                .count()
+        }
+
+        // Test 1: Regular -> daemon (system-like) should add blank before daemon
+        let _regular_msg = Message {
+            id: "1".to_string(),
+            from: "madison".to_string(),
+            content: "working on task".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let daemon_msg = Message {
+            id: "2".to_string(),
+            from: "daemon".to_string(),
+            content: "Spawned coworker".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+
+        let daemon_lines = render_message(&daemon_msg, 80, Some("madison"));
+        assert!(
+            count_blank_lines(&daemon_lines) == 1,
+            "Should have blank line before daemon message after regular sender"
+        );
+
+        // Test 2: daemon -> daemon (both system-like) should NOT add blank
+        let daemon_msg2 = Message {
+            id: "3".to_string(),
+            from: "daemon".to_string(),
+            content: "Another daemon event".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"));
+        assert_eq!(
+            count_blank_lines(&daemon_lines2),
+            0,
+            "Should NOT have blank line between consecutive daemon messages"
+        );
+
+        // Test 3: daemon -> github (both system-like) should NOT add blank
+        let github_msg = Message {
+            id: "4".to_string(),
+            from: "github".to_string(),
+            content: "Check passed".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let github_lines = render_message(&github_msg, 80, Some("daemon"));
+        assert_eq!(
+            count_blank_lines(&github_lines),
+            0,
+            "Should NOT have blank line between daemon and github messages"
+        );
+
+        // Test 4: daemon -> regular (park) should NOT add blank (groups with system)
+        let park_msg = Message {
+            id: "5".to_string(),
+            from: "park".to_string(),
+            content: "back to work".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Text,
+        };
+        let park_lines = render_message(&park_msg, 80, Some("daemon"));
+        assert_eq!(
+            count_blank_lines(&park_lines),
+            0,
+            "Should NOT have blank line when transitioning from system-like to regular"
+        );
+
+        // Test 5: Verify is_system_like_sender helper
+        assert!(is_system_like_sender("daemon"));
+        assert!(is_system_like_sender("github"));
+        assert!(is_system_like_sender("system"));
+        assert!(is_system_like_sender("DAEMON")); // case insensitive
+        assert!(!is_system_like_sender("madison"));
+        assert!(!is_system_like_sender("park"));
     }
 }
