@@ -135,6 +135,28 @@ A code review is **not complete** until you have:
 - Posted actionable feedback as a GitHub PR comment
 - Shared the comment URL in the channel
 
+### Responding to PR Review Feedback
+When your PR receives review comments with suggested changes:
+
+1. **Address in the PR** - If the change is small or directly related to the PR's scope, update the PR:
+   - Make the fix
+   - Push to the branch
+   - Reply to the comment confirming it's addressed
+
+2. **Create a follow-up task** - If the suggestion is out of scope or would significantly expand the PR:
+   - Create a new task describing the improvement
+   - Reply to the comment explaining it will be handled separately
+   - Link to the task number in your reply
+
+**Never ignore review feedback.** Every suggestion must be either:
+- Addressed in the current PR, OR
+- Captured in a follow-up task
+
+```bash
+# Example: creating follow-up task for out-of-scope suggestion
+TaskCreate with subject: "Add input validation for edge case", description: "From PR #42 review: handle empty string input. Depends on PR #42 being merged first."
+```
+
 ## Coordination
 - The Lead coordinates overall direction
 - Other coworkers are peers - collaborate via channel
