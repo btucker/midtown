@@ -3232,25 +3232,69 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
 
     // Case 2: Pending tasks without owners - assign ownership atomically, then spawn
     let pending_unowned = crate::tasks::get_pending_tasks_without_owners();
+    // Read all tasks once for relationship lookups (blockedBy, PR owner search)
+    let all_tasks = crate::tasks::read_tasks();
+    // Track PR# → coworker and task_id → coworker assignments made during this loop iteration.
+    // This prevents assigning different coworkers to sub-tasks of the same PR review
+    // when multiple sub-tasks are processed in the same tick.
+    let mut pr_coworker_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut task_coworker_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for task in pending_unowned {
-        // Step 1: Check if this task references a PR that already has an assigned coworker.
-        // This groups all sub-tasks for the same PR (score, filter, post comment, etc.)
-        // under the same coworker who is running the review.
-        let coworker_name = if let Some(pr_num) = crate::tasks::extract_pr_number(&task.subject) {
-            if let Some(existing_owner) = crate::tasks::find_pr_owner(&pr_num) {
-                info!(
-                    "Task #{} references PR #{} - assigning to existing owner {}",
-                    task.id, pr_num, existing_owner
-                );
-                existing_owner
-            } else {
-                let Some(name) = state.coworkers.next_available_name() else {
-                    debug!("No available coworker slots for unowned task #{}", task.id);
-                    break;
-                };
-                name
+        // Step 1: Determine the coworker name by checking multiple grouping strategies.
+        // Priority: in-memory PR map → in-memory blockedBy map → disk PR owner →
+        //           blockedBy relationship → new coworker name
+        let grouped_name: Option<String> = 'resolve: {
+            // Strategy A: Extract PR number from subject or description
+            if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(&task) {
+                // Check in-memory map first (handles same-tick assignments)
+                if let Some(name) = pr_coworker_map.get(&pr_num) {
+                    info!(
+                        "Task #{} references PR #{} - assigning to in-memory owner {}",
+                        task.id, pr_num, name
+                    );
+                    break 'resolve Some(name.clone());
+                }
+                // Check disk for previously assigned PR tasks
+                if let Some(existing_owner) =
+                    crate::tasks::find_pr_owner_in_tasks(&pr_num, &all_tasks)
+                {
+                    info!(
+                        "Task #{} references PR #{} - assigning to existing owner {}",
+                        task.id, pr_num, existing_owner
+                    );
+                    break 'resolve Some(existing_owner);
+                }
             }
+
+            // Strategy B: Check blockedBy relationships
+            // If this task is blocked by a task that was assigned in this loop, use that owner
+            for blocked_by_id in &task.blocked_by {
+                if let Some(name) = task_coworker_map.get(blocked_by_id) {
+                    info!(
+                        "Task #{} blocked by #{} - assigning to same owner {}",
+                        task.id, blocked_by_id, name
+                    );
+                    break 'resolve Some(name.clone());
+                }
+            }
+            // Check disk for blockedBy owners
+            if let Some(owner) = crate::tasks::find_owner_via_blocked_by(&task, &all_tasks) {
+                info!(
+                    "Task #{} blocked by owned task - assigning to {}",
+                    task.id, owner
+                );
+                break 'resolve Some(owner);
+            }
+
+            None
+        };
+
+        let coworker_name = if let Some(name) = grouped_name {
+            name
         } else {
+            // No grouping found - allocate a new coworker name
             let Some(name) = state.coworkers.next_available_name() else {
                 debug!("No available coworker slots for unowned task #{}", task.id);
                 break;
@@ -3272,6 +3316,12 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             "Assigned task #{} to {} (pre-spawn)",
             task.id, coworker_name
         );
+
+        // Record this assignment in in-memory maps for same-tick grouping
+        task_coworker_map.insert(task.id.clone(), coworker_name.clone());
+        if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(&task) {
+            pr_coworker_map.insert(pr_num, coworker_name.clone());
+        }
 
         // Build the prompt message to send during spawn
         let prompt = format!(
