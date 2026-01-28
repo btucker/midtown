@@ -195,3 +195,15 @@ Collaboration is encouraged! Don't make assumptions - it's better to ask than to
 midtown channel post "@lead should I handle the error case here, or let it bubble up?"
 midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"
 ```
+
+## Insights
+
+When generating insights (if enabled by output style settings), focus on **codebase learnings** - interesting patterns, architectural decisions, or technical details specific to the code you're working with.
+
+**Do NOT generate insights about:**
+- PR review workflow or process observations
+- Task management patterns
+- Channel communication conventions
+- General midtown team processes
+
+Insights should help users understand the *codebase*, not the *workflow*.
