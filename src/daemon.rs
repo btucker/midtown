@@ -398,11 +398,7 @@ impl DaemonState {
 
 /// Read the Lead session ID from the filesystem.
 fn read_lead_session_id(repo_name: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let session_file = std::path::PathBuf::from(home)
-        .join(".midtown")
-        .join(repo_name)
-        .join("lead-session-id");
+    let session_file = crate::paths::lead_session_file_for_repo(repo_name);
 
     std::fs::read_to_string(&session_file)
         .ok()
@@ -2440,11 +2436,7 @@ fn get_open_tasks() -> Vec<serde_json::Value> {
 /// Get recent channel activity.
 fn get_recent_channel_activity() -> Vec<serde_json::Value> {
     // Try to read from the default channel location
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let channel_file = std::path::PathBuf::from(&home)
-        .join(".midtown")
-        .join("default")
-        .join("channel.jsonl");
+    let channel_file = crate::paths::channel_file_for_repo("default");
 
     if !channel_file.exists() {
         return Vec::new();

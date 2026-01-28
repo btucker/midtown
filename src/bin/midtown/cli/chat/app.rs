@@ -430,11 +430,8 @@ fn fetch_tasks() -> Vec<KanbanTask> {
         None => return tasks,
     };
 
-    // Read the lead session ID from ~/.midtown/<repo>/lead-session-id
-    let lead_session_file = home
-        .join(".midtown")
-        .join(&repo_name)
-        .join("lead-session-id");
+    // Read the lead session ID from ~/.midtown/lead/<repo>/session-id
+    let lead_session_file = midtown::paths::lead_session_file_for_repo(&repo_name);
     let lead_session_id = match std::fs::read_to_string(&lead_session_file) {
         Ok(id) => id.trim().to_string(),
         Err(_) => return tasks,

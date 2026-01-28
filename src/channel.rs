@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 /// assert_eq!(new_msgs[0].content, "Third");
 /// ```
 pub struct Channel {
-    /// Base directory for this channel (~/.midtown/<repo>/)
+    /// Base directory for this channel (~/.midtown/projects/<repo>/)
     base_dir: PathBuf,
     /// Path to the channel.jsonl file
     channel_file: PathBuf,
@@ -92,10 +92,9 @@ impl Channel {
 
     /// Open a channel for a specific repository
     ///
-    /// Uses ~/.midtown/<repo>/ as the base directory.
+    /// Uses ~/.midtown/projects/<repo>/ as the base directory.
     pub fn for_repo(repo: &str) -> Result<Self> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let base_dir = PathBuf::from(home).join(".midtown").join(repo);
+        let base_dir = crate::paths::projects_dir_for_repo(repo);
         Self::new(base_dir)
     }
 
