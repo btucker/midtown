@@ -2790,31 +2790,44 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         }
     }
 
-    // Case 2: Pending tasks without owners - spawn a new coworker and assign
+    // Case 2: Pending tasks without owners - assign ownership atomically, then spawn
     let pending_unowned = crate::tasks::get_pending_tasks_without_owners();
     for task in pending_unowned {
-        // Spawn a new coworker
-        match state.coworkers.spawn(false) {
-            Ok(coworker_name) => {
+        // Step 1: Get the next available coworker name (without spawning yet)
+        let Some(coworker_name) = state.coworkers.next_available_name() else {
+            debug!("No available coworker slots for unowned task #{}", task.id);
+            // Stop trying - if we're out of slots we'll try again next tick
+            break;
+        };
+
+        // Step 2: Atomically assign task ownership BEFORE spawning
+        // This prevents race conditions where multiple coworkers could claim the same task
+        if let Err(e) = crate::tasks::update_task_owner(&task.id, &coworker_name) {
+            warn!(
+                "Failed to assign task #{} to {}: {}",
+                task.id, coworker_name, e
+            );
+            continue;
+        }
+
+        info!(
+            "Assigned task #{} to {} (pre-spawn)",
+            task.id, coworker_name
+        );
+
+        // Step 3: Now spawn the coworker with the pre-assigned name
+        match state.coworkers.spawn_with_name(&coworker_name, false) {
+            Ok(_) => {
                 info!(
-                    "Spawned new coworker {} for unowned task #{}",
+                    "Spawned coworker {} for pre-assigned task #{}",
                     coworker_name, task.id
                 );
-
-                // Assign the task to this coworker
-                if let Err(e) = crate::tasks::update_task_owner(&task.id, &coworker_name) {
-                    warn!(
-                        "Failed to assign task #{} to {}: {}",
-                        task.id, coworker_name, e
-                    );
-                    continue;
-                }
 
                 // Post to channel
                 let msg = Message::text(
                     "daemon",
                     format!(
-                        "🚀 Spawned coworker {} and assigned task #{}: {}",
+                        "🚀 Spawned coworker {} for assigned task #{}: {}",
                         coworker_name, task.id, task.subject
                     ),
                 );
@@ -2825,7 +2838,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 // Give coworker time to start
                 std::thread::sleep(std::time::Duration::from_secs(2));
 
-                // Nudge them about the task
+                // Nudge them about their assigned task
                 let nudge_msg = format!(
                     "You've been assigned task #{}: {}. Get started!",
                     task.id, task.subject
@@ -2838,19 +2851,18 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                     );
                 } else {
                     info!(
-                        "Nudged {} about newly assigned task #{}",
+                        "Nudged {} about their assigned task #{}",
                         coworker_name, task.id
                     );
                 }
             }
             Err(e) => {
-                // Could not spawn - might be out of coworker slots
-                debug!(
-                    "Could not spawn coworker for unowned task #{}: {}",
-                    task.id, e
+                // Spawn failed but task is already assigned - that's okay,
+                // the next daemon tick will see the assigned task and try to spawn again
+                warn!(
+                    "Failed to spawn {} for pre-assigned task #{}: {}",
+                    coworker_name, task.id, e
                 );
-                // Stop trying - if we're out of slots we'll try again next tick
-                break;
             }
         }
     }
