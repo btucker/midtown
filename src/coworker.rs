@@ -690,6 +690,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_respawn_fails_without_worktree() {
         let (manager, _temp_dir) = test_manager();
 
@@ -705,6 +706,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_respawn_fails_if_already_running() {
         let (manager, _temp_dir) = test_manager();
 
