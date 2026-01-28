@@ -104,6 +104,11 @@ impl CoworkerManager {
         manager
     }
 
+    /// Returns the tmux session name (e.g., "midtown-projectname").
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+
     /// Discover existing coworker windows from tmux and add them to tracking.
     ///
     /// This is called on startup to recover coworkers that were running before
