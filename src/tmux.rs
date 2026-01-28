@@ -547,6 +547,17 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
     Ok(status.success())
 }
 
+/// Read plugins from user's ~/.claude/settings.json
+fn read_user_plugins() -> Option<serde_json::Value> {
+    let home = std::env::var("HOME").ok()?;
+    let settings_path = std::path::PathBuf::from(home)
+        .join(".claude")
+        .join("settings.json");
+    let content = std::fs::read_to_string(settings_path).ok()?;
+    let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
+    settings.get("plugins").cloned()
+}
+
 /// JSON settings for coworker Claude Code sessions.
 ///
 /// Configures hooks for:
@@ -555,8 +566,12 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
 /// - PostToolUse: Post insights to channel
 /// - Notification: Post idle status when waiting for input
 fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
+    // Read user's plugins from ~/.claude/settings.json
+    let user_plugins = read_user_plugins().unwrap_or_default();
+
     serde_json::json!({
         "editorMode": "normal",
+        "plugins": user_plugins,
         "hooks": {
             "Stop": [{
                 "hooks": [{
@@ -663,7 +678,7 @@ pub fn spawn_claude(
     // Build the claude command with session ID for task persistence
     // Use file paths for settings and prompt to avoid shell quoting issues
     // Set MIDTOWN_AGENT env var so the coworker's name appears in messages
-    // Use --setting-sources project,local to use project settings (no vim mode)
+    // Use --setting-sources project,local (plugins are now in --settings file)
     // Add --continue flag if resuming a previous session
     let continue_flag = if resume { " --continue" } else { "" };
     let command = format!(
