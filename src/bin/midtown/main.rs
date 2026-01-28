@@ -147,16 +147,6 @@ fn main() {
         return;
     }
 
-    // Stop hook also works standalone (no daemon required)
-    if let Commands::Coworker {
-        command: CoworkerCommand::StopHook,
-    } = &command
-    {
-        let result = cli::handle_coworker_stop_hook();
-        handle_result(format, result);
-        return;
-    }
-
     // Daemon command (runs the daemon server - internal use)
     if let Commands::Daemon {
         socket,
