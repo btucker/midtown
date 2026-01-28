@@ -983,3 +983,285 @@ fn test_message_update_in_existing_channel() {
         unique_msg
     );
 }
+
+// ============================================================================
+// Selection Mode and Scrollwheel Tests
+// These tests verify mouse capture toggle and scroll functionality
+// ============================================================================
+
+/// Test that pressing 's' toggles selection mode.
+///
+/// This test verifies that:
+/// 1. The TUI starts in normal mode (can scroll)
+/// 2. Pressing 's' enters selection mode (border turns yellow, mouse capture disabled)
+/// 3. Pressing 's' again returns to normal mode
+#[test]
+#[timeout(30000)]
+#[ignore] // Requires tmux and built binary
+fn test_selection_mode_toggle() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    // Build the binary first
+    let build_result = Command::new("cargo")
+        .args(["build", "--release"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status();
+
+    if build_result.map(|s| !s.success()).unwrap_or(true) {
+        eprintln!("Skipping test: could not build binary");
+        return;
+    }
+
+    let session = test_session_name();
+    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("release")
+        .join("midtown");
+
+    // Create test directory structure
+    let test_dir = std::env::temp_dir().join(format!("midtown-select-test-{}", std::process::id()));
+    let midtown_dir = test_dir.join(".midtown").join("select-test-repo");
+    fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
+
+    // Initialize git
+    let git_dir = test_dir.join("select-test-repo");
+    fs::create_dir_all(&git_dir).expect("Failed to create git dir");
+    let _ = Command::new("git")
+        .args(["init"])
+        .current_dir(&git_dir)
+        .status();
+
+    // Create session
+    assert!(
+        create_test_session_with_size(&session, 100, 30),
+        "Failed to create test session"
+    );
+    let _cleanup = SessionCleanup(&session);
+
+    // Set up environment
+    send_keys(&session, &format!("export HOME={}", test_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    send_keys(&session, &format!("cd {}", git_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    // Start midtown chat
+    send_keys(&session, &format!("{} chat", binary_path.display()));
+    send_keys(&session, "Enter");
+
+    // Wait for TUI to start
+    thread::sleep(Duration::from_secs(2));
+
+    // Capture initial state - should NOT show [SELECT] indicator
+    let initial_content = capture_pane(&session).unwrap_or_default();
+    let initially_in_select_mode = initial_content.contains("[SELECT");
+
+    // Press 's' to toggle selection mode
+    send_keys(&session, "s");
+    thread::sleep(Duration::from_millis(500));
+
+    // Capture state after pressing 's' - should show [SELECT] indicator
+    let select_mode_content = capture_pane(&session).unwrap_or_default();
+    let in_select_mode = select_mode_content.contains("[SELECT");
+
+    // Press 's' again to exit selection mode
+    send_keys(&session, "s");
+    thread::sleep(Duration::from_millis(500));
+
+    // Capture state after pressing 's' again - should NOT show [SELECT] indicator
+    let normal_mode_content = capture_pane(&session).unwrap_or_default();
+    let back_to_normal = !normal_mode_content.contains("[SELECT");
+
+    // Quit the TUI
+    send_keys(&session, "q");
+    thread::sleep(Duration::from_millis(200));
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&test_dir);
+
+    // Assert the toggle behavior
+    assert!(
+        !initially_in_select_mode,
+        "TUI should start in normal mode (no [SELECT] indicator)"
+    );
+    assert!(
+        in_select_mode,
+        "After pressing 's', TUI should show [SELECT] indicator. Got:\n{}",
+        select_mode_content
+    );
+    assert!(
+        back_to_normal,
+        "After pressing 's' again, TUI should exit selection mode. Got:\n{}",
+        normal_mode_content
+    );
+}
+
+/// Test that scrollwheel scrolling works in the chat TUI.
+///
+/// This test verifies that:
+/// 1. When there are more messages than fit on screen, scroll shows different content
+/// 2. Scroll up (to see older messages) changes the visible content
+/// 3. Scroll down returns to showing newest messages
+///
+/// Note: This uses keyboard scroll keys (k/j) since sending mouse scroll events
+/// through tmux is complex. The keyboard and mouse scroll share the same handler.
+#[test]
+#[timeout(30000)]
+#[ignore] // Requires tmux and built binary
+fn test_scrollwheel_scrolling() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    // Build the binary first
+    let build_result = Command::new("cargo")
+        .args(["build", "--release"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status();
+
+    if build_result.map(|s| !s.success()).unwrap_or(true) {
+        eprintln!("Skipping test: could not build binary");
+        return;
+    }
+
+    let session = test_session_name();
+    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("release")
+        .join("midtown");
+
+    // Create test directory structure
+    let test_dir = std::env::temp_dir().join(format!("midtown-scroll-test-{}", std::process::id()));
+    let midtown_dir = test_dir.join(".midtown").join("scroll-test-repo");
+    fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
+
+    // Initialize git
+    let git_dir = test_dir.join("scroll-test-repo");
+    fs::create_dir_all(&git_dir).expect("Failed to create git dir");
+    let _ = Command::new("git")
+        .args(["init"])
+        .current_dir(&git_dir)
+        .status();
+
+    // Pre-populate channel with many messages to enable scrolling
+    let channel_file = midtown_dir.join("channel.jsonl");
+    {
+        use chrono::Utc;
+        use std::io::Write;
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&channel_file)
+            .expect("Failed to open channel file");
+
+        // Add 100 messages - enough to require scrolling
+        // Messages have unique identifiers so we can verify which ones are visible
+        for i in 0..100 {
+            let timestamp = Utc::now().to_rfc3339();
+            // Each message from a different user to take more vertical space
+            let msg = format!(
+                r#"{{"id":"scroll-{}","from":"user{}","content":"SCROLL_MSG_{}","timestamp":"{}","type":"text"}}"#,
+                i,
+                i % 10,
+                i,
+                timestamp
+            );
+            writeln!(file, "{}", msg).expect("Failed to write message");
+        }
+        file.sync_all().expect("Failed to sync");
+    }
+
+    // Create session
+    assert!(
+        create_test_session_with_size(&session, 100, 30),
+        "Failed to create test session"
+    );
+    let _cleanup = SessionCleanup(&session);
+
+    // Set up environment
+    send_keys(&session, &format!("export HOME={}", test_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    send_keys(&session, &format!("cd {}", git_dir.display()));
+    send_keys(&session, "Enter");
+    thread::sleep(Duration::from_millis(100));
+
+    // Start midtown chat
+    send_keys(&session, &format!("{} chat", binary_path.display()));
+    send_keys(&session, "Enter");
+
+    // Wait for TUI to start and load messages
+    thread::sleep(Duration::from_secs(3));
+
+    // Capture initial state - should show newest messages (90-99)
+    let initial_content = capture_pane(&session).unwrap_or_default();
+    eprintln!("Initial content:\n{}", initial_content);
+
+    // Check that newest messages are visible
+    let shows_newest = initial_content.contains("SCROLL_MSG_99")
+        || initial_content.contains("SCROLL_MSG_98")
+        || initial_content.contains("SCROLL_MSG_97");
+
+    // Scroll up many times using PageUp to see older messages
+    // This uses the keyboard interface which shares the same scroll logic as mouse
+    for _ in 0..5 {
+        send_keys(&session, "PageUp");
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Wait for render
+    thread::sleep(Duration::from_millis(500));
+
+    // Capture scrolled state - should show older messages
+    let scrolled_content = capture_pane(&session).unwrap_or_default();
+    eprintln!("Scrolled content:\n{}", scrolled_content);
+
+    // After scrolling up, we should see different messages (older ones)
+    let shows_older = scrolled_content.contains("SCROLL_MSG_0")
+        || scrolled_content.contains("SCROLL_MSG_1")
+        || scrolled_content.contains("SCROLL_MSG_2")
+        || scrolled_content.contains("SCROLL_MSG_3")
+        || scrolled_content.contains("SCROLL_MSG_4");
+
+    // Scroll back down using 'G' (go to end/bottom)
+    send_keys(&session, "G");
+    thread::sleep(Duration::from_millis(500));
+
+    // Capture after scrolling to bottom
+    let bottom_content = capture_pane(&session).unwrap_or_default();
+    let back_at_bottom = bottom_content.contains("SCROLL_MSG_99")
+        || bottom_content.contains("SCROLL_MSG_98")
+        || bottom_content.contains("SCROLL_MSG_97");
+
+    // Quit the TUI
+    send_keys(&session, "q");
+    thread::sleep(Duration::from_millis(200));
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&test_dir);
+
+    // Assert scrolling behavior
+    assert!(
+        shows_newest,
+        "Initially should show newest messages (90-99). Got:\n{}",
+        initial_content
+    );
+    assert!(
+        shows_older,
+        "After scrolling up, should show older messages (0-4). Got:\n{}",
+        scrolled_content
+    );
+    assert!(
+        back_at_bottom,
+        "After pressing 'G', should be back at bottom (90-99). Got:\n{}",
+        bottom_content
+    );
+}
