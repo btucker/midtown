@@ -24,6 +24,7 @@ use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
 use crate::message::{Message, MessageType};
 use crate::rpc::{Request, RequestId, Response, RpcError};
+use crate::web::{self, WebUpdate};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
 
@@ -366,10 +367,17 @@ struct DaemonState {
     pending_task_nudge_cooldowns: std::sync::Mutex<HashMap<String, Instant>>,
     /// Persistent GitHub state (PR reviewer assignments, etc.)
     github_state: Mutex<crate::github_state::GitHubState>,
+    /// Broadcast sender for pushing channel messages to WebSocket clients
+    web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
 }
 
 impl DaemonState {
-    fn new(socket_path: PathBuf, workdir: PathBuf, channel: Channel) -> crate::Result<Self> {
+    fn new(
+        socket_path: PathBuf,
+        workdir: PathBuf,
+        channel: Channel,
+        web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
+    ) -> crate::Result<Self> {
         // Derive the tmux session name using git-aware repo detection
         let repo_name = crate::paths::detect_repo_name().unwrap_or_else(|| {
             workdir
@@ -405,7 +413,17 @@ impl DaemonState {
             last_orphan_spawn: Mutex::new(None),
             pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
             github_state: Mutex::new(github_state),
+            web_updates_tx,
         })
+    }
+
+    /// Send a message to the channel and broadcast it to WebSocket clients.
+    fn send_and_broadcast(&self, message: &Message) -> crate::Result<()> {
+        self.channel.send(message)?;
+        if let Some(ref tx) = self.web_updates_tx {
+            web::broadcast_channel_message(tx, message);
+        }
+        Ok(())
     }
 }
 
@@ -500,13 +518,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let channel = Channel::for_repo(&repo_name)?;
     info!("Channel: {}", channel.base_dir().display());
 
-    // Create daemon state (pass channel to state so RPC handlers can use it)
-    let state = Arc::new(DaemonState::new(
-        config.socket_path.clone(),
-        config.workdir,
-        channel,
-    )?);
-
     // Remove existing socket file if present
     if config.socket_path.exists() {
         std::fs::remove_file(&config.socket_path)?;
@@ -518,6 +529,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Start webhook server and gh forwarder watchdog if configured
     let mut webhook_rx = None;
+    let mut web_updates_tx = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
     if let Some(port) = config.webhook_port {
@@ -528,9 +540,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             web_static_dir: None, // Use default location
         };
         match start_webhook_server(webhook_config).await {
-            Ok(rx) => {
+            Ok((rx, updates_tx)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
+                web_updates_tx = Some(updates_tx);
 
                 // Spawn webhook forwarder watchdog task
                 let restart_interval = config.webhook_restart_interval_secs;
@@ -547,6 +560,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     } else {
         debug!("Webhook server disabled (no port configured)");
     }
+
+    // Create daemon state (pass channel and web updates sender so messages
+    // are broadcast to WebSocket clients in real-time)
+    let state = Arc::new(DaemonState::new(
+        config.socket_path.clone(),
+        config.workdir,
+        channel,
+        web_updates_tx,
+    )?);
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -616,7 +638,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             } => {
                 debug!("Received webhook message: {}", webhook_event.message.content);
-                if let Err(e) = state.channel.send(&webhook_event.message) {
+                if let Err(e) = state.send_and_broadcast(&webhook_event.message) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
 
@@ -807,7 +829,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             "system",
             format!("⏱️ Auto-shutting down idle coworker: {}", name),
         );
-        if let Err(e) = state.channel.send(&msg) {
+        if let Err(e) = state.send_and_broadcast(&msg) {
             warn!("Failed to post shutdown message to channel: {}", e);
         }
 
@@ -885,7 +907,7 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
             "system",
             format!("🔄 Nudging interrupted coworker: {}", name),
         );
-        if let Err(e) = state.channel.send(&msg) {
+        if let Err(e) = state.send_and_broadcast(&msg) {
             warn!("Failed to post interrupted nudge message to channel: {}", e);
         }
 
@@ -1238,7 +1260,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                         "midtown",
                         format!("🚀 Spawned {} in response to @mention", name),
                     );
-                    if let Err(e) = state.channel.send(&spawn_msg) {
+                    if let Err(e) = state.send_and_broadcast(&spawn_msg) {
                         warn!("Failed to post spawn message: {}", e);
                     }
                 }
@@ -1249,7 +1271,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                         "midtown",
                         format!("⚠️ Failed to spawn {} for @mention: {}", name, e),
                     );
-                    let _ = state.channel.send(&err_msg);
+                    let _ = state.send_and_broadcast(&err_msg);
                     continue;
                 }
             }
@@ -1400,7 +1422,7 @@ async fn poll_prs_for_issues(
                                 owner, issue_type, pr_number
                             ),
                         );
-                        if let Err(e) = state.channel.send(&msg) {
+                        if let Err(e) = state.send_and_broadcast(&msg) {
                             warn!("Failed to post spawn message: {}", e);
                         }
                         true
@@ -1420,7 +1442,7 @@ async fn poll_prs_for_issues(
                             get_issue_action(issue_type)
                         );
                         let msg = Message::new("midtown", channel_message, MessageType::Text);
-                        if let Err(e) = state.channel.send(&msg) {
+                        if let Err(e) = state.send_and_broadcast(&msg) {
                             warn!("Failed to post PR issue to channel: {}", e);
                         }
                         true
@@ -1429,7 +1451,7 @@ async fn poll_prs_for_issues(
             } else {
                 // No owner, post to channel
                 let msg = Message::new("midtown", message.clone(), MessageType::Text);
-                if let Err(e) = state.channel.send(&msg) {
+                if let Err(e) = state.send_and_broadcast(&msg) {
                     warn!("Failed to post PR issue to channel: {}", e);
                 }
                 info!(
@@ -1615,7 +1637,7 @@ async fn spawn_reviewers_for_prs(
                             format!("🔍 {} assigned to review PR #{}", reviewer_name, pr_number),
                             MessageType::Text,
                         );
-                        if let Err(e) = state.channel.send(&channel_msg) {
+                        if let Err(e) = state.send_and_broadcast(&channel_msg) {
                             warn!("Failed to post review assignment to channel: {}", e);
                         }
 
@@ -1702,7 +1724,7 @@ async fn spawn_reviewers_for_prs(
                                     ),
                                     MessageType::Text,
                                 );
-                                if let Err(e) = state.channel.send(&channel_msg) {
+                                if let Err(e) = state.send_and_broadcast(&channel_msg) {
                                     warn!("Failed to post spawn message to channel: {}", e);
                                 }
 
@@ -2283,7 +2305,7 @@ fn handle_coworker_asking(
 ) -> Response {
     // Post question to channel
     let msg = Message::text(name, format!("Question for Lead: {}", question));
-    if let Err(e) = state.channel.send(&msg) {
+    if let Err(e) = state.send_and_broadcast(&msg) {
         error!("Failed to post question to channel: {}", e);
     }
 
@@ -2406,7 +2428,7 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
 
     let msg = Message::new(from, content.clone(), msg_type.clone());
 
-    match state.channel.send(&msg) {
+    match state.send_and_broadcast(&msg) {
         Ok(()) => {
             info!("Channel post from {}: {}", from, message);
 
@@ -2909,7 +2931,7 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
                         owner, pr_number
                     ),
                 );
-                if let Err(e) = state.channel.send(&msg) {
+                if let Err(e) = state.send_and_broadcast(&msg) {
                     warn!("Failed to post spawn message: {}", e);
                 }
             }
@@ -3014,7 +3036,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                         owner, task_id
                     ),
                 );
-                if let Err(e) = state.channel.send(&recovery_msg) {
+                if let Err(e) = state.send_and_broadcast(&recovery_msg) {
                     warn!("Failed to post recovery message: {}", e);
                 }
 
@@ -3051,7 +3073,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                             task_id, owner
                         ),
                     );
-                    if let Err(e) = state.channel.send(&msg) {
+                    if let Err(e) = state.send_and_broadcast(&msg) {
                         warn!("Failed to post task reset message: {}", e);
                     }
                 }
@@ -3166,7 +3188,7 @@ async fn check_for_duplicate_task_workers(state: &DaemonState) {
                     duplicate, task_id, task_subject, keeper
                 ),
             );
-            if let Err(e) = state.channel.send(&msg) {
+            if let Err(e) = state.send_and_broadcast(&msg) {
                 warn!("Failed to post duplicate kill message: {}", e);
             }
         }
@@ -3258,7 +3280,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                         owner, task_id
                     ),
                 );
-                if let Err(e) = state.channel.send(&msg) {
+                if let Err(e) = state.send_and_broadcast(&msg) {
                     warn!("Failed to post spawn message: {}", e);
                 }
             }
@@ -3322,7 +3344,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                         coworker_name, task.id, task.subject
                     ),
                 );
-                if let Err(e) = state.channel.send(&msg) {
+                if let Err(e) = state.send_and_broadcast(&msg) {
                     warn!("Failed to post assignment message: {}", e);
                 }
             }
