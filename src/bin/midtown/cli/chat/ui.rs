@@ -438,16 +438,37 @@ fn draw_kanban_column(
 
             // Only apply hyperlink to the first line of items that have URLs
             if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
-                // Record hyperlink for post-render writing
-                hyperlinks.push(Hyperlink {
-                    x: inner.x,
-                    y,
-                    text: truncated.clone(),
-                    url: url.clone(),
-                    first_char_color: ci_dot_color,
-                });
+                // Extract the PR identifier as the clickable target.
+                // Prefer "PR#XX" but fall back to "#XX" for narrow columns
+                // where truncate_str strips the "PR" prefix.
+                let (link_start, link_text) = if let Some(start) = truncated.find("PR#") {
+                    let text: String = truncated[start..]
+                        .chars()
+                        .take_while(|c| *c != ' ')
+                        .collect();
+                    (start, text)
+                } else if let Some(start) = truncated.find('#') {
+                    let text: String = truncated[start..]
+                        .chars()
+                        .take_while(|c| *c != ' ')
+                        .collect();
+                    (start, text)
+                } else {
+                    (0, String::new())
+                };
 
-                // Still render to ratatui's buffer (will be overwritten post-render)
+                if !link_text.is_empty() {
+                    let char_offset = truncated[..link_start].chars().count() as u16;
+                    hyperlinks.push(Hyperlink {
+                        x: inner.x + char_offset,
+                        y,
+                        text: link_text,
+                        url: url.clone(),
+                        first_char_color: None,
+                    });
+                }
+
+                // Render the full line to ratatui's buffer (PR#XX will get OSC 8 post-render)
                 render_hyperlink_line(
                     buffer,
                     inner.x,
