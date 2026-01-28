@@ -596,9 +596,21 @@ fn render_message(msg: &Message, width: usize, prev_sender: Option<&str>) -> Vec
         _ => Style::default().fg(Color::White),
     };
 
-    // For action messages, use special format: " HH:MM * name message"
+    // For action messages, use special format: "* name message"
     if msg.message_type == MessageType::Action {
-        return render_action_message(msg, &time, color, content_style, width);
+        let mut result = Vec::new();
+        // Add blank line before action messages (except for first message)
+        if prev_sender.is_some() {
+            result.push(Line::from(""));
+        }
+        result.extend(render_action_message(
+            msg,
+            &time,
+            color,
+            content_style,
+            width,
+        ));
+        return result;
     }
 
     // For system messages (or daemon messages), render entire line in gray (no timestamp gutter)
