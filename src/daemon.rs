@@ -3186,11 +3186,29 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
     // Case 2: Pending tasks without owners - assign ownership atomically, then spawn
     let pending_unowned = crate::tasks::get_pending_tasks_without_owners();
     for task in pending_unowned {
-        // Step 1: Get the next available coworker name (without spawning yet)
-        let Some(coworker_name) = state.coworkers.next_available_name() else {
-            debug!("No available coworker slots for unowned task #{}", task.id);
-            // Stop trying - if we're out of slots we'll try again next tick
-            break;
+        // Step 1: Check if this task references a PR that already has an assigned coworker.
+        // This groups all sub-tasks for the same PR (score, filter, post comment, etc.)
+        // under the same coworker who is running the review.
+        let coworker_name = if let Some(pr_num) = crate::tasks::extract_pr_number(&task.subject) {
+            if let Some(existing_owner) = crate::tasks::find_pr_owner(&pr_num) {
+                info!(
+                    "Task #{} references PR #{} - assigning to existing owner {}",
+                    task.id, pr_num, existing_owner
+                );
+                existing_owner
+            } else {
+                let Some(name) = state.coworkers.next_available_name() else {
+                    debug!("No available coworker slots for unowned task #{}", task.id);
+                    break;
+                };
+                name
+            }
+        } else {
+            let Some(name) = state.coworkers.next_available_name() else {
+                debug!("No available coworker slots for unowned task #{}", task.id);
+                break;
+            };
+            name
         };
 
         // Step 2: Atomically assign task ownership BEFORE spawning
