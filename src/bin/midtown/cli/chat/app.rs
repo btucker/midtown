@@ -75,6 +75,9 @@ pub struct MergedPr {
     pub merged_at: DateTime<Utc>,
 }
 
+/// Number of messages to load initially and per history load
+const INITIAL_MESSAGE_COUNT: usize = 100;
+
 /// Application state
 pub struct App {
     /// All messages from the channel
@@ -87,6 +90,10 @@ pub struct App {
     channel: Option<Channel>,
     /// Whether initial messages have been loaded
     initial_load_done: bool,
+    /// Byte position where loaded history starts (0 means all history loaded)
+    history_start_position: u64,
+    /// Whether all history has been loaded
+    history_fully_loaded: bool,
     /// Tasks for the kanban board
     pub tasks: Vec<KanbanTask>,
     /// Open PRs for the kanban board (Review column)
@@ -133,6 +140,8 @@ impl App {
             visible_height: 20,
             channel,
             initial_load_done: false,
+            history_start_position: 0,
+            history_fully_loaded: false,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
@@ -158,15 +167,23 @@ impl App {
         if let Some(ref channel) = self.channel {
             let is_initial_load = !self.initial_load_done;
             if is_initial_load {
-                // First load: reset cursor to start of file, then read all via cursor
-                // This ensures the cursor position is updated correctly
-                let _ = channel.reset_cursor("chat-tui");
+                // First load: only load the last N messages for fast startup
+                // This avoids reading the entire history on large channels
+                if let Ok((messages, start_pos)) =
+                    channel.read_last_n_messages(INITIAL_MESSAGE_COUNT)
+                {
+                    self.messages = messages;
+                    self.history_start_position = start_pos;
+                    self.history_fully_loaded = start_pos == 0;
+                    self.scroll_offset = 0; // Start at bottom (most recent)
+                }
                 self.initial_load_done = true;
+                // Don't reset cursor - we'll set it up on next refresh
+                return;
             }
 
             // Read new messages since cursor position
-            // On first call, cursor is at 0, so we read everything
-            // On subsequent calls, cursor is at end of last read
+            // On subsequent calls, cursor tracks new messages arriving
             if let Ok(new_messages) = channel.read_since_cursor("chat-tui")
                 && !new_messages.is_empty()
             {
@@ -176,10 +193,7 @@ impl App {
                 // Append new messages (they're already in chronological order)
                 self.messages.extend(new_messages);
 
-                if is_initial_load {
-                    // On initial load, always scroll to bottom (most recent messages)
-                    self.scroll_offset = 0;
-                } else if was_at_bottom {
+                if was_at_bottom {
                     // User was at bottom - stay at bottom (auto-scroll)
                     self.scroll_offset = 0;
                 } else {
@@ -294,6 +308,7 @@ impl App {
         if self.scroll_offset < max_scroll {
             self.scroll_offset += 1;
         }
+        self.maybe_load_more_history();
     }
 
     /// Scroll down one line
@@ -308,6 +323,7 @@ impl App {
         let page_size = self.visible_height.saturating_sub(2);
         let max_scroll = self.max_scroll();
         self.scroll_offset = (self.scroll_offset + page_size).min(max_scroll);
+        self.maybe_load_more_history();
     }
 
     /// Page down
@@ -319,6 +335,7 @@ impl App {
     /// Scroll to top (oldest messages)
     pub fn scroll_to_top(&mut self) {
         self.scroll_offset = self.max_scroll();
+        self.maybe_load_more_history();
     }
 
     /// Scroll to bottom (newest messages)
@@ -329,6 +346,41 @@ impl App {
     /// Maximum scroll offset
     fn max_scroll(&self) -> usize {
         self.messages.len().saturating_sub(self.visible_height)
+    }
+
+    /// Check if user is near the top of loaded messages
+    fn is_near_top(&self) -> bool {
+        let max = self.max_scroll();
+        // Consider "near top" if within 10 messages of the oldest loaded
+        self.scroll_offset >= max.saturating_sub(10)
+    }
+
+    /// Load more history if user scrolls near the top
+    fn maybe_load_more_history(&mut self) {
+        if self.history_fully_loaded || !self.is_near_top() {
+            return;
+        }
+
+        if let Some(ref channel) = self.channel
+            && let Ok((older_messages, new_start)) = channel
+                .read_messages_before_position(self.history_start_position, INITIAL_MESSAGE_COUNT)
+        {
+            if !older_messages.is_empty() {
+                let added = older_messages.len();
+                // Prepend older messages to the beginning
+                let mut combined = older_messages;
+                combined.extend(std::mem::take(&mut self.messages));
+                self.messages = combined;
+
+                // Adjust scroll offset to keep viewing the same messages
+                self.scroll_offset += added;
+
+                self.history_start_position = new_start;
+            }
+            if new_start == 0 {
+                self.history_fully_loaded = true;
+            }
+        }
     }
 
     /// Get the channel file path for file watching
@@ -803,6 +855,8 @@ mod tests {
             visible_height: 20,
             channel: None,
             initial_load_done: true,
+            history_start_position: 0,
+            history_fully_loaded: true,
             tasks: vec![
                 KanbanTask {
                     id: "1".to_string(),
@@ -865,6 +919,8 @@ mod tests {
             visible_height: 10,
             channel: None,
             initial_load_done: true,
+            history_start_position: 0,
+            history_fully_loaded: true,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
