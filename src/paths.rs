@@ -200,6 +200,25 @@ pub fn cursors_dir_for_repo(repo: &str) -> PathBuf {
     projects_dir_for_repo(repo).join("cursors")
 }
 
+/// Get the GitHub state file path for a specific repository.
+///
+/// Returns `~/.midtown/projects/<repo>/github-state.json`.
+///
+/// This file stores persistent GitHub-related state:
+/// - PR reviewer assignments (which coworker is reviewing which PR)
+pub fn github_state_file_for_repo(repo: &str) -> PathBuf {
+    projects_dir_for_repo(repo).join("github-state.json")
+}
+
+/// Get the GitHub state file path for the current repository.
+///
+/// Detects the repo name from the current git working directory.
+/// Falls back to "default" if not in a git repository.
+pub fn github_state_file() -> PathBuf {
+    let repo = detect_repo_name().unwrap_or_else(|| "default".to_string());
+    github_state_file_for_repo(&repo)
+}
+
 /// Get the daemon socket path for a specific repository.
 ///
 /// Returns `~/.local/state/midtown/<repo>/daemon.sock`.

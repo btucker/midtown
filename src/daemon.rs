@@ -364,6 +364,8 @@ struct DaemonState {
     last_orphan_spawn: Mutex<Option<Instant>>,
     /// Tracks when each pending task was last nudged (task_id -> last nudge time)
     pending_task_nudge_cooldowns: std::sync::Mutex<HashMap<String, Instant>>,
+    /// Persistent GitHub state (PR reviewer assignments, etc.)
+    github_state: Mutex<crate::github_state::GitHubState>,
 }
 
 impl DaemonState {
@@ -383,6 +385,13 @@ impl DaemonState {
             message: format!("Failed to initialize worktree manager: {}", e),
         })?;
 
+        // Load persistent GitHub state
+        let github_state =
+            crate::github_state::load_state_for_repo(&repo_name).unwrap_or_else(|e| {
+                warn!("Failed to load github-state.json: {}, using defaults", e);
+                crate::github_state::GitHubState::default()
+            });
+
         Ok(Self {
             coworkers: CoworkerManager::new(session_name, worktree_manager),
             channel,
@@ -395,6 +404,7 @@ impl DaemonState {
             repo_name,
             last_orphan_spawn: Mutex::new(None),
             pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
+            github_state: Mutex::new(github_state),
         })
     }
 }
@@ -1468,11 +1478,18 @@ async fn spawn_reviewers_for_prs(
             continue;
         }
 
-        // Check if already assigned for review
+        // Check if already assigned for review (check both in-memory and persistent state)
         {
             let tracker = state.pr_review_tracker.lock().await;
             if tracker.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review", pr_number);
+                debug!("PR #{} already assigned for review (in-memory)", pr_number);
+                continue;
+            }
+        }
+        {
+            let github_state = state.github_state.lock().await;
+            if github_state.is_assigned(pr_number) {
+                debug!("PR #{} already assigned for review (persistent)", pr_number);
                 continue;
             }
         }
@@ -1485,8 +1502,27 @@ async fn spawn_reviewers_for_prs(
             {
                 let mut tracker = state.pr_review_tracker.lock().await;
                 if tracker.is_assigned(pr_number) {
-                    debug!("PR #{} review completed, freeing tracker slot", pr_number);
+                    debug!(
+                        "PR #{} review completed, freeing tracker slot (in-memory)",
+                        pr_number
+                    );
                     tracker.mark_reviewed(pr_number);
+                }
+            }
+            // Also clean up persistent state
+            {
+                let mut github_state = state.github_state.lock().await;
+                if github_state.is_assigned(pr_number) {
+                    debug!(
+                        "PR #{} review completed, freeing tracker slot (persistent)",
+                        pr_number
+                    );
+                    github_state.remove_assignment(pr_number);
+                    if let Err(e) =
+                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+                    {
+                        warn!("Failed to save github-state.json: {}", e);
+                    }
                 }
             }
             continue;
@@ -1503,10 +1539,21 @@ async fn spawn_reviewers_for_prs(
             Some(reviewer_name) => {
                 let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-                // Record the assignment
+                // Record the assignment (in-memory)
                 {
                     let mut tracker = state.pr_review_tracker.lock().await;
                     tracker.assign(pr_number, &reviewer_name);
+                }
+
+                // Persist the assignment to github-state.json
+                {
+                    let mut github_state = state.github_state.lock().await;
+                    github_state.assign_reviewer(pr_number, &reviewer_name);
+                    if let Err(e) =
+                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+                    {
+                        warn!("Failed to save github-state.json: {}", e);
+                    }
                 }
 
                 // Nudge the reviewer to run /code-review:code-review
@@ -1543,9 +1590,19 @@ async fn spawn_reviewers_for_prs(
                             "Failed to nudge {} to review PR #{}: {}",
                             reviewer_name, pr_number, e
                         );
-                        // Remove the assignment since we couldn't nudge
+                        // Remove the assignment since we couldn't nudge (in-memory)
                         let mut tracker = state.pr_review_tracker.lock().await;
                         tracker.mark_reviewed(pr_number);
+                        // Also remove from persistent state
+                        drop(tracker);
+                        let mut github_state = state.github_state.lock().await;
+                        github_state.remove_assignment(pr_number);
+                        if let Err(e) = crate::github_state::save_state_for_repo(
+                            &state.repo_name,
+                            &github_state,
+                        ) {
+                            warn!("Failed to save github-state.json: {}", e);
+                        }
                     }
                 }
             }
@@ -1562,10 +1619,22 @@ async fn spawn_reviewers_for_prs(
                     Ok(new_coworker) => {
                         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-                        // Record the assignment
+                        // Record the assignment (in-memory)
                         {
                             let mut tracker = state.pr_review_tracker.lock().await;
                             tracker.assign(pr_number, &new_coworker);
+                        }
+
+                        // Persist the assignment to github-state.json
+                        {
+                            let mut github_state = state.github_state.lock().await;
+                            github_state.assign_reviewer(pr_number, &new_coworker);
+                            if let Err(e) = crate::github_state::save_state_for_repo(
+                                &state.repo_name,
+                                &github_state,
+                            ) {
+                                warn!("Failed to save github-state.json: {}", e);
+                            }
                         }
 
                         // Give the new coworker time to start (async sleep)
@@ -1608,9 +1677,19 @@ async fn spawn_reviewers_for_prs(
                                     "Failed to nudge newly spawned {} to review PR #{}: {}",
                                     new_coworker, pr_number, e
                                 );
-                                // Remove the assignment since we couldn't nudge
+                                // Remove the assignment since we couldn't nudge (in-memory)
                                 let mut tracker = state.pr_review_tracker.lock().await;
                                 tracker.mark_reviewed(pr_number);
+                                // Also remove from persistent state
+                                drop(tracker);
+                                let mut github_state = state.github_state.lock().await;
+                                github_state.remove_assignment(pr_number);
+                                if let Err(e) = crate::github_state::save_state_for_repo(
+                                    &state.repo_name,
+                                    &github_state,
+                                ) {
+                                    warn!("Failed to save github-state.json: {}", e);
+                                }
                             }
                         }
                     }
@@ -1655,15 +1734,24 @@ async fn find_available_reviewer(
         .map(|name| name.to_lowercase())
         .collect();
 
-    // Get coworkers who are already assigned to review PRs
+    // Get coworkers who are already assigned to review PRs (combine in-memory and persistent)
     let reviewing_coworkers: HashSet<String> = {
         let tracker = state.pr_review_tracker.lock().await;
-        tracker
+        let in_memory: HashSet<String> = tracker
             .assigned
             .values()
             .filter(|(_, t)| t.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS))
             .map(|(name, _)| name.to_lowercase())
-            .collect()
+            .collect();
+        drop(tracker);
+
+        let github_state = state.github_state.lock().await;
+        let persistent: HashSet<String> = github_state
+            .assigned_reviewers()
+            .map(|name| name.to_lowercase())
+            .collect();
+
+        in_memory.union(&persistent).cloned().collect()
     };
 
     // Find available coworkers: either idle, or busy but awaiting review on their own PR
