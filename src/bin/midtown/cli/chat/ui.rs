@@ -412,56 +412,26 @@ fn render_plain_line(
     }
 }
 
-/// Render a line as a clickable OSC 8 hyperlink with optional CI dot coloring
+/// Render a line with optional CI dot coloring
 ///
-/// OSC 8 hyperlinks wrap text in escape sequences:
-/// - Start: \x1b]8;;URL\x07
-/// - End: \x1b]8;;\x07
+/// NOTE: OSC 8 hyperlinks were previously attempted here but disabled because
+/// ratatui's cell/buffer system doesn't properly support embedding escape
+/// sequences in cell symbols. The sequences caused display corruption
+/// (e.g., "PR#140" appearing as "P #140"). When ratatui adds native hyperlink
+/// support, this can be revisited.
 ///
-/// We only add these at the START and END of the text (2 sequences total),
-/// avoiding the previous performance issue of wrapping each character.
+/// The `url` parameter is kept for API compatibility but currently unused.
 fn render_hyperlink_line(
     buffer: &mut Buffer,
     x: u16,
     y: u16,
     text: &str,
-    url: &str,
+    _url: &str,
     max_width: usize,
     ci_dot_color: Option<Color>,
 ) {
-    let chars: Vec<char> = text.chars().take(max_width).collect();
-    let len = chars.len();
-
-    if len == 0 {
-        return;
-    }
-
-    for (i, ch) in chars.iter().enumerate() {
-        // Color the first character (CI dot) if we have a CI status
-        let fg_color = match (i, &ci_dot_color, *ch) {
-            (0, Some(color), '●' | '○') => *color,
-            _ => Color::White,
-        };
-
-        if len == 1 {
-            // Single character: wrap entirely
-            let symbol = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", url, ch);
-            buffer[(x, y)].set_symbol(&symbol).set_fg(fg_color);
-        } else if i == 0 {
-            // First character: prepend OSC 8 start
-            let symbol = format!("\x1b]8;;{}\x07{}", url, ch);
-            buffer[(x, y)].set_symbol(&symbol).set_fg(fg_color);
-        } else if i == len - 1 {
-            // Last character: append OSC 8 end
-            let symbol = format!("{}\x1b]8;;\x07", ch);
-            buffer[(x + i as u16, y)]
-                .set_symbol(&symbol)
-                .set_fg(fg_color);
-        } else {
-            // Middle characters: plain
-            buffer[(x + i as u16, y)].set_char(*ch).set_fg(fg_color);
-        }
-    }
+    // Render as plain text (hyperlinks disabled due to ratatui limitations)
+    render_plain_line(buffer, x, y, text, max_width, ci_dot_color);
 }
 
 /// Truncate a string to fit within the given width, adding "..." if truncated
