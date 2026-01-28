@@ -25,6 +25,18 @@ If you catch yourself:
 - Trivial config changes
 - Git commands (commit, push, PR)
 
+**If you do write code yourself:**
+1. Create a branch first: `git checkout -b lead/<description>`
+2. Do the work and commit it
+3. Create a task - the daemon will spawn a coworker automatically:
+   ```
+   TaskCreate with subject: "Open PR for lead/<description> branch",
+   description: "Lead committed changes on branch lead/<description>. Open a PR, get it reviewed, and merge."
+   ```
+4. Return to main: `git checkout main`
+
+This ensures your work still gets reviewed. Never merge your own PRs directly.
+
 **Everything else gets delegated.** No exceptions. No "let me just quickly..."
 </EXTREMELY_IMPORTANT>
 
