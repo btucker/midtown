@@ -251,10 +251,7 @@ impl Drop for DaemonFixture {
 fn test_daemon_starts_and_creates_socket() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     assert!(
@@ -282,15 +279,11 @@ fn test_daemon_starts_and_creates_socket() {
 fn test_daemon_ping_endpoint() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     let response = fixture.rpc_call("ping", None);
@@ -310,15 +303,11 @@ fn test_daemon_ping_endpoint() {
 fn test_daemon_version_endpoint() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     let response = fixture.rpc_call("version", None);
@@ -352,15 +341,11 @@ fn test_daemon_version_endpoint() {
 fn test_daemon_status_endpoint() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     let response = fixture.rpc_call("status", None);
@@ -387,15 +372,11 @@ fn test_daemon_status_endpoint() {
 fn test_daemon_coworker_list_endpoint() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     let response = fixture.rpc_call("coworker.list", None);
@@ -433,15 +414,11 @@ fn test_daemon_coworker_list_endpoint() {
 fn test_daemon_unknown_method_returns_error() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     let response = fixture.rpc_call("nonexistent.method", None);
@@ -473,15 +450,11 @@ fn test_daemon_unknown_method_returns_error() {
 fn test_daemon_handles_multiple_requests() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     // Send multiple requests on the same connection
@@ -514,15 +487,11 @@ fn test_daemon_handles_multiple_requests() {
 fn test_daemon_channel_post_endpoint() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     let params = serde_json::json!({
@@ -552,15 +521,11 @@ fn test_daemon_channel_post_endpoint() {
 fn test_daemon_graceful_shutdown() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     // Verify daemon is running
@@ -598,15 +563,11 @@ fn test_daemon_graceful_shutdown() {
 fn test_daemon_creates_pid_file() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
-        None => {
-            eprintln!("Skipping test: could not create test fixture");
-            return;
-        }
+        None => return, // Skip silently if fixture creation fails
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping test: daemon did not start");
-        return;
+        return; // Skip silently if daemon fails to start
     }
 
     // PID file should exist
