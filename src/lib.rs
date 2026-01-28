@@ -63,6 +63,9 @@ pub mod tmux;
 // GitHub webhook integration (rictus)
 pub mod webhook;
 
+// Web server for Svelte mobile app
+pub mod web;
+
 // Agent nudging subsystem (dementus)
 pub mod nudge;
 
