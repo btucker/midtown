@@ -186,6 +186,14 @@ const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
 /// Interval for checking Lead session changes (10 seconds)
 const SESSION_CHECK_INTERVAL_SECS: u64 = 10;
 
+/// Minimum time a coworker must be alive before auto-shutdown (5 minutes)
+/// This prevents spawn storms where coworkers are rapidly spawned and killed.
+const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
+
+/// Cooldown between orphan recovery spawns (5 seconds)
+/// Only spawn one coworker per tick, with a minimum gap between spawns.
+const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
+
 /// Ensure required Claude Code plugins are installed.
 ///
 /// Reads the required plugins list from config, checks which are already
@@ -349,6 +357,8 @@ struct DaemonState {
     lead_session_id: std::sync::Mutex<Option<String>>,
     /// Repository name (for reading Lead session file)
     repo_name: String,
+    /// Last time a coworker was spawned for orphan recovery (rate limiting)
+    last_orphan_spawn: Mutex<Option<Instant>>,
 }
 
 impl DaemonState {
@@ -381,6 +391,7 @@ impl DaemonState {
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             lead_session_id: std::sync::Mutex::new(initial_lead_session),
             repo_name,
+            last_orphan_spawn: Mutex::new(None),
         })
     }
 }
@@ -713,14 +724,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 ///
 /// IMPORTANT: Coworkers with open PRs are NEVER auto-killed, regardless of
 /// idle time. This ensures they can respond to PR feedback and merge their work.
+///
+/// Also enforces a minimum lifetime check - coworkers must be alive for at least
+/// 5 minutes before they can be auto-shutdown. This prevents spawn storms where
+/// coworkers are rapidly spawned and killed.
 async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
-    // Get list of active coworkers
-    let active_coworkers: Vec<String> = state
-        .coworkers
-        .list()
-        .iter()
-        .map(|c| c.name.clone())
-        .collect();
+    // Get list of active coworkers with their data (need started_at for lifetime check)
+    let active_coworkers = state.coworkers.list();
 
     if active_coworkers.is_empty() {
         return;
@@ -733,12 +743,30 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     let coworkers_with_open_prs = get_coworkers_with_open_prs();
 
     let now = Instant::now();
+    let now_utc = chrono::Utc::now();
     let mut to_shutdown = Vec::new();
 
     {
         let mut idle_since = state.idle_since.write().await;
 
-        for coworker in &active_coworkers {
+        for cw in &active_coworkers {
+            let coworker = &cw.name;
+
+            // Check minimum lifetime - coworker must be alive for at least 5 minutes
+            let lifetime = now_utc.signed_duration_since(cw.started_at);
+            if lifetime < chrono::Duration::from_std(MINIMUM_COWORKER_LIFETIME).unwrap_or_default()
+            {
+                debug!(
+                    "Coworker {} is too young for auto-shutdown ({} < {})",
+                    coworker,
+                    lifetime,
+                    MINIMUM_COWORKER_LIFETIME.as_secs()
+                );
+                // Remove from idle tracking since they're protected
+                idle_since.remove(coworker);
+                continue;
+            }
+
             let is_busy = busy_coworkers
                 .iter()
                 .any(|b| b.eq_ignore_ascii_case(coworker));
@@ -2569,7 +2597,24 @@ fn coworker_from_branch(branch: &str) -> Option<String> {
 /// An orphaned task is one that is `in_progress` but the owning coworker
 /// is no longer active (no tmux window). If the coworker's worktree still
 /// exists, we respawn them and nudge them to resume work.
+///
+/// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
+/// spawns to prevent window flashing from spawn storms.
 async fn check_and_recover_orphans(state: &DaemonState) {
+    // Check cooldown - skip if we spawned too recently
+    {
+        let last_spawn = state.last_orphan_spawn.lock().await;
+        if let Some(last) = *last_spawn
+            && last.elapsed() < ORPHAN_SPAWN_COOLDOWN
+        {
+            debug!(
+                "Orphan recovery cooldown active ({:?} remaining)",
+                ORPHAN_SPAWN_COOLDOWN - last.elapsed()
+            );
+            return;
+        }
+    }
+
     // Get in_progress tasks with their owners
     let in_progress = get_in_progress_tasks_with_owners();
 
@@ -2586,6 +2631,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         .collect();
 
     // Find orphaned tasks (in_progress with owner not in active list)
+    // Rate limit: only recover ONE coworker per tick to prevent spawn storms
     for (task_id, task_subject, owner) in in_progress {
         // Skip if owner is Lead or empty
         if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
@@ -2608,6 +2654,26 @@ async fn check_and_recover_orphans(state: &DaemonState) {
             Ok(_) => {
                 info!("Respawned coworker {} successfully", owner);
 
+                // Update last spawn time for rate limiting
+                {
+                    let mut last_spawn = state.last_orphan_spawn.lock().await;
+                    *last_spawn = Some(Instant::now());
+                }
+
+                // Give the coworker a moment to start up
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                // Verify the window actually exists before proceeding
+                let session_name = format!("midtown-{}", state.repo_name);
+                if !crate::tmux::window_exists(&session_name, &owner).unwrap_or(false) {
+                    warn!(
+                        "Coworker {} window did not appear after spawn - skipping nudge",
+                        owner
+                    );
+                    // Still break to respect rate limit - we tried
+                    break;
+                }
+
                 // Post to channel about the recovery
                 let recovery_msg = Message::text(
                     "daemon",
@@ -2620,9 +2686,6 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                     warn!("Failed to post recovery message: {}", e);
                 }
 
-                // Give the coworker a moment to start up
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
                 // Nudge them to resume their task
                 let nudge_msg = format!(
                     "Resume task #{}: {}. You were working on this task before your session was interrupted. Check your git status and continue where you left off.",
@@ -2634,9 +2697,12 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                 } else {
                     info!("Nudged {} to resume task #{}", owner, task_id);
                 }
+
+                // Rate limit: only spawn ONE coworker per tick
+                break;
             }
             Err(e) => {
-                // Could not respawn - log and continue
+                // Could not respawn - log and continue to next orphan
                 // This might happen if the worktree doesn't exist
                 debug!(
                     "Could not respawn {} for orphaned task #{}: {}",
