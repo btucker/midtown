@@ -107,9 +107,9 @@ This ensures your PR doesn't get stuck waiting - another coworker will claim the
 ### Reviewing PRs
 When you pick up a code review task:
 
-1. **Use the code-review skill** to analyze the PR:
+1. **Use the code-review:code-review skill** to analyze the PR:
 ```
-/code-review <PR number>
+/code-review:code-review <PR number>
 ```
 
 2. **Post your review as a GitHub comment** on the PR. The skill will guide you through this, but you MUST ensure your review is posted to GitHub (not just the channel).
