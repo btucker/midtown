@@ -217,16 +217,101 @@ async fn api_channel_history(
     Ok(axum::Json(response))
 }
 
-/// Get daemon/coworker status by calling the daemon RPC over Unix socket.
-async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
-    let repo = state.config.repo.clone();
+/// Get daemon/coworker status including tasks and PRs for kanban board
+async fn api_status(State(_state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
+    // Read tasks directly from Claude Code task storage
+    let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
+        .into_iter()
+        .map(|task| {
+            let status = match task.status {
+                crate::tasks::TaskStatus::Pending => "pending",
+                crate::tasks::TaskStatus::InProgress => "in_progress",
+                crate::tasks::TaskStatus::Completed => "completed",
+            };
+            serde_json::json!({
+                "id": task.id,
+                "subject": task.subject,
+                "status": status,
+                "owner": task.owner,
+            })
+        })
+        .collect();
 
-    let status = tokio::task::spawn_blocking(move || call_daemon_status(&repo))
-        .await
-        .map_err(|e| {
-            error!("Status task join error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    // Get open PRs via gh CLI (spawn blocking to avoid blocking async runtime)
+    let pull_requests = tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("gh")
+            .args(["pr", "list", "--json", "number,title,author,state,isDraft,reviewDecision"])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let prs: Vec<serde_json::Value> =
+                    serde_json::from_str(&stdout).unwrap_or_default();
+                prs.into_iter()
+                    .map(|pr| {
+                        let is_draft =
+                            pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+                        let status = if is_draft {
+                            "draft"
+                        } else {
+                            match pr
+                                .get("reviewDecision")
+                                .and_then(|r| r.as_str())
+                                .unwrap_or("")
+                            {
+                                "APPROVED" => "approved",
+                                "CHANGES_REQUESTED" => "changes requested",
+                                "REVIEW_REQUIRED" => "awaiting review",
+                                _ => "open",
+                            }
+                        };
+                        serde_json::json!({
+                            "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
+                            "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                            "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                            "status": status,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        }
+    })
+    .await
+    .unwrap_or_default();
+
+    // Get merged PRs via gh CLI
+    let merged_prs = tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("gh")
+            .args([
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--limit",
+                "10",
+                "--json",
+                "number,title,mergedAt",
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    })
+    .await
+    .unwrap_or_default();
+
+    let status = serde_json::json!({
+        "daemon": "running",
+        "coworkers": [],
+        "tasks": tasks,
+        "pull_requests": pull_requests,
+        "merged_prs": merged_prs,
+    });
 
     Ok(axum::Json(status))
 }
