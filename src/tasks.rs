@@ -124,6 +124,7 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
     let owner = value
         .get("owner")
         .and_then(|v| v.as_str())
+        .map(|s| s.trim().trim_matches('"'))
         .filter(|s| !s.is_empty())
         .map(String::from);
 
@@ -404,6 +405,31 @@ mod tests {
         assert_eq!(pending_without_owners.len(), 2);
         assert_eq!(pending_without_owners[0].id, "1");
         assert_eq!(pending_without_owners[1].id, "3");
+    }
+
+    #[test]
+    fn test_parse_quoted_empty_owner_as_none() {
+        // Bug: Claude Code sometimes sets owner to literal '""' (two quote chars)
+        // which passes is_empty() check (length 2) and causes the daemon to
+        // spawn a coworker with an empty name.
+        let json = r#"{"id": "367", "subject": "Score and filter issues", "status": "in_progress", "owner": "\"\""}"#;
+        let task = parse_task_json(json).unwrap();
+        assert!(
+            task.owner.is_none(),
+            "owner '\"\"' (literal quotes) should be parsed as None, got {:?}",
+            task.owner
+        );
+    }
+
+    #[test]
+    fn test_parse_whitespace_only_owner_as_none() {
+        let json = r#"{"id": "1", "subject": "Test", "status": "pending", "owner": "  "}"#;
+        let task = parse_task_json(json).unwrap();
+        assert!(
+            task.owner.is_none(),
+            "whitespace-only owner should be parsed as None, got {:?}",
+            task.owner
+        );
     }
 
     #[test]

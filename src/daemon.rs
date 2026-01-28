@@ -2995,7 +2995,8 @@ async fn check_and_recover_orphans(state: &DaemonState) {
     // Find orphaned tasks (in_progress with owner not in active list)
     // Rate limit: only recover ONE coworker per tick to prevent spawn storms
     for (task_id, task_subject, owner) in in_progress {
-        // Skip if owner is Lead or empty
+        // Skip if owner is Lead, empty, or just whitespace/quotes
+        let owner = owner.trim().trim_matches('"').to_string();
         if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
             continue;
         }
