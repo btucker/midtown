@@ -17,6 +17,8 @@ pub struct Task {
     pub owner: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default, alias = "blockedBy")]
+    pub blocked_by: Vec<String>,
 }
 
 /// Task status matching Claude Code's TaskList tool.
@@ -133,12 +135,27 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let blocked_by = value
+        .get("blockedBy")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    v.as_str()
+                        .map(String::from)
+                        .or_else(|| v.as_u64().map(|n| n.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(Task {
         id,
         subject,
         status,
         owner,
         description,
+        blocked_by,
     })
 }
 
@@ -195,15 +212,15 @@ pub fn get_pending_tasks() -> Vec<Task> {
         .collect()
 }
 
-/// Extract a PR number from a task subject string.
+/// Extract a PR number from a text string.
 ///
-/// Looks for patterns like "PR #123" in the subject.
+/// Looks for patterns like "PR #123" in the text.
 /// Returns the PR number as a string if found.
-pub fn extract_pr_number(subject: &str) -> Option<String> {
+pub fn extract_pr_number(text: &str) -> Option<String> {
     // Find "PR #" (case-insensitive) followed by digits
-    let lower = subject.to_lowercase();
+    let lower = text.to_lowercase();
     let idx = lower.find("pr #")?;
-    let after = &subject[idx + 4..];
+    let after = &text[idx + 4..];
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
         None
@@ -212,18 +229,60 @@ pub fn extract_pr_number(subject: &str) -> Option<String> {
     }
 }
 
+/// Extract a PR number from a task by checking both subject and description.
+///
+/// Returns the PR number as a string if found in either field.
+pub fn extract_pr_number_from_task(task: &Task) -> Option<String> {
+    extract_pr_number(&task.subject)
+        .or_else(|| task.description.as_deref().and_then(extract_pr_number))
+}
+
 /// Find the owner of an existing task (in_progress or pending-with-owner) that references the same PR.
 ///
+/// Checks both subject and description for the PR number pattern.
 /// Used to group PR sub-tasks under the same coworker.
 pub fn find_pr_owner(pr_number: &str) -> Option<String> {
     let tasks = read_tasks();
+    find_pr_owner_in_tasks(pr_number, &tasks)
+}
+
+/// Find the owner of a task referencing the given PR number within a provided task list.
+///
+/// This avoids re-reading tasks from disk when the caller already has them.
+pub fn find_pr_owner_in_tasks(pr_number: &str, tasks: &[Task]) -> Option<String> {
     let pr_pattern = format!("PR #{}", pr_number);
     for task in tasks {
         if (task.status == TaskStatus::InProgress || task.status == TaskStatus::Pending)
             && task.owner.is_some()
-            && task.subject.contains(&pr_pattern)
         {
-            return task.owner;
+            // Check subject
+            if task.subject.contains(&pr_pattern) {
+                return task.owner.clone();
+            }
+            // Check description
+            if task
+                .description
+                .as_ref()
+                .is_some_and(|desc| desc.contains(&pr_pattern))
+            {
+                return task.owner.clone();
+            }
+        }
+    }
+    None
+}
+
+/// Find the owner of a related task via blockedBy relationships.
+///
+/// If this task is blocked by another task that has an owner, return that owner.
+/// This groups sub-tasks under the same coworker even when they don't mention the PR number.
+pub fn find_owner_via_blocked_by(task: &Task, all_tasks: &[Task]) -> Option<String> {
+    for blocked_by_id in &task.blocked_by {
+        if let Some(parent) = all_tasks.iter().find(|t| &t.id == blocked_by_id)
+            && let Some(ref owner) = parent.owner
+            && !owner.is_empty()
+        {
+            return Some(owner.clone());
         }
     }
     None
@@ -504,14 +563,14 @@ mod tests {
 
     #[test]
     fn test_find_pr_owner_from_tasks() {
-        // Test the logic used to find a PR owner from a list of tasks
-        let tasks = [
+        let tasks = vec![
             Task {
                 id: "1".to_string(),
                 subject: "Review PR #42".to_string(),
                 status: TaskStatus::InProgress,
                 owner: Some("alice".to_string()),
                 description: None,
+                blocked_by: vec![],
             },
             Task {
                 id: "2".to_string(),
@@ -519,6 +578,7 @@ mod tests {
                 status: TaskStatus::Pending,
                 owner: None,
                 description: None,
+                blocked_by: vec![],
             },
             Task {
                 id: "3".to_string(),
@@ -526,47 +586,168 @@ mod tests {
                 status: TaskStatus::InProgress,
                 owner: Some("bob".to_string()),
                 description: None,
+                blocked_by: vec![],
             },
         ];
 
-        // Simulate find_pr_owner logic inline (since we can't call the real one without disk)
-        let pr_number = "42";
-        let pr_pattern = format!("PR #{}", pr_number);
-        let owner = tasks
-            .iter()
-            .find(|t| {
-                (t.status == TaskStatus::InProgress || t.status == TaskStatus::Pending)
-                    && t.owner.is_some()
-                    && t.subject.contains(&pr_pattern)
-            })
-            .and_then(|t| t.owner.clone());
+        // Use the new find_pr_owner_in_tasks function
+        assert_eq!(
+            find_pr_owner_in_tasks("42", &tasks),
+            Some("alice".to_string())
+        );
+        assert_eq!(
+            find_pr_owner_in_tasks("99", &tasks),
+            Some("bob".to_string())
+        );
+        assert_eq!(find_pr_owner_in_tasks("55", &tasks), None);
+    }
 
-        assert_eq!(owner, Some("alice".to_string()));
+    #[test]
+    fn test_find_pr_owner_from_description() {
+        // Tasks where the PR number is only in the description, not the subject
+        let tasks = vec![
+            Task {
+                id: "10".to_string(),
+                subject: "Code review PR #239".to_string(),
+                status: TaskStatus::InProgress,
+                owner: Some("vernon".to_string()),
+                description: Some("Review PR #239 changes".to_string()),
+                blocked_by: vec![],
+            },
+            Task {
+                id: "11".to_string(),
+                subject: "Find relevant CLAUDE.md files".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: Some("Sub-task for PR #239 review".to_string()),
+                blocked_by: vec!["10".to_string()],
+            },
+        ];
 
-        // PR #99 should find bob
-        let pr_pattern_99 = "PR #99";
-        let owner_99 = tasks
-            .iter()
-            .find(|t| {
-                (t.status == TaskStatus::InProgress || t.status == TaskStatus::Pending)
-                    && t.owner.is_some()
-                    && t.subject.contains(pr_pattern_99)
-            })
-            .and_then(|t| t.owner.clone());
+        // The main task has PR #239 in its subject — should find vernon
+        assert_eq!(
+            find_pr_owner_in_tasks("239", &tasks),
+            Some("vernon".to_string())
+        );
 
-        assert_eq!(owner_99, Some("bob".to_string()));
+        // extract_pr_number_from_task should find PR number in description
+        assert_eq!(
+            extract_pr_number_from_task(&tasks[1]),
+            Some("239".to_string())
+        );
+    }
 
-        // PR #55 should find no owner
-        let pr_pattern_55 = "PR #55";
-        let owner_55 = tasks
-            .iter()
-            .find(|t| {
-                (t.status == TaskStatus::InProgress || t.status == TaskStatus::Pending)
-                    && t.owner.is_some()
-                    && t.subject.contains(pr_pattern_55)
-            })
-            .and_then(|t| t.owner.clone());
+    #[test]
+    fn test_extract_pr_number_from_task_subject_only() {
+        let task = Task {
+            id: "1".to_string(),
+            subject: "Check PR #42 eligibility".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+        };
+        assert_eq!(extract_pr_number_from_task(&task), Some("42".to_string()));
+    }
 
-        assert_eq!(owner_55, None);
+    #[test]
+    fn test_extract_pr_number_from_task_description_only() {
+        let task = Task {
+            id: "1".to_string(),
+            subject: "Run 5 parallel code review agents".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: Some("Part of PR #239 review workflow".to_string()),
+            blocked_by: vec![],
+        };
+        assert_eq!(extract_pr_number_from_task(&task), Some("239".to_string()));
+    }
+
+    #[test]
+    fn test_extract_pr_number_from_task_no_pr() {
+        let task = Task {
+            id: "1".to_string(),
+            subject: "Score and filter issues".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: Some("Generic scoring task".to_string()),
+            blocked_by: vec![],
+        };
+        assert_eq!(extract_pr_number_from_task(&task), None);
+    }
+
+    #[test]
+    fn test_find_owner_via_blocked_by() {
+        let tasks = vec![
+            Task {
+                id: "100".to_string(),
+                subject: "Code review PR #239".to_string(),
+                status: TaskStatus::InProgress,
+                owner: Some("vernon".to_string()),
+                description: None,
+                blocked_by: vec![],
+            },
+            Task {
+                id: "101".to_string(),
+                subject: "Run 5 parallel code review agents".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec!["100".to_string()],
+            },
+            Task {
+                id: "102".to_string(),
+                subject: "Score and filter issues".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec!["101".to_string()],
+            },
+        ];
+
+        // Task 101 is blocked by task 100 (owned by vernon)
+        assert_eq!(
+            find_owner_via_blocked_by(&tasks[1], &tasks),
+            Some("vernon".to_string())
+        );
+
+        // Task 102 is blocked by task 101 (no owner yet) — should return None
+        assert_eq!(find_owner_via_blocked_by(&tasks[2], &tasks), None);
+
+        // Task 100 has no blockedBy — should return None
+        assert_eq!(find_owner_via_blocked_by(&tasks[0], &tasks), None);
+    }
+
+    #[test]
+    fn test_find_pr_owner_checks_description() {
+        // Verify find_pr_owner_in_tasks checks description too
+        let tasks = vec![Task {
+            id: "50".to_string(),
+            subject: "Some review task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("alice".to_string()),
+            description: Some("Reviewing PR #88 changes".to_string()),
+            blocked_by: vec![],
+        }];
+
+        assert_eq!(
+            find_pr_owner_in_tasks("88", &tasks),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_blocked_by_from_json() {
+        let json =
+            r#"{"id": "5", "subject": "Sub task", "status": "pending", "blockedBy": ["3", "4"]}"#;
+        let task = parse_task_json(json).unwrap();
+        assert_eq!(task.blocked_by, vec!["3".to_string(), "4".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_blocked_by_missing() {
+        let json = r#"{"id": "5", "subject": "Sub task", "status": "pending"}"#;
+        let task = parse_task_json(json).unwrap();
+        assert!(task.blocked_by.is_empty());
     }
 }
