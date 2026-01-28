@@ -89,11 +89,86 @@ impl CoworkerManager {
     /// * `session_name` - The tmux session name (e.g., "midtown-projectname")
     /// * `worktree_manager` - Manager for creating isolated git worktrees
     pub fn new(session_name: impl Into<String>, worktree_manager: WorktreeManager) -> Self {
-        Self {
+        let session = session_name.into();
+        let manager = Self {
             coworkers: Arc::new(RwLock::new(HashMap::new())),
             worktree_manager: Arc::new(worktree_manager),
-            session_name: session_name.into(),
+            session_name: session,
+        };
+
+        // Discover existing coworkers from tmux on startup
+        if let Err(e) = manager.discover_existing() {
+            tracing::warn!("Failed to discover existing coworkers: {}", e);
         }
+
+        manager
+    }
+
+    /// Discover existing coworker windows from tmux and add them to tracking.
+    ///
+    /// This is called on startup to recover coworkers that were running before
+    /// the daemon was restarted. The coworkers continue running uninterrupted.
+    fn discover_existing(&self) -> crate::Result<()> {
+        // Get all known coworker names
+        let all_names: std::collections::HashSet<&str> = AVENUE_NAMES
+            .iter()
+            .chain(OVERFLOW_NAMES.iter())
+            .copied()
+            .collect();
+
+        // List windows in our session
+        let windows = match tmux::list_windows(&self.session_name) {
+            Ok(w) => w,
+            Err(_) => {
+                // Session might not exist yet, that's OK
+                return Ok(());
+            }
+        };
+
+        let mut discovered = 0;
+        let mut coworkers = self.coworkers.write().unwrap();
+
+        for window_name in windows {
+            // Check if this window name is a known coworker name
+            if !all_names.contains(window_name.as_str()) {
+                continue;
+            }
+
+            // Skip if already tracked
+            if coworkers.contains_key(&window_name) {
+                continue;
+            }
+
+            // Get the working directory from the worktree
+            let working_dir = self
+                .worktree_manager
+                .worktree_path(&window_name)
+                .to_string_lossy()
+                .to_string();
+
+            // Create a coworker entry
+            let coworker = Coworker {
+                name: window_name.clone(),
+                status: CoworkerStatus::Running,
+                working_dir,
+                started_at: Utc::now(), // Unknown, use now as approximation
+                current_task: None,     // Will be discovered via task tracking
+                session_id: None,       // Will be set when coworker registers
+            };
+
+            coworkers.insert(window_name.clone(), coworker);
+            discovered += 1;
+            tracing::info!("Discovered existing coworker: {}", window_name);
+        }
+
+        if discovered > 0 {
+            tracing::info!(
+                "Discovered {} existing coworker(s) from tmux session",
+                discovered
+            );
+        }
+
+        Ok(())
     }
 
     /// Get a randomly selected available avenue name.
