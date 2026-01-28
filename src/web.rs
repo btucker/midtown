@@ -118,7 +118,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             .route("/api/health", get(api_health))
             .route("/api/channel", get(api_channel_history))
             .route("/api/status", get(api_status))
-            .nest_service("/", serve_dir)
+            .fallback_service(serve_dir)
             .with_state(state)
     } else {
         warn!(
