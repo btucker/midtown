@@ -1318,7 +1318,7 @@ async fn poll_prs_for_issues(
 /// - Aren't owned by the potential reviewer (no self-reviews)
 ///
 /// For each eligible PR, it spawns a new coworker (or uses an idle one) and
-/// nudges them to run `/code-review <pr-number>`.
+/// nudges them to run `/code-review:code-review <pr-number>`.
 async fn spawn_reviewers_for_prs(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -1401,9 +1401,9 @@ async fn spawn_reviewers_for_prs(
                     tracker.assign(pr_number, &reviewer_name);
                 }
 
-                // Nudge the reviewer to run /code-review
+                // Nudge the reviewer to run /code-review:code-review
                 let nudge_msg = format!(
-                    "Please review PR #{}: {}. Run: /code-review {}",
+                    "Please review PR #{}: {}. Run: /code-review:code-review {}",
                     pr_number,
                     truncate_str(title, 50),
                     pr_number
@@ -1463,9 +1463,9 @@ async fn spawn_reviewers_for_prs(
                         // Give the new coworker time to start (async sleep)
                         tokio::time::sleep(Duration::from_secs(3)).await;
 
-                        // Nudge the new reviewer to run /code-review
+                        // Nudge the new reviewer to run /code-review:code-review
                         let nudge_msg = format!(
-                            "Please review PR #{}: {}. Run: /code-review {}",
+                            "Please review PR #{}: {}. Run: /code-review:code-review {}",
                             pr_number,
                             truncate_str(title, 50),
                             pr_number

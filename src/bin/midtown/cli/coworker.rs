@@ -129,7 +129,7 @@ pub fn handle_stop_hook_standalone() -> Result<Response, String> {
     let prs_needing_review = get_prs_needing_review(&agent);
     if !prs_needing_review.is_empty() {
         work_items.push(format!(
-            "{} PR{} needing review (use /code-review): {}",
+            "{} PR{} needing review (use /code-review:code-review): {}",
             prs_needing_review.len(),
             if prs_needing_review.len() == 1 {
                 ""
