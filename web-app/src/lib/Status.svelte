@@ -6,14 +6,14 @@
     switch (status?.toLowerCase()) {
       case 'running':
       case 'active':
-        return '#4ade80'
+        return '#5faf5f'
       case 'idle':
-        return '#fbbf24'
+        return '#d7af5f'
       case 'stopped':
       case 'failed':
-        return '#e94560'
+        return '#af5f5f'
       default:
-        return '#666'
+        return '#585858'
     }
   }
 
@@ -121,7 +121,7 @@
 
   h2 {
     font-size: 1rem;
-    color: #00d9ff;
+    color: #5fafaf;
     margin-bottom: 12px;
   }
 
@@ -131,17 +131,17 @@
 
   .refresh-btn {
     padding: 6px 12px;
-    border: 1px solid #0f3460;
+    border: 1px solid #3a3a3a;
     border-radius: 4px;
     background: transparent;
-    color: #888;
+    color: #585858;
     font-size: 0.75rem;
     cursor: pointer;
   }
 
   .refresh-btn:hover {
-    border-color: #00d9ff;
-    color: #00d9ff;
+    border-color: #5fafaf;
+    color: #5fafaf;
   }
 
   .daemon-status {
@@ -149,7 +149,7 @@
     align-items: center;
     gap: 8px;
     padding: 12px;
-    background: #16213e;
+    background: #262626;
     border-radius: 8px;
   }
 
@@ -164,10 +164,10 @@
   }
 
   .empty {
-    color: #666;
+    color: #585858;
     font-style: italic;
     padding: 12px;
-    background: #16213e;
+    background: #262626;
     border-radius: 8px;
   }
 
@@ -179,7 +179,7 @@
 
   .coworker-card {
     padding: 12px;
-    background: #16213e;
+    background: #262626;
     border-radius: 8px;
   }
 
@@ -199,7 +199,7 @@
     font-size: 0.7rem;
     padding: 2px 8px;
     border-radius: 12px;
-    color: #1a1a2e;
+    color: #1c1c1c;
     text-transform: capitalize;
   }
 
@@ -209,16 +209,16 @@
   }
 
   .task-label {
-    color: #888;
+    color: #585858;
   }
 
   .task-text {
-    color: #ccc;
+    color: #a8a8a8;
   }
 
   .started-at {
     font-size: 0.75rem;
-    color: #666;
+    color: #585858;
   }
 
   .task-list {
@@ -231,13 +231,13 @@
     display: flex;
     gap: 8px;
     padding: 8px 12px;
-    background: #16213e;
+    background: #262626;
     border-radius: 4px;
     font-size: 0.85rem;
   }
 
   .task-id {
-    color: #888;
+    color: #585858;
     min-width: 30px;
   }
 
@@ -246,7 +246,7 @@
   }
 
   .task-status {
-    color: #666;
+    color: #585858;
     text-transform: capitalize;
   }
 </style>
