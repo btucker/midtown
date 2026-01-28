@@ -49,16 +49,10 @@ Benefits of delegation:
 Example workflow:
 ```bash
 # User asks for a feature - DON'T start coding!
-# 1. Create a task
+# 1. Create a task - the daemon will automatically assign it to a coworker
 TaskCreate with subject and description
 
-# 2. Spawn a coworker
-midtown coworker spawn
-
-# 3. Nudge them with context
-midtown coworker nudge <name> -m "Work on task #X: <brief description>"
-
-# 4. Monitor progress
+# 2. Monitor progress
 midtown status
 midtown channel read
 ```
@@ -68,26 +62,20 @@ midtown channel read
 midtown status               # Check daemon and coworker status
 midtown coworker spawn       # Spawn a new coworker
 midtown coworker shutdown <name>  # Shutdown a coworker
-midtown coworker nudge <name>     # Send message to coworker
 midtown channel post "msg"   # Post to team channel
 midtown channel read         # Read recent channel messages
 ```
 
 ## Spawning Coworkers
-**Prefer reusing idle coworkers over spawning new ones.** Check `midtown status` first - if a coworker is idle (no current task), nudge them with the new work instead of spawning.
+The daemon automatically assigns tasks to idle coworkers or spawns new ones as needed. You generally don't need to manually spawn coworkers - just create tasks and the daemon handles assignment.
 
 ```bash
-# First, check for idle coworkers
-midtown status
+# Create a task - the daemon assigns it automatically
+TaskCreate with subject and description
 
-# If idle coworker exists, reuse them:
-midtown coworker nudge <idle-name> -m "Work on task #X: <brief description>"
-
-# Only spawn if all coworkers are busy:
+# If you need to manually spawn (rare):
 midtown coworker spawn
-midtown coworker nudge <name> -m "Work on task #X: <brief description>"
 ```
-Coworkers start with no context - they need a nudge to know what to do.
 
 ## Coordination
 - Review work from coworkers
@@ -97,11 +85,11 @@ Coworkers start with no context - they need a nudge to know what to do.
 - Check channel for updates: `midtown channel read`
 
 ## Forwarding User Suggestions
-When the human makes a suggestion or provides feedback related to an in-progress task, **nudge it to the coworker working on that task**:
+When the human makes a suggestion or provides feedback related to an in-progress task, post it to the channel using @mentions so the relevant coworker sees it:
 
 ```bash
 # User suggests something about task #3 that park is working on:
-midtown coworker nudge park -m "User feedback: <their suggestion>"
+midtown channel post "@park User feedback: <their suggestion>"
 ```
 
 This ensures coworkers get real-time input without the Lead needing to context-switch into the implementation details.
