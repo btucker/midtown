@@ -207,6 +207,71 @@ pub fn get_pending_tasks() -> Vec<Task> {
         .collect()
 }
 
+/// Get pending tasks that have an owner assigned.
+///
+/// Returns tuples of (task_id, subject, owner_name).
+pub fn get_pending_tasks_with_owners() -> Vec<(String, String, String)> {
+    read_tasks()
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::Pending && t.owner.is_some())
+        .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
+        .collect()
+}
+
+/// Get pending tasks that have no owner (unclaimed and not started).
+pub fn get_pending_tasks_without_owners() -> Vec<Task> {
+    read_tasks()
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::Pending && t.owner.is_none())
+        .collect()
+}
+
+/// Update a task's owner and optionally status.
+///
+/// Writes the updated task back to disk.
+pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    // Get the lead session ID
+    let repo = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    let lead_session_file = home.join(".midtown").join(&repo).join("lead-session-id");
+    let lead_session_id = std::fs::read_to_string(&lead_session_file)
+        .map_err(|e| format!("Failed to read lead session ID: {}", e))?
+        .trim()
+        .to_string();
+
+    if lead_session_id.is_empty() {
+        return Err("Lead session ID is empty".to_string());
+    }
+
+    // Read the task file
+    let task_file = home
+        .join(".claude")
+        .join("tasks")
+        .join(&lead_session_id)
+        .join(format!("{}.json", task_id));
+
+    let content =
+        std::fs::read_to_string(&task_file).map_err(|e| format!("Failed to read task: {}", e))?;
+
+    // Parse and update
+    let mut task: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse task: {}", e))?;
+
+    task["owner"] = serde_json::json!(owner);
+
+    // Write back
+    let updated_content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+
+    std::fs::write(&task_file, updated_content)
+        .map_err(|e| format!("Failed to write task: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +314,48 @@ mod tests {
         let json = r#"{"id": 42, "subject": "Test", "status": "pending"}"#;
         let task = parse_task_json(json).unwrap();
         assert_eq!(task.id, "42");
+    }
+
+    #[test]
+    fn test_pending_tasks_with_owners() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        create_task_file(&tasks_dir, "1", "pending", None);
+        create_task_file(&tasks_dir, "2", "pending", Some("alice"));
+        create_task_file(&tasks_dir, "3", "pending", Some("bob"));
+        create_task_file(&tasks_dir, "4", "in_progress", Some("carol"));
+
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let pending_with_owners: Vec<_> = tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::Pending && t.owner.is_some())
+            .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
+            .collect();
+
+        assert_eq!(pending_with_owners.len(), 2);
+        assert_eq!(pending_with_owners[0].2, "alice");
+        assert_eq!(pending_with_owners[1].2, "bob");
+    }
+
+    #[test]
+    fn test_pending_tasks_without_owners() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        create_task_file(&tasks_dir, "1", "pending", None);
+        create_task_file(&tasks_dir, "2", "pending", Some("alice"));
+        create_task_file(&tasks_dir, "3", "pending", None);
+        create_task_file(&tasks_dir, "4", "in_progress", None);
+
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let pending_without_owners: Vec<_> = tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::Pending && t.owner.is_none())
+            .collect();
+
+        assert_eq!(pending_without_owners.len(), 2);
+        assert_eq!(pending_without_owners[0].id, "1");
+        assert_eq!(pending_without_owners[1].id, "3");
     }
 }
