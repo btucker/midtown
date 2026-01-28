@@ -16,6 +16,21 @@ use midtown::{Message, MessageType};
 
 use super::app::{App, CiStatus, TaskStatus};
 
+/// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
+#[derive(Debug, Clone)]
+pub struct Hyperlink {
+    /// Screen x coordinate
+    pub x: u16,
+    /// Screen y coordinate
+    pub y: u16,
+    /// Text to display (will be rewritten with OSC 8 wrapping)
+    pub text: String,
+    /// URL to link to
+    pub url: String,
+    /// Optional color for the first character (CI status dot)
+    pub first_char_color: Option<Color>,
+}
+
 /// Format duration as (Xm) or (Xh) for display
 fn format_duration_minutes(since: DateTime<Utc>) -> String {
     let now = Utc::now();
@@ -108,10 +123,14 @@ const REPO_STATUS_HEIGHT: u16 = 1;
 
 /// Draw the main UI
 ///
+/// Returns a list of hyperlinks that should be rendered after ratatui draws.
+/// These hyperlinks need to be written directly to the terminal using OSC 8
+/// sequences, bypassing ratatui's buffer system (which doesn't support hyperlinks).
+///
 /// Note: The Team panel has been removed - coworker status is now shown
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
-pub fn draw(f: &mut Frame, app: &mut App) {
+pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     // Calculate dynamic kanban height based on In Progress and Review columns
     let (_pending, in_progress, _completed) = app.tasks_by_status();
     let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
@@ -127,8 +146,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     draw_repo_status_line(f, app, chunks[0]);
-    draw_kanban_panel(f, app, chunks[1]);
+    let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
     draw_chat_panel(f, app, chunks[2]);
+
+    hyperlinks
 }
 
 /// Format relative time (e.g., "3 minutes ago", "2 hours ago", "1 day ago")
@@ -266,7 +287,9 @@ fn ci_status_color(status: &CiStatus) -> Color {
 }
 
 /// Draw the kanban board with 4 columns
-fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
+///
+/// Returns hyperlinks for PR items in Review and Done columns
+fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
     // Split into 4 equal columns
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -317,6 +340,8 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
         &in_progress_items,
     );
 
+    let mut hyperlinks = Vec::new();
+
     // Review column (open PRs with repo#XX format, CI status dot, and duration) - 2-line items
     let review_items: Vec<KanbanItem> = app
         .prs
@@ -334,7 +359,9 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             }
         })
         .collect();
-    draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
+    let review_hyperlinks =
+        draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
+    hyperlinks.extend(review_hyperlinks);
 
     // Done column (merged PRs with repo#XX format) - single line, reverse chronological, max 10
     let done_items: Vec<KanbanItem> = app
@@ -350,11 +377,24 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) {
             }
         })
         .collect();
-    draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
+    let done_hyperlinks = draw_kanban_column(f, columns[3], "Done", Color::Green, &done_items);
+    hyperlinks.extend(done_hyperlinks);
+
+    hyperlinks
 }
 
 /// Draw a single kanban column with multi-line item support and optional hyperlinks
-fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, items: &[KanbanItem]) {
+///
+/// Returns hyperlinks for items that have URLs (these will be rendered post-draw)
+fn draw_kanban_column(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    color: Color,
+    items: &[KanbanItem],
+) -> Vec<Hyperlink> {
+    let mut hyperlinks = Vec::new();
+
     let block = Block::default()
         .title(format!(" {} ({}) ", title, items.len()))
         .borders(Borders::ALL)
@@ -366,7 +406,7 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
     if items.is_empty() {
         let paragraph = Paragraph::new("-").style(Style::default().fg(Color::White));
         f.render_widget(paragraph, inner);
-        return;
+        return hyperlinks;
     }
 
     let available_width = inner.width as usize;
@@ -398,6 +438,16 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
 
             // Only apply hyperlink to the first line of items that have URLs
             if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
+                // Record hyperlink for post-render writing
+                hyperlinks.push(Hyperlink {
+                    x: inner.x,
+                    y,
+                    text: truncated.clone(),
+                    url: url.clone(),
+                    first_char_color: ci_dot_color,
+                });
+
+                // Still render to ratatui's buffer (will be overwritten post-render)
                 render_hyperlink_line(
                     buffer,
                     inner.x,
@@ -422,6 +472,8 @@ fn draw_kanban_column(f: &mut Frame, area: Rect, title: &str, color: Color, item
             lines_used += 1;
         }
     }
+
+    hyperlinks
 }
 
 /// Render a plain text line with optional CI status dot coloring
