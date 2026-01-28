@@ -542,13 +542,21 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
         prev_sender = Some(&msg.from);
     }
 
-    // Take only the last visible_height lines to show newest messages at bottom.
+    // Handle line truncation based on scroll position.
     // Each message can render to multiple lines (sender + content + continuations),
-    // so the total rendered lines often exceeds visible_height. Without this,
-    // Paragraph would show the first N lines (oldest messages) instead of the
-    // last N lines (newest messages).
+    // so the total rendered lines often exceeds visible_height.
+    //
+    // When at bottom (scroll_offset=0): show LAST N lines (newest messages)
+    // When scrolled up (scroll_offset>0): show FIRST N lines (older messages the user scrolled to)
     let visible_lines = if lines.len() > inner.height as usize {
-        lines.split_off(lines.len() - inner.height as usize)
+        if app.scroll_offset == 0 {
+            // At bottom: take last N lines to show newest messages
+            lines.split_off(lines.len() - inner.height as usize)
+        } else {
+            // Scrolled up: take first N lines to show older messages
+            lines.truncate(inner.height as usize);
+            lines
+        }
     } else {
         lines
     };
@@ -1300,6 +1308,115 @@ mod tests {
         assert!(
             fixed_content.contains("message content 9"),
             "Fixed version should contain newest message"
+        );
+    }
+
+    #[test]
+    fn test_scroll_offset_shows_older_messages() {
+        // Bug reproduction: When user scrolls up (scroll_offset > 0), they expect to see
+        // older messages. But the current code always takes the LAST N lines of rendered
+        // content, which means scrolling has no visible effect.
+        //
+        // This test verifies that scrolling up actually shows different (older) content.
+        use chrono::Utc;
+
+        // Create 20 messages, each from a different sender (so each takes ~3 lines)
+        let messages: Vec<Message> = (0..20)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: format!("user{}", i),
+                content: format!("message content {}", i),
+                timestamp: Utc::now(),
+                message_type: MessageType::Text,
+            })
+            .collect();
+
+        // Simulate scroll_offset=0 (bottom): visible_messages returns messages 10..20
+        let at_bottom_messages = &messages[10..20];
+        let mut at_bottom_lines: Vec<Line> = Vec::new();
+        let mut prev_sender: Option<&str> = None;
+        for msg in at_bottom_messages {
+            at_bottom_lines.extend(render_message(msg, 80, prev_sender));
+            prev_sender = Some(&msg.from);
+        }
+
+        // Simulate scroll_offset=10 (scrolled up): visible_messages returns messages 0..10
+        let scrolled_up_messages = &messages[0..10];
+        let mut scrolled_up_lines: Vec<Line> = Vec::new();
+        let mut prev_sender: Option<&str> = None;
+        for msg in scrolled_up_messages {
+            scrolled_up_lines.extend(render_message(msg, 80, prev_sender));
+            prev_sender = Some(&msg.from);
+        }
+
+        let visible_height = 10;
+
+        // At bottom: take LAST N lines (correct - shows newest messages)
+        let bottom_visible: Vec<_> = if at_bottom_lines.len() > visible_height {
+            at_bottom_lines
+                .iter()
+                .skip(at_bottom_lines.len() - visible_height)
+                .collect()
+        } else {
+            at_bottom_lines.iter().collect()
+        };
+
+        // Scrolled up: the bug is taking LAST N lines, should take FIRST N lines
+        let scrolled_buggy: Vec<_> = if scrolled_up_lines.len() > visible_height {
+            scrolled_up_lines
+                .iter()
+                .skip(scrolled_up_lines.len() - visible_height)
+                .collect()
+        } else {
+            scrolled_up_lines.iter().collect()
+        };
+
+        // Scrolled up: correct behavior should take FIRST N lines
+        let scrolled_fixed: Vec<_> = scrolled_up_lines.iter().take(visible_height).collect();
+
+        // Extract content
+        let bottom_content: String = bottom_visible
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        let buggy_content: String = scrolled_buggy
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        let fixed_content: String = scrolled_fixed
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        // At bottom should show newest messages (19, 18, etc.)
+        assert!(
+            bottom_content.contains("message content 19")
+                || bottom_content.contains("message content 18"),
+            "At bottom should show newest messages, got: {}",
+            bottom_content
+        );
+
+        // Scrolled up with buggy logic shows LAST N lines of older messages
+        // which might contain message 8 or 9 (end of 0..10 range)
+        assert!(
+            buggy_content.contains("message content 9")
+                || buggy_content.contains("message content 8"),
+            "Buggy scrolled shows end of old messages, got: {}",
+            buggy_content
+        );
+
+        // Scrolled up with fixed logic shows FIRST N lines of older messages
+        // which should contain message 0 or 1 (start of 0..10 range)
+        assert!(
+            fixed_content.contains("user0") || fixed_content.contains("message content 0"),
+            "Fixed scrolled should show oldest messages (0, 1, etc.), got: {}",
+            fixed_content
+        );
+
+        // The key assertion: buggy and fixed should show DIFFERENT content when scrolled
+        assert_ne!(
+            buggy_content, fixed_content,
+            "Scrolled content should differ between buggy and fixed implementations"
         );
     }
 }
