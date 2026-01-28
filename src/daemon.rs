@@ -554,7 +554,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodic orphan check
             _ = orphan_check_interval.tick() => {
-                check_and_recover_orphans(&state);
+                check_and_recover_orphans(&state).await;
                 spawn_for_pending_tasks(&state);
             }
 
@@ -2478,7 +2478,7 @@ fn coworker_from_branch(branch: &str) -> Option<String> {
 /// An orphaned task is one that is `in_progress` but the owning coworker
 /// is no longer active (no tmux window). If the coworker's worktree still
 /// exists, we respawn them and nudge them to resume work.
-fn check_and_recover_orphans(state: &DaemonState) {
+async fn check_and_recover_orphans(state: &DaemonState) {
     // Get in_progress tasks with their owners
     let in_progress = get_in_progress_tasks_with_owners();
 
@@ -2530,7 +2530,7 @@ fn check_and_recover_orphans(state: &DaemonState) {
                 }
 
                 // Give the coworker a moment to start up
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
                 // Nudge them to resume their task
                 let nudge_msg = format!(
