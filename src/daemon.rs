@@ -1958,22 +1958,15 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 
 /// Handle coworker.nudge RPC method.
 ///
-/// Posts the nudge as a channel message in the format `from: @name message`
-/// so nudges are visible in the chat, then sends the nudge to the coworker's tmux window.
+/// Sends the nudge directly to the coworker's tmux window without posting to the channel,
+/// to avoid the chat monitor seeing the @mention and creating a duplicate nudge.
 fn handle_coworker_nudge(
     id: RequestId,
-    from: &str,
+    _from: &str,
     name: &str,
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    // Post to channel first as an @mention message
-    let channel_content = format!("@{} {}", name, message);
-    let channel_msg = Message::new(from, channel_content, MessageType::Text);
-    if let Err(e) = state.channel.send(&channel_msg) {
-        warn!("Failed to post nudge to channel: {}", e);
-    }
-
     match state.coworkers.nudge(name, message) {
         Ok(()) => {
             info!("Nudged coworker {}: {}", name, message);
