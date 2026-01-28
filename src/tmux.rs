@@ -676,7 +676,7 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
 
     serde_json::json!({
         "editorMode": "normal",
-        "plugins": user_plugins,
+        "enabledPlugins": user_plugins,
         "hooks": {
             "Stop": [{
                 "hooks": [{
