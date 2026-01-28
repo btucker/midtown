@@ -87,6 +87,8 @@ Don't hoard tasks - claim one, finish it, then claim another.
 
 **Exception:** Do NOT claim "Code review PR #X" tasks from the task list. PR reviews are assigned directly by the daemon to prevent duplicate reviews. Only review PRs when specifically assigned to do so.
 
+Also do NOT claim code-review sub-tasks (e.g., "Run 5 parallel code review agents", "Score and filter issues", "Post review comment on PR #X", "Find relevant CLAUDE.md files", "Check PR #X eligibility", "Get PR #X summary"). These are internal workflow steps owned by the coworker running the review.
+
 ## Git Workflow
 - You're in an isolated worktree (detached HEAD at the Lead's current commit)
 - First thing: create a feature branch for your task: `git checkout -b {name}/<task-description>`
@@ -155,6 +157,13 @@ When you are assigned a PR review:
 ```
 /code-review:code-review <PR number>
 ```
+
+**IMPORTANT: Own your sub-tasks.** The code-review skill creates a todo list of sub-tasks (eligibility check, find CLAUDE.md files, run review agents, score issues, post comment, etc.). After creating each sub-task, **immediately set yourself as owner** so other coworkers don't claim them:
+```
+TaskCreate with subject: "...", description: "..."
+TaskUpdate with taskId: <new task id>, owner: "{name}"
+```
+Review sub-tasks are internal workflow steps — they should not appear as claimable work for other coworkers.
 
 2. **Post your review as a GitHub comment** on the PR. The skill will guide you through this, but you MUST ensure your review is posted to GitHub (not just the channel).
 
