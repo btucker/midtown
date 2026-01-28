@@ -395,11 +395,7 @@ fn parse_stuck_prs(json_str: &str) -> Vec<StuckPr> {
 
 /// Get the path to the flagged PRs directory for tracking.
 fn flagged_prs_dir_path(repo_name: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".midtown")
-        .join("flagged_prs")
-        .join(repo_name)
+    midtown::paths::projects_dir_for_repo(repo_name).join("flagged_prs")
 }
 
 /// Get set of recently flagged PR numbers (within the last hour).
@@ -661,11 +657,7 @@ fn extract_insights(text: &str) -> Vec<String> {
 /// Each posted insight hash becomes a file in this directory.
 /// Uses repo name (not transcript) to prevent duplicates across sessions.
 fn insights_dir_path(repo_name: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".midtown")
-        .join("insights")
-        .join(repo_name)
+    midtown::paths::projects_dir_for_repo(repo_name).join("insights")
 }
 
 /// Get set of already-posted insight hashes for the given repository.

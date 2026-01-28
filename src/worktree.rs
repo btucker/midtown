@@ -1,7 +1,7 @@
 //! Git worktree management for coworker isolation.
 //!
 //! Each coworker gets an isolated git worktree at:
-//! `~/.midtown/<repo>/worktrees/<coworker-name>/`
+//! `~/.midtown/coworkers/<repo>/<coworker-name>/`
 //!
 //! The worktree is created with a dedicated branch `<coworker-name>/work`.
 
@@ -46,9 +46,9 @@ impl From<WorktreeError> for Error {
 pub struct WorktreeManager {
     /// Root repository path (the main checkout)
     repo_root: PathBuf,
-    /// Repository name (for ~/.midtown/<repo>/)
+    /// Repository name (for ~/.midtown/coworkers/<repo>/)
     repo_name: String,
-    /// Base path for worktrees (~/.midtown/<repo>/worktrees/)
+    /// Base path for worktrees (~/.midtown/coworkers/<repo>/)
     worktrees_base: PathBuf,
 }
 
@@ -85,7 +85,7 @@ impl WorktreeManager {
 
     /// Create a worktree for a coworker.
     ///
-    /// Creates a new worktree at `~/.midtown/<repo>/worktrees/<name>/`
+    /// Creates a new worktree at `~/.midtown/coworkers/<repo>/<name>/`
     /// detached at the current HEAD. The coworker should immediately create
     /// a feature branch for their task.
     pub fn create(&self, coworker_name: &str) -> WorktreeResult<PathBuf> {
@@ -263,13 +263,9 @@ fn repo_name_from_path(repo_path: &Path) -> WorktreeResult<String> {
         .ok_or_else(|| WorktreeError::RepoDetection("Could not determine repo name".to_string()))
 }
 
-/// Get the base path for worktrees (~/.midtown/<repo>/worktrees/).
+/// Get the base path for worktrees (~/.midtown/coworkers/<repo>/).
 fn worktrees_base_path(repo_name: &str) -> WorktreeResult<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        WorktreeError::RepoDetection("Could not determine home directory".to_string())
-    })?;
-
-    Ok(home.join(".midtown").join(repo_name).join("worktrees"))
+    Ok(crate::paths::coworkers_dir_for_repo(repo_name))
 }
 
 /// Parse the output of `git worktree list --porcelain`.
@@ -336,12 +332,12 @@ mod tests {
         let manager = WorktreeManager {
             repo_root: PathBuf::from("/tmp/repo"),
             repo_name: "myrepo".to_string(),
-            worktrees_base: PathBuf::from("/home/user/.midtown/myrepo/worktrees"),
+            worktrees_base: PathBuf::from("/home/user/.midtown/coworkers/myrepo"),
         };
 
         assert_eq!(
             manager.worktree_path("alice"),
-            PathBuf::from("/home/user/.midtown/myrepo/worktrees/alice")
+            PathBuf::from("/home/user/.midtown/coworkers/myrepo/alice")
         );
     }
 
@@ -351,16 +347,16 @@ mod tests {
 HEAD abc123
 branch refs/heads/main
 
-worktree /home/user/.midtown/myrepo/worktrees/alice
+worktree /home/user/.midtown/coworkers/myrepo/alice
 HEAD def456
 branch refs/heads/alice/work
 
-worktree /home/user/.midtown/myrepo/worktrees/bob
+worktree /home/user/.midtown/coworkers/myrepo/bob
 HEAD 789xyz
 branch refs/heads/bob/work
 "#;
 
-        let base = PathBuf::from("/home/user/.midtown/myrepo/worktrees");
+        let base = PathBuf::from("/home/user/.midtown/coworkers/myrepo");
         let worktrees = parse_worktree_list(output, &base);
 
         assert_eq!(worktrees.len(), 3);
@@ -374,7 +370,7 @@ branch refs/heads/bob/work
         // Alice's worktree
         assert_eq!(
             worktrees[1].path,
-            PathBuf::from("/home/user/.midtown/myrepo/worktrees/alice")
+            PathBuf::from("/home/user/.midtown/coworkers/myrepo/alice")
         );
         assert_eq!(worktrees[1].branch, Some("alice/work".to_string()));
         assert!(worktrees[1].is_coworker);
@@ -387,10 +383,10 @@ branch refs/heads/bob/work
 
     #[test]
     fn test_check_coworker_worktree() {
-        let base = PathBuf::from("/home/user/.midtown/myrepo/worktrees");
+        let base = PathBuf::from("/home/user/.midtown/coworkers/myrepo");
 
         let (is_coworker, name) = check_coworker_worktree(
-            &PathBuf::from("/home/user/.midtown/myrepo/worktrees/alice"),
+            &PathBuf::from("/home/user/.midtown/coworkers/myrepo/alice"),
             &base,
         );
         assert!(is_coworker);

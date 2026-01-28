@@ -133,11 +133,7 @@ fn write_coworker_prompt_file(name: &str, prompt: &str) -> crate::Result<PathBuf
 ///
 /// Returns None if no Lead session has been started for this repo.
 pub fn get_lead_session_id(repo_name: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let session_file = PathBuf::from(home)
-        .join(".midtown")
-        .join(repo_name)
-        .join("lead-session-id");
+    let session_file = crate::paths::lead_session_file_for_repo(repo_name);
 
     std::fs::read_to_string(&session_file)
         .ok()

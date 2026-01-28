@@ -31,7 +31,7 @@ pub enum TaskStatus {
 
 /// Read all tasks from Claude Code's task storage for the current session.
 ///
-/// Looks up the lead session ID from `~/.midtown/<repo>/lead-session-id` and
+/// Looks up the lead session ID from `~/.midtown/lead/<repo>/session-id` and
 /// reads all task JSON files from `~/.claude/tasks/<session_id>/`.
 pub fn read_tasks() -> Vec<Task> {
     read_tasks_for_repo(None)
@@ -46,12 +46,8 @@ pub fn read_tasks_for_repo(repo_name: Option<&str>) -> Vec<Task> {
         .or_else(crate::paths::detect_repo_name)
         .unwrap_or_else(|| "default".to_string());
 
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-
-    // Read the lead session ID from ~/.midtown/<repo>/lead-session-id
-    let lead_session_file = home.join(".midtown").join(&repo).join("lead-session-id");
+    // Read the lead session ID from ~/.midtown/lead/<repo>/session-id
+    let lead_session_file = crate::paths::lead_session_file_for_repo(&repo);
     let Ok(lead_session_id) = std::fs::read_to_string(&lead_session_file) else {
         return Vec::new();
     };
@@ -236,7 +232,7 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
 
     // Get the lead session ID
     let repo = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let lead_session_file = home.join(".midtown").join(&repo).join("lead-session-id");
+    let lead_session_file = crate::paths::lead_session_file_for_repo(&repo);
     let lead_session_id = std::fs::read_to_string(&lead_session_file)
         .map_err(|e| format!("Failed to read lead session ID: {}", e))?
         .trim()

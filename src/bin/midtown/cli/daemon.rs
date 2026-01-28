@@ -250,15 +250,11 @@ fn write_lead_settings_file() -> Result<PathBuf, String> {
 
 /// Get the path to the Lead session ID file for a project.
 fn lead_session_file(repo: &Path) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let repo_name = repo
         .file_name()
         .map(|s: &std::ffi::OsStr| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    PathBuf::from(home)
-        .join(".midtown")
-        .join(&repo_name)
-        .join("lead-session-id")
+    midtown::paths::lead_session_file_for_repo(&repo_name)
 }
 
 /// Build the claude command for the Lead session.
@@ -725,15 +721,11 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
 
 /// Path to the marker file indicating Lead was initialized by midtown.
 fn lead_initialized_marker(repo: &Path) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let repo_name = repo
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    PathBuf::from(home)
-        .join(".midtown")
-        .join(&repo_name)
-        .join("lead-initialized")
+    midtown::paths::lead_dir_for_repo(&repo_name).join("lead-initialized")
 }
 
 /// Get session status for status command enhancement.
@@ -769,12 +761,11 @@ pub fn handle_register_session() -> Result<Response, String> {
 
     let lead_uuid = find_newest_dir(&tasks_dir)?;
 
-    // Save to ~/.midtown/<repo>/lead-session-id
-    let midtown_dir = home.join(".midtown").join(&repo_name);
-    fs::create_dir_all(&midtown_dir)
-        .map_err(|e| format!("Failed to create midtown directory: {}", e))?;
+    // Save to ~/.midtown/lead/<repo>/session-id
+    let lead_dir = midtown::paths::lead_dir_for_repo(&repo_name);
+    fs::create_dir_all(&lead_dir).map_err(|e| format!("Failed to create lead directory: {}", e))?;
 
-    let session_file = midtown_dir.join("lead-session-id");
+    let session_file = midtown::paths::lead_session_file_for_repo(&repo_name);
     fs::write(&session_file, &lead_uuid)
         .map_err(|e| format!("Failed to write session file: {}", e))?;
 
@@ -1019,8 +1010,9 @@ mod tests {
         let session_file = lead_session_file(&repo_path);
 
         assert!(session_file.to_string_lossy().contains(".midtown"));
+        assert!(session_file.to_string_lossy().contains("lead"));
         assert!(session_file.to_string_lossy().contains("my-project"));
-        assert!(session_file.to_string_lossy().ends_with("lead-session-id"));
+        assert!(session_file.to_string_lossy().ends_with("session-id"));
     }
 
     #[test]
