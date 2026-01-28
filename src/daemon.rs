@@ -1094,13 +1094,13 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
         let is_running = state.coworkers.get(&name).is_some();
 
         if !is_running {
-            // Try to spawn the coworker with resume flag
+            // Spawn the coworker with resume flag (creates worktree if needed, reuses if exists)
             info!(
                 "Spawning mentioned coworker {} (not currently running)",
                 name
             );
-            match state.coworkers.respawn(&name) {
-                Ok(()) => {
+            match state.coworkers.spawn_with_name(&name, true) {
+                Ok(_) => {
                     info!("Spawned coworker {} via @mention", name);
                     // Post to channel about the spawn
                     let spawn_msg = Message::text(
@@ -1112,30 +1112,14 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                     }
                 }
                 Err(e) => {
-                    // Respawn failed - likely no existing worktree, try regular spawn
-                    debug!("Respawn failed for {}: {}, trying regular spawn", name, e);
-                    match state.coworkers.spawn(false) {
-                        Ok(spawned_name) if spawned_name == name => {
-                            info!("Spawned new coworker {} via @mention", name);
-                        }
-                        Ok(spawned_name) => {
-                            // Got a different name, that's unexpected
-                            warn!(
-                                "Spawn returned different name: expected {}, got {}",
-                                name, spawned_name
-                            );
-                        }
-                        Err(e) => {
-                            warn!("Failed to spawn coworker {}: {}", name, e);
-                            // Post error to channel
-                            let err_msg = Message::text(
-                                "daemon",
-                                format!("⚠️ Failed to spawn {} for @mention: {}", name, e),
-                            );
-                            let _ = state.channel.send(&err_msg);
-                            continue;
-                        }
-                    }
+                    warn!("Failed to spawn coworker {}: {}", name, e);
+                    // Post error to channel
+                    let err_msg = Message::text(
+                        "daemon",
+                        format!("⚠️ Failed to spawn {} for @mention: {}", name, e),
+                    );
+                    let _ = state.channel.send(&err_msg);
+                    continue;
                 }
             }
         }
