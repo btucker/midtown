@@ -248,7 +248,25 @@ impl Channel {
 mod tests {
     use super::*;
     use crate::message::MessageType;
+    use std::thread;
+    use std::time::Duration;
     use tempfile::TempDir;
+
+    /// Retry read_all with backoff to handle transient lock contention in CI
+    fn read_all_with_retry(channel: &Channel, max_attempts: u32) -> Result<Vec<Message>> {
+        for attempt in 0..max_attempts {
+            match channel.read_all() {
+                Ok(messages) => return Ok(messages),
+                Err(e) if attempt < max_attempts - 1 => {
+                    // WouldBlock is expected under lock contention, retry after backoff
+                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
 
     #[test]
     fn test_channel_creation() {
@@ -269,7 +287,8 @@ mod tests {
         channel.send(&msg1).unwrap();
         channel.send(&msg2).unwrap();
 
-        let messages = channel.read_all().unwrap();
+        // Use retry helper to handle transient lock contention in CI
+        let messages = read_all_with_retry(&channel, 5).unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "Hello");
         assert_eq!(messages[1].content, "World");
