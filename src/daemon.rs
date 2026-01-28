@@ -2337,78 +2337,9 @@ fn handle_coworker_asking(
 /// Known system senders that should not trigger feedback detection.
 const SYSTEM_SENDERS: &[&str] = &["Lead", "lead", "github", "system", "GitHub"];
 
-/// Patterns that indicate a message is asking for feedback or help.
-/// Checked case-insensitively.
-const FEEDBACK_PATTERNS: &[&str] = &[
-    "feedback",
-    "thoughts?",
-    "opinion?",
-    "what do you think",
-    "help",
-    "blocked",
-    "stuck",
-    "unsure",
-    "not sure",
-    "question",
-    "@lead",
-    "lead:",
-];
-
-/// Check if a message is asking for feedback or help.
-///
-/// Returns true if the message:
-/// - Contains any feedback pattern keywords
-/// - Is directed at Lead (@Lead, Lead:)
-/// - Ends with "?" and contains substantive content (not just a status update)
-fn is_feedback_request(message: &str) -> bool {
-    let lower = message.to_lowercase();
-
-    // Check for explicit feedback patterns
-    for pattern in FEEDBACK_PATTERNS {
-        if lower.contains(pattern) {
-            return true;
-        }
-    }
-
-    // Check if it ends with "?" and has substantive content
-    // Exclude status updates like "claiming task?" or short messages
-    if message.trim().ends_with('?') && message.len() > 30 {
-        // But exclude if it looks like a status update (starts with /me or common status words)
-        if !lower.starts_with("/me ")
-            && !lower.contains("claiming")
-            && !lower.contains("starting")
-            && !lower.contains("working on")
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
 /// Check if a sender is a coworker (not Lead or system).
 fn is_coworker_sender(from: &str) -> bool {
     !SYSTEM_SENDERS.contains(&from)
-}
-
-/// Check if a message is directed at a coworker but NOT at the lead.
-///
-/// Returns true if the message contains `@<coworker_name>` (for any known coworker)
-/// but does not contain `@lead`. This is used to skip nudging the lead when
-/// coworkers are communicating with each other.
-fn is_directed_at_coworker_only(message: &str) -> bool {
-    let lower = message.to_lowercase();
-
-    // Check if message mentions @lead
-    let mentions_lead = lower.contains("@lead");
-    if mentions_lead {
-        return false;
-    }
-
-    // Check if message mentions any coworker
-    COWORKER_NAMES
-        .iter()
-        .any(|&name| lower.contains(&format!("@{}", name)))
 }
 
 /// Handle channel.post RPC method.
@@ -2440,12 +2371,8 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 }
             }
 
-            // Check for feedback requests from coworkers and nudge Lead
-            // Skip if the message is directed at another coworker (not @lead)
-            if is_coworker_sender(from)
-                && is_feedback_request(&content)
-                && !is_directed_at_coworker_only(&content)
-            {
+            // Nudge the Lead when a coworker explicitly mentions @lead
+            if is_coworker_sender(from) && content.to_lowercase().contains("@lead") {
                 // Use message ID to avoid duplicate nudges
                 let should_nudge = {
                     let nudged = state.nudged_messages.read().unwrap();
@@ -2459,19 +2386,19 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                         nudged.insert(msg.id.clone());
                     }
 
-                    // Truncate question for nudge message (max 100 chars)
-                    let question = if content.len() > 100 {
+                    // Truncate message for nudge (max 100 chars)
+                    let summary = if content.len() > 100 {
                         format!("{}...", &content[..97])
                     } else {
                         content.clone()
                     };
 
-                    let nudge_msg = format!("{} is asking for feedback: {}", from, question);
-                    info!("Nudging Lead about feedback request from {}", from);
+                    let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
+                    info!("Nudging Lead about @lead mention from {}", from);
 
                     // Nudge the Lead window
                     if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
-                        warn!("Failed to nudge Lead about feedback request: {}", e);
+                        warn!("Failed to nudge Lead about @lead mention: {}", e);
                     }
                 }
             }
@@ -3420,56 +3347,7 @@ mod tests {
         assert_eq!(coworker_from_branch("main"), None);
     }
 
-    // PR polling tests
-    #[test]
-    fn test_is_feedback_request_with_keywords() {
-        // Explicit feedback keywords
-        assert!(is_feedback_request(
-            "What do you think about this approach?"
-        ));
-        assert!(is_feedback_request(
-            "I need some feedback on the API design"
-        ));
-        assert!(is_feedback_request("Thoughts? I'm not sure about this"));
-        assert!(is_feedback_request("Could I get your opinion?"));
-        assert!(is_feedback_request("I'm blocked on the auth issue"));
-        assert!(is_feedback_request(
-            "I'm stuck here, not sure how to proceed"
-        ));
-        assert!(is_feedback_request(
-            "I have a question about the architecture"
-        ));
-        assert!(is_feedback_request("@Lead can you review this?"));
-        assert!(is_feedback_request("Lead: what's the best approach here?"));
-    }
-
-    #[test]
-    fn test_is_feedback_request_with_questions() {
-        // Long questions that end with "?" and don't look like status updates should trigger
-        assert!(is_feedback_request(
-            "Is this the right way to handle the authentication flow in the API layer?"
-        ));
-        assert!(is_feedback_request(
-            "Should we use async/await here or is the sync version fine for this use case?"
-        ));
-    }
-
-    #[test]
-    fn test_is_feedback_request_excludes_status_updates() {
-        // Status updates should not trigger
-        assert!(!is_feedback_request("/me claiming task 1"));
-        assert!(!is_feedback_request("/me working on task 2"));
-        assert!(!is_feedback_request("starting task #3"));
-        assert!(!is_feedback_request("claiming #5?"));
-    }
-
-    #[test]
-    fn test_is_feedback_request_excludes_short_questions() {
-        // Short questions that are probably just confirmations
-        assert!(!is_feedback_request("Ready?"));
-        assert!(!is_feedback_request("Done?"));
-    }
-
+    // Lead nudge tests
     #[test]
     fn test_is_coworker_sender() {
         // System senders should not be coworkers
@@ -3487,36 +3365,30 @@ mod tests {
     }
 
     #[test]
-    fn test_is_directed_at_coworker_only() {
-        // Messages directed at a coworker (should return true)
-        assert!(is_directed_at_coworker_only(
-            "@pleasant any progress on task 304?"
-        ));
-        assert!(is_directed_at_coworker_only(
-            "@lexington can you help with this?"
-        ));
-        assert!(is_directed_at_coworker_only(
-            "Hey @amsterdam, what's the status?"
-        ));
+    fn test_lead_nudge_only_on_explicit_at_lead() {
+        // Only explicit @lead mentions should trigger nudges.
+        // Heuristic keywords like "feedback", "help", "blocked" should NOT trigger.
+        let triggers = |msg: &str| msg.to_lowercase().contains("@lead");
 
-        // Messages directed at lead (should return false)
-        assert!(!is_directed_at_coworker_only("@lead what do you think?"));
-        assert!(!is_directed_at_coworker_only("@Lead can you review this?"));
+        // Should trigger: explicit @lead mentions
+        assert!(triggers("@lead should this handle the error case?"));
+        assert!(triggers("@Lead can you review this approach?"));
+        assert!(triggers("Hey @lead, I'm blocked on the API design"));
 
-        // Messages mentioning both coworker and lead (should return false)
-        assert!(!is_directed_at_coworker_only(
-            "@lead and @lexington please check this"
-        ));
+        // Should NOT trigger: heuristic keywords without @lead
+        assert!(!triggers("I need some feedback on the API design"));
+        assert!(!triggers("I'm blocked on the auth issue"));
+        assert!(!triggers("I'm stuck here, not sure how to proceed"));
+        assert!(!triggers("What do you think about this approach?"));
+        assert!(!triggers("I have a question about the architecture"));
 
-        // Messages not mentioning anyone (should return false)
-        assert!(!is_directed_at_coworker_only(
-            "What do you think about this?"
-        ));
-        assert!(!is_directed_at_coworker_only("I'm stuck on this issue"));
+        // Should NOT trigger: status updates mentioning "feedback"
+        assert!(!triggers("addressing review feedback on PR #227"));
+        assert!(!triggers("/me addressing feedback from code review"));
 
-        // Edge cases
-        assert!(!is_directed_at_coworker_only("lead: what's next?")); // lead: without @
-        assert!(is_directed_at_coworker_only("@york great work!")); // praise to coworker
+        // Should NOT trigger: coworker-to-coworker messages
+        assert!(!triggers("@lexington can you help with this?"));
+        assert!(!triggers("@pleasant any progress on task 304?"));
     }
 
     #[test]
