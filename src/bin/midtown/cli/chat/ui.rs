@@ -69,9 +69,27 @@ fn get_sender_color(name: &str) -> Color {
     }
 }
 
-/// Height of the kanban board (including borders)
-/// Increased to accommodate 2-line items in In Progress and Review columns
-const KANBAN_HEIGHT: u16 = 9;
+/// Minimum height of the kanban board (including borders)
+const MIN_KANBAN_HEIGHT: u16 = 5;
+
+/// Calculate the kanban board height based on In Progress and Review column items.
+///
+/// "In Progress" and "Review" columns expand to show all items (2 lines each).
+/// "Backlog" and "Done" columns do not affect height (they truncate if needed).
+fn calculate_kanban_height(app: &App) -> u16 {
+    let (_pending, in_progress, _completed) = app.tasks_by_status();
+    let in_progress_count = in_progress.len();
+    let review_count = app.prs.len();
+
+    // Each item in these columns takes 2 lines
+    let max_items = in_progress_count.max(review_count);
+    let content_lines = max_items * 2;
+
+    // Add 2 for borders (top and bottom)
+    let required_height = (content_lines + 2) as u16;
+
+    required_height.max(MIN_KANBAN_HEIGHT)
+}
 
 /// Height of the repo status line
 const REPO_STATUS_HEIGHT: u16 = 1;
@@ -82,12 +100,15 @@ const REPO_STATUS_HEIGHT: u16 = 1;
 /// in tmux tab names instead, providing better visibility even when the
 /// chat TUI is not in focus.
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // Calculate dynamic kanban height based on In Progress and Review items
+    let kanban_height = calculate_kanban_height(app);
+
     // Split into repo status (top), kanban (middle), and chat (bottom) panels
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(REPO_STATUS_HEIGHT),
-            Constraint::Length(KANBAN_HEIGHT),
+            Constraint::Length(kanban_height),
             Constraint::Min(10),
         ])
         .split(f.area());
