@@ -428,16 +428,23 @@ fn draw_kanban_column(
 
             // Only apply hyperlink to the first line of items that have URLs
             if let (0, Some(url)) = (line_idx, item.url.as_ref()) {
-                // Record hyperlink for post-render writing
-                hyperlinks.push(Hyperlink {
-                    x: inner.x,
-                    y,
-                    text: truncated.clone(),
-                    url: url.clone(),
-                    first_char_color: ci_dot_color,
-                });
+                // Extract just the "PR#XX" portion as the clickable target
+                if let Some(pr_start) = truncated.find("PR#") {
+                    let pr_text: String = truncated[pr_start..]
+                        .chars()
+                        .take_while(|c| *c != ' ')
+                        .collect();
+                    let char_offset = truncated[..pr_start].chars().count() as u16;
+                    hyperlinks.push(Hyperlink {
+                        x: inner.x + char_offset,
+                        y,
+                        text: pr_text,
+                        url: url.clone(),
+                        first_char_color: None,
+                    });
+                }
 
-                // Still render to ratatui's buffer (will be overwritten post-render)
+                // Render the full line to ratatui's buffer (PR#XX will get OSC 8 post-render)
                 render_hyperlink_line(
                     buffer,
                     inner.x,
