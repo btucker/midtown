@@ -420,13 +420,14 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
-    /// Retry read_all with backoff to handle transient lock contention in CI
-    fn read_all_with_retry(channel: &Channel, max_attempts: u32) -> Result<Vec<Message>> {
+    /// Retry a fallible operation with backoff to handle transient lock contention in CI.
+    /// All channel read methods use try_lock_shared() which returns WouldBlock when
+    /// an exclusive write lock is held by another thread.
+    fn retry_with_backoff<T>(max_attempts: u32, mut f: impl FnMut() -> Result<T>) -> Result<T> {
         for attempt in 0..max_attempts {
-            match channel.read_all() {
-                Ok(messages) => return Ok(messages),
+            match f() {
+                Ok(val) => return Ok(val),
                 Err(e) if attempt < max_attempts - 1 => {
-                    // WouldBlock is expected under lock contention, retry after backoff
                     thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
                     continue;
                 }
@@ -436,20 +437,31 @@ mod tests {
         unreachable!()
     }
 
-    /// Retry helper for message_count to handle transient lock contention in CI
+    fn read_all_with_retry(channel: &Channel, max_attempts: u32) -> Result<Vec<Message>> {
+        retry_with_backoff(max_attempts, || channel.read_all())
+    }
+
     fn message_count_with_retry(channel: &Channel, max_attempts: u32) -> Result<usize> {
-        for attempt in 0..max_attempts {
-            match channel.message_count() {
-                Ok(count) => return Ok(count),
-                Err(e) if attempt < max_attempts - 1 => {
-                    // WouldBlock is expected under lock contention, retry after backoff
-                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        unreachable!()
+        retry_with_backoff(max_attempts, || channel.message_count())
+    }
+
+    fn read_last_n_with_retry(
+        channel: &Channel,
+        n: usize,
+        max_attempts: u32,
+    ) -> Result<(Vec<Message>, u64)> {
+        retry_with_backoff(max_attempts, || channel.read_last_n_messages(n))
+    }
+
+    fn read_before_pos_with_retry(
+        channel: &Channel,
+        pos: u64,
+        n: usize,
+        max_attempts: u32,
+    ) -> Result<(Vec<Message>, u64)> {
+        retry_with_backoff(max_attempts, || {
+            channel.read_messages_before_position(pos, n)
+        })
     }
 
     #[test]
@@ -681,7 +693,7 @@ mod tests {
         }
 
         // Request last 10 messages, but only 5 exist
-        let (messages, start_pos) = channel.read_last_n_messages(10).unwrap();
+        let (messages, start_pos) = read_last_n_with_retry(&channel, 10, 5).unwrap();
         assert_eq!(messages.len(), 5);
         assert_eq!(start_pos, 0, "start_pos should be 0 when all messages fit");
         assert_eq!(messages[0].content, "Message 1");
@@ -701,7 +713,7 @@ mod tests {
         }
 
         // Request last 10 messages
-        let (messages, _start_pos) = channel.read_last_n_messages(10).unwrap();
+        let (messages, _start_pos) = read_last_n_with_retry(&channel, 10, 5).unwrap();
         assert_eq!(messages.len(), 10);
         // Should have messages 41-50 (last 10)
         assert_eq!(messages[0].content, "Message 41");
@@ -713,7 +725,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let channel = Channel::new(temp_dir.path()).unwrap();
 
-        let (messages, start_pos) = channel.read_last_n_messages(10).unwrap();
+        let (messages, start_pos) = read_last_n_with_retry(&channel, 10, 5).unwrap();
         assert!(messages.is_empty());
         assert_eq!(start_pos, 0);
     }
@@ -731,15 +743,13 @@ mod tests {
         }
 
         // First, get the last 10 messages to establish a position
-        let (recent_msgs, start_pos) = channel.read_last_n_messages(10).unwrap();
+        let (recent_msgs, start_pos) = read_last_n_with_retry(&channel, 10, 5).unwrap();
         assert_eq!(recent_msgs.len(), 10);
         assert_eq!(recent_msgs[0].content, "Message 21");
 
         // Now load 10 more messages before that position
         if start_pos > 0 {
-            let (older_msgs, _) = channel
-                .read_messages_before_position(start_pos, 10)
-                .unwrap();
+            let (older_msgs, _) = read_before_pos_with_retry(&channel, start_pos, 10, 5).unwrap();
             assert!(!older_msgs.is_empty());
             // Should have some messages with lower numbers
             for msg in &older_msgs {
@@ -763,7 +773,7 @@ mod tests {
         channel.send(&Message::text("agent1", "Message 1")).unwrap();
 
         // Position 0 means no more history
-        let (messages, start_pos) = channel.read_messages_before_position(0, 10).unwrap();
+        let (messages, start_pos) = read_before_pos_with_retry(&channel, 0, 10, 5).unwrap();
         assert!(messages.is_empty());
         assert_eq!(start_pos, 0);
     }
