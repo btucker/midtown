@@ -473,6 +473,8 @@ struct DaemonState {
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
+    /// Web Push notification manager for sending notifications to PWA clients
+    push_manager: Option<crate::push::PushManager>,
 }
 
 /// Number of coworker slots reserved for reviewers.
@@ -509,6 +511,14 @@ impl DaemonState {
                 crate::github_state::GitHubState::default()
             });
 
+        let push_manager = match crate::push::PushManager::new() {
+            Ok(pm) => Some(pm),
+            Err(e) => {
+                warn!("Failed to initialize push manager: {}", e);
+                None
+            }
+        };
+
         Ok(Self {
             coworkers,
             channel,
@@ -525,6 +535,7 @@ impl DaemonState {
             github_state: Mutex::new(github_state),
             web_updates_tx,
             max_coworkers,
+            push_manager,
         })
     }
 
@@ -535,6 +546,37 @@ impl DaemonState {
             web::broadcast_channel_message(tx, message);
         }
         Ok(())
+    }
+
+    /// Send a web push notification to all subscribed PWA clients.
+    ///
+    /// This is fire-and-forget: push sending runs in a background task.
+    fn send_push_notification(&self, title: &str, body: &str, tag: &str) {
+        if let Some(ref pm) = self.push_manager {
+            let payload = crate::push::PushPayload {
+                title: title.to_string(),
+                body: body.to_string(),
+                tag: Some(tag.to_string()),
+                url: None,
+            };
+            // PushManager is not Send, so we need to do blocking reads + async sends
+            // Clone what we need for the spawned task
+            let subs = pm.load_subscriptions();
+            if subs.is_empty() {
+                return;
+            }
+            let push_dir = pm.push_dir().to_path_buf();
+            tokio::spawn(async move {
+                let pm = match crate::push::PushManager::from_path(push_dir) {
+                    Ok(pm) => pm,
+                    Err(e) => {
+                        warn!("Failed to create push manager for send: {}", e);
+                        return;
+                    }
+                };
+                pm.send_to_all(&payload).await;
+            });
+        }
     }
 
     /// Broadcast a coworker status change to WebSocket clients.
@@ -2881,7 +2923,8 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
             }
 
             // Nudge the Lead when a coworker explicitly mentions @lead
-            if is_coworker_sender(from) && content.to_lowercase().contains("@lead") {
+            let content_lower = content.to_lowercase();
+            if is_coworker_sender(from) && content_lower.contains("@lead") {
                 // Use message ID to avoid duplicate nudges
                 let should_nudge = {
                     let nudged = state.nudged_messages.read().unwrap();
@@ -2909,15 +2952,28 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                     if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
                         warn!("Failed to nudge Lead about @lead mention: {}", e);
                     }
+
+                    // Send push notification to mobile PWA
+                    state.send_push_notification(
+                        &format!("@lead from {}", from),
+                        &summary,
+                        "mention",
+                    );
                 }
             }
 
-            // Send bell notification to human when @user is mentioned
-            if content.to_lowercase().contains("@user") && from != "user" {
+            // Send bell notification and push notification for @user mentions
+            if content_lower.contains("@user") && from != "user" {
                 info!("Bell notification: @user mentioned by {}", from);
                 if let Err(e) = state.coworkers.notify_user() {
                     warn!("Failed to send bell notification for @user mention: {}", e);
                 }
+                let summary = if content.len() > 100 {
+                    format!("{}...", &content[..97])
+                } else {
+                    content.clone()
+                };
+                state.send_push_notification(&format!("@user from {}", from), &summary, "mention");
             }
 
             Response::success(

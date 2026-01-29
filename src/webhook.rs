@@ -128,11 +128,23 @@ pub async fn start_webhook_server(
         repo: config.repo.clone(),
     };
 
+    let push_manager = match crate::push::PushManager::new() {
+        Ok(pm) => {
+            tracing::info!("Web Push notification manager initialized");
+            Some(pm)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize push manager: {}", e);
+            None
+        }
+    };
+
     let web_state = Arc::new(WebState {
         config: web_config,
         updates_tx: web_updates_tx.clone(),
         coworkers: coworker_manager,
         channel_post_tx: mobile_tx,
+        push_manager,
     });
 
     // CORS layer for development (allows requests from Vite dev server)

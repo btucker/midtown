@@ -6,6 +6,14 @@
   import Kanban from './lib/Kanban.svelte'
   import { messages, connected, coworkers, projects, activeProject, multiProjectMode } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, detectMode, fetchProjects, switchProject } from './lib/api.js'
+  import {
+    pushSupported,
+    pushPermission,
+    pushSubscribed,
+    subscribePush,
+    unsubscribePush,
+    checkPushSubscription,
+  } from './lib/push.js'
 
   let activeTab = $state('channel')
 
@@ -21,11 +29,15 @@
       }
       // Refresh project list every 30s
       const projectInterval = setInterval(fetchProjects, 30000)
+      // Check push notification status
+      checkPushSubscription()
       return () => clearInterval(projectInterval)
     } else {
       // Single-project mode: connect directly as before
       await Promise.all([fetchHistory(), fetchStatus()])
       connectWebSocket()
+      // Check push notification status
+      checkPushSubscription()
       const interval = setInterval(fetchStatus, 30000)
       return () => clearInterval(interval)
     }
@@ -36,6 +48,14 @@
       switchProject(project.name, project.webhook_port)
     }
   }
+
+  async function togglePush() {
+    if ($pushSubscribed) {
+      await unsubscribePush()
+    } else {
+      await subscribePush()
+    }
+  }
 </script>
 
 <main>
@@ -44,9 +64,27 @@
       <img src="/logo.png" alt="Midtown" class="header-logo" />
       <h1>Midtown</h1>
     </div>
-    <span class="connection-status" class:connected={$connected}>
-      {$connected ? 'Connected' : 'Disconnected'}
-    </span>
+    <div class="header-controls">
+      {#if $pushSupported}
+        <button
+          class="push-toggle"
+          class:subscribed={$pushSubscribed}
+          class:denied={$pushPermission === 'denied'}
+          onclick={togglePush}
+          disabled={$pushPermission === 'denied'}
+          title={$pushPermission === 'denied'
+            ? 'Notifications blocked in browser settings'
+            : $pushSubscribed
+              ? 'Disable push notifications'
+              : 'Enable push notifications'}
+        >
+          {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
+        </button>
+      {/if}
+      <span class="connection-status" class:connected={$connected}>
+        {$connected ? 'Connected' : 'Disconnected'}
+      </span>
+    </div>
   </header>
 
   {#if $multiProjectMode && $projects.length > 0}
@@ -151,6 +189,35 @@
     width: 28px;
     height: 28px;
     border-radius: 6px;
+  }
+
+  .header-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .push-toggle {
+    background: none;
+    border: none;
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 4px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+  }
+
+  .push-toggle.subscribed {
+    opacity: 1;
+  }
+
+  .push-toggle.denied {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .push-toggle:hover:not(.denied) {
+    opacity: 1;
   }
 
   h1 {

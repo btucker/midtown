@@ -61,6 +61,14 @@ tailf = "0.1"
 futures = "0.3"
 unicode-width = "0.2.0"
 
+# Web Push notifications (VAPID + RFC8030)
+web-push-native = { version = "0.4", features = ["vapid", "serialization"] }
+jwt-simple = { version = "0.12", default-features = false, features = ["pure-rust"] }
+p256 = "0.13"
+base64ct = { version = "1", features = ["alloc"] }
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+http = "1"
+
 [dev-dependencies]
 tempfile = "3.0"
 ntest = "0.9"  # Test utilities including timeout attribute

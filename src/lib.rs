@@ -87,6 +87,9 @@ pub mod paths;
 // Persistent GitHub state (PR reviewer assignments)
 pub mod github_state;
 
+// Web Push notification support
+pub mod push;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;
