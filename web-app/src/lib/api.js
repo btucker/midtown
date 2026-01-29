@@ -8,6 +8,7 @@ import {
   projects,
   activeProject,
   multiProjectMode,
+  repoStatuses,
 } from './store.js'
 
 let ws = null
@@ -142,11 +143,13 @@ function updateKanbanData(data) {
       reviewer: pr.reviewer,
       reviewer_assigned_at: pr.reviewer_assigned_at,
       created_at: pr.created_at,
+      repo: pr.repo || null,
     })),
     done: mergedPrs.slice(0, 10).map((pr) => ({
       number: pr.number,
       title: pr.title,
       mergedAt: pr.mergedAt,
+      repo: pr.repo || null,
     })),
   })
 }
@@ -161,6 +164,12 @@ function updateRepoStatus(data) {
     releaseTag: rs.release_tag || null,
     releaseTime: rs.release_time || null,
   })
+
+  // Update multi-repo statuses if available
+  const repos = data.repo_statuses || []
+  if (repos.length > 0) {
+    repoStatuses.set(repos)
+  }
 }
 
 // Connect to WebSocket for live updates

@@ -20,7 +20,7 @@ export const kanbanData = writable({
   done: [],
 })
 
-// Repository status (commit, CI, release)
+// Repository status (commit, CI, release) - primary repo
 export const repoStatus = writable({
   repoName: '',
   commitHash: '',
@@ -29,6 +29,9 @@ export const repoStatus = writable({
   releaseTag: null,
   releaseTime: null,
 })
+
+// Multi-repo statuses (array of {label, fullName, commitHash, commitTime, ciStatus, releaseTag, releaseTime})
+export const repoStatuses = writable([])
 
 // Multi-project support
 // List of discovered projects: [{name, status, daemon_socket, webhook_port}]

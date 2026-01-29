@@ -14,7 +14,7 @@ use ratatui::{
 
 use midtown::{Message, MessageType};
 
-use super::app::{App, CiStatus, TaskStatus};
+use super::app::{App, CiStatus, RepoStatus, TaskStatus};
 
 /// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
 #[derive(Debug, Clone)]
@@ -131,8 +131,11 @@ fn calculate_kanban_height(in_progress_count: usize, review_count: usize) -> u16
     total_height.max(MIN_KANBAN_HEIGHT)
 }
 
-/// Height of the repo status line
-const REPO_STATUS_HEIGHT: u16 = 1;
+/// Calculate height for repo status lines (1 per repo, minimum 1)
+fn repo_status_height(app: &App) -> u16 {
+    let count = app.repo_statuses.len();
+    if count > 1 { count as u16 } else { 1 }
+}
 
 /// Draw the main UI
 ///
@@ -159,17 +162,18 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let input_height = input_box_height(input_text, inner_width);
 
     // Split into repo status (top), kanban, chat, and input (bottom) panels
+    let status_height = repo_status_height(app);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(REPO_STATUS_HEIGHT),
+            Constraint::Length(status_height),
             Constraint::Length(kanban_height),
             Constraint::Min(10),
             Constraint::Length(input_height),
         ])
         .split(f.area());
 
-    draw_repo_status_line(f, app, chunks[0]);
+    draw_repo_status_lines(f, app, chunks[0]);
     let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
     draw_chat_panel(f, app, chunks[2]);
     draw_input_box(f, app, chunks[3]);
@@ -208,10 +212,27 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
     }
 }
 
-/// Draw the repo status line showing commit, CI status, and release info
-fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
-    let status = &app.repo_status;
+/// Draw stacked repo status lines (one per repo, or single line for single-repo)
+fn draw_repo_status_lines(f: &mut Frame, app: &App, area: Rect) {
+    if app.repo_statuses.len() > 1 {
+        // Multi-repo: render one line per repo
+        let lines: Vec<Line> = app
+            .repo_statuses
+            .iter()
+            .map(|(info, status)| build_repo_status_line(&info.label, status, area.width))
+            .collect();
+        let paragraph = Paragraph::new(lines);
+        f.render_widget(paragraph, area);
+    } else {
+        // Single-repo: use the primary status and repo_name
+        let line = build_repo_status_line(&app.repo_name, &app.repo_status, area.width);
+        let paragraph = Paragraph::new(line);
+        f.render_widget(paragraph, area);
+    }
+}
 
+/// Build a single repo status line with commit, CI, and release info
+fn build_repo_status_line(repo_label: &str, status: &RepoStatus, width: u16) -> Line<'static> {
     // Background color matching tmux status bar (colour236 = dark gray)
     let bg = Color::Indexed(236);
 
@@ -219,7 +240,7 @@ fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
 
     // Repo name (dim)
     spans.push(Span::styled(
-        format!(" {}  ", app.repo_name),
+        format!(" {}  ", repo_label),
         Style::default().fg(Color::DarkGray).bg(bg),
     ));
 
@@ -246,17 +267,20 @@ fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
         CiStatus::Running => ("●", Color::Yellow),
         CiStatus::Unknown => ("○", Color::DarkGray),
     };
-    spans.push(Span::styled(ci_char, Style::default().fg(ci_color).bg(bg)));
+    spans.push(Span::styled(
+        ci_char.to_string(),
+        Style::default().fg(ci_color).bg(bg),
+    ));
     spans.push(Span::styled("  ", Style::default().bg(bg)));
 
     // Release info
-    if let Some(ref tag) = status.release_tag {
+    if let Some(tag) = &status.release_tag {
         spans.push(Span::styled(
-            "Releases: ",
+            "Releases: ".to_string(),
             Style::default().fg(Color::DarkGray).bg(bg),
         ));
         spans.push(Span::styled(
-            tag.clone(),
+            tag.to_string(),
             Style::default().fg(Color::Cyan).bg(bg),
         ));
         if let Some(release_time) = status.release_time {
@@ -269,16 +293,14 @@ fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
 
     // Fill rest of line with background
     let content_len: usize = spans.iter().map(|s| s.content.len()).sum();
-    if content_len < area.width as usize {
+    if content_len < width as usize {
         spans.push(Span::styled(
-            " ".repeat(area.width as usize - content_len),
+            " ".repeat(width as usize - content_len),
             Style::default().bg(bg),
         ));
     }
 
-    let line = Line::from(spans);
-    let paragraph = Paragraph::new(line);
-    f.render_widget(paragraph, area);
+    Line::from(spans)
 }
 
 /// A kanban item that may span multiple lines
@@ -373,7 +395,12 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
         .iter()
         .map(|pr| {
             let ci_dot = ci_status_dot(&pr.ci_status);
-            let line1 = format!("{} PR#{} {}", ci_dot, pr.number, pr.title);
+            let repo_badge = pr
+                .repo
+                .as_ref()
+                .map(|r| format!("[{}] ", r))
+                .unwrap_or_default();
+            let line1 = format!("{} {}PR#{} {}", ci_dot, repo_badge, pr.number, pr.title);
             let author_duration = format_duration_minutes(pr.created_at);
             let line2 = format!("  A: {} {}", pr.author, author_duration);
             let line3 = match (&pr.reviewer, &pr.reviewed_at) {
@@ -402,8 +429,13 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
         .take(10)
         .map(|pr| {
             let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
+            let repo_badge = pr
+                .repo
+                .as_ref()
+                .map(|r| format!("[{}] ", r))
+                .unwrap_or_default();
             KanbanItem {
-                lines: vec![format!("PR#{} {}", pr.number, pr.title)],
+                lines: vec![format!("{}PR#{} {}", repo_badge, pr.number, pr.title)],
                 url: Some(url),
                 ci_status: None,
             }

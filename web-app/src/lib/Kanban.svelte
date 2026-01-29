@@ -1,7 +1,18 @@
 <script>
-  import { kanbanData, repoStatus } from './store.js'
+  import { kanbanData, repoStatus, repoStatuses } from './store.js'
 
-  const repoUrl = 'https://github.com/btucker/midtown'
+  const defaultRepoUrl = 'https://github.com/btucker/midtown'
+
+  // Get repo URL for a PR (multi-repo aware)
+  function prRepoUrl(pr) {
+    if (pr.repo && $repoStatuses.length > 0) {
+      const info = $repoStatuses.find(r => r.label === pr.repo)
+      if (info && info.fullName) {
+        return `https://github.com/${info.fullName}`
+      }
+    }
+    return defaultRepoUrl
+  }
 
   let expanded = $state(false)
 
@@ -87,23 +98,45 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="kanban-header" onclick={toggleExpand}>
-    <div class="repo-status">
-      <span class="repo-name">{$repoStatus.repoName || 'midtown'}</span>
-      {#if $repoStatus.commitHash}
-        <span class="commit-hash">{$repoStatus.commitHash}</span>
-        {#if $repoStatus.commitTime}
-          <span class="commit-time">{formatRelativeTime($repoStatus.commitTime)}</span>
+    {#if $repoStatuses.length > 1}
+      {#each $repoStatuses as rs}
+        <div class="repo-status">
+          <span class="repo-name">{rs.label}</span>
+          {#if rs.commitHash}
+            <span class="commit-hash">{rs.commitHash}</span>
+            {#if rs.commitTime}
+              <span class="commit-time">{formatRelativeTime(rs.commitTime)}</span>
+            {/if}
+          {/if}
+          <span class="ci-status" style="color: {ciStatusColor(rs.ciStatus)}">{ciStatusDot(rs.ciStatus)}</span>
+          {#if rs.releaseTag}
+            <span class="release-label">Releases:</span>
+            <span class="release-tag">{rs.releaseTag}</span>
+            {#if rs.releaseTime}
+              <span class="release-time">{formatRelativeTime(rs.releaseTime)}</span>
+            {/if}
+          {/if}
+        </div>
+      {/each}
+    {:else}
+      <div class="repo-status">
+        <span class="repo-name">{$repoStatus.repoName || 'midtown'}</span>
+        {#if $repoStatus.commitHash}
+          <span class="commit-hash">{$repoStatus.commitHash}</span>
+          {#if $repoStatus.commitTime}
+            <span class="commit-time">{formatRelativeTime($repoStatus.commitTime)}</span>
+          {/if}
         {/if}
-      {/if}
-      <span class="ci-status" style="color: {ciStatusColor($repoStatus.ciStatus)}">{ciStatusDot($repoStatus.ciStatus)}</span>
-      {#if $repoStatus.releaseTag}
-        <span class="release-label">Releases:</span>
-        <span class="release-tag">{$repoStatus.releaseTag}</span>
-        {#if $repoStatus.releaseTime}
-          <span class="release-time">{formatRelativeTime($repoStatus.releaseTime)}</span>
+        <span class="ci-status" style="color: {ciStatusColor($repoStatus.ciStatus)}">{ciStatusDot($repoStatus.ciStatus)}</span>
+        {#if $repoStatus.releaseTag}
+          <span class="release-label">Releases:</span>
+          <span class="release-tag">{$repoStatus.releaseTag}</span>
+          {#if $repoStatus.releaseTime}
+            <span class="release-time">{formatRelativeTime($repoStatus.releaseTime)}</span>
+          {/if}
         {/if}
-      {/if}
-    </div>
+      </div>
+    {/if}
     <span class="chevron" class:expanded>▲</span>
   </div>
 
@@ -160,8 +193,11 @@
           <button class="kanban-card clickable" onclick={() => selectPr(pr)}>
             <div class="card-line">
               <span class="ci-dot" style="color: {dot.color}">{'\u25CF'}</span>
+              {#if pr.repo}
+                <span class="repo-badge">[{pr.repo}]</span>
+              {/if}
               <a
-                href="{repoUrl}/pull/{pr.number}"
+                href="{prRepoUrl(pr)}/pull/{pr.number}"
                 class="pr-link"
                 target="_blank"
                 rel="noopener"
@@ -190,8 +226,11 @@
         {#each $kanbanData.done as pr}
           <button class="kanban-card clickable" onclick={() => selectPr(pr)}>
             <div class="pr-number-line">
+              {#if pr.repo}
+                <span class="repo-badge">[{pr.repo}]</span>
+              {/if}
               <a
-                href="{repoUrl}/pull/{pr.number}"
+                href="{prRepoUrl(pr)}/pull/{pr.number}"
                 class="pr-link"
                 target="_blank"
                 rel="noopener"
@@ -494,6 +533,12 @@
   .ci-dot {
     flex-shrink: 0;
     font-size: 0.6rem;
+  }
+
+  .repo-badge {
+    color: #888;
+    font-size: 0.65rem;
+    flex-shrink: 0;
   }
 
   .pr-link {

@@ -13,6 +13,17 @@ use crate::client::DaemonClient;
 struct KanbanData {
     prs: Vec<KanbanPr>,
     merged_prs: Vec<MergedPr>,
+    /// Repo metadata from daemon RPC (label, full_name)
+    repos: Vec<(String, String)>,
+}
+
+/// Info about a repo in a multi-repo project
+#[derive(Debug, Clone)]
+pub struct RepoInfo {
+    /// Short label (directory name, e.g., "midtown")
+    pub label: String,
+    /// Full GitHub name (e.g., "btucker/midtown")
+    pub full_name: String,
 }
 
 /// CI status for the repo status line
@@ -71,6 +82,8 @@ pub struct KanbanPr {
     pub reviewer: Option<String>,
     /// When the review comment was posted
     pub reviewed_at: Option<DateTime<Utc>>,
+    /// Repository name (for multi-repo projects)
+    pub repo: Option<String>,
 }
 
 /// A merged PR item for the Done column
@@ -79,6 +92,8 @@ pub struct MergedPr {
     pub number: u64,
     pub title: String,
     pub merged_at: DateTime<Utc>,
+    /// Repository name (for multi-repo projects)
+    pub repo: Option<String>,
 }
 
 /// Number of messages to load initially and per history load
@@ -115,12 +130,14 @@ pub struct App {
     kanban_last_refresh: Instant,
     /// Receiver for async kanban data from background thread
     kanban_receiver: Option<Receiver<KanbanData>>,
-    /// Repository status (commit, CI, release info)
+    /// Repository status (commit, CI, release info) - primary repo
     pub repo_status: RepoStatus,
+    /// Multi-repo statuses (label, full_name, status) for all project repos
+    pub repo_statuses: Vec<(RepoInfo, RepoStatus)>,
     /// Last time repo status was refreshed
     repo_status_last_refresh: Instant,
     /// Receiver for async repo status from background thread
-    repo_status_receiver: Option<Receiver<RepoStatus>>,
+    repo_status_receiver: Option<Receiver<Vec<(RepoInfo, RepoStatus)>>>,
     /// Selection mode - when true, mouse capture is disabled for text selection
     pub selection_mode: bool,
     /// Input mode - when true, keyboard input goes to the text input
@@ -168,6 +185,7 @@ impl App {
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
             repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
             selection_mode: false,
@@ -233,6 +251,32 @@ impl App {
                 Ok(data) => {
                     self.prs = data.prs;
                     self.merged_prs = data.merged_prs;
+                    // Update repo info from daemon if available
+                    if !data.repos.is_empty() {
+                        let new_repos: Vec<RepoInfo> = data
+                            .repos
+                            .iter()
+                            .map(|(label, full_name)| RepoInfo {
+                                label: label.clone(),
+                                full_name: full_name.clone(),
+                            })
+                            .collect();
+                        // If repo list changed, update and force status refresh
+                        let changed = self.repo_statuses.len() != new_repos.len()
+                            || self
+                                .repo_statuses
+                                .iter()
+                                .zip(new_repos.iter())
+                                .any(|((info, _), new)| info.full_name != new.full_name);
+                        if changed {
+                            self.repo_statuses = new_repos
+                                .into_iter()
+                                .map(|info| (info, RepoStatus::default()))
+                                .collect();
+                            self.repo_status_last_refresh =
+                                Instant::now() - REPO_STATUS_REFRESH_INTERVAL;
+                        }
+                    }
                     self.kanban_receiver = None; // Clear receiver, fetch complete
                 }
                 Err(TryRecvError::Empty) => {
@@ -256,8 +300,13 @@ impl App {
         // Check for repo status data from background thread (non-blocking)
         if let Some(ref receiver) = self.repo_status_receiver {
             match receiver.try_recv() {
-                Ok(status) => {
-                    self.repo_status = status;
+                Ok(statuses) => {
+                    // Update multi-repo statuses
+                    self.repo_statuses = statuses;
+                    // Keep primary repo_status in sync (first repo)
+                    if let Some((_, status)) = self.repo_statuses.first() {
+                        self.repo_status = status.clone();
+                    }
                     self.repo_status_receiver = None;
                 }
                 Err(TryRecvError::Empty) => {
@@ -288,21 +337,54 @@ impl App {
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let (prs, merged_prs) =
-                fetch_kanban_data_via_rpc().unwrap_or_else(|| (fetch_prs(), fetch_merged_prs()));
+            let (prs, merged_prs, repos) = fetch_kanban_data_via_rpc()
+                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new()));
             // Ignore send error if receiver dropped (app closed)
-            let _ = tx.send(KanbanData { prs, merged_prs });
+            let _ = tx.send(KanbanData {
+                prs,
+                merged_prs,
+                repos,
+            });
         });
     }
 
-    /// Refresh repository status (commit, CI, release)
+    /// Refresh repository status (commit, CI, release) for all repos
     fn refresh_repo_status(&mut self) {
         let (tx, rx) = mpsc::channel();
         self.repo_status_receiver = Some(rx);
 
+        // Clone repo info for the background thread
+        let repos: Vec<RepoInfo> = self
+            .repo_statuses
+            .iter()
+            .map(|(info, _)| info.clone())
+            .collect();
+
         thread::spawn(move || {
-            let status = fetch_repo_status();
-            let _ = tx.send(status);
+            if repos.is_empty() {
+                // Single-repo mode: use current git context
+                let status = fetch_repo_status(None);
+                let info = RepoInfo {
+                    label: String::new(),
+                    full_name: String::new(),
+                };
+                let _ = tx.send(vec![(info, status)]);
+            } else {
+                // Multi-repo mode: fetch status for each repo
+                let statuses: Vec<(RepoInfo, RepoStatus)> = repos
+                    .into_iter()
+                    .map(|info| {
+                        let full_name = if info.full_name.is_empty() {
+                            None
+                        } else {
+                            Some(info.full_name.clone())
+                        };
+                        let status = fetch_repo_status(full_name.as_deref());
+                        (info, status)
+                    })
+                    .collect();
+                let _ = tx.send(statuses);
+            }
         });
     }
 
@@ -659,6 +741,7 @@ fn fetch_prs() -> Vec<KanbanPr> {
                         ci_status,
                         reviewer,
                         reviewed_at,
+                        repo: None,
                     });
                 }
             }
@@ -812,6 +895,7 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
                         number,
                         title,
                         merged_at,
+                        repo: None,
                     });
                 }
             }
@@ -826,7 +910,8 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
 /// Fetch kanban PR data from the daemon via RPC.
 ///
 /// Returns None if the daemon is not available, allowing fallback to direct gh CLI.
-fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>)> {
+#[allow(clippy::type_complexity)]
+fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(String, String)>)> {
     use crate::client::DaemonClient;
 
     let client = DaemonClient::connect().ok()?;
@@ -834,6 +919,25 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>)> {
 
     let prs_json = data.get("prs").and_then(|v| v.as_array())?;
     let merged_json = data.get("merged_prs").and_then(|v| v.as_array())?;
+
+    // Extract repo metadata if present
+    let repos: Vec<(String, String)> = data
+        .get("repos")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| {
+                    let label = r.get("label").and_then(|v| v.as_str())?.to_string();
+                    let full_name = r
+                        .get("full_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some((label, full_name))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let prs: Vec<KanbanPr> = prs_json
         .iter()
@@ -875,6 +979,11 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>)> {
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc));
 
+            let repo = pr
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             Some(KanbanPr {
                 number,
                 title,
@@ -883,6 +992,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>)> {
                 ci_status,
                 reviewer,
                 reviewed_at,
+                repo,
             })
         })
         .collect();
@@ -902,26 +1012,48 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>)> {
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(Utc::now);
+            let repo = pr
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             Some(MergedPr {
                 number,
                 title,
                 merged_at,
+                repo,
             })
         })
         .collect();
 
-    Some((prs, merged_prs))
+    Some((prs, merged_prs, repos))
 }
 
-/// Fetch repository status (commit, CI status, release) from GitHub using gh CLI
-fn fetch_repo_status() -> RepoStatus {
+/// Fetch repository status (commit, CI status, release) from GitHub using gh CLI.
+///
+/// If `repo_full_name` is provided (e.g., "btucker/midtown"), uses explicit API paths.
+/// Otherwise, uses gh template variables that resolve from the current git context.
+fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
     let mut status = RepoStatus::default();
+
+    // Build API path prefix: explicit repo or gh template variable
+    let (commits_path, actions_path, releases_path) = match repo_full_name {
+        Some(name) => (
+            format!("repos/{}/commits/HEAD", name),
+            format!("repos/{}/actions/runs?branch=main&per_page=1", name),
+            format!("repos/{}/releases/latest", name),
+        ),
+        None => (
+            "repos/{owner}/{repo}/commits/{branch}".to_string(),
+            "repos/{owner}/{repo}/actions/runs?branch=main&per_page=1".to_string(),
+            "repos/{owner}/{repo}/releases/latest".to_string(),
+        ),
+    };
 
     // Fetch latest commit on default branch
     if let Ok(output) = std::process::Command::new("gh")
         .args([
             "api",
-            "repos/{owner}/{repo}/commits/{branch}",
+            &commits_path,
             "--jq",
             r#"{sha: .sha[0:7], date: .commit.author.date}"#,
         ])
@@ -945,7 +1077,7 @@ fn fetch_repo_status() -> RepoStatus {
     if let Ok(output) = std::process::Command::new("gh")
         .args([
             "api",
-            "repos/{owner}/{repo}/actions/runs?branch=main&per_page=1",
+            &actions_path,
             "--jq",
             ".workflow_runs[0] | {status: .status, conclusion: .conclusion}",
         ])
@@ -971,7 +1103,7 @@ fn fetch_repo_status() -> RepoStatus {
     if let Ok(output) = std::process::Command::new("gh")
         .args([
             "api",
-            "repos/{owner}/{repo}/releases/latest",
+            &releases_path,
             "--jq",
             "{tag: .tag_name, published_at: .published_at}",
         ])
@@ -1083,6 +1215,7 @@ mod tests {
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
             repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             selection_mode: false,
@@ -1130,6 +1263,7 @@ mod tests {
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
             repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             selection_mode: false,
