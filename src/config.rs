@@ -15,7 +15,7 @@
 //!    ]
 //!
 //!    [daemon]
-//!    webhook_port = 47022
+//!    webhook_port = 47023
 //!    webhook_secret = "your-secret"
 //!    webhook_restart_interval_secs = 300
 //!    pr_poll_interval_secs = 60
@@ -310,7 +310,7 @@ pub struct PluginsConfig {
 /// - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DaemonSection {
-    /// Port for the webhook server (default: 47022, set to 0 to disable)
+    /// Port for the webhook server (default: 47023, set to 0 to disable)
     #[serde(default)]
     pub webhook_port: Option<u16>,
 
@@ -483,7 +483,7 @@ pub fn project_config_path(project_name: &str) -> PathBuf {
 }
 
 /// Starting port for auto-assigned per-project webhook ports.
-/// Port 47022 is reserved for the shared webserver (Phase 2).
+/// Port 47022 is reserved for the shared multi-project webserver.
 const AUTO_PORT_START: u16 = 47023;
 
 /// Scan all project configs and collect the webhook ports that are in use.
