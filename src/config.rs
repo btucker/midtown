@@ -7,6 +7,7 @@
 //!    [default]
 //!    bin_command = "midtown"
 //!    chat_layout = "auto"
+//!    max_coworkers = 8
 //!
 //!    [plugins]
 //!    required = [
@@ -19,6 +20,7 @@
 //!    # All fields are optional - only override what you need
 //!    bin_command = "cargo run --release --"
 //!    chat_layout = "split"
+//!    max_coworkers = 4
 //!    ```
 //!
 //! Project config takes precedence over global defaults.
@@ -55,6 +57,10 @@ pub struct ProjectConfig {
     /// Minimum terminal width for split layout in auto mode (default: 160)
     #[serde(default)]
     pub chat_min_width: Option<u16>,
+
+    /// Maximum number of concurrent coworkers (default: 16)
+    #[serde(default)]
+    pub max_coworkers: Option<usize>,
 }
 
 impl ProjectConfig {
@@ -67,6 +73,7 @@ impl ProjectConfig {
                 .or_else(|| self.bin_command.clone()),
             chat_layout: other.chat_layout.or(self.chat_layout),
             chat_min_width: other.chat_min_width.or(self.chat_min_width),
+            max_coworkers: other.max_coworkers.or(self.max_coworkers),
         }
     }
 
@@ -85,6 +92,11 @@ impl ProjectConfig {
     /// Get chat_min_width with fallback to default.
     pub fn chat_min_width(&self) -> u16 {
         self.chat_min_width.unwrap_or(160)
+    }
+
+    /// Get max_coworkers, or None if not configured (falls back to daemon default).
+    pub fn max_coworkers(&self) -> Option<usize> {
+        self.max_coworkers
     }
 }
 
@@ -272,12 +284,14 @@ bin_command = "custom-command"
             bin_command: Some("midtown".to_string()),
             chat_layout: Some(ChatLayout::Auto),
             chat_min_width: Some(160),
+            max_coworkers: Some(8),
         };
 
         let project = ProjectConfig {
             bin_command: Some("custom".to_string()),
             chat_layout: None, // Not overridden
             chat_min_width: Some(200),
+            max_coworkers: None, // Not overridden
         };
 
         let merged = global.merge(&project);
@@ -285,6 +299,27 @@ bin_command = "custom-command"
         assert_eq!(merged.bin_command(), "custom"); // Overridden
         assert_eq!(merged.chat_layout(), ChatLayout::Auto); // From global
         assert_eq!(merged.chat_min_width(), 200); // Overridden
+        assert_eq!(merged.max_coworkers(), Some(8)); // From global
+    }
+
+    #[test]
+    fn test_merge_configs_max_coworkers_override() {
+        let global = ProjectConfig {
+            bin_command: Some("midtown".to_string()),
+            chat_layout: None,
+            chat_min_width: None,
+            max_coworkers: Some(16),
+        };
+
+        let project = ProjectConfig {
+            bin_command: None,
+            chat_layout: None,
+            chat_min_width: None,
+            max_coworkers: Some(4),
+        };
+
+        let merged = global.merge(&project);
+        assert_eq!(merged.max_coworkers(), Some(4)); // Project overrides global
     }
 
     #[test]
@@ -380,5 +415,32 @@ bin_command = "midtown"
 "#;
         let config: GlobalConfig = toml::from_str(toml).unwrap();
         assert!(config.plugins.required.is_empty());
+    }
+
+    #[test]
+    fn test_max_coworkers_parse() {
+        let toml = r#"
+[default]
+max_coworkers = 8
+"#;
+        let config: GlobalConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.default.max_coworkers(), Some(8));
+    }
+
+    #[test]
+    fn test_max_coworkers_project_config() {
+        let toml = r#"
+bin_command = "midtown"
+max_coworkers = 4
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.max_coworkers(), Some(4));
+        assert_eq!(config.bin_command(), "midtown");
+    }
+
+    #[test]
+    fn test_max_coworkers_default_none() {
+        let config = ProjectConfig::default();
+        assert_eq!(config.max_coworkers(), None);
     }
 }
