@@ -9,6 +9,10 @@
 //! 1. The git repository root (project-level, takes precedence)
 //! 2. `~/.midtown/MIDTOWN.md` (user-level)
 //!
+//! Custom prompts can also be appended via `LEAD.md` and `COWORKER.md` files:
+//! 1. `~/.midtown/LEAD.md` / `~/.midtown/COWORKER.md` (global)
+//! 2. `~/.midtown/projects/<repo>/LEAD.md` / `~/.midtown/projects/<repo>/COWORKER.md` (project-level)
+//!
 //! The coworker prompt uses `{name}` as a template variable that gets replaced
 //! with the coworker's actual name at runtime.
 
@@ -111,14 +115,62 @@ fn common_prompt() -> String {
     }
 }
 
+/// Load custom prompt files from global and project-level locations.
+///
+/// This loads and concatenates content from:
+/// 1. `~/.midtown/<filename>` (global)
+/// 2. `~/.midtown/projects/<repo>/<filename>` (project-level)
+///
+/// Both files are optional. Content from both locations is concatenated
+/// with newlines between them.
+fn load_custom_prompt_files(filename: &str) -> String {
+    let mut parts = Vec::new();
+
+    // Load global custom prompt
+    if let Some(home) = dirs::home_dir() {
+        let global_path = home.join(".midtown").join(filename);
+        if let Ok(content) = std::fs::read_to_string(&global_path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+    }
+
+    // Load project-level custom prompt
+    if let Some(repo) = crate::paths::detect_repo_name() {
+        let project_path = crate::paths::projects_dir_for_repo(&repo).join(filename);
+        if let Ok(content) = std::fs::read_to_string(&project_path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        parts.join("\n\n")
+    }
+}
+
 /// Load the Lead agent's system prompt.
 ///
 /// Returns the prompt from `agents/lead.md` if found, otherwise returns the
 /// embedded default. Appends common prompt content shared with coworkers.
+/// Custom content from `~/.midtown/LEAD.md` and
+/// `~/.midtown/projects/<repo>/LEAD.md` is appended if present.
 pub fn lead_system_prompt() -> String {
     let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
     let common = common_prompt().replace("{name}", "Lead");
-    format!("{lead}\n{common}")
+    let custom = load_custom_prompt_files("LEAD.md");
+
+    let mut prompt = format!("{lead}\n{common}");
+    if !custom.is_empty() {
+        prompt = format!("{prompt}\n\n{custom}");
+    }
+    prompt
 }
 
 /// Load the coworker agent's system prompt with name substitution.
@@ -126,11 +178,19 @@ pub fn lead_system_prompt() -> String {
 /// Returns the prompt from `agents/coworker.md` if found, otherwise returns the
 /// embedded default. Appends common prompt content. The `{name}` placeholder is
 /// replaced with the coworker's actual name in both the coworker and common sections.
+/// Custom content from `~/.midtown/COWORKER.md` and
+/// `~/.midtown/projects/<repo>/COWORKER.md` is appended if present.
 pub fn coworker_system_prompt(name: &str) -> String {
     let template =
         load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
     let common = common_prompt();
-    format!("{template}\n{common}").replace("{name}", name)
+    let custom = load_custom_prompt_files("COWORKER.md");
+
+    let mut prompt = format!("{template}\n{common}");
+    if !custom.is_empty() {
+        prompt = format!("{prompt}\n\n{custom}");
+    }
+    prompt.replace("{name}", name)
 }
 
 #[cfg(test)]
@@ -248,6 +308,35 @@ mod tests {
         assert!(
             prompt.contains("GitHub Etiquette"),
             "Common prompt should contain base content even without MIDTOWN.md"
+        );
+    }
+
+    #[test]
+    fn test_load_custom_prompt_files_returns_empty_for_nonexistent() {
+        // Should return empty string when no custom files exist
+        let result = load_custom_prompt_files("NONEXISTENT_FILE_12345.md");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_lead_system_prompt_works_without_custom_files() {
+        // Even without custom files, should return valid prompt with common content
+        let prompt = lead_system_prompt();
+        assert!(prompt.contains("Lead System Prompt"));
+        assert!(
+            prompt.contains("GitHub Etiquette"),
+            "Lead prompt should include common content"
+        );
+    }
+
+    #[test]
+    fn test_coworker_system_prompt_works_without_custom_files() {
+        // Even without custom files, should return valid prompt with common content
+        let prompt = coworker_system_prompt("amsterdam");
+        assert!(prompt.contains("**amsterdam**"));
+        assert!(
+            prompt.contains("GitHub Etiquette"),
+            "Coworker prompt should include common content"
         );
     }
 }
