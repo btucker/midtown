@@ -4,20 +4,38 @@
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
-  import { messages, connected, coworkers } from './lib/store.js'
-  import { connectWebSocket, fetchHistory, fetchStatus } from './lib/api.js'
+  import { messages, connected, coworkers, projects, activeProject, multiProjectMode } from './lib/store.js'
+  import { connectWebSocket, fetchHistory, fetchStatus, detectMode, fetchProjects, switchProject } from './lib/api.js'
 
   let activeTab = $state('channel')
 
   onMount(async () => {
-    // Load initial data
-    await Promise.all([fetchHistory(), fetchStatus()])
-    // Connect WebSocket for live updates
-    connectWebSocket()
-    // Refresh status every 30s for kanban updates
-    const interval = setInterval(fetchStatus, 30000)
-    return () => clearInterval(interval)
+    const isMultiProject = detectMode()
+
+    if (isMultiProject) {
+      // Multi-project mode: fetch project list, auto-select first running project
+      const projectList = await fetchProjects()
+      const running = projectList.find(p => p.status === 'running' && p.webhook_port)
+      if (running) {
+        switchProject(running.name, running.webhook_port)
+      }
+      // Refresh project list every 30s
+      const projectInterval = setInterval(fetchProjects, 30000)
+      return () => clearInterval(projectInterval)
+    } else {
+      // Single-project mode: connect directly as before
+      await Promise.all([fetchHistory(), fetchStatus()])
+      connectWebSocket()
+      const interval = setInterval(fetchStatus, 30000)
+      return () => clearInterval(interval)
+    }
   })
+
+  function selectProject(project) {
+    if (project.status === 'running' && project.webhook_port) {
+      switchProject(project.name, project.webhook_port)
+    }
+  }
 </script>
 
 <main>
@@ -28,38 +46,62 @@
     </span>
   </header>
 
-  <Kanban />
+  {#if $multiProjectMode && $projects.length > 0}
+    <div class="project-tabs">
+      {#each $projects as project}
+        <button
+          class="project-tab"
+          class:active={$activeProject === project.name}
+          class:stopped={project.status !== 'running'}
+          onclick={() => selectProject(project)}
+          title={project.status === 'running' ? `Port ${project.webhook_port || 'N/A'}` : 'Stopped'}
+        >
+          <span class="project-status-dot" class:running={project.status === 'running'}></span>
+          {project.name}
+        </button>
+      {/each}
+    </div>
+  {/if}
 
-  <nav>
-    <button
-      class:active={activeTab === 'channel'}
-      onclick={() => (activeTab = 'channel')}
-    >
-      Channel
-    </button>
-    <button
-      class:active={activeTab === 'status'}
-      onclick={() => (activeTab = 'status')}
-    >
-      Status
-    </button>
-    <button
-      class:active={activeTab === 'tmux'}
-      onclick={() => (activeTab = 'tmux')}
-    >
-      Tmux
-    </button>
-  </nav>
+  {#if !$multiProjectMode || $activeProject}
+    <Kanban />
 
-  <div class="content">
-    {#if activeTab === 'channel'}
-      <Channel />
-    {:else if activeTab === 'status'}
-      <Status />
-    {:else if activeTab === 'tmux'}
-      <Tmux />
-    {/if}
-  </div>
+    <nav>
+      <button
+        class:active={activeTab === 'channel'}
+        onclick={() => (activeTab = 'channel')}
+      >
+        Channel
+      </button>
+      <button
+        class:active={activeTab === 'status'}
+        onclick={() => (activeTab = 'status')}
+      >
+        Status
+      </button>
+      <button
+        class:active={activeTab === 'tmux'}
+        onclick={() => (activeTab = 'tmux')}
+      >
+        Tmux
+      </button>
+    </nav>
+
+    <div class="content">
+      {#if activeTab === 'channel'}
+        <Channel />
+      {:else if activeTab === 'status'}
+        <Status />
+      {:else if activeTab === 'tmux'}
+        <Tmux />
+      {/if}
+    </div>
+  {:else if $multiProjectMode}
+    <div class="no-project">
+      <p>No running projects found.</p>
+      <p class="hint">Start a project with <code>midtown start</code></p>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -114,6 +156,58 @@
     color: #1c1c1c;
   }
 
+  .project-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 6px 8px;
+    background: #1c1c1c;
+    border-bottom: 1px solid #3a3a3a;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .project-tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    background: #262626;
+    color: #a8a8a8;
+    font-size: 0.8rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+
+  .project-tab:hover:not(.active) {
+    background: #303030;
+    color: #d0d0d0;
+  }
+
+  .project-tab.active {
+    background: #303030;
+    color: #5fafaf;
+    border-color: #5fafaf;
+  }
+
+  .project-tab.stopped {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .project-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #585858;
+  }
+
+  .project-status-dot.running {
+    background: #5faf5f;
+  }
+
   nav {
     display: flex;
     background: #262626;
@@ -145,5 +239,26 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
+  }
+
+  .no-project {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: #585858;
+  }
+
+  .no-project .hint {
+    font-size: 0.8rem;
+  }
+
+  .no-project code {
+    background: #303030;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #a8a8a8;
   }
 </style>
