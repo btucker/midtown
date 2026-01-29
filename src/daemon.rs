@@ -233,6 +233,15 @@ const IDLE_SHUTDOWN_DURATION: Duration = Duration::from_secs(300);
 /// How often to check for idle coworkers (30 seconds)
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How often to check if channel rotation is needed (1 hour)
+const CHANNEL_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Maximum age of the oldest message before rotation triggers (24 hours)
+const CHANNEL_ROTATION_MAX_AGE_HOURS: u64 = 24;
+
+/// How many minutes of recent messages to retain after rotation (60 minutes)
+const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
+
 /// Interval for checking orphaned tasks (30 seconds)
 const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
 
@@ -700,6 +709,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Skip the first tick (which fires immediately)
     orphan_check_interval.tick().await;
 
+    // Timer for periodic channel rotation
+    let mut channel_rotation_interval = interval(CHANNEL_ROTATION_CHECK_INTERVAL);
+    // Skip the first tick (which fires immediately)
+    channel_rotation_interval.tick().await;
+
     // Main accept loop
     loop {
         let shutdown_rx = shutdown_tx.subscribe();
@@ -779,6 +793,27 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 check_for_duplicate_task_workers(&state).await;
                 check_and_recover_orphans(&state).await;
                 spawn_for_pending_tasks(&state);
+            }
+
+            // Periodic channel log rotation
+            _ = channel_rotation_interval.tick() => {
+                if state.channel.needs_rotation(CHANNEL_ROTATION_MAX_AGE_HOURS) {
+                    info!("Channel rotation triggered (oldest message > {}h)", CHANNEL_ROTATION_MAX_AGE_HOURS);
+                    match state.channel.rotate(CHANNEL_ROTATION_RETAIN_MINUTES) {
+                        Ok(archived) => {
+                            info!("Channel rotated: {} messages archived", archived);
+                            let msg = Message::system(
+                                format!("Channel log rotated: {} old messages archived", archived)
+                            );
+                            if let Err(e) = state.send_and_broadcast(&msg) {
+                                warn!("Failed to send rotation notification: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Channel rotation failed: {}", e);
+                        }
+                    }
+                }
             }
 
             // Handle SIGTERM
