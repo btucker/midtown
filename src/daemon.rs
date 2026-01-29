@@ -469,6 +469,8 @@ struct DaemonState {
     last_orphan_spawn: Mutex<Option<Instant>>,
     /// Tracks when each pending task was last nudged (task_id -> last nudge time)
     pending_task_nudge_cooldowns: std::sync::Mutex<HashMap<String, Instant>>,
+    /// Tracks orphaned worktrees that have already been warned about (dedup across poll cycles)
+    warned_orphans: std::sync::RwLock<HashSet<String>>,
     /// Persistent GitHub state (PR reviewer assignments, etc.)
     github_state: Mutex<crate::github_state::GitHubState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
@@ -528,6 +530,7 @@ impl DaemonState {
             all_repo_paths,
             last_orphan_spawn: Mutex::new(None),
             pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
+            warned_orphans: std::sync::RwLock::new(HashSet::new()),
             github_state: Mutex::new(github_state),
             web_updates_tx,
             max_coworkers,
@@ -4175,15 +4178,44 @@ fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
 fn cleanup_orphaned_worktrees(state: &DaemonState) {
     let flagged = state.coworkers.cleanup_orphaned_worktrees();
 
-    for name in flagged {
-        let msg = Message::system(format!(
-            "⚠️ Orphaned worktree for '{}' has unmerged commits. \
-             Please review and merge or delete the branch manually.",
-            name
-        ));
-        if let Err(e) = state.send_and_broadcast(&msg) {
-            warn!("Failed to send orphan flag message for {}: {}", name, e);
+    // Prune warned_orphans: remove entries for worktrees that are no longer
+    // flagged (they were cleaned up or manually deleted). This ensures that
+    // if a reused coworker name becomes orphaned again, it will trigger a
+    // new warning.
+    {
+        let mut warned = state.warned_orphans.write().unwrap();
+        warned.retain(|name| flagged.contains(name));
+    }
+
+    // Filter out worktrees we've already warned about (dedup across poll cycles)
+    let already_warned = state.warned_orphans.read().unwrap();
+    let new_flags: Vec<_> = flagged
+        .into_iter()
+        .filter(|name| !already_warned.contains(name))
+        .collect();
+    drop(already_warned);
+
+    if new_flags.is_empty() {
+        return;
+    }
+
+    // Record these as warned
+    {
+        let mut warned = state.warned_orphans.write().unwrap();
+        for name in &new_flags {
+            warned.insert(name.clone());
         }
+    }
+
+    // Notify @lead about orphaned worktrees with unmerged commits
+    let names_list = new_flags.join(", ");
+    let msg = Message::system(format!(
+        "⚠️ @lead Orphaned worktrees with unmerged commits: {}. \
+         Please investigate and decide whether to merge or delete these branches.",
+        names_list
+    ));
+    if let Err(e) = state.send_and_broadcast(&msg) {
+        warn!("Failed to send orphan flag message: {}", e);
     }
 }
 
