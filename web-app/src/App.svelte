@@ -28,6 +28,8 @@
     </span>
   </header>
 
+  <Kanban />
+
   <nav>
     <button
       class:active={activeTab === 'channel'}
@@ -48,8 +50,6 @@
       Tmux
     </button>
   </nav>
-
-  <Kanban />
 
   <div class="content">
     {#if activeTab === 'channel'}

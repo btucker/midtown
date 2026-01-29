@@ -19,3 +19,13 @@ export const kanbanData = writable({
   review: [],
   done: [],
 })
+
+// Repository status (commit, CI, release)
+export const repoStatus = writable({
+  repoName: '',
+  commitHash: '',
+  commitTime: null,
+  ciStatus: null,
+  releaseTag: null,
+  releaseTime: null,
+})

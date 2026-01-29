@@ -228,6 +228,103 @@ async fn api_channel_history(
     Ok(axum::Json(response))
 }
 
+/// CI status for the repository
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CiStatus {
+    Passed,
+    Failed,
+    Running,
+    Unknown,
+}
+
+/// Repository status information (commit, CI, release)
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct RepoStatus {
+    pub commit_hash: String,
+    pub commit_time: Option<String>,
+    pub ci_status: Option<CiStatus>,
+    pub release_tag: Option<String>,
+    pub release_time: Option<String>,
+}
+
+/// Fetch repository status via gh CLI
+fn fetch_repo_status() -> RepoStatus {
+    let mut status = RepoStatus::default();
+
+    // Fetch latest commit on default branch
+    if let Ok(output) = std::process::Command::new("gh")
+        .args([
+            "api",
+            "repos/{owner}/{repo}/commits/{branch}",
+            "--jq",
+            r#"{sha: .sha[0:7], date: .commit.author.date}"#,
+        ])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(sha) = data.get("sha").and_then(|v| v.as_str()) {
+                status.commit_hash = sha.to_string();
+            }
+            if let Some(date_str) = data.get("date").and_then(|v| v.as_str()) {
+                status.commit_time = Some(date_str.to_string());
+            }
+        }
+    }
+
+    // Fetch CI status from latest workflow run on main branch
+    if let Ok(output) = std::process::Command::new("gh")
+        .args([
+            "api",
+            "repos/{owner}/{repo}/actions/runs?branch=main&per_page=1",
+            "--jq",
+            ".workflow_runs[0] | {status: .status, conclusion: .conclusion}",
+        ])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            let run_status = data.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let conclusion = data.get("conclusion").and_then(|v| v.as_str());
+
+            status.ci_status = Some(match (run_status, conclusion) {
+                ("completed", Some("success")) => CiStatus::Passed,
+                ("completed", Some("failure")) => CiStatus::Failed,
+                ("completed", Some("cancelled")) => CiStatus::Failed,
+                ("in_progress", _) | ("queued", _) | ("waiting", _) => CiStatus::Running,
+                _ => CiStatus::Unknown,
+            });
+        }
+    }
+
+    // Fetch latest release
+    if let Ok(output) = std::process::Command::new("gh")
+        .args([
+            "api",
+            "repos/{owner}/{repo}/releases/latest",
+            "--jq",
+            "{tag: .tag_name, published_at: .published_at}",
+        ])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(tag) = data.get("tag").and_then(|v| v.as_str()) {
+                status.release_tag = Some(tag.to_string());
+            }
+            if let Some(date_str) = data.get("published_at").and_then(|v| v.as_str()) {
+                status.release_time = Some(date_str.to_string());
+            }
+        }
+    }
+
+    status
+}
+
 /// Get daemon/coworker status including tasks and PRs for kanban board
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
     // Read tasks directly from Claude Code task storage
@@ -352,12 +449,19 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         })
         .unwrap_or_default();
 
+    // Fetch repo status (blocking I/O)
+    let repo_status = tokio::task::spawn_blocking(fetch_repo_status)
+        .await
+        .unwrap_or_default();
+
     let status = serde_json::json!({
         "daemon": "running",
         "coworkers": coworkers_data,
         "tasks": tasks,
         "pull_requests": pull_requests,
         "merged_prs": merged_prs,
+        "repo_name": state.config.repo,
+        "repo_status": repo_status,
     });
 
     Ok(axum::Json(status))
