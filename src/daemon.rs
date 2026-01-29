@@ -1618,7 +1618,15 @@ async fn chat_monitor_loop(
 /// For each valid coworker name mentioned:
 /// - If the coworker is not running, spawn them with --resume
 /// - Nudge them with the message context
+///
+/// Also supports @all to broadcast to every active coworker and the lead.
 fn route_mentions(state: &DaemonState, msg: &Message) {
+    // Check for @all broadcast first
+    if contains_at_all(&msg.content) {
+        route_at_all(state, msg);
+        return;
+    }
+
     let mentions = extract_mentions(&msg.content);
 
     if mentions.is_empty() {
@@ -1702,6 +1710,56 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
             } else {
                 info!("Nudged {} about @mention from {}", name, msg.from);
             }
+        }
+    }
+}
+
+/// Check if a message contains @all (case-insensitive, with word boundary).
+fn contains_at_all(content: &str) -> bool {
+    let content_lower = content.to_lowercase();
+    if let Some(idx) = content_lower.find("@all") {
+        let after_idx = idx + 4; // "@all".len()
+        after_idx >= content.len()
+            || !content[after_idx..]
+                .chars()
+                .next()
+                .unwrap_or(' ')
+                .is_alphanumeric()
+    } else {
+        false
+    }
+}
+
+/// Route an @all broadcast: nudge every active coworker and the lead, except the sender.
+fn route_at_all(state: &DaemonState, msg: &Message) {
+    let active_coworkers = state.coworkers.list();
+    let nudge_text = format!("{} said: {}", msg.from, msg.content);
+
+    info!(
+        "@all broadcast from {} to {} active coworker(s) + lead",
+        msg.from,
+        active_coworkers.len()
+    );
+
+    // Nudge the lead (unless the lead sent the message)
+    if !msg.from.eq_ignore_ascii_case("lead") {
+        if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
+            warn!("Failed to nudge lead for @all: {}", e);
+        } else {
+            info!("Nudged lead for @all from {}", msg.from);
+        }
+    }
+
+    // Nudge all active coworkers (except the sender)
+    for coworker in &active_coworkers {
+        if coworker.name.eq_ignore_ascii_case(&msg.from) {
+            continue;
+        }
+
+        if let Err(e) = state.coworkers.nudge(&coworker.name, &nudge_text) {
+            warn!("Failed to nudge {} for @all: {}", coworker.name, e);
+        } else {
+            info!("Nudged {} for @all from {}", coworker.name, msg.from);
         }
     }
 }
@@ -4829,6 +4887,53 @@ mod tests {
         let mentions = extract_mentions(review_content);
         assert!(mentions.contains(&"park".to_string()));
         assert!(mentions.contains(&"madison".to_string()));
+    }
+
+    #[test]
+    fn test_contains_at_all_basic() {
+        assert!(contains_at_all("@all please check the latest changes"));
+        assert!(contains_at_all("Hey @all, important update"));
+        assert!(contains_at_all("message for @all"));
+    }
+
+    #[test]
+    fn test_contains_at_all_case_insensitive() {
+        assert!(contains_at_all("@ALL please review"));
+        assert!(contains_at_all("@All heads up"));
+        assert!(contains_at_all("@aLl check this"));
+    }
+
+    #[test]
+    fn test_contains_at_all_word_boundary() {
+        // Should NOT match @allison or @alliance (part of a longer word)
+        assert!(!contains_at_all("@allison please help"));
+        assert!(!contains_at_all("@alliance meeting at 3"));
+        assert!(!contains_at_all("@allowed to proceed"));
+    }
+
+    #[test]
+    fn test_contains_at_all_at_end() {
+        assert!(contains_at_all("message to @all"));
+    }
+
+    #[test]
+    fn test_contains_at_all_with_punctuation() {
+        assert!(contains_at_all("@all: important update"));
+        assert!(contains_at_all("@all, please check"));
+        assert!(contains_at_all("@all!"));
+    }
+
+    #[test]
+    fn test_contains_at_all_no_match() {
+        assert!(!contains_at_all("just a regular message"));
+        assert!(!contains_at_all("@ all with space"));
+    }
+
+    #[test]
+    fn test_extract_mentions_does_not_include_at_all() {
+        // @all is not a coworker name, so extract_mentions should not return it
+        let mentions = extract_mentions("@all please check");
+        assert!(mentions.is_empty());
     }
 
     // Duplicate task worker detection tests
