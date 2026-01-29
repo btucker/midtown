@@ -12,6 +12,10 @@ use std::io::{self, ErrorKind};
 use std::path::Path;
 use tracing::{debug, warn};
 
+/// How long a review assignment is valid before it expires (10 minutes).
+/// Mirrors PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS from the in-memory tracker.
+pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
+
 /// Persistent state for GitHub-related data.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GitHubState {
@@ -86,9 +90,15 @@ impl GitHubState {
             .map(|a| a.reviewer.as_str())
     }
 
-    /// Check if a PR has been assigned for review.
+    /// Check if a PR has been assigned for review and the assignment hasn't expired.
     pub fn is_assigned(&self, pr_number: u64) -> bool {
-        self.pr_reviewers.contains_key(&pr_number)
+        match self.pr_reviewers.get(&pr_number) {
+            Some(assignment) => {
+                let elapsed = Utc::now().signed_duration_since(assignment.assigned_at);
+                elapsed < chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64)
+            }
+            None => false,
+        }
     }
 
     /// Remove a reviewer assignment (e.g., when PR is merged/closed).
@@ -107,6 +117,26 @@ impl GitHubState {
             .iter()
             .find(|(_, a)| a.reviewer == reviewer)
             .map(|(pr_number, _)| *pr_number)
+    }
+
+    /// Clean up assignments that have expired (older than timeout).
+    pub fn cleanup_expired_assignments(&mut self) {
+        let now = Utc::now();
+        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+        let to_remove: Vec<_> = self
+            .pr_reviewers
+            .iter()
+            .filter(|(_, a)| now.signed_duration_since(a.assigned_at) > timeout)
+            .map(|(pr, _)| *pr)
+            .collect();
+
+        for pr in to_remove {
+            debug!(
+                "Cleaning up expired reviewer assignment for PR #{} (timed out)",
+                pr
+            );
+            self.pr_reviewers.remove(&pr);
+        }
     }
 
     /// Clean up assignments for PRs that are no longer open.
@@ -250,5 +280,45 @@ mod tests {
 
         let state = GitHubState::load(&path).unwrap();
         assert!(state.pr_reviewers.is_empty());
+    }
+
+    #[test]
+    fn test_is_assigned_expires_after_timeout() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington");
+
+        // Fresh assignment should be considered assigned
+        assert!(state.is_assigned(42));
+
+        // Manually backdate the assignment to exceed the timeout
+        if let Some(assignment) = state.pr_reviewers.get_mut(&42) {
+            assignment.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        // Expired assignment should NOT be considered assigned
+        assert!(
+            !state.is_assigned(42),
+            "Expired persistent assignment should not be considered assigned"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_expired_assignments() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(43, "park");
+
+        // Backdate PR 42's assignment past the timeout
+        if let Some(assignment) = state.pr_reviewers.get_mut(&42) {
+            assignment.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        state.cleanup_expired_assignments();
+
+        // PR 42 should be removed (expired), PR 43 should remain (fresh)
+        assert!(!state.pr_reviewers.contains_key(&42));
+        assert!(state.pr_reviewers.contains_key(&43));
     }
 }
