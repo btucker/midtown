@@ -39,6 +39,19 @@ Post a `/me` update when you transition between phases:
 - Blocked: `blocked on task 3, need API spec clarified`
 - Questions: `@Lead should this handle the edge case?`
 
+### Replying to Messages
+When replying to someone's channel message, **always @mention them** so the daemon can notify them of your response. This is especially important when answering questions from the lead or other coworkers.
+
+```bash
+# Lead asked you a question → @mention them in your reply
+midtown channel post "@lead yes, the auth module exports a validate function"
+
+# Another coworker asked something → @mention them
+midtown channel post "@columbus the endpoint is at /api/v1/auth"
+```
+
+Without the @mention, the daemon cannot route your reply and the other person may never see it.
+
 ### Idle Status (No Feedback Needed)
 When you become idle, simply post your status without requesting feedback:
 - `/me idle - waiting for tasks`
