@@ -410,6 +410,154 @@ impl Channel {
 
         Ok((messages, final_start))
     }
+
+    /// Rotate the channel log file.
+    ///
+    /// Keeps messages from the last `retain_minutes` in channel.jsonl and
+    /// archives everything older to `channel-YYYY-MM-DD.jsonl`. If the archive
+    /// file already exists, older messages are appended to it.
+    ///
+    /// After rotation, all agent cursors are reset to 0 because byte positions
+    /// in the channel file have changed.
+    ///
+    /// Returns the number of messages archived, or 0 if no rotation was needed.
+    pub fn rotate(&self, retain_minutes: i64) -> Result<usize> {
+        use chrono::Utc;
+
+        if !self.channel_file.exists() {
+            return Ok(0);
+        }
+
+        // Read all messages under exclusive lock
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.channel_file)?;
+        file.lock_exclusive()?;
+
+        let reader = BufReader::new(&file);
+        let mut all_messages = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if !line.trim().is_empty()
+                && let Ok(msg) = serde_json::from_str::<Message>(&line)
+            {
+                all_messages.push(msg);
+            }
+        }
+
+        if all_messages.is_empty() {
+            return Ok(0);
+        }
+
+        // Sort by timestamp for correct partitioning
+        all_messages.sort_by_key(|m| m.timestamp);
+
+        let cutoff = Utc::now() - chrono::Duration::minutes(retain_minutes);
+
+        let (archive, retain): (Vec<_>, Vec<_>) =
+            all_messages.into_iter().partition(|m| m.timestamp < cutoff);
+
+        if archive.is_empty() {
+            return Ok(0);
+        }
+
+        let archived_count = archive.len();
+
+        // Write archived messages to channel-YYYY-MM-DD.jsonl
+        let date_str = Utc::now().format("%Y-%m-%d").to_string();
+        let archive_file_path = self.base_dir.join(format!("channel-{}.jsonl", date_str));
+
+        {
+            let mut archive_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&archive_file_path)?;
+
+            for msg in &archive {
+                let mut json = serde_json::to_string(msg)?;
+                json.push('\n');
+                archive_file.write_all(json.as_bytes())?;
+            }
+            archive_file.sync_all()?;
+        }
+
+        // Write retained messages to a temp file, then rename over channel.jsonl
+        let temp_path = self.channel_file.with_extension("jsonl.rotating");
+        {
+            let mut temp_file = File::create(&temp_path)?;
+            for msg in &retain {
+                let mut json = serde_json::to_string(msg)?;
+                json.push('\n');
+                temp_file.write_all(json.as_bytes())?;
+            }
+            temp_file.sync_all()?;
+        }
+
+        // Atomic replace: rename temp over the channel file
+        // Note: on Unix, rename is atomic within the same filesystem.
+        fs::rename(&temp_path, &self.channel_file)?;
+
+        // Reset all cursor files since byte positions have changed
+        let cursors_dir = self.base_dir.join("cursors");
+        if cursors_dir.exists()
+            && let Ok(entries) = fs::read_dir(&cursors_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "json")
+                    && let Some(agent) = path.file_stem().and_then(|s| s.to_str())
+                    && let Ok(mut cursor) =
+                        crate::cursor::Cursor::load_or_create(&self.base_dir, agent)
+                {
+                    cursor.reset();
+                    let _ = cursor.save(&self.base_dir);
+                }
+            }
+        }
+
+        // Lock released when `file` is dropped
+        Ok(archived_count)
+    }
+
+    /// Check if the channel needs rotation based on the age of the oldest message.
+    ///
+    /// Returns true if the oldest message is older than `max_age_hours`.
+    pub fn needs_rotation(&self, max_age_hours: u64) -> bool {
+        use chrono::Utc;
+
+        if !self.channel_file.exists() {
+            return false;
+        }
+
+        // Quick check: read just the first non-empty line
+        let file = match File::open(&self.channel_file) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+
+        if file.try_lock_shared().is_err() {
+            return false;
+        }
+
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => return false,
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let age = Utc::now() - msg.timestamp;
+                return age.num_hours() >= max_age_hours as i64;
+            }
+            // If first line can't be parsed, skip it
+        }
+
+        false
+    }
 }
 
 #[cfg(test)]
@@ -776,5 +924,189 @@ mod tests {
         let (messages, start_pos) = read_before_pos_with_retry(&channel, 0, 10, 5).unwrap();
         assert!(messages.is_empty());
         assert_eq!(start_pos, 0);
+    }
+
+    #[test]
+    fn test_rotate_empty_channel() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Rotating an empty channel should be a no-op
+        let archived = channel.rotate(60).unwrap();
+        assert_eq!(archived, 0);
+    }
+
+    #[test]
+    fn test_rotate_all_recent_messages() {
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Send messages that are all very recent (within last 60 min)
+        channel.send(&Message::text("agent1", "Recent 1")).unwrap();
+        channel.send(&Message::text("agent1", "Recent 2")).unwrap();
+
+        let archived = channel.rotate(60).unwrap();
+        assert_eq!(archived, 0, "No messages should be archived");
+
+        // All messages still present
+        let messages = channel.read_all().unwrap();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn test_rotate_archives_old_messages() {
+        use chrono::{Duration, Utc};
+        use std::io::Write;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Write old messages directly with timestamps > 60 min ago
+        let now = Utc::now();
+        let old_time = now - Duration::hours(3);
+        let channel_file = temp_dir.path().join("channel.jsonl");
+
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&channel_file)
+                .unwrap();
+
+            // Write 3 old messages
+            for i in 1..=3 {
+                let msg = Message {
+                    id: format!("old-{}", i),
+                    timestamp: old_time + Duration::minutes(i as i64),
+                    from: "agent1".to_string(),
+                    content: format!("Old message {}", i),
+                    message_type: MessageType::Text,
+                };
+                writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
+            }
+
+            // Write 2 recent messages
+            for i in 1..=2 {
+                let msg = Message {
+                    id: format!("new-{}", i),
+                    timestamp: now - Duration::minutes(i as i64),
+                    from: "agent1".to_string(),
+                    content: format!("Recent message {}", i),
+                    message_type: MessageType::Text,
+                };
+                writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
+            }
+        }
+
+        // Rotate with 60 min retention
+        let archived = channel.rotate(60).unwrap();
+        assert_eq!(archived, 3, "3 old messages should be archived");
+
+        // Only recent messages remain in channel
+        let remaining = channel.read_all().unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining[0].content.starts_with("Recent"));
+        assert!(remaining[1].content.starts_with("Recent"));
+
+        // Archive file should exist with old messages
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let archive_path = temp_dir.path().join(format!("channel-{}.jsonl", today));
+        assert!(archive_path.exists(), "Archive file should exist");
+
+        // Read archive and verify
+        let archive_content = std::fs::read_to_string(&archive_path).unwrap();
+        let archive_msgs: Vec<Message> = archive_content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(archive_msgs.len(), 3);
+        assert!(archive_msgs[0].content.starts_with("Old"));
+    }
+
+    #[test]
+    fn test_rotate_resets_cursors() {
+        use chrono::{Duration, Utc};
+        use std::io::Write;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Write old + recent messages
+        let now = Utc::now();
+        let old_time = now - Duration::hours(3);
+        let channel_file = temp_dir.path().join("channel.jsonl");
+
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&channel_file)
+                .unwrap();
+
+            let old_msg = Message {
+                id: "old-1".to_string(),
+                timestamp: old_time,
+                from: "agent1".to_string(),
+                content: "Old".to_string(),
+                message_type: MessageType::Text,
+            };
+            writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
+        }
+
+        // Send a recent one normally
+        channel.send(&Message::text("agent1", "Recent")).unwrap();
+
+        // Agent reads to establish a cursor at some byte offset
+        let _ = channel.read_since_cursor("reader").unwrap();
+        let cursor_before = channel.get_cursor("reader").unwrap();
+        assert!(cursor_before.position > 0, "Cursor should be past 0");
+
+        // Rotate
+        let archived = channel.rotate(60).unwrap();
+        assert_eq!(archived, 1);
+
+        // Cursor should be reset to 0
+        let cursor_after = channel.get_cursor("reader").unwrap();
+        assert_eq!(
+            cursor_after.position, 0,
+            "Cursor should be reset after rotation"
+        );
+    }
+
+    #[test]
+    fn test_needs_rotation() {
+        use chrono::{Duration, Utc};
+        use std::io::Write;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Empty channel doesn't need rotation
+        assert!(!channel.needs_rotation(24));
+
+        // Channel with only recent messages doesn't need rotation
+        channel.send(&Message::text("agent1", "Recent")).unwrap();
+        assert!(!channel.needs_rotation(24));
+
+        // Channel with old messages needs rotation
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        let old_time = Utc::now() - Duration::hours(25);
+        {
+            // Prepend an old message by rewriting the file
+            let existing = std::fs::read_to_string(&channel_file).unwrap();
+            let mut file = std::fs::File::create(&channel_file).unwrap();
+            let old_msg = Message {
+                id: "old-1".to_string(),
+                timestamp: old_time,
+                from: "agent1".to_string(),
+                content: "Very old".to_string(),
+                message_type: MessageType::Text,
+            };
+            writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
+            file.write_all(existing.as_bytes()).unwrap();
+        }
+
+        assert!(channel.needs_rotation(24));
     }
 }
