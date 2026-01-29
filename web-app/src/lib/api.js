@@ -46,6 +46,9 @@ function updateKanbanData(data) {
       title: pr.title,
       author: pr.author,
       status: pr.status,
+      reviewer: pr.reviewer,
+      reviewer_assigned_at: pr.reviewer_assigned_at,
+      created_at: pr.created_at,
     })),
     done: mergedPrs.slice(0, 10).map((pr) => ({
       number: pr.number,
