@@ -780,11 +780,9 @@ fn cursor_position_in_wrapped(text: &str, cursor_char: usize, width: u16) -> (u1
             col += w;
         }
     }
-    // Cursor at end of text — check if it landed on a wrap boundary
-    if col >= width {
-        row += 1;
-        col = 0;
-    }
+    // Cursor at end of text — col is always <= width here, so no wrap needed.
+    // Unlike mid-text positions, the end cursor has no next character forcing
+    // a new line, so it stays at the end of the current visual line.
     (row, col as u16)
 }
 
@@ -2154,5 +2152,15 @@ mod tests {
     #[test]
     fn test_cursor_position_zero_width() {
         assert_eq!(cursor_position_in_wrapped("hello", 3, 0), (0, 0));
+    }
+
+    #[test]
+    fn test_cursor_at_end_of_exact_width_text() {
+        // "abcde" at width 5 exactly fills one line.
+        // count_visual_lines says 1 line, so height = 3 (1 + borders).
+        // The cursor at end (char 5) must stay on row 0, col 5 —
+        // NOT wrap to row 1 col 0, since the input box only has 1 text row.
+        assert_eq!(count_visual_lines("abcde", 5), 1);
+        assert_eq!(cursor_position_in_wrapped("abcde", 5, 5), (0, 5));
     }
 }
