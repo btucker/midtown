@@ -29,3 +29,13 @@ export const repoStatus = writable({
   releaseTag: null,
   releaseTime: null,
 })
+
+// Multi-project support
+// List of discovered projects: [{name, status, daemon_socket, webhook_port}]
+export const projects = writable([])
+
+// Currently selected project name (null = single-project mode)
+export const activeProject = writable(null)
+
+// Whether the app is running in multi-project mode (served from shared webserver)
+export const multiProjectMode = writable(false)
