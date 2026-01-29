@@ -668,12 +668,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     None => std::future::pending().await,
                 }
             } => {
+                let content = &mobile_post.content;
                 handle_channel_post(
                     RequestId::Null,
                     "user",
-                    &mobile_post.content,
+                    content,
                     &state,
                 );
+
+                // Route @mentions in user messages to coworkers
+                let msg = Message::text("user", content);
+                route_mentions(&state, &msg);
             }
 
             // Periodically check for idle coworkers and shut them down
