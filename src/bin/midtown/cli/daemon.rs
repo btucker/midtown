@@ -524,6 +524,17 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         }
     }
 
+    // Step 3: Auto-launch shared webserver if not running
+    if !webserver_is_running() {
+        match launch_webserver() {
+            Ok(()) => messages.push(format!(
+                "Started webserver on http://0.0.0.0:{}",
+                midtown::webserver::DEFAULT_WEBSERVER_PORT
+            )),
+            Err(e) => messages.push(format!("Warning: Failed to start webserver: {}", e)),
+        }
+    }
+
     // Build response message
     let attach_hint = "Attach with: midtown attach".to_string();
     messages.push(attach_hint);
@@ -531,6 +542,111 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
     Ok(Response::Message {
         message: messages.join(". "),
     })
+}
+
+/// Path to the shared webserver PID file.
+fn webserver_pid_file() -> PathBuf {
+    midtown::paths::midtown_base_dir().join("webserver.pid")
+}
+
+/// Check if the shared webserver is running by testing its PID file lock.
+fn webserver_is_running() -> bool {
+    let pid_file = webserver_pid_file();
+    if !pid_file.exists() {
+        return false;
+    }
+    is_daemon_running(&pid_file)
+}
+
+/// Launch the shared webserver as a background process.
+fn launch_webserver() -> Result<(), String> {
+    let exe =
+        std::env::current_exe().map_err(|e| format!("Failed to get current executable: {}", e))?;
+
+    let mut cmd = Command::new(&exe);
+    cmd.arg("webserver");
+    // Don't pass --foreground so it daemonizes itself
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    cmd.spawn()
+        .map_err(|e| format!("Failed to spawn webserver: {}", e))?;
+
+    // Brief wait for it to start
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    Ok(())
+}
+
+/// Stop the shared webserver by sending SIGTERM to its PID.
+fn stop_webserver() -> Result<bool, String> {
+    let pid_file = webserver_pid_file();
+    if !pid_file.exists() {
+        return Ok(false);
+    }
+
+    if !webserver_is_running() {
+        // Stale PID file, clean up
+        let _ = std::fs::remove_file(&pid_file);
+        return Ok(false);
+    }
+
+    let pid_str = std::fs::read_to_string(&pid_file)
+        .map_err(|e| format!("Failed to read webserver PID file: {}", e))?;
+    let pid: u32 = pid_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("Invalid PID in webserver PID file: {}", e))?;
+
+    // Send SIGTERM
+    let _ = Command::new("kill")
+        .arg(pid.to_string())
+        .stderr(Stdio::null())
+        .status();
+
+    // Wait briefly for exit
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Force kill if still running
+    if webserver_is_running() {
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Clean up PID file
+    let _ = std::fs::remove_file(&pid_file);
+
+    Ok(true)
+}
+
+/// Handle `midtown webserver stop` command.
+pub fn handle_webserver_stop() -> Result<Response, String> {
+    match stop_webserver()? {
+        true => Ok(Response::message("Stopped webserver")),
+        false => Ok(Response::message("Webserver was not running")),
+    }
+}
+
+/// Handle `midtown webserver restart` command.
+pub fn handle_webserver_restart() -> Result<Response, String> {
+    let was_running = stop_webserver()?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    launch_webserver()?;
+    if was_running {
+        Ok(Response::message(format!(
+            "Restarted webserver on http://0.0.0.0:{}",
+            midtown::webserver::DEFAULT_WEBSERVER_PORT
+        )))
+    } else {
+        Ok(Response::message(format!(
+            "Started webserver on http://0.0.0.0:{}",
+            midtown::webserver::DEFAULT_WEBSERVER_PORT
+        )))
+    }
 }
 
 /// Handle `midtown stop` command.

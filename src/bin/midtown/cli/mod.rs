@@ -81,3 +81,13 @@ pub fn handle_chat() -> Result<(), String> {
 pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
     hooks::handle(cmd)
 }
+
+/// Handle `midtown webserver stop` command
+pub fn handle_webserver_stop() -> Result<Response, String> {
+    daemon::handle_webserver_stop()
+}
+
+/// Handle `midtown webserver restart` command
+pub fn handle_webserver_restart() -> Result<Response, String> {
+    daemon::handle_webserver_restart()
+}

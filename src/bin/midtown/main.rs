@@ -116,8 +116,17 @@ enum Commands {
         #[command(subcommand)]
         command: HookCommand,
     },
-    /// Run the standalone multi-project webserver
+    /// Standalone multi-project webserver
     Webserver {
+        #[command(subcommand)]
+        command: WebserverCommand,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum WebserverCommand {
+    /// Run the webserver (default)
+    Run {
         /// Port to listen on (default: 47022)
         #[arg(long)]
         port: Option<u16>,
@@ -130,6 +139,10 @@ enum Commands {
         #[arg(long)]
         foreground: bool,
     },
+    /// Stop the webserver
+    Stop,
+    /// Restart the webserver
+    Restart,
 }
 
 #[derive(Subcommand, Clone)]
@@ -353,122 +366,136 @@ fn main() {
         return;
     }
 
-    // Webserver command (standalone, no daemon required)
-    if let Commands::Webserver {
-        port,
-        static_dir,
-        foreground,
-    } = &command
-    {
-        let mut config = midtown::webserver::WebserverConfig::default();
-        if let Some(p) = port {
-            config.port = *p;
-        }
-        if static_dir.is_some() {
-            config.static_dir = static_dir.clone();
-        }
+    // Webserver commands (standalone, no daemon required)
+    if let Commands::Webserver { command: ws_cmd } = &command {
+        match ws_cmd {
+            WebserverCommand::Stop => {
+                let result = cli::handle_webserver_stop();
+                handle_result(format, result);
+                return;
+            }
+            WebserverCommand::Restart => {
+                let result = cli::handle_webserver_restart();
+                handle_result(format, result);
+                return;
+            }
+            WebserverCommand::Run {
+                port,
+                static_dir,
+                foreground,
+            } => {
+                let mut config = midtown::webserver::WebserverConfig::default();
+                if let Some(p) = port {
+                    config.port = *p;
+                }
+                if static_dir.is_some() {
+                    config.static_dir = static_dir.clone();
+                }
 
-        // Set up tracing
-        tracing_subscriber::fmt::init();
+                // Set up tracing
+                tracing_subscriber::fmt::init();
 
-        // PID file for singleton enforcement
-        let pid_file_path = midtown::paths::midtown_base_dir().join("webserver.pid");
+                // PID file for singleton enforcement
+                let pid_file_path = midtown::paths::midtown_base_dir().join("webserver.pid");
 
-        if !foreground {
-            use daemonize::Daemonize;
+                if !foreground {
+                    use daemonize::Daemonize;
 
-            // Check if webserver is already running
-            if pid_file_path.exists() {
-                use fs2::FileExt;
-                if let Ok(f) = std::fs::OpenOptions::new().read(true).open(&pid_file_path) {
-                    if f.try_lock_exclusive().is_err() {
-                        let pid_msg = std::fs::read_to_string(&pid_file_path)
-                            .ok()
-                            .and_then(|s| s.trim().parse::<u32>().ok())
-                            .map(|pid| format!(" (PID {})", pid))
-                            .unwrap_or_default();
-                        eprintln!(
-                            "Error: Webserver is already running{}. Stop it first.",
-                            pid_msg
-                        );
+                    // Check if webserver is already running
+                    if pid_file_path.exists() {
+                        use fs2::FileExt;
+                        if let Ok(f) = std::fs::OpenOptions::new().read(true).open(&pid_file_path) {
+                            if f.try_lock_exclusive().is_err() {
+                                let pid_msg = std::fs::read_to_string(&pid_file_path)
+                                    .ok()
+                                    .and_then(|s| s.trim().parse::<u32>().ok())
+                                    .map(|pid| format!(" (PID {})", pid))
+                                    .unwrap_or_default();
+                                eprintln!(
+                                    "Error: Webserver is already running{}. Stop it first.",
+                                    pid_msg
+                                );
+                                std::process::exit(1);
+                            }
+                            let _ = f.unlock();
+                        }
+                    }
+
+                    // Create log directory
+                    let log_dir = midtown::paths::midtown_base_dir().join("logs");
+                    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                        eprintln!("Failed to create log directory: {}", e);
                         std::process::exit(1);
                     }
-                    let _ = f.unlock();
-                }
-            }
 
-            // Create log directory
-            let log_dir = midtown::paths::midtown_base_dir().join("logs");
-            if let Err(e) = std::fs::create_dir_all(&log_dir) {
-                eprintln!("Failed to create log directory: {}", e);
-                std::process::exit(1);
-            }
+                    let stdout = match std::fs::File::options()
+                        .append(true)
+                        .create(true)
+                        .open(log_dir.join("webserver.out"))
+                    {
+                        Ok(f) => f,
+                        Err(e) => {
+                            eprintln!("Failed to open stdout log: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                    let stderr = match std::fs::File::options()
+                        .append(true)
+                        .create(true)
+                        .open(log_dir.join("webserver.err"))
+                    {
+                        Ok(f) => f,
+                        Err(e) => {
+                            eprintln!("Failed to open stderr log: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
 
-            let stdout = match std::fs::File::options()
-                .append(true)
-                .create(true)
-                .open(log_dir.join("webserver.out"))
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("Failed to open stdout log: {}", e);
-                    std::process::exit(1);
-                }
-            };
-            let stderr = match std::fs::File::options()
-                .append(true)
-                .create(true)
-                .open(log_dir.join("webserver.err"))
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("Failed to open stderr log: {}", e);
-                    std::process::exit(1);
-                }
-            };
+                    let daemonize = Daemonize::new().stdout(stdout).stderr(stderr);
 
-            let daemonize = Daemonize::new().stdout(stdout).stderr(stderr);
-
-            match daemonize.start() {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("Failed to daemonize: {}", e);
-                    std::process::exit(1);
+                    match daemonize.start() {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Failed to daemonize: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
+
+                // Write PID file with lock
+                let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+                rt.block_on(async {
+                    // Write PID file
+                    if let Err(e) = std::fs::create_dir_all(pid_file_path.parent().unwrap()) {
+                        eprintln!("Failed to create PID file directory: {}", e);
+                        std::process::exit(1);
+                    }
+                    {
+                        use fs2::FileExt;
+                        let pid_file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(true)
+                            .open(&pid_file_path)
+                            .expect("Failed to open PID file");
+                        pid_file
+                            .try_lock_exclusive()
+                            .expect("Failed to lock PID file");
+                        use std::io::Write;
+                        writeln!(&pid_file, "{}", std::process::id())
+                            .expect("Failed to write PID file");
+                        // Keep the file handle alive by leaking it (lock is held for process lifetime)
+                        std::mem::forget(pid_file);
+                    }
+
+                    if let Err(e) = midtown::webserver::run(config).await {
+                        eprintln!("Webserver error: {}", e);
+                        std::process::exit(1);
+                    }
+                });
+                return;
             }
         }
-
-        // Write PID file with lock
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        rt.block_on(async {
-            // Write PID file
-            if let Err(e) = std::fs::create_dir_all(pid_file_path.parent().unwrap()) {
-                eprintln!("Failed to create PID file directory: {}", e);
-                std::process::exit(1);
-            }
-            {
-                use fs2::FileExt;
-                let pid_file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&pid_file_path)
-                    .expect("Failed to open PID file");
-                pid_file
-                    .try_lock_exclusive()
-                    .expect("Failed to lock PID file");
-                use std::io::Write;
-                writeln!(&pid_file, "{}", std::process::id()).expect("Failed to write PID file");
-                // Keep the file handle alive by leaking it (lock is held for process lifetime)
-                std::mem::forget(pid_file);
-            }
-
-            if let Err(e) = midtown::webserver::run(config).await {
-                eprintln!("Webserver error: {}", e);
-                std::process::exit(1);
-            }
-        });
-        return;
     }
 
     // All other commands require daemon connection
