@@ -96,6 +96,30 @@ pub use cursor::Cursor;
 pub use message::{Message, MessageType};
 pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};
 
+/// Resolve the `web/` directory containing built static assets.
+///
+/// Checks candidates in order and returns the first that exists:
+/// 1. Next to the running executable (`exe_dir/web`)
+/// 2. In the source tree where the binary was compiled (`CARGO_MANIFEST_DIR/web`)
+///
+/// Falls back to the source-tree path even if it doesn't exist, so callers
+/// get a meaningful path for error messages.
+pub fn resolve_web_dir() -> std::path::PathBuf {
+    // Candidate 1: next to the executable (works for bundled installs)
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    {
+        let candidate = exe_dir.join("web");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    // Candidate 2: source tree where `cargo build` ran (baked in at compile time)
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web")
+}
+
 use thiserror::Error;
 
 /// Errors that can occur in the Midtown daemon.

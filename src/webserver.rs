@@ -43,16 +43,9 @@ pub struct WebserverConfig {
 
 impl Default for WebserverConfig {
     fn default() -> Self {
-        // Resolve web directory relative to the executable, not the working directory.
-        // This matches how the daemon's WebConfig resolves its static_dir.
-        let static_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .map(|exe_dir| exe_dir.join("web"));
-
         Self {
             port: DEFAULT_WEBSERVER_PORT,
-            static_dir,
+            static_dir: Some(crate::resolve_web_dir()),
         }
     }
 }
@@ -342,15 +335,22 @@ mod tests {
     fn test_webserver_config_default() {
         let config = WebserverConfig::default();
         assert_eq!(config.port, 47022);
-        // static_dir should auto-resolve to exe_dir/web, not None
-        assert!(
-            config.static_dir.is_some(),
-            "static_dir should default to exe_dir/web, not None"
-        );
+        // static_dir should auto-resolve and actually exist on disk
+        assert!(config.static_dir.is_some(), "static_dir should not be None");
         let dir = config.static_dir.unwrap();
         assert!(
             dir.ends_with("web"),
             "static_dir should end with 'web', got: {:?}",
+            dir
+        );
+        assert!(
+            dir.exists(),
+            "static_dir should point to an existing directory, got: {:?}",
+            dir
+        );
+        assert!(
+            dir.join("index.html").exists(),
+            "static_dir should contain index.html, got: {:?}",
             dir
         );
     }
