@@ -1995,6 +1995,15 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                             truncate_str(title, 40)
                         );
 
+                        // Set tmux tab to show review status immediately
+                        let review_status = format!("reviewing PR #{}", pr_number);
+                        if let Err(e) = state
+                            .coworkers
+                            .update_status_display(&new_coworker, Some(&review_status))
+                        {
+                            warn!("Failed to set review status for {}: {}", new_coworker, e);
+                        }
+
                         // Post to channel about the spawn
                         let channel_msg = Message::new(
                             "midtown",

@@ -39,12 +39,15 @@ pub fn parse_status(status: &str) -> String {
     {
         // Check "waiting/blocked" before "review" which could match "waiting for review"
         "idle"
+    } else if status_lower.contains("reviewing") {
+        // Active code review — distinct from opening/requesting a PR
+        "review"
     } else if status_lower.contains("pr ")
         || status_lower.contains("pull request")
         || status_lower.starts_with("pr")
         || status_lower.contains("review")
     {
-        // Match "PR " with space to avoid false positives, or "review" for code review
+        // Match "PR " with space to avoid false positives, or "review" for requesting review
         "PR"
     } else if status_lower.contains("develop")
         || status_lower.contains("working")
@@ -1146,6 +1149,13 @@ mod tests {
         assert_eq!(parse_status("PR ready"), "PR");
         assert_eq!(parse_status("creating pull request #4"), "PR#4");
         assert_eq!(parse_status("requesting review #2"), "PR#2");
+    }
+
+    #[test]
+    fn test_parse_status_review() {
+        assert_eq!(parse_status("reviewing PR #42"), "review#42");
+        assert_eq!(parse_status("reviewing PR #5: Add auth"), "review#5");
+        assert_eq!(parse_status("reviewing code"), "review");
     }
 
     #[test]
