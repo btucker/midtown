@@ -335,21 +335,21 @@ fn char_index_to_byte_index(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
-/// Compute the display width of the first `char_count` characters in a string.
-///
-/// Uses Unicode display widths so that wide characters (emoji, CJK) count as
-/// 2 columns and combining marks count as 0.
-pub(crate) fn display_width_up_to(s: &str, char_count: usize) -> u16 {
-    use unicode_width::UnicodeWidthChar;
-    s.chars()
-        .take(char_count)
-        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum::<usize>() as u16
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthChar;
+
+    /// Compute the display width of the first `char_count` characters in a string.
+    ///
+    /// Uses Unicode display widths so that wide characters (emoji, CJK) count as
+    /// 2 columns and combining marks count as 0.
+    fn display_width_up_to(s: &str, char_count: usize) -> u16 {
+        s.chars()
+            .take(char_count)
+            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum::<usize>() as u16
+    }
 
     #[test]
     fn test_char_index_to_byte_index_ascii() {
