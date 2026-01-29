@@ -2,6 +2,65 @@
 
 Coordinate multiple **Claude Code** instances working on the same codebase using native Claude Code tasks.
 
+## Quick Start
+
+### 1. Install
+
+From [crates.io](https://crates.io/crates/midtown):
+
+```bash
+cargo install midtown
+```
+
+Or from source:
+
+```bash
+cargo install --path .
+```
+
+### 2. Start midtown
+
+From your project directory:
+
+```bash
+midtown start
+```
+
+This starts the daemon and creates a tmux session with the Lead window.
+
+### 3. Attach to the session
+
+```bash
+midtown attach
+```
+
+You're now in the Lead's Claude Code instance.
+
+### 4. Spawn coworkers
+
+The Lead can spawn coworkers to parallelize work:
+
+```bash
+midtown coworker spawn
+# => Spawned coworker: lexington
+```
+
+Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
+
+### 5. Monitor progress
+
+```bash
+midtown status
+```
+
+Shows: active coworkers, open tasks, open PRs, recent channel activity.
+
+### 6. Stop when done
+
+```bash
+midtown stop
+```
+
 ## Why Midtown?
 
 Midtown is inspired by [Gastown](https://github.com/anthropics/claude-code/tree/main/.claude/docs/gastown.md), but a bit simpler, less exciting, and, well, more mid.
@@ -116,65 +175,6 @@ Automatic webhook integration with GitHub events (requires `gh auth login`):
 ```
 
 All agents run as windows within a single tmux session. Use `Ctrl-b w` to see everyone, `Ctrl-b n/p` to switch between them.
-
-## Quick Start
-
-### 1. Install
-
-From [crates.io](https://crates.io/crates/midtown):
-
-```bash
-cargo install midtown
-```
-
-Or from source:
-
-```bash
-cargo install --path .
-```
-
-### 2. Start midtown
-
-From your project directory:
-
-```bash
-midtown start
-```
-
-This starts the daemon and creates a tmux session with the Lead window.
-
-### 3. Attach to the session
-
-```bash
-midtown attach
-```
-
-You're now in the Lead's Claude Code instance.
-
-### 4. Spawn coworkers
-
-The Lead can spawn coworkers to parallelize work:
-
-```bash
-midtown coworker spawn
-# => Spawned coworker: lexington
-```
-
-Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
-
-### 5. Monitor progress
-
-```bash
-midtown status
-```
-
-Shows: active coworkers, open tasks, open PRs, recent channel activity.
-
-### 6. Stop when done
-
-```bash
-midtown stop
-```
 
 ## CLI Reference
 
