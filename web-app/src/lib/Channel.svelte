@@ -7,6 +7,9 @@
   let messagesContainer = $state(null)
   let autoScroll = $state(true)
 
+  // Cache current tasks to avoid recalculating on every render
+  let currentTasks = $derived(getCurrentTasks($coworkers))
+
   // Muted avenue colors matching terminal TUI palette (AVENUE_COLORS from ui.rs)
   const AVENUE_COLORS = {
     lexington: '#5fafaf',   // Cyan
@@ -138,7 +141,6 @@
         <p class="hint">Messages from the team channel will appear here</p>
       </div>
     {:else}
-      {@const currentTasks = getCurrentTasks($coworkers)}
       {#each $messages as msg, i}
         {#if needsBlankLine($messages, i)}
           <div class="blank-line"></div>
