@@ -356,18 +356,25 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
 
     let mut hyperlinks = Vec::new();
 
-    // Review column (open PRs with repo#XX format, CI status dot, and duration) - 2-line items
+    // Review column (open PRs with repo#XX format, CI status dot, author/reviewer) - 3-line items
     let review_items: Vec<KanbanItem> = app
         .prs
         .iter()
         .map(|pr| {
             let ci_dot = ci_status_dot(&pr.ci_status);
             let line1 = format!("{} PR#{} {}", ci_dot, pr.number, pr.title);
-            let duration = format_duration_minutes(pr.created_at);
-            let line2 = format!("  └ {} {}", pr.author, duration);
+            let author_duration = format_duration_minutes(pr.created_at);
+            let line2 = format!("  A: {} {}", pr.author, author_duration);
+            let line3 = match (&pr.reviewer, &pr.reviewed_at) {
+                (Some(reviewer), Some(at)) => {
+                    format!("  R: {} {}", reviewer, format_duration_minutes(*at))
+                }
+                (Some(reviewer), None) => format!("  R: {}", reviewer),
+                _ => "  R: pending".to_string(),
+            };
             let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
             KanbanItem {
-                lines: vec![line1, line2],
+                lines: vec![line1, line2, line3],
                 url: Some(url),
                 ci_status: Some(pr.ci_status.clone()),
             }
