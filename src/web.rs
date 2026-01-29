@@ -259,7 +259,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "pr",
                 "list",
                 "--json",
-                "number,title,author,state,isDraft,reviewDecision",
+                "number,title,author,state,isDraft,reviewDecision,createdAt",
             ])
             .output();
         match output {
@@ -293,14 +293,18 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                     _ => "open",
                 }
             };
-            // Look up reviewer from persistent state
-            let reviewer = github_state.get_reviewer(pr_number);
+            // Look up reviewer assignment from persistent state
+            let assignment = github_state.pr_reviewers.get(&pr_number);
+            let reviewer = assignment.map(|a| a.reviewer.as_str());
+            let reviewer_assigned_at = assignment.map(|a| a.assigned_at.to_rfc3339());
             serde_json::json!({
                 "number": pr_number,
                 "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
                 "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
                 "status": status,
                 "reviewer": reviewer,
+                "reviewer_assigned_at": reviewer_assigned_at,
+                "created_at": pr.get("createdAt").and_then(|c| c.as_str()),
             })
         })
         .collect();
