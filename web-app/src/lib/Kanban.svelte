@@ -73,7 +73,8 @@
 
   <div class="kanban">
     <div class="kanban-column">
-      <h3 class="column-title backlog">
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+      <h3 class="column-title backlog" onclick={toggleExpand}>
         Backlog <span class="count">({$kanbanData.backlog.length})</span>
       </h3>
       <div class="column-items">
@@ -90,7 +91,8 @@
     </div>
 
     <div class="kanban-column">
-      <h3 class="column-title in-progress">
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+      <h3 class="column-title in-progress" onclick={toggleExpand}>
         In Progress <span class="count">({$kanbanData.inProgress.length})</span>
       </h3>
       <div class="column-items">
@@ -112,7 +114,8 @@
     </div>
 
     <div class="kanban-column">
-      <h3 class="column-title review">
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+      <h3 class="column-title review" onclick={toggleExpand}>
         Review <span class="count">({$kanbanData.review.length})</span>
       </h3>
       <div class="column-items">
@@ -143,7 +146,8 @@
     </div>
 
     <div class="kanban-column">
-      <h3 class="column-title done">
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+      <h3 class="column-title done" onclick={toggleExpand}>
         Done <span class="count">({$kanbanData.done.length})</span>
       </h3>
       <div class="column-items">
@@ -292,6 +296,14 @@
     margin: 0;
     border-radius: 4px 4px 0 0;
     white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.15s;
+  }
+
+  .column-title:active {
+    background: rgba(255, 255, 255, 0.05);
   }
 
   .column-title .count {
