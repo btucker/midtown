@@ -100,6 +100,17 @@ This prevents wasted effort from duplicate work.
 
 Don't hoard tasks - claim one, finish it, then claim another.
 
+### Blocked Tasks
+**Never work on a task that has unresolved `blockedBy` dependencies.** Before claiming a task, check its `blockedBy` list using `TaskGet`. If any blocking task is not yet `Completed`, do NOT claim or start work on it. Instead:
+1. Post to channel: `/me idle - pending tasks are blocked`
+2. Move on to an unblocked task, or stand by if none are available.
+
+If you discover mid-work that your task is blocked (e.g., a dependency was added after you started), stop immediately and notify the lead:
+```bash
+midtown channel post "@lead stopping task #X - blocked by incomplete task #Y"
+```
+Then update your task status back to `pending` and remove yourself as owner.
+
 **Exception:** Do NOT claim "Code review PR #X" tasks from the task list. PR reviews are assigned directly by the daemon to prevent duplicate reviews. Only review PRs when specifically assigned to do so.
 
 Also do NOT claim code-review sub-tasks (e.g., "Run 5 parallel code review agents", "Score and filter issues", "Post review comment on PR #X", "Find relevant CLAUDE.md files", "Check PR #X eligibility", "Get PR #X summary"). These are internal workflow steps owned by the coworker running the review.

@@ -321,18 +321,39 @@ pub fn get_pending_tasks_without_owners() -> Vec<Task> {
 /// to prevent the daemon from claiming tasks before the creating coworker sets ownership.
 const TASK_CREATION_GRACE_SECS: u64 = 45;
 
-/// Get pending tasks without owners, skipping tasks created within `grace_secs` seconds.
+/// Get pending tasks without owners, skipping tasks created within `grace_secs` seconds
+/// and tasks that have unresolved `blockedBy` dependencies.
 pub fn get_pending_tasks_without_owners_with_grace(grace_secs: u64) -> Vec<Task> {
     let now = std::time::SystemTime::now();
     let grace = std::time::Duration::from_secs(grace_secs);
-    read_tasks()
-        .into_iter()
+    let all_tasks = read_tasks();
+    all_tasks
+        .iter()
         .filter(|t| {
             t.status == TaskStatus::Pending
                 && t.owner.is_none()
                 && !is_within_grace_period(t, now, grace)
+                && !has_unresolved_blockers(t, &all_tasks)
         })
+        .cloned()
         .collect()
+}
+
+/// Check whether a task has unresolved `blockedBy` dependencies.
+///
+/// Returns `true` if any task ID in `blocked_by` refers to a task that is not
+/// `Completed`, or if the referenced task does not exist (treated as unresolved
+/// to avoid assigning work whose prerequisites can't be verified).
+pub fn has_unresolved_blockers(task: &Task, all_tasks: &[Task]) -> bool {
+    if task.blocked_by.is_empty() {
+        return false;
+    }
+    task.blocked_by.iter().any(|blocker_id| {
+        match all_tasks.iter().find(|t| &t.id == blocker_id) {
+            Some(blocker) => blocker.status != TaskStatus::Completed,
+            None => true, // unknown task — treat as unresolved
+        }
+    })
 }
 
 /// Check if a task was created within the grace period.
@@ -844,6 +865,90 @@ mod tests {
             created_at: None,
         };
         assert!(!is_within_grace_period(&no_time_task, now, grace));
+    }
+
+    #[test]
+    fn test_has_unresolved_blockers() {
+        let all_tasks = vec![
+            Task {
+                id: "1".to_string(),
+                subject: "Completed prerequisite".to_string(),
+                status: TaskStatus::Completed,
+                owner: Some("alice".to_string()),
+                description: None,
+                blocked_by: vec![],
+                created_at: None,
+            },
+            Task {
+                id: "2".to_string(),
+                subject: "In-progress prerequisite".to_string(),
+                status: TaskStatus::InProgress,
+                owner: Some("bob".to_string()),
+                description: None,
+                blocked_by: vec![],
+                created_at: None,
+            },
+            Task {
+                id: "3".to_string(),
+                subject: "Blocked by completed task".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec!["1".to_string()],
+                created_at: None,
+            },
+            Task {
+                id: "4".to_string(),
+                subject: "Blocked by in-progress task".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec!["2".to_string()],
+                created_at: None,
+            },
+            Task {
+                id: "5".to_string(),
+                subject: "Blocked by nonexistent task".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec!["999".to_string()],
+                created_at: None,
+            },
+            Task {
+                id: "6".to_string(),
+                subject: "Blocked by mix: one completed, one pending".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec!["1".to_string(), "2".to_string()],
+                created_at: None,
+            },
+            Task {
+                id: "7".to_string(),
+                subject: "No blockers at all".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec![],
+                created_at: None,
+            },
+        ];
+
+        // Task 3: blocked by completed task → no unresolved blockers
+        assert!(!has_unresolved_blockers(&all_tasks[2], &all_tasks));
+
+        // Task 4: blocked by in-progress task → has unresolved blockers
+        assert!(has_unresolved_blockers(&all_tasks[3], &all_tasks));
+
+        // Task 5: blocked by nonexistent task → treat as unresolved
+        assert!(has_unresolved_blockers(&all_tasks[4], &all_tasks));
+
+        // Task 6: blocked by both completed AND in-progress → still blocked
+        assert!(has_unresolved_blockers(&all_tasks[5], &all_tasks));
+
+        // Task 7: no blockedBy at all → not blocked
+        assert!(!has_unresolved_blockers(&all_tasks[6], &all_tasks));
     }
 
     #[test]
