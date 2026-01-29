@@ -108,7 +108,7 @@ fn get_sender_color(name: &str) -> Color {
 }
 
 /// Minimum height of the kanban board (including borders)
-const MIN_KANBAN_HEIGHT: u16 = 5;
+const MIN_KANBAN_HEIGHT: u16 = 6;
 
 /// Calculate the dynamic kanban board height based on In Progress and Review columns
 ///
