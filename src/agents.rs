@@ -18,6 +18,8 @@
 
 use std::path::PathBuf;
 
+use crate::config::Personality;
+
 /// Embedded default for the Lead system prompt.
 const DEFAULT_LEAD_PROMPT: &str = include_str!("../agents/lead.md");
 
@@ -26,6 +28,9 @@ const DEFAULT_COWORKER_PROMPT: &str = include_str!("../agents/coworker.md");
 
 /// Embedded default for common prompt content shared by both agents.
 const DEFAULT_COMMON_PROMPT: &str = include_str!("../agents/common.md");
+
+/// Embedded default for personality definitions.
+const DEFAULT_PERSONALITIES: &str = include_str!("../agents/personalities.md");
 
 /// Find the git repository root directory.
 fn git_repo_root() -> Option<PathBuf> {
@@ -155,21 +160,82 @@ fn load_custom_prompt_files(filename: &str) -> String {
     }
 }
 
+/// Extract a personality description for a given agent name and variant.
+///
+/// Parses `personalities.md` which uses `## name` and `### variant` headers.
+/// Returns None if the name or variant is not found.
+fn load_personality(name: &str, personality: Personality) -> Option<String> {
+    let content =
+        load_prompt_file("personalities.md").unwrap_or_else(|| DEFAULT_PERSONALITIES.to_string());
+    let variant = personality.as_str();
+    let name_lower = name.to_lowercase();
+
+    // Find the section for this agent name (## name)
+    let mut in_name_section = false;
+    let mut in_variant_section = false;
+    let mut lines = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with("## ") && !line.starts_with("### ") {
+            let heading = line.trim_start_matches("## ").trim().to_lowercase();
+            in_name_section = heading == name_lower;
+            in_variant_section = false;
+            continue;
+        }
+
+        if !in_name_section {
+            continue;
+        }
+
+        if line.starts_with("### ") {
+            let heading = line.trim_start_matches("### ").trim().to_lowercase();
+            in_variant_section = heading == variant;
+            continue;
+        }
+
+        if in_variant_section {
+            lines.push(line);
+        }
+    }
+
+    let text = lines.join("\n").trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// Build the personality section to append to a system prompt.
+fn personality_section(name: &str, personality: Personality) -> String {
+    match load_personality(name, personality) {
+        Some(desc) => format!(
+            "\n\n## Personality\n\n\
+             Your personality variant is set to **{}**. Let this voice come through in your \
+             channel messages and GitHub comments (PR descriptions, review comments). \
+             Keep code itself clean and professional regardless.\n\n{}",
+            personality.as_str(),
+            desc
+        ),
+        None => String::new(),
+    }
+}
+
 /// Load the Lead agent's system prompt.
 ///
 /// Returns the prompt from `agents/lead.md` if found, otherwise returns the
 /// embedded default. Appends common prompt content shared with coworkers.
 /// Custom content from `~/.midtown/LEAD.md` and
 /// `~/.midtown/projects/<repo>/LEAD.md` is appended if present.
+/// If a personality variant is configured, the matching personality description
+/// is appended to give the Lead a unique voice.
 pub fn lead_system_prompt() -> String {
     let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
     let common = common_prompt();
     let custom = load_custom_prompt_files("LEAD.md");
+    let personality = crate::config::get_personality();
 
     let mut prompt = format!("{lead}\n{common}");
     if !custom.is_empty() {
         prompt = format!("{prompt}\n\n{custom}");
     }
+    prompt.push_str(&personality_section("lead", personality));
     prompt.replace("{name}", "Lead")
 }
 
@@ -180,16 +246,20 @@ pub fn lead_system_prompt() -> String {
 /// replaced with the coworker's actual name in both the coworker and common sections.
 /// Custom content from `~/.midtown/COWORKER.md` and
 /// `~/.midtown/projects/<repo>/COWORKER.md` is appended if present.
+/// If a personality variant is configured, the matching personality description
+/// is appended to give the coworker a unique voice.
 pub fn coworker_system_prompt(name: &str) -> String {
     let template =
         load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
     let common = common_prompt();
     let custom = load_custom_prompt_files("COWORKER.md");
+    let personality = crate::config::get_personality();
 
     let mut prompt = format!("{template}\n{common}");
     if !custom.is_empty() {
         prompt = format!("{prompt}\n\n{custom}");
     }
+    prompt.push_str(&personality_section(name, personality));
     prompt.replace("{name}", name)
 }
 
@@ -316,6 +386,109 @@ mod tests {
         // Should return empty string when no custom files exist
         let result = load_custom_prompt_files("NONEXISTENT_FILE_12345.md");
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_load_personality_normal() {
+        let result = load_personality("york", Personality::Normal);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(
+            text.contains("Professional"),
+            "york normal should be professional"
+        );
+    }
+
+    #[test]
+    fn test_load_personality_fun() {
+        let result = load_personality("york", Personality::Fun);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(
+            text.contains("New Yorker"),
+            "york fun should mention New Yorker"
+        );
+    }
+
+    #[test]
+    fn test_load_personality_wild() {
+        let result = load_personality("york", Personality::Wild);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(
+            text.contains("vendor"),
+            "york wild should mention vendor energy"
+        );
+    }
+
+    #[test]
+    fn test_load_personality_lead() {
+        let result = load_personality("lead", Personality::Fun);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(!text.is_empty(), "lead fun should have content");
+    }
+
+    #[test]
+    fn test_load_personality_unknown_name() {
+        let result = load_personality("nonexistent_agent", Personality::Normal);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_personality_case_insensitive() {
+        let result = load_personality("York", Personality::Normal);
+        assert!(
+            result.is_some(),
+            "Personality lookup should be case-insensitive"
+        );
+    }
+
+    #[test]
+    fn test_personality_section_builds_correctly() {
+        let section = personality_section("broadway", Personality::Fun);
+        assert!(section.contains("## Personality"));
+        assert!(section.contains("**fun**"));
+        assert!(section.contains("premiere"));
+    }
+
+    #[test]
+    fn test_personality_section_empty_for_unknown() {
+        let section = personality_section("nonexistent", Personality::Normal);
+        assert!(section.is_empty());
+    }
+
+    #[test]
+    fn test_all_coworker_names_have_personalities() {
+        let names = &[
+            "lexington",
+            "park",
+            "madison",
+            "broadway",
+            "amsterdam",
+            "columbus",
+            "riverside",
+            "york",
+            "pleasant",
+            "vernon",
+            "bleecker",
+            "houston",
+            "canal",
+            "spring",
+            "prince",
+            "mercer",
+        ];
+        for name in names {
+            for personality in &[Personality::Normal, Personality::Fun, Personality::Wild] {
+                let result = load_personality(name, *personality);
+                assert!(
+                    result.is_some(),
+                    "Missing personality for {} / {}",
+                    name,
+                    personality.as_str()
+                );
+            }
+        }
     }
 
     #[test]

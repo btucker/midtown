@@ -32,6 +32,7 @@
 //!    [default]
 //!    max_coworkers = 4
 //!    chat_layout = "split"
+//!    personality = "fun"  # "normal" (default), "fun", or "wild"
 //!
 //!    [daemon]
 //!    webhook_port = 47023
@@ -111,6 +112,30 @@ impl ProjectMetadata {
             self.primary_repo.as_deref().into_iter().collect()
         } else {
             self.repos.iter().map(|s| s.as_str()).collect()
+        }
+    }
+}
+
+/// Personality variant for agent channel/GitHub voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Personality {
+    /// Professional and concise
+    #[default]
+    Normal,
+    /// Playful and expressive
+    Fun,
+    /// Over-the-top creative
+    Wild,
+}
+
+impl Personality {
+    /// Return the variant name as used in personalities.md headers.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Personality::Normal => "normal",
+            Personality::Fun => "fun",
+            Personality::Wild => "wild",
         }
     }
 }
@@ -218,6 +243,10 @@ pub struct ProjectConfig {
     /// Maximum number of concurrent coworkers (default: 16)
     #[serde(default)]
     pub max_coworkers: Option<usize>,
+
+    /// Personality variant for agent voice in channel/GitHub (normal, fun, wild)
+    #[serde(default)]
+    pub personality: Option<Personality>,
 }
 
 impl ProjectConfig {
@@ -231,6 +260,7 @@ impl ProjectConfig {
             chat_layout: other.chat_layout.or(self.chat_layout),
             chat_min_width: other.chat_min_width.or(self.chat_min_width),
             max_coworkers: other.max_coworkers.or(self.max_coworkers),
+            personality: other.personality.or(self.personality),
         }
     }
 
@@ -254,6 +284,11 @@ impl ProjectConfig {
     /// Get max_coworkers, or None if not configured (falls back to daemon default).
     pub fn max_coworkers(&self) -> Option<usize> {
         self.max_coworkers
+    }
+
+    /// Get personality with fallback to Normal.
+    pub fn personality(&self) -> Personality {
+        self.personality.unwrap_or_default()
     }
 }
 
@@ -374,6 +409,7 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
             || full.default.chat_layout.is_some()
             || full.default.chat_min_width.is_some()
             || full.default.max_coworkers.is_some()
+            || full.default.personality.is_some()
             || full.project.name.is_some()
         {
             return Some(full.default);
@@ -535,6 +571,19 @@ pub fn get_required_plugins() -> Vec<String> {
     GlobalConfig::load().plugins.required.clone()
 }
 
+/// Get the personality setting for the current project.
+pub fn get_personality() -> Personality {
+    let project_name = get_project_name().unwrap_or_default();
+
+    let config = if project_name.is_empty() {
+        GlobalConfig::load().default
+    } else {
+        get_project_config(&project_name)
+    };
+
+    config.personality()
+}
+
 /// Get the current project name from git repo root directory.
 fn get_project_name() -> Option<String> {
     crate::paths::detect_repo_name()
@@ -606,6 +655,7 @@ bin_command = "custom-command"
             chat_layout: Some(ChatLayout::Auto),
             chat_min_width: Some(160),
             max_coworkers: Some(8),
+            personality: Some(Personality::Fun),
         };
 
         let project = ProjectConfig {
@@ -613,6 +663,7 @@ bin_command = "custom-command"
             chat_layout: None, // Not overridden
             chat_min_width: Some(200),
             max_coworkers: None, // Not overridden
+            personality: None,   // Not overridden
         };
 
         let merged = global.merge(&project);
@@ -621,6 +672,7 @@ bin_command = "custom-command"
         assert_eq!(merged.chat_layout(), ChatLayout::Auto); // From global
         assert_eq!(merged.chat_min_width(), 200); // Overridden
         assert_eq!(merged.max_coworkers(), Some(8)); // From global
+        assert_eq!(merged.personality(), Personality::Fun); // From global
     }
 
     #[test]
@@ -630,6 +682,7 @@ bin_command = "custom-command"
             chat_layout: None,
             chat_min_width: None,
             max_coworkers: Some(16),
+            personality: None,
         };
 
         let project = ProjectConfig {
@@ -637,6 +690,7 @@ bin_command = "custom-command"
             chat_layout: None,
             chat_min_width: None,
             max_coworkers: Some(4),
+            personality: None,
         };
 
         let merged = global.merge(&project);
@@ -818,6 +872,67 @@ webhook_port = 0
 "#;
         let config: GlobalConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.daemon.webhook_port, Some(0));
+    }
+
+    #[test]
+    fn test_personality_default() {
+        let config = ProjectConfig::default();
+        assert_eq!(config.personality(), Personality::Normal);
+    }
+
+    #[test]
+    fn test_personality_parse() {
+        let toml = r#"
+[default]
+personality = "fun"
+"#;
+        let config: GlobalConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.default.personality(), Personality::Fun);
+    }
+
+    #[test]
+    fn test_personality_wild() {
+        let toml = r#"
+personality = "wild"
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.personality(), Personality::Wild);
+    }
+
+    #[test]
+    fn test_personality_normal_explicit() {
+        let toml = r#"
+personality = "normal"
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.personality(), Personality::Normal);
+    }
+
+    #[test]
+    fn test_personality_merge_override() {
+        let global = ProjectConfig {
+            bin_command: None,
+            chat_layout: None,
+            chat_min_width: None,
+            max_coworkers: None,
+            personality: Some(Personality::Normal),
+        };
+        let project = ProjectConfig {
+            bin_command: None,
+            chat_layout: None,
+            chat_min_width: None,
+            max_coworkers: None,
+            personality: Some(Personality::Wild),
+        };
+        let merged = global.merge(&project);
+        assert_eq!(merged.personality(), Personality::Wild);
+    }
+
+    #[test]
+    fn test_personality_as_str() {
+        assert_eq!(Personality::Normal.as_str(), "normal");
+        assert_eq!(Personality::Fun.as_str(), "fun");
+        assert_eq!(Personality::Wild.as_str(), "wild");
     }
 
     #[test]
