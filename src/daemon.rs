@@ -964,16 +964,19 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         // For isolated coworkers (reviewers), verify the review was actually posted
         let (should_shutdown, shutdown_msg) = if is_isolated {
             // Look up the PR this reviewer was assigned to
+            // Try in-memory tracker first
             let pr_number = {
-                // Try in-memory tracker first
                 let tracker = state.pr_review_tracker.lock().await;
                 tracker.pr_for_coworker(&name)
-            }
-            .or_else(|| {
-                // Fall back to persistent state
-                let github_state = state.github_state.blocking_lock();
-                github_state.pr_for_reviewer(&name)
-            });
+            };
+            let pr_number = match pr_number {
+                Some(pr) => Some(pr),
+                None => {
+                    // Fall back to persistent state
+                    let github_state = state.github_state.lock().await;
+                    github_state.pr_for_reviewer(&name)
+                }
+            };
 
             match pr_number {
                 Some(pr) => {
