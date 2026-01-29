@@ -3168,7 +3168,6 @@ fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
 fn spawn_for_pending_tasks(state: &DaemonState) {
     // Get list of currently active coworkers
     let active_coworkers = state.coworkers.list();
-    let active_count = active_coworkers.len();
     let active_names: std::collections::HashSet<String> = active_coworkers
         .iter()
         .map(|cw| cw.name.to_lowercase())
@@ -3211,8 +3210,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             continue;
         }
 
-        // Check max coworkers limit before spawning
-        if active_count >= state.max_coworkers {
+        // Check max coworkers limit before spawning (use live count, not stale snapshot)
+        if state.is_at_coworker_limit() {
             debug!(
                 "Max coworkers limit ({}) reached, deferring spawn for task #{} owned by {}",
                 state.max_coworkers, task_id, owner
