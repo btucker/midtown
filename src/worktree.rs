@@ -303,8 +303,56 @@ impl WorktreeManager {
         }
     }
 
+    /// Check if a coworker's branch has a merged PR on GitHub.
+    ///
+    /// Uses `gh pr list` to check if the branch's PR was merged (e.g. via
+    /// squash-merge). This catches cases where `has_commits_beyond_base`
+    /// returns a false positive because squash-merged commits have different
+    /// SHAs than the branch commits.
+    pub fn is_branch_pr_merged(&self, coworker_name: &str) -> bool {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return false;
+        }
+
+        // Get the current branch in the worktree
+        let branch_output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output();
+
+        let branch = match branch_output {
+            Ok(output) if output.status.success() => {
+                let b = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if b == "HEAD" {
+                    return false; // Detached HEAD, can't check PR
+                }
+                b
+            }
+            _ => return false,
+        };
+
+        // Check if there's a merged PR for this branch
+        let output = Command::new("gh")
+            .current_dir(&self.repo_root)
+            .args([
+                "pr", "list", "--head", &branch, "--state", "merged", "--json", "number",
+                "--limit", "1",
+            ])
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                // gh returns "[]" when no merged PRs found, non-empty array otherwise
+                stdout != "[]" && !stdout.is_empty()
+            }
+            _ => false, // If gh fails, assume not merged (safe default)
+        }
+    }
+
     /// Safely clean up a coworker's worktree and branch if it has no commits
-    /// and no uncommitted changes.
+    /// and no uncommitted changes, or if the branch's PR has been merged.
     ///
     /// Returns `Ok(true)` if the worktree was cleaned up.
     /// Returns `Ok(false)` if the worktree has commits or uncommitted changes
@@ -316,8 +364,19 @@ impl WorktreeManager {
             return Ok(true); // Already gone
         }
 
-        if self.has_commits_beyond_base(coworker_name) {
-            return Ok(false); // Has commits, don't delete
+        let has_commits = self.has_commits_beyond_base(coworker_name);
+
+        if has_commits {
+            // Branch has commits beyond base - but check if the PR was already
+            // merged (e.g. via squash-merge, where commit SHAs differ from main).
+            if !self.is_branch_pr_merged(coworker_name) {
+                return Ok(false); // Has genuinely unmerged commits
+            }
+            // PR was merged - safe to clean up despite commit diff
+            tracing::info!(
+                "Orphaned worktree for {} has commits but PR is merged (squash-merge) - cleaning up",
+                coworker_name
+            );
         }
 
         if self.has_uncommitted_changes(coworker_name) {
