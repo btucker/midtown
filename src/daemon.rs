@@ -957,10 +957,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     content,
                     &state,
                 );
-
-                // Route @mentions in user messages to coworkers
-                let msg = Message::text("user", content);
-                route_mentions(&state, &msg);
             }
 
             // Periodically check for idle coworkers and shut them down
@@ -1578,7 +1574,7 @@ async fn pr_poll_task(
 // ============================================================================
 
 /// Senders to skip when routing mentions (loop protection).
-const SKIP_SENDERS: &[&str] = &["midtown", "system", "github"];
+const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user"];
 
 /// Background task that monitors the channel for @mentions and routes them.
 ///
@@ -2972,6 +2968,9 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
                     warn!("Failed to nudge Lead about user message: {}", e);
                 }
+
+                // Route @mentions in user messages directly to coworkers
+                route_mentions(state, &msg);
             }
 
             // Nudge the Lead when a coworker explicitly mentions @lead
@@ -4941,10 +4940,13 @@ mod tests {
 
     #[test]
     fn test_skip_senders() {
-        // Verify SKIP_SENDERS contains expected values
+        // Verify SKIP_SENDERS contains expected values.
+        // "user" is skipped because handle_channel_post routes user @mentions
+        // directly, similar to how the webhook handler routes "github" mentions.
         assert!(SKIP_SENDERS.contains(&"midtown"));
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
+        assert!(SKIP_SENDERS.contains(&"user"));
     }
 
     #[test]
@@ -5016,6 +5018,29 @@ mod tests {
         // @all is not a coworker name, so extract_mentions should not return it
         let mentions = extract_mentions("@all please check");
         assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn test_user_mentions_coworker_should_be_extracted() {
+        // When a user @mentions a coworker in their message, the mention should
+        // be extracted so it can be routed directly to that coworker (not just
+        // to the lead). This validates the contract that handle_channel_post
+        // relies on when calling route_mentions for user messages.
+        let user_msg = "@lexington please review PR #42";
+        let mentions = extract_mentions(user_msg);
+        assert_eq!(mentions, vec!["lexington"]);
+
+        // User mentioning multiple coworkers
+        let multi_msg = "@park and @madison can you pair on this?";
+        let mentions = extract_mentions(multi_msg);
+        assert!(mentions.contains(&"park".to_string()));
+        assert!(mentions.contains(&"madison".to_string()));
+
+        // User mentioning @lead should NOT appear in coworker mentions
+        // (@lead is handled separately in handle_channel_post)
+        let lead_msg = "@lead what do you think?";
+        let mentions = extract_mentions(lead_msg);
+        assert!(mentions.is_empty() || !mentions.contains(&"lead".to_string()));
     }
 
     // Duplicate task worker detection tests
