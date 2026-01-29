@@ -64,11 +64,11 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="kanban-wrapper" class:expanded>
-  <div class="kanban-header">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="kanban-header" onclick={toggleExpand}>
     <span class="kanban-title">Kanban</span>
-    <button class="expand-toggle" onclick={toggleExpand} aria-label={expanded ? 'Collapse' : 'Expand'}>
-      <span class="chevron" class:expanded>▲</span>
-    </button>
+    <span class="chevron" class:expanded>▲</span>
   </div>
 
   <div class="kanban">
@@ -234,6 +234,13 @@
     align-items: center;
     padding: 4px 8px;
     background: #16213e;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .kanban-header:active {
+    background: #1a2744;
   }
 
   .kanban-title {
@@ -243,22 +250,10 @@
     letter-spacing: 0.05em;
   }
 
-  .expand-toggle {
-    background: transparent;
-    border: none;
-    color: #666;
-    cursor: pointer;
-    padding: 2px 6px;
-    font-size: 0.65rem;
-    transition: color 0.2s;
-  }
-
-  .expand-toggle:hover {
-    color: #00d9ff;
-  }
-
   .chevron {
     display: inline-block;
+    font-size: 0.65rem;
+    color: #666;
     transition: transform 0.3s ease-in-out;
   }
 
