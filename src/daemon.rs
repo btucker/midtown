@@ -2912,6 +2912,14 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 }
             }
 
+            // Send bell notification to human when @user is mentioned
+            if content.to_lowercase().contains("@user") && from != "user" {
+                info!("Bell notification: @user mentioned by {}", from);
+                if let Err(e) = state.coworkers.notify_user() {
+                    warn!("Failed to send bell notification for @user mention: {}", e);
+                }
+            }
+
             Response::success(
                 id,
                 serde_json::json!({

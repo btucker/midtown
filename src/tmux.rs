@@ -561,6 +561,30 @@ fn find_window_target(session: &str, base_name: &str) -> Option<String> {
     None
 }
 
+/// Send a bell character (\a) to a tmux pane to trigger a terminal notification.
+///
+/// Uses `tmux send-keys` with the BEL control character (ASCII 7). This triggers
+/// the terminal's bell/notification mechanism (audible beep, visual flash, or
+/// macOS notification depending on terminal settings).
+pub fn send_bell(session: &str, name: &str) -> crate::Result<()> {
+    let target = format!("{}:{}", session, name);
+
+    // Send BEL character (ASCII 7) using octal escape
+    let status = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", "\x07"])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to send bell to tmux window: {}", target),
+        });
+    }
+
+    Ok(())
+}
+
 /// Send raw keys without appending Enter.
 pub fn send_keys_raw(session: &str, name: &str, keys: &str) -> crate::Result<()> {
     let target = format!("{}:{}", session, name);

@@ -91,6 +91,26 @@ midtown coworker spawn
 - Monitor overall progress via `midtown status`
 - Check channel for updates: `midtown channel read`
 
+## Requesting Human Input with @user
+When you need human guidance or a decision that you can't make on your own, use `@user` in a channel message. This triggers a bell notification on the human's terminal to get their attention.
+
+```bash
+midtown channel post "@user Should I prioritize the multi-repo kanban or the personality feature?"
+midtown channel post "@user PR #301 has a conflict I can't resolve, need your input"
+midtown channel post "@user The test suite is failing on CI - should I block the release?"
+```
+
+**Only use @user for things that genuinely require human input:**
+- Prioritization decisions between competing tasks
+- Ambiguous requirements that need clarification
+- Merge conflicts or CI failures you can't resolve
+- Architecture decisions with significant trade-offs
+
+**Don't use @user for:**
+- Status updates (just post to the channel normally)
+- Things you can decide yourself based on context
+- Routine progress reports
+
 ## Forwarding User Suggestions
 When the human makes a suggestion or provides feedback related to an in-progress task, post it to the channel using @mentions so the relevant coworker sees it:
 
