@@ -826,7 +826,8 @@ pub fn handle_webserver_restart() -> Result<Response, String> {
 
 /// Handle `midtown stop` command.
 ///
-/// Stops the daemon and optionally the tmux session.
+/// Stops the daemon, webserver, and optionally the tmux session.
+/// Also cleans up any orphaned `gh webhook forward` processes.
 pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     let mut messages = Vec::new();
 
@@ -852,7 +853,7 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
         }
     }
 
-    // Step 2: Stop daemon
+    // Step 2: Stop daemon (this also signals the gh webhook forwarder to stop)
     if daemon_is_running() {
         // Read the PID and send SIGTERM for a clean shutdown
         let pid_path = midtown::paths::daemon_pid_file();
@@ -879,27 +880,76 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
         messages.push("Daemon was not running".to_string());
     }
 
+    // Step 3: Kill any orphaned `gh webhook forward` processes.
+    // The daemon's SIGTERM handler should have already stopped these, but
+    // if the daemon exited uncleanly they may be left behind.
+    kill_orphaned_webhook_forwarders(&mut messages);
+
+    // Step 4: Stop the standalone webserver
+    if webserver_is_running() {
+        match stop_webserver() {
+            Ok(true) => messages.push("Stopped webserver".to_string()),
+            Ok(false) => {}
+            Err(e) => messages.push(format!("Warning: Failed to stop webserver: {}", e)),
+        }
+    }
+
     Ok(Response::Message {
         message: messages.join(". "),
     })
 }
 
+/// Kill any orphaned `gh webhook forward` processes for the current project.
+///
+/// Uses `pkill` to find and terminate processes matching the project-specific
+/// webhook URL (e.g., `localhost:47023/webhook`). This avoids killing forwarders
+/// belonging to other running projects in a multi-project setup.
+///
+/// Falls back to a broad `gh webhook forward` pattern only if the project's
+/// webhook port cannot be determined.
+fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
+    // Try to scope the pattern to this project's webhook port
+    let pattern = resolve_project_name(&None)
+        .map(|name| midtown::config::get_project_daemon_config(&name))
+        .and_then(|daemon_cfg| daemon_cfg.webhook_port)
+        .map(|port| format!("localhost:{}/webhook", port))
+        .unwrap_or_else(|| "gh webhook forward".to_string());
+
+    let output = Command::new("pgrep").args(["-f", &pattern]).output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            // There are running gh webhook forward processes — kill them
+            let _ = Command::new("pkill")
+                .args(["-f", &pattern])
+                .stderr(Stdio::null())
+                .status();
+            messages.push("Stopped gh webhook forwarder".to_string());
+        }
+        _ => {
+            // No matching processes or pgrep failed — nothing to clean up
+        }
+    }
+}
+
 /// Handle `midtown restart` command.
 ///
-/// Gracefully restarts the daemon while preserving the tmux session and all
-/// running Claude processes (Lead and coworkers). Only the daemon process is
-/// restarted, which allows updating daemon code without losing work in progress.
-/// Also restarts the chat pane to pick up any code changes.
+/// Gracefully restarts the daemon and webserver while preserving the tmux
+/// session and all running Claude processes (Lead and coworkers). The daemon
+/// and webserver processes are restarted so they pick up new code, while
+/// the chat pane is also respawned.
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
 pub fn handle_restart() -> Result<Response, String> {
-    // Stop daemon only, keep the tmux session running
+    // Stop daemon and webserver, keep the tmux session running.
+    // handle_stop also cleans up orphaned gh webhook forwarders.
     let _ = handle_stop(true);
 
     // Brief pause for cleanup
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    // Start daemon (session already exists, so it will re-discover coworkers)
+    // Start daemon and webserver (session already exists, so it will
+    // re-discover coworkers; handle_start also launches the webserver)
     let result = handle_start(false, None, vec![])?;
 
     // Restart the chat pane to pick up code changes.
