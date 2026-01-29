@@ -146,28 +146,52 @@ impl PrIssueTracker {
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        // Check env vars for webhook config (can override or disable with MIDTOWN_WEBHOOK_PORT=0)
-        let webhook_port = std::env::var("MIDTOWN_WEBHOOK_PORT")
+        // Load config.toml for base daemon settings
+        let global_config = crate::config::GlobalConfig::load();
+        let daemon_section = &global_config.daemon;
+
+        // Config.toml values as base, then env vars can override
+        // Env var takes precedence if set, otherwise use config.toml, otherwise use default
+
+        // Webhook port: env var -> config.toml -> default
+        // Note: MIDTOWN_WEBHOOK_PORT=0 disables webhook entirely
+        let webhook_port = match std::env::var("MIDTOWN_WEBHOOK_PORT").ok() {
+            Some(s) => s
+                .parse()
+                .ok()
+                .map(|p: u16| if p == 0 { None } else { Some(p) })
+                .unwrap_or(Some(DEFAULT_WEBHOOK_PORT)),
+            None => match daemon_section.webhook_port {
+                Some(0) => None,
+                Some(p) => Some(p),
+                None => Some(DEFAULT_WEBHOOK_PORT),
+            },
+        };
+
+        // Webhook secret: env var -> config.toml -> None
+        let webhook_secret = std::env::var("MIDTOWN_WEBHOOK_SECRET")
             .ok()
-            .and_then(|s| s.parse().ok())
-            .map(|p| if p == 0 { None } else { Some(p) })
-            .unwrap_or(Some(DEFAULT_WEBHOOK_PORT));
-        let webhook_secret = std::env::var("MIDTOWN_WEBHOOK_SECRET").ok();
+            .or_else(|| daemon_section.webhook_secret.clone());
+
+        // Restart interval: env var -> config.toml -> default
         let webhook_restart_interval_secs = std::env::var("MIDTOWN_WEBHOOK_RESTART_INTERVAL")
             .ok()
             .and_then(|s| s.parse().ok())
+            .or(daemon_section.webhook_restart_interval_secs)
             .unwrap_or(DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS);
 
+        // PR poll interval: env var -> config.toml -> default
         let pr_poll_interval_secs = std::env::var("MIDTOWN_PR_POLL_INTERVAL")
             .ok()
             .and_then(|s| s.parse().ok())
+            .or(daemon_section.pr_poll_interval_secs)
             .unwrap_or(DEFAULT_PR_POLL_INTERVAL_SECS);
 
-        // Chat monitor is enabled by default, disable with MIDTOWN_CHAT_MONITOR=0
-        let chat_monitor_enabled = std::env::var("MIDTOWN_CHAT_MONITOR")
-            .ok()
-            .map(|s| s != "0")
-            .unwrap_or(true);
+        // Chat monitor: env var -> config.toml -> true (enabled by default)
+        let chat_monitor_enabled = match std::env::var("MIDTOWN_CHAT_MONITOR").ok() {
+            Some(s) => s != "0",
+            None => daemon_section.chat_monitor_enabled.unwrap_or(true),
+        };
 
         // Max concurrent coworkers: env var > project config > global config > default (16)
         let max_coworkers = std::env::var("MIDTOWN_MAX_COWORKERS")

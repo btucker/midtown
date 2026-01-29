@@ -13,6 +13,13 @@
 //!    required = [
 //!        "superpowers@claude-plugins-official",
 //!    ]
+//!
+//!    [daemon]
+//!    webhook_port = 47022
+//!    webhook_secret = "your-secret"
+//!    webhook_restart_interval_secs = 300
+//!    pr_poll_interval_secs = 60
+//!    chat_monitor_enabled = true
 //!    ```
 //!
 //! 2. **Project config** at `~/.midtown/projects/<project>/config.toml`:
@@ -24,6 +31,13 @@
 //!    ```
 //!
 //! Project config takes precedence over global defaults.
+//!
+//! Daemon settings can also be overridden via environment variables:
+//! - `MIDTOWN_WEBHOOK_PORT` (set to 0 to disable)
+//! - `MIDTOWN_WEBHOOK_SECRET`
+//! - `MIDTOWN_WEBHOOK_RESTART_INTERVAL`
+//! - `MIDTOWN_PR_POLL_INTERVAL`
+//! - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -108,6 +122,37 @@ pub struct PluginsConfig {
     pub required: Vec<String>,
 }
 
+/// Daemon configuration section.
+///
+/// These settings can be overridden by environment variables:
+/// - `MIDTOWN_WEBHOOK_PORT` (set to 0 to disable)
+/// - `MIDTOWN_WEBHOOK_SECRET`
+/// - `MIDTOWN_WEBHOOK_RESTART_INTERVAL`
+/// - `MIDTOWN_PR_POLL_INTERVAL`
+/// - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DaemonSection {
+    /// Port for the webhook server (default: 47022, set to 0 to disable)
+    #[serde(default)]
+    pub webhook_port: Option<u16>,
+
+    /// GitHub webhook secret for signature verification
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
+
+    /// Interval in seconds to restart webhook forwarder (default: 300)
+    #[serde(default)]
+    pub webhook_restart_interval_secs: Option<u64>,
+
+    /// Interval in seconds to poll PRs for actionable issues (default: 60)
+    #[serde(default)]
+    pub pr_poll_interval_secs: Option<u64>,
+
+    /// Enable chat monitor for @mention routing (default: true)
+    #[serde(default)]
+    pub chat_monitor_enabled: Option<bool>,
+}
+
 /// Global configuration from `~/.midtown/config.toml`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GlobalConfig {
@@ -118,6 +163,10 @@ pub struct GlobalConfig {
     /// Plugin configuration
     #[serde(default)]
     pub plugins: PluginsConfig,
+
+    /// Daemon configuration
+    #[serde(default)]
+    pub daemon: DaemonSection,
 }
 
 impl GlobalConfig {
@@ -442,5 +491,60 @@ max_coworkers = 4
     fn test_max_coworkers_default_none() {
         let config = ProjectConfig::default();
         assert_eq!(config.max_coworkers(), None);
+    }
+
+    #[test]
+    fn test_daemon_section_default() {
+        let config = GlobalConfig::default();
+        assert!(config.daemon.webhook_port.is_none());
+        assert!(config.daemon.webhook_secret.is_none());
+        assert!(config.daemon.webhook_restart_interval_secs.is_none());
+        assert!(config.daemon.pr_poll_interval_secs.is_none());
+        assert!(config.daemon.chat_monitor_enabled.is_none());
+    }
+
+    #[test]
+    fn test_daemon_section_parse() {
+        let toml = r#"
+[daemon]
+webhook_port = 8080
+webhook_secret = "my-secret"
+webhook_restart_interval_secs = 600
+pr_poll_interval_secs = 120
+chat_monitor_enabled = false
+"#;
+        let config: GlobalConfig = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.daemon.webhook_port, Some(8080));
+        assert_eq!(config.daemon.webhook_secret, Some("my-secret".to_string()));
+        assert_eq!(config.daemon.webhook_restart_interval_secs, Some(600));
+        assert_eq!(config.daemon.pr_poll_interval_secs, Some(120));
+        assert_eq!(config.daemon.chat_monitor_enabled, Some(false));
+    }
+
+    #[test]
+    fn test_daemon_section_partial() {
+        let toml = r#"
+[daemon]
+webhook_port = 9000
+"#;
+        let config: GlobalConfig = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.daemon.webhook_port, Some(9000));
+        // Other fields default to None
+        assert!(config.daemon.webhook_secret.is_none());
+        assert!(config.daemon.webhook_restart_interval_secs.is_none());
+        assert!(config.daemon.pr_poll_interval_secs.is_none());
+        assert!(config.daemon.chat_monitor_enabled.is_none());
+    }
+
+    #[test]
+    fn test_daemon_section_disable_webhook() {
+        let toml = r#"
+[daemon]
+webhook_port = 0
+"#;
+        let config: GlobalConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.daemon.webhook_port, Some(0));
     }
 }
