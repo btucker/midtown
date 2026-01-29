@@ -781,6 +781,7 @@ pub fn spawn_claude(
     repo_name: Option<&str>,
     resume: bool,
     isolated_tasks: bool,
+    additional_dirs: &[PathBuf],
 ) -> crate::Result<String> {
     // Get bin_command from project config
     let bin_command = crate::config::get_bin_command();
@@ -822,10 +823,18 @@ pub fn spawn_claude(
         )
     };
 
+    // Build --add-dir flags for multi-repo projects
+    let add_dir_flags: String = additional_dirs
+        .iter()
+        .filter_map(|d| d.to_str())
+        .map(|d| format!(" --add-dir {}", d))
+        .collect();
+
     let command = format!(
-        "{}; claude --dangerously-skip-permissions{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        "{}; claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
         env_vars,
         session_flag,
+        add_dir_flags,
         settings_file.display(),
         prompt_file.display()
     );
