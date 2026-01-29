@@ -543,6 +543,54 @@ impl DaemonState {
 /// Acquire an exclusive lock on the PID file.
 ///
 /// This enforces singleton behavior - only one daemon can run per repository.
+/// Load additional WorktreeManagers for multi-repo projects.
+///
+/// Reads the project config to find additional repos (beyond the primary/workdir)
+/// and creates a WorktreeManager for each. Failures are logged but don't prevent
+/// the daemon from starting - the primary repo always works.
+fn load_additional_worktree_managers(
+    project_name: &str,
+    config: &DaemonConfig,
+) -> Vec<WorktreeManager> {
+    let full_config = match crate::config::load_full_project_config(project_name) {
+        Some(c) => c,
+        None => return vec![],
+    };
+
+    let primary = config.workdir.to_string_lossy().to_string();
+    let repos = full_config.project.repos();
+
+    repos
+        .into_iter()
+        .filter(|r| {
+            // Skip the primary repo (it's already handled by the main WorktreeManager)
+            let repo_path = std::path::Path::new(r);
+            repo_path
+                .canonicalize()
+                .ok()
+                .and_then(|canon| {
+                    std::path::Path::new(&primary)
+                        .canonicalize()
+                        .ok()
+                        .map(|p| canon != p)
+                })
+                .unwrap_or_else(|| *r != primary.as_str())
+        })
+        .filter_map(
+            |repo_path| match WorktreeManager::new(std::path::PathBuf::from(repo_path)) {
+                Ok(mgr) => {
+                    info!("Additional repo for coworker worktrees: {}", repo_path);
+                    Some(mgr)
+                }
+                Err(e) => {
+                    warn!("Failed to create worktree manager for {}: {}", repo_path, e);
+                    None
+                }
+            },
+        )
+        .collect()
+}
+
 /// The lock is held for the lifetime of the returned File handle.
 ///
 /// Returns an error if another daemon is already running (lock already held).
@@ -670,7 +718,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             code: -32603,
             message: format!("Failed to initialize worktree manager: {}", e),
         })?;
-    let coworker_manager = CoworkerManager::new(session_name, worktree_manager);
+
+    // For multi-repo projects, create worktree managers for additional repos
+    let additional_worktree_managers = load_additional_worktree_managers(&project_name, &config);
+    let coworker_manager = CoworkerManager::with_additional_repos(
+        session_name,
+        worktree_manager,
+        additional_worktree_managers,
+    );
 
     // Start webhook server and gh forwarder watchdog if configured
     let mut webhook_rx = None;

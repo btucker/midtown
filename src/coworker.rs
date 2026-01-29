@@ -80,8 +80,10 @@ pub struct Coworker {
 pub struct CoworkerManager {
     /// Map of coworker name -> coworker info
     coworkers: Arc<RwLock<HashMap<String, Coworker>>>,
-    /// Worktree manager for creating isolated workspaces
+    /// Worktree manager for the primary repo
     worktree_manager: Arc<WorktreeManager>,
+    /// Worktree managers for additional repos in multi-repo projects
+    additional_worktree_managers: Vec<Arc<WorktreeManager>>,
     /// The tmux session name for the project (e.g., "midtown-projectname")
     session_name: String,
     /// Names of coworkers discovered from tmux on startup (before daemon was managing them).
@@ -94,12 +96,30 @@ impl CoworkerManager {
     ///
     /// # Arguments
     /// * `session_name` - The tmux session name (e.g., "midtown-projectname")
-    /// * `worktree_manager` - Manager for creating isolated git worktrees
+    /// * `worktree_manager` - Manager for creating isolated git worktrees (primary repo)
     pub fn new(session_name: impl Into<String>, worktree_manager: WorktreeManager) -> Self {
+        Self::with_additional_repos(session_name, worktree_manager, vec![])
+    }
+
+    /// Create a new coworker manager with additional repos for multi-repo projects.
+    ///
+    /// # Arguments
+    /// * `session_name` - The tmux session name (e.g., "midtown-projectname")
+    /// * `worktree_manager` - Manager for the primary repo
+    /// * `additional_worktree_managers` - Managers for additional repos
+    pub fn with_additional_repos(
+        session_name: impl Into<String>,
+        worktree_manager: WorktreeManager,
+        additional_worktree_managers: Vec<WorktreeManager>,
+    ) -> Self {
         let session = session_name.into();
         let manager = Self {
             coworkers: Arc::new(RwLock::new(HashMap::new())),
             worktree_manager: Arc::new(worktree_manager),
+            additional_worktree_managers: additional_worktree_managers
+                .into_iter()
+                .map(Arc::new)
+                .collect(),
             session_name: session,
             discovered_on_startup: Arc::new(RwLock::new(Vec::new())),
         };
@@ -360,6 +380,9 @@ impl CoworkerManager {
             })?
             .to_string();
 
+        // Create worktrees in additional repos (multi-repo projects)
+        let additional_dirs = self.create_additional_worktrees(&name);
+
         // Create the tmux window and spawn claude in the worktree
         // Pass repo_name so the coworker's tasks can be symlinked to the Lead's tasks
         // Pass isolated_tasks to control whether they get a shared or private task list
@@ -371,6 +394,7 @@ impl CoworkerManager {
             Some(repo_name),
             resume,
             isolated_tasks,
+            &additional_dirs,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -397,6 +421,70 @@ impl CoworkerManager {
         Ok(name)
     }
 
+    /// Create worktrees for a coworker in all additional repos (multi-repo projects).
+    ///
+    /// Returns the list of additional worktree paths to pass as --add-dir to Claude.
+    /// Failures in additional repos are logged but don't prevent coworker spawn.
+    fn create_additional_worktrees(&self, coworker_name: &str) -> Vec<std::path::PathBuf> {
+        let mut additional_dirs = Vec::new();
+        for mgr in &self.additional_worktree_managers {
+            match mgr.create(coworker_name) {
+                Ok(path) => {
+                    additional_dirs.push(path);
+                }
+                Err(WorktreeError::AlreadyExists(_)) => {
+                    // Reuse existing worktree path
+                    let path = mgr.worktree_path(coworker_name);
+                    if is_valid_git_worktree(&path) {
+                        additional_dirs.push(path);
+                    } else {
+                        // Corrupted - try cleanup + recreate
+                        tracing::warn!(
+                            "Additional worktree for {} in {} is corrupted, recreating",
+                            coworker_name,
+                            mgr.repo_name()
+                        );
+                        let _ = mgr.force_cleanup(coworker_name);
+                        match mgr.create(coworker_name) {
+                            Ok(path) => additional_dirs.push(path),
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to recreate additional worktree for {} in {}: {}",
+                                    coworker_name,
+                                    mgr.repo_name(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create additional worktree for {} in {}: {}",
+                        coworker_name,
+                        mgr.repo_name(),
+                        e
+                    );
+                }
+            }
+        }
+        additional_dirs
+    }
+
+    /// Clean up worktrees for a coworker in all additional repos.
+    fn cleanup_additional_worktrees(&self, coworker_name: &str) {
+        for mgr in &self.additional_worktree_managers {
+            if let Err(e) = mgr.force_cleanup(coworker_name) {
+                tracing::warn!(
+                    "Failed to cleanup additional worktree for {} in {}: {}",
+                    coworker_name,
+                    mgr.repo_name(),
+                    e
+                );
+            }
+        }
+    }
+
     /// Shutdown a coworker by name.
     pub fn shutdown(&self, name: &str) -> crate::Result<()> {
         // Update status to stopping
@@ -414,6 +502,9 @@ impl CoworkerManager {
 
         // Kill the tmux window
         tmux::kill_window(&self.session_name, name)?;
+
+        // Clean up additional repo worktrees (multi-repo projects)
+        self.cleanup_additional_worktrees(name);
 
         // Remove from tracking
         {
@@ -625,6 +716,9 @@ impl CoworkerManager {
             })?
             .to_string();
 
+        // Create worktrees in additional repos (multi-repo projects)
+        let additional_dirs = self.create_additional_worktrees(name);
+
         // Create the tmux window and spawn claude in the worktree
         let repo_name = self.worktree_manager.repo_name();
         let session_id = tmux::spawn_claude(
@@ -634,6 +728,7 @@ impl CoworkerManager {
             Some(repo_name),
             resume,
             isolated_tasks,
+            &additional_dirs,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -704,6 +799,14 @@ impl CoworkerManager {
             })?
             .to_string();
 
+        // Collect existing additional repo worktree paths (don't recreate for respawn)
+        let additional_dirs: Vec<std::path::PathBuf> = self
+            .additional_worktree_managers
+            .iter()
+            .map(|mgr| mgr.worktree_path(name))
+            .filter(|p| p.exists())
+            .collect();
+
         // Spawn Claude in the existing worktree, resuming the previous session
         // so the coworker picks up where they left off
         // Use shared task list (not isolated) for respawned coworkers
@@ -715,6 +818,7 @@ impl CoworkerManager {
             Some(repo_name),
             true,
             false,
+            &additional_dirs,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -1117,5 +1221,131 @@ mod tests {
         // New worktree should be valid
         assert!(new_path.exists());
         assert!(is_valid_git_worktree(&new_path));
+    }
+
+    /// Create a git repo in a temp dir for use as an additional repo
+    fn create_git_repo(dir: &std::path::Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .expect("Failed to init git repo");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(dir)
+            .output()
+            .expect("Failed to set git user.email");
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(dir)
+            .output()
+            .expect("Failed to set git user.name");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .current_dir(dir)
+            .output()
+            .expect("Failed to create initial commit");
+    }
+
+    #[test]
+    fn test_with_additional_repos() {
+        let primary_dir = TempDir::new().expect("Failed to create primary temp dir");
+        create_git_repo(primary_dir.path());
+
+        let extra_dir = TempDir::new().expect("Failed to create extra temp dir");
+        create_git_repo(extra_dir.path());
+
+        let primary_wt =
+            WorktreeManager::new(primary_dir.path().to_path_buf()).expect("primary wt manager");
+        let extra_wt =
+            WorktreeManager::new(extra_dir.path().to_path_buf()).expect("extra wt manager");
+
+        let manager =
+            CoworkerManager::with_additional_repos("midtown-test", primary_wt, vec![extra_wt]);
+
+        // Verify additional managers are tracked
+        assert_eq!(manager.additional_worktree_managers.len(), 1);
+    }
+
+    #[test]
+    fn test_create_additional_worktrees() {
+        let primary_dir = TempDir::new().expect("Failed to create primary temp dir");
+        create_git_repo(primary_dir.path());
+
+        let extra_dir = TempDir::new().expect("Failed to create extra temp dir");
+        create_git_repo(extra_dir.path());
+
+        let primary_wt =
+            WorktreeManager::new(primary_dir.path().to_path_buf()).expect("primary wt manager");
+        let extra_wt =
+            WorktreeManager::new(extra_dir.path().to_path_buf()).expect("extra wt manager");
+
+        let manager =
+            CoworkerManager::with_additional_repos("midtown-test", primary_wt, vec![extra_wt]);
+
+        let additional_dirs = manager.create_additional_worktrees("testworker");
+        assert_eq!(additional_dirs.len(), 1);
+        assert!(additional_dirs[0].exists());
+        assert!(is_valid_git_worktree(&additional_dirs[0]));
+    }
+
+    #[test]
+    fn test_create_additional_worktrees_empty_when_no_additional() {
+        let (manager, _temp_dir) = test_manager();
+        let additional_dirs = manager.create_additional_worktrees("testworker");
+        assert!(additional_dirs.is_empty());
+    }
+
+    #[test]
+    fn test_create_additional_worktrees_reuses_existing() {
+        let primary_dir = TempDir::new().expect("Failed to create primary temp dir");
+        create_git_repo(primary_dir.path());
+
+        let extra_dir = TempDir::new().expect("Failed to create extra temp dir");
+        create_git_repo(extra_dir.path());
+
+        let primary_wt =
+            WorktreeManager::new(primary_dir.path().to_path_buf()).expect("primary wt manager");
+        let extra_wt =
+            WorktreeManager::new(extra_dir.path().to_path_buf()).expect("extra wt manager");
+
+        let manager =
+            CoworkerManager::with_additional_repos("midtown-test", primary_wt, vec![extra_wt]);
+
+        // Create first time
+        let dirs1 = manager.create_additional_worktrees("testworker");
+        assert_eq!(dirs1.len(), 1);
+
+        // Create again - should reuse existing
+        let dirs2 = manager.create_additional_worktrees("testworker");
+        assert_eq!(dirs2.len(), 1);
+        assert_eq!(dirs1[0], dirs2[0]);
+    }
+
+    #[test]
+    fn test_cleanup_additional_worktrees() {
+        let primary_dir = TempDir::new().expect("Failed to create primary temp dir");
+        create_git_repo(primary_dir.path());
+
+        let extra_dir = TempDir::new().expect("Failed to create extra temp dir");
+        create_git_repo(extra_dir.path());
+
+        let primary_wt =
+            WorktreeManager::new(primary_dir.path().to_path_buf()).expect("primary wt manager");
+        let extra_wt =
+            WorktreeManager::new(extra_dir.path().to_path_buf()).expect("extra wt manager");
+        let extra_wt_path = extra_wt.worktree_path("testworker");
+
+        let manager =
+            CoworkerManager::with_additional_repos("midtown-test", primary_wt, vec![extra_wt]);
+
+        // Create worktrees
+        let dirs = manager.create_additional_worktrees("testworker");
+        assert_eq!(dirs.len(), 1);
+        assert!(extra_wt_path.exists());
+
+        // Cleanup
+        manager.cleanup_additional_worktrees("testworker");
+        assert!(!extra_wt_path.exists());
     }
 }
