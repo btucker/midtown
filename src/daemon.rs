@@ -63,8 +63,10 @@ pub struct DaemonConfig {
 /// Default interval for restarting the webhook forwarder (5 minutes)
 pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
 
-/// Default port for the webhook server (obscure to avoid conflicts)
-pub const DEFAULT_WEBHOOK_PORT: u16 = 47022;
+/// Default port for the per-project webhook server.
+/// Port 47022 is reserved for the shared multi-project webserver.
+/// Per-project daemons use 47023+.
+pub const DEFAULT_WEBHOOK_PORT: u16 = 47023;
 
 /// Default interval for polling PRs (30 seconds)
 pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;

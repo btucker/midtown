@@ -698,11 +698,16 @@ pub fn handle_start(
     if !webserver_is_running() {
         match launch_webserver() {
             Ok(()) => messages.push(format!(
-                "Started webserver on http://0.0.0.0:{}",
+                "Started webserver on http://localhost:{}",
                 midtown::webserver::DEFAULT_WEBSERVER_PORT
             )),
             Err(e) => messages.push(format!("Warning: Failed to start webserver: {}", e)),
         }
+    } else {
+        messages.push(format!(
+            "Webserver running at http://localhost:{}",
+            midtown::webserver::DEFAULT_WEBSERVER_PORT
+        ));
     }
 
     // Build response message
@@ -734,7 +739,7 @@ fn launch_webserver() -> Result<(), String> {
         std::env::current_exe().map_err(|e| format!("Failed to get current executable: {}", e))?;
 
     let mut cmd = Command::new(&exe);
-    cmd.arg("webserver");
+    cmd.args(["webserver", "run"]);
     // Don't pass --foreground so it daemonizes itself
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -808,12 +813,12 @@ pub fn handle_webserver_restart() -> Result<Response, String> {
     launch_webserver()?;
     if was_running {
         Ok(Response::message(format!(
-            "Restarted webserver on http://0.0.0.0:{}",
+            "Restarted webserver on http://localhost:{}",
             midtown::webserver::DEFAULT_WEBSERVER_PORT
         )))
     } else {
         Ok(Response::message(format!(
-            "Started webserver on http://0.0.0.0:{}",
+            "Started webserver on http://localhost:{}",
             midtown::webserver::DEFAULT_WEBSERVER_PORT
         )))
     }
