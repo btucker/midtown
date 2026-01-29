@@ -4123,6 +4123,15 @@ fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
 fn cleanup_orphaned_worktrees(state: &DaemonState) {
     let flagged = state.coworkers.cleanup_orphaned_worktrees();
 
+    // Prune warned_orphans: remove entries for worktrees that are no longer
+    // flagged (they were cleaned up or manually deleted). This ensures that
+    // if a reused coworker name becomes orphaned again, it will trigger a
+    // new warning.
+    {
+        let mut warned = state.warned_orphans.write().unwrap();
+        warned.retain(|name| flagged.contains(name));
+    }
+
     // Filter out worktrees we've already warned about (dedup across poll cycles)
     let already_warned = state.warned_orphans.read().unwrap();
     let new_flags: Vec<_> = flagged
