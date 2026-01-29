@@ -65,8 +65,8 @@ pub struct WebState {
     pub coworkers: Option<CoworkerManager>,
     /// Sender for channel posts to be processed by the daemon
     pub channel_post_tx: mpsc::Sender<MobileChannelPost>,
-    /// Web Push notification manager
-    pub push_manager: Option<PushManager>,
+    /// Web Push notification manager (shared with daemon)
+    pub push_manager: Option<Arc<PushManager>>,
 }
 
 /// Types of real-time updates sent to clients
@@ -757,25 +757,6 @@ pub fn broadcast_coworker_status(
     });
 
     let _ = tx.send(update);
-}
-
-/// Send a push notification to all subscribed clients.
-///
-/// This is called from the daemon when events worth notifying about occur
-/// (e.g., @user mentions, PR reviews requested).
-pub async fn send_push_notification(
-    push_manager: &PushManager,
-    title: &str,
-    body: &str,
-    tag: Option<&str>,
-) {
-    let payload = crate::push::PushPayload {
-        title: title.to_string(),
-        body: body.to_string(),
-        tag: tag.map(|s| s.to_string()),
-        url: None,
-    };
-    push_manager.send_to_all(&payload).await;
 }
 
 /// Broadcast a new channel message to all WebSocket clients

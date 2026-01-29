@@ -474,7 +474,8 @@ struct DaemonState {
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
     /// Web Push notification manager for sending notifications to PWA clients
-    push_manager: Option<crate::push::PushManager>,
+    /// (shared with the webserver to avoid race conditions on subscription storage)
+    push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
 }
 
 /// Number of coworker slots reserved for reviewers.
@@ -503,6 +504,7 @@ impl DaemonState {
         channel: Channel,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
         max_coworkers: usize,
+        push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
     ) -> crate::Result<Self> {
         // Load persistent GitHub state
         let github_state =
@@ -510,14 +512,6 @@ impl DaemonState {
                 warn!("Failed to load github-state.json: {}, using defaults", e);
                 crate::github_state::GitHubState::default()
             });
-
-        let push_manager = match crate::push::PushManager::new() {
-            Ok(pm) => Some(pm),
-            Err(e) => {
-                warn!("Failed to initialize push manager: {}", e);
-                None
-            }
-        };
 
         Ok(Self {
             coworkers,
@@ -559,21 +553,13 @@ impl DaemonState {
                 tag: Some(tag.to_string()),
                 url: None,
             };
-            // PushManager is not Send, so we need to do blocking reads + async sends
-            // Clone what we need for the spawned task
             let subs = pm.load_subscriptions();
             if subs.is_empty() {
                 return;
             }
-            let push_dir = pm.push_dir().to_path_buf();
+            // Clone the Arc to share the same PushManager instance with the async task
+            let pm = pm.clone();
             tokio::spawn(async move {
-                let pm = match crate::push::PushManager::from_path(push_dir) {
-                    Ok(pm) => pm,
-                    Err(e) => {
-                        warn!("Failed to create push manager for send: {}", e);
-                        return;
-                    }
-                };
                 pm.send_to_all(&payload).await;
             });
         }
@@ -778,6 +764,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut webhook_rx = None;
     let mut web_updates_tx = None;
     let mut mobile_rx: Option<tokio::sync::mpsc::Receiver<crate::web::MobileChannelPost>> = None;
+    let mut shared_push_manager: Option<std::sync::Arc<crate::push::PushManager>> = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
     if let Some(port) = config.webhook_port {
@@ -788,11 +775,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             web_static_dir: None, // Use default location
         };
         match start_webhook_server(webhook_config, Some(coworker_manager.clone())).await {
-            Ok((rx, updates_tx, mob_rx)) => {
+            Ok((rx, updates_tx, mob_rx, push_mgr)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
                 web_updates_tx = Some(updates_tx);
                 mobile_rx = Some(mob_rx);
+                shared_push_manager = push_mgr;
 
                 // Spawn webhook forwarder watchdog task
                 let restart_interval = config.webhook_restart_interval_secs;
@@ -834,6 +822,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         channel,
         web_updates_tx,
         config.max_coworkers,
+        shared_push_manager,
     )?);
     info!(
         "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",
