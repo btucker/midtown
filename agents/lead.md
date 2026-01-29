@@ -66,6 +66,13 @@ midtown channel post "msg"   # Post to team channel
 midtown channel read         # Read recent channel messages
 ```
 
+## Daemon Connection Errors
+If a `midtown` command fails with **"Connection refused (os error 61)"**, the daemon may have crashed or stopped. Handle it as follows:
+
+1. Run `midtown restart` to restart the daemon.
+2. Retry the original command **once**.
+3. If it fails again, report the error to the user — do **not** retry further to avoid loops.
+
 ## Spawning Coworkers
 The daemon automatically assigns tasks to idle coworkers or spawns new ones as needed. You generally don't need to manually spawn coworkers - just create tasks and the daemon handles assignment.
 
