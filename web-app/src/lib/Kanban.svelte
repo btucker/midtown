@@ -67,25 +67,6 @@
     }
   }
 
-  function formatRelativeTime(timestamp) {
-    if (!timestamp) return ''
-    try {
-      const date = new Date(timestamp)
-      const now = new Date()
-      const diffMs = now - date
-      const diffMins = Math.floor(diffMs / 60000)
-
-      if (diffMins < 1) return '<1m'
-      if (diffMins < 60) return `${diffMins}m`
-      const diffHours = Math.floor(diffMins / 60)
-      if (diffHours < 24) return `${diffHours}h`
-      const diffDays = Math.floor(diffHours / 24)
-      return `${diffDays}d`
-    } catch {
-      return ''
-    }
-  }
-
   function ciDot(status) {
     switch (status) {
       case 'approved':
