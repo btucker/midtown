@@ -1,0 +1,8 @@
+{
+  "name": "Midtown Mobile",
+  "short_name": "Midtown",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#262626",
+  "background_color": "#1c1c1c"
+}

@@ -91,6 +91,7 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
+    padding-top: calc(env(safe-area-inset-top) + 12px);
     background: #262626;
     border-bottom: 1px solid #3a3a3a;
   }
