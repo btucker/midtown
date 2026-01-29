@@ -608,23 +608,16 @@ pub fn handle_restart() -> Result<Response, String> {
     // Start daemon (session already exists, so it will re-discover coworkers)
     let result = handle_start(false)?;
 
-    // Restart the chat pane to pick up code changes
+    // Restart the chat pane to pick up code changes.
+    // Use respawn-pane -k to atomically kill the old process and start a new
+    // one, avoiding a race where send-keys characters (like 'i' in "midtown")
+    // are intercepted by the still-running TUI's input mode handler.
     if let Ok(session) = session_name() {
         let chat_pane = format!("{}:lead.1", session);
-
-        // Send Ctrl-C to stop the current chat process
-        let _ = Command::new("tmux")
-            .args(["send-keys", "-t", &chat_pane, "C-c"])
-            .status();
-
-        // Brief pause for the process to terminate
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Restart the chat using the configured binary
         let bin_command = midtown::config::get_bin_command();
         let chat_cmd = format!("{} chat", bin_command);
         let _ = Command::new("tmux")
-            .args(["send-keys", "-t", &chat_pane, &chat_cmd, "Enter"])
+            .args(["respawn-pane", "-k", "-t", &chat_pane, &chat_cmd])
             .status();
     }
 
