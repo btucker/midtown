@@ -73,6 +73,8 @@ export function connectWebSocket() {
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout)
       reconnectTimeout = null
+      // Fetch recent history to get messages sent during disconnection
+      fetchHistory()
     }
   }
 
