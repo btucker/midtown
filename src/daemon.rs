@@ -2371,12 +2371,12 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 }
             }
 
-            // Nudge lead when mobile messages arrive (from web UI)
-            if from == "mobile" {
+            // Nudge lead when user messages arrive (from web UI or TUI input)
+            if from == "user" {
                 let nudge_msg = format!("user: {}", content);
-                info!("Nudging Lead about mobile message");
+                info!("Nudging Lead about user message");
                 if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about mobile message: {}", e);
+                    warn!("Failed to nudge Lead about user message: {}", e);
                 }
             }
 

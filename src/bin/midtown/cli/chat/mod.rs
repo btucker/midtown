@@ -240,9 +240,63 @@ enum EventResult {
 
 /// Handle a terminal event, returns the result
 fn handle_event(app: &mut App, event: Event) -> EventResult {
+    // Input mode: route all key events to the text input
+    if app.input_mode {
+        if let Event::Key(key) = event
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = false;
+                }
+                KeyCode::Enter => {
+                    app.send_input();
+                    app.input_mode = false;
+                }
+                KeyCode::Backspace => {
+                    if app.input_cursor > 0 {
+                        app.input_cursor -= 1;
+                        app.input_text.remove(app.input_cursor);
+                    }
+                }
+                KeyCode::Delete => {
+                    if app.input_cursor < app.input_text.len() {
+                        app.input_text.remove(app.input_cursor);
+                    }
+                }
+                KeyCode::Left => {
+                    if app.input_cursor > 0 {
+                        app.input_cursor -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if app.input_cursor < app.input_text.len() {
+                        app.input_cursor += 1;
+                    }
+                }
+                KeyCode::Home => {
+                    app.input_cursor = 0;
+                }
+                KeyCode::End => {
+                    app.input_cursor = app.input_text.len();
+                }
+                KeyCode::Char(c) => {
+                    app.input_text.insert(app.input_cursor, c);
+                    app.input_cursor += 1;
+                }
+                _ => {}
+            }
+        }
+        return EventResult::Continue;
+    }
+
+    // Normal mode
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return EventResult::Exit,
+            KeyCode::Char('i') => {
+                app.input_mode = true;
+            }
             KeyCode::Char('s') => {
                 app.toggle_selection_mode();
                 return EventResult::ToggleSelectionMode;
