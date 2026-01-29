@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use midtown::{Channel, Message};
 
+use crate::client::DaemonClient;
+
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
     prs: Vec<KanbanPr>,
@@ -88,6 +90,8 @@ pub struct App {
     pub visible_height: usize,
     /// Channel for reading messages
     channel: Option<Channel>,
+    /// Daemon client for posting messages (enables nudge functionality)
+    daemon_client: Option<DaemonClient>,
     /// Whether initial messages have been loaded
     initial_load_done: bool,
     /// Byte position where loaded history starts (0 means all history loaded)
@@ -138,6 +142,9 @@ impl App {
 
         let channel = Channel::for_repo(&channel_repo).ok();
 
+        // Connect to daemon for posting messages (optional - falls back to direct write)
+        let daemon_client = DaemonClient::connect().ok();
+
         // Get repo name with owner from gh CLI (e.g., "btucker/midtown")
         let repo_name = fetch_repo_name();
 
@@ -146,6 +153,7 @@ impl App {
             scroll_offset: 0,
             visible_height: 20,
             channel,
+            daemon_client,
             initial_load_done: false,
             history_start_position: 0,
             history_fully_loaded: false,
@@ -361,20 +369,32 @@ impl App {
     }
 
     /// Send the current input text as a message to the channel
+    ///
+    /// Prefers routing through the daemon RPC so the Lead gets nudged about
+    /// new user messages. Falls back to direct channel write if daemon is unavailable.
     pub fn send_input(&mut self) {
         let text = self.input_text.trim().to_string();
         if text.is_empty() {
             return;
         }
-        if let Some(ref channel) = self.channel {
+
+        let sent = if let Some(ref client) = self.daemon_client {
+            // Route through daemon so it can nudge the Lead
+            client.channel_post_as(&text, "user").is_ok()
+        } else if let Some(ref channel) = self.channel {
+            // Fallback: direct write (won't trigger Lead nudge)
             let message = Message::text("user", &text);
-            if channel.send(&message).is_ok() {
-                self.input_text.clear();
-                self.input_cursor = 0;
-                // Refresh to pick up the new message
-                self.refresh();
-                self.scroll_to_bottom();
-            }
+            channel.send(&message).is_ok()
+        } else {
+            false
+        };
+
+        if sent {
+            self.input_text.clear();
+            self.input_cursor = 0;
+            // Refresh to pick up the new message
+            self.refresh();
+            self.scroll_to_bottom();
         }
     }
 
@@ -874,6 +894,7 @@ mod tests {
             scroll_offset: 0,
             visible_height: 20,
             channel: None,
+            daemon_client: None,
             initial_load_done: true,
             history_start_position: 0,
             history_fully_loaded: true,
@@ -942,6 +963,7 @@ mod tests {
             scroll_offset: 0, // "at bottom" - should show most recent
             visible_height: 10,
             channel: None,
+            daemon_client: None,
             initial_load_done: true,
             history_start_position: 0,
             history_fully_loaded: true,
