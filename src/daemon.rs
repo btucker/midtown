@@ -1866,6 +1866,12 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                 );
                             }
                         }
+                    } else if state.is_at_coworker_limit() {
+                        // At coworker limit — post to channel instead of spawning
+                        debug!(
+                            "Max coworkers limit ({}) reached, cannot spawn {} for PR #{}",
+                            state.max_coworkers, owner, pr_number
+                        );
                     } else {
                         // Owner is not active — spawn them to address the review
                         info!(
@@ -1898,6 +1904,19 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                     "Failed to spawn {} for PR #{} review complete: {}",
                                     owner, pr_number, e
                                 );
+                                // Fall back to posting to channel so the team knows
+                                let channel_message = format!(
+                                    "PR #{} ({}) owned by {} - review complete: {} (spawn failed)",
+                                    pr_number,
+                                    truncate_str(title, 40),
+                                    owner,
+                                    get_issue_action(PrIssueType::ReviewComplete)
+                                );
+                                let msg =
+                                    Message::new("midtown", channel_message, MessageType::Text);
+                                if let Err(e) = state.send_and_broadcast(&msg) {
+                                    warn!("Failed to post PR issue to channel: {}", e);
+                                }
                             }
                         }
                     }
