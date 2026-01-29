@@ -147,19 +147,21 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let (_pending, in_progress, _completed) = app.tasks_by_status();
     let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
 
-    // Split into repo status (top), kanban (middle), and chat (bottom) panels
+    // Split into repo status (top), kanban, chat, and input (bottom) panels
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(REPO_STATUS_HEIGHT),
             Constraint::Length(kanban_height),
             Constraint::Min(10),
+            Constraint::Length(3),
         ])
         .split(f.area());
 
     draw_repo_status_line(f, app, chunks[0]);
     let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
     draw_chat_panel(f, app, chunks[2]);
+    draw_input_box(f, app, chunks[3]);
 
     hyperlinks
 }
@@ -693,6 +695,43 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+}
+
+/// Draw the input box for typing messages
+fn draw_input_box(f: &mut Frame, app: &App, area: Rect) {
+    let border_color = if app.input_mode {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+    let title = if app.input_mode {
+        " Message (Enter to send, Esc to cancel) "
+    } else {
+        " Press 'i' to type "
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+
+    let display_text = if app.input_mode || !app.input_text.is_empty() {
+        app.input_text.as_str()
+    } else {
+        ""
+    };
+
+    let paragraph = Paragraph::new(Line::from(display_text.to_string()))
+        .style(Style::default().fg(Color::White));
+
+    f.render_widget(block, area);
+    f.render_widget(paragraph, inner);
+
+    // Show cursor when in input mode
+    if app.input_mode {
+        f.set_cursor_position((inner.x + app.input_cursor as u16, inner.y));
+    }
 }
 
 /// Render a single message into one or more Lines

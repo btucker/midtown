@@ -408,20 +408,20 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
 
     match msg {
         ClientMessage::SendMessage { content } => {
-            // Post message to channel as "mobile" user
+            // Post message to channel as "user"
             let channel = Channel::for_repo(&state.config.repo)
                 .map_err(|e| format!("Failed to open channel: {}", e))?;
 
-            let message = Message::text("mobile", &content);
+            let message = Message::text("user", &content);
             channel
                 .send(&message)
                 .map_err(|e| format!("Failed to send message: {}", e))?;
 
-            info!("Mobile user sent: {}", content);
+            info!("User sent: {}", content);
 
             // Broadcast the message to all connected clients
             let update = WebUpdate::ChannelMessage(ChannelMessageData {
-                from: "mobile".to_string(),
+                from: "user".to_string(),
                 content,
                 timestamp: message.timestamp.to_rfc3339(),
                 msg_type: "text".to_string(),

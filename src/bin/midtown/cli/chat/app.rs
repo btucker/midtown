@@ -115,6 +115,12 @@ pub struct App {
     repo_status_receiver: Option<Receiver<RepoStatus>>,
     /// Selection mode - when true, mouse capture is disabled for text selection
     pub selection_mode: bool,
+    /// Input mode - when true, keyboard input goes to the text input
+    pub input_mode: bool,
+    /// Current text in the input field
+    pub input_text: String,
+    /// Cursor position within input_text
+    pub input_cursor: usize,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -153,6 +159,9 @@ impl App {
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
             selection_mode: false,
+            input_mode: false,
+            input_text: String::new(),
+            input_cursor: 0,
         };
 
         // Initial load
@@ -349,6 +358,24 @@ impl App {
     /// Toggle selection mode (disables mouse capture for text selection)
     pub fn toggle_selection_mode(&mut self) {
         self.selection_mode = !self.selection_mode;
+    }
+
+    /// Send the current input text as a message to the channel
+    pub fn send_input(&mut self) {
+        let text = self.input_text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        if let Some(ref channel) = self.channel {
+            let message = Message::text("user", &text);
+            if channel.send(&message).is_ok() {
+                self.input_text.clear();
+                self.input_cursor = 0;
+                // Refresh to pick up the new message
+                self.refresh();
+                self.scroll_to_bottom();
+            }
+        }
     }
 
     /// Maximum scroll offset
@@ -882,6 +909,9 @@ mod tests {
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             selection_mode: false,
+            input_mode: false,
+            input_text: String::new(),
+            input_cursor: 0,
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -925,6 +955,9 @@ mod tests {
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             selection_mode: false,
+            input_mode: false,
+            input_text: String::new(),
+            input_cursor: 0,
         };
 
         let visible = app.visible_messages();
