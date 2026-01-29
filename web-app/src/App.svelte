@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import Channel from './lib/Channel.svelte'
   import Status from './lib/Status.svelte'
-  import Lead from './lib/Lead.svelte'
+  import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
   import { messages, connected, coworkers } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus } from './lib/api.js'
@@ -42,10 +42,10 @@
       Status
     </button>
     <button
-      class:active={activeTab === 'lead'}
-      onclick={() => (activeTab = 'lead')}
+      class:active={activeTab === 'tmux'}
+      onclick={() => (activeTab = 'tmux')}
     >
-      Lead
+      Tmux
     </button>
   </nav>
 
@@ -56,8 +56,8 @@
       <Channel />
     {:else if activeTab === 'status'}
       <Status />
-    {:else if activeTab === 'lead'}
-      <Lead />
+    {:else if activeTab === 'tmux'}
+      <Tmux />
     {/if}
   </div>
 </main>

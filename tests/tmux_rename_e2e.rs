@@ -147,6 +147,100 @@ fn test_list_windows_deduplicates_after_stripping() {
 #[test]
 #[timeout(30000)]
 #[ignore] // Requires tmux to be running
+fn test_list_all_windows_includes_lead() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(
+        create_test_session(&session),
+        "Failed to create tmux session"
+    );
+
+    // The default window is the first one created; rename it to "lead"
+    let default_window = format!("{}:0", session);
+    let _ = Command::new("tmux")
+        .args(["rename-window", "-t", &default_window, "lead"])
+        .status();
+    thread::sleep(Duration::from_millis(100));
+
+    // Create coworker windows
+    assert!(
+        create_test_window(&session, "york"),
+        "Failed to create window"
+    );
+    assert!(
+        create_test_window(&session, "amsterdam"),
+        "Failed to create window"
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    // list_all_windows should include "lead"
+    let all_windows = midtown::tmux::list_all_windows(&session).expect("list_all_windows failed");
+    // list_windows should NOT include "lead"
+    let coworker_windows = midtown::tmux::list_windows(&session).expect("list_windows failed");
+
+    kill_test_session(&session);
+
+    assert!(
+        all_windows.contains(&"lead".to_string()),
+        "list_all_windows should include 'lead', got: {:?}",
+        all_windows
+    );
+    assert!(
+        all_windows.contains(&"york".to_string()),
+        "list_all_windows should include 'york', got: {:?}",
+        all_windows
+    );
+    assert!(
+        !coworker_windows.contains(&"lead".to_string()),
+        "list_windows should NOT include 'lead', got: {:?}",
+        coworker_windows
+    );
+}
+
+#[test]
+#[timeout(30000)]
+#[ignore] // Requires tmux to be running
+fn test_list_all_windows_deduplicates() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(
+        create_test_session(&session),
+        "Failed to create tmux session"
+    );
+
+    assert!(
+        create_test_window(&session, "york"),
+        "Failed to create window"
+    );
+    thread::sleep(Duration::from_millis(100));
+
+    // Rename to add status suffix
+    rename_tmux_window(&session, "york", "york:done#204");
+    thread::sleep(Duration::from_millis(100));
+
+    let windows = midtown::tmux::list_all_windows(&session).expect("list_all_windows failed");
+
+    kill_test_session(&session);
+
+    let york_count = windows.iter().filter(|w| w.as_str() == "york").count();
+    assert_eq!(
+        york_count, 1,
+        "Expected exactly one 'york' in list_all_windows, got {} in {:?}",
+        york_count, windows
+    );
+}
+
+#[test]
+#[timeout(30000)]
+#[ignore] // Requires tmux to be running
 fn test_rename_window_works_after_previous_rename() {
     if !tmux_available() {
         eprintln!("Skipping test: tmux not available");

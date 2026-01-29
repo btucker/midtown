@@ -6,7 +6,7 @@
 use axum::{
     Router,
     extract::{
-        State,
+        Query, State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
@@ -130,6 +130,8 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             .route("/api/channel", get(api_channel_history))
             .route("/api/status", get(api_status))
             .route("/api/lead-pane", get(api_lead_pane))
+            .route("/api/tmux-pane", get(api_tmux_pane))
+            .route("/api/tmux-windows", get(api_tmux_windows))
             .fallback_service(serve_dir)
             .with_state(state)
     } else {
@@ -144,6 +146,8 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             .route("/api/channel", get(api_channel_history))
             .route("/api/status", get(api_status))
             .route("/api/lead-pane", get(api_lead_pane))
+            .route("/api/tmux-pane", get(api_tmux_pane))
+            .route("/api/tmux-windows", get(api_tmux_windows))
             .route("/", get(dev_placeholder))
             .with_state(state)
     }
@@ -378,6 +382,70 @@ async fn api_lead_pane(
     }
 }
 
+/// Query parameters for tmux pane capture
+#[derive(Debug, Deserialize)]
+struct TmuxPaneQuery {
+    /// Which tmux window to capture (e.g., "lead", "riverside")
+    window: String,
+}
+
+/// Get the content of any tmux window's pane
+///
+/// Accepts a `?window=name` query parameter to select which window to capture.
+/// Used by the "Tmux" tab in the web UI.
+async fn api_tmux_pane(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<TmuxPaneQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let session = format!("{}{}", tmux::SESSION_PREFIX, state.config.repo);
+    let window = params.window;
+
+    // Validate window name: only allow non-empty alphanumeric, hyphens, and underscores
+    if window.is_empty()
+        || !window
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let target = format!("{}:{}", session, window);
+
+    let content = tokio::task::spawn_blocking(move || tmux::capture_pane(&target))
+        .await
+        .map_err(|e| {
+            error!("Failed to spawn blocking task: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    match content {
+        Some(text) => Ok(axum::Json(serde_json::json!({ "content": text }))),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// List all tmux windows in the session
+///
+/// Returns a JSON array of window names that can be passed to `/api/tmux-pane?window=`.
+async fn api_tmux_windows(
+    State(state): State<Arc<WebState>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let session = format!("{}{}", tmux::SESSION_PREFIX, state.config.repo);
+
+    let windows = tokio::task::spawn_blocking(move || tmux::list_all_windows(&session))
+        .await
+        .map_err(|e| {
+            error!("Failed to spawn blocking task: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map_err(|e| {
+            error!("Failed to list tmux windows: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(axum::Json(serde_json::json!({ "windows": windows })))
+}
+
 /// WebSocket upgrade handler
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<WebState>>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_websocket(socket, state))
@@ -561,6 +629,38 @@ mod tests {
         assert!(json.contains("lexington"));
         assert!(json.contains("running"));
         assert!(json.contains("Fix auth bug"));
+    }
+
+    #[test]
+    fn test_tmux_pane_query_parsing() {
+        // Valid window names
+        let json = r#"{"window": "lead"}"#;
+        let query: TmuxPaneQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.window, "lead");
+
+        let json = r#"{"window": "riverside"}"#;
+        let query: TmuxPaneQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.window, "riverside");
+    }
+
+    #[test]
+    fn test_tmux_window_name_validation() {
+        // Valid names: non-empty, alphanumeric, hyphens, underscores
+        let valid = |name: &str| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        };
+
+        assert!(valid("lead"));
+        assert!(valid("riverside"));
+        assert!(valid("my-window"));
+        assert!(valid("window_1"));
+        assert!(!valid("foo:bar"));
+        assert!(!valid("foo;bar"));
+        assert!(!valid("foo bar"));
+        assert!(!valid(""));
     }
 
     #[test]
