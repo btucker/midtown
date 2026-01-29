@@ -69,6 +69,10 @@ pub struct Coworker {
     pub current_task: Option<String>,
     /// Claude Code session ID (UUID) for task symlink management
     pub session_id: Option<String>,
+    /// Whether this coworker has an isolated task list (e.g., review coworkers)
+    /// Isolated coworkers are auto-killed immediately when they go idle.
+    #[serde(default)]
+    pub isolated_tasks: bool,
 }
 
 /// Manager for coworker lifecycle.
@@ -152,6 +156,8 @@ impl CoworkerManager {
                 .to_string();
 
             // Create a coworker entry
+            // Assume not isolated (shared task list) for discovered coworkers - they were
+            // likely regular coworkers. Isolated review coworkers get killed when idle anyway.
             let coworker = Coworker {
                 name: window_name.clone(),
                 status: CoworkerStatus::Running,
@@ -159,6 +165,7 @@ impl CoworkerManager {
                 started_at: Utc::now(), // Unknown, use now as approximation
                 current_task: None,     // Will be discovered via task tracking
                 session_id: None,       // Will be set when coworker registers
+                isolated_tasks: false,
             };
 
             coworkers.insert(window_name.clone(), coworker);
@@ -228,7 +235,16 @@ impl CoworkerManager {
     /// If `prompt` is provided, waits for the coworker to initialize and sends the
     /// prompt as the initial nudge. This is the preferred way to send initial
     /// instructions as it avoids the race condition of spawning then nudging separately.
-    pub fn spawn(&self, resume: bool, prompt: Option<&str>) -> crate::Result<String> {
+    ///
+    /// If `isolated_tasks` is true, the coworker gets its own task list (no shared
+    /// CLAUDE_CODE_TASK_LIST_ID). This is used for review coworkers whose sub-tasks
+    /// should not pollute the shared task list.
+    pub fn spawn(
+        &self,
+        resume: bool,
+        prompt: Option<&str>,
+        isolated_tasks: bool,
+    ) -> crate::Result<String> {
         let name = self
             .next_available_name()
             .ok_or_else(|| crate::Error::Rpc {
@@ -325,6 +341,7 @@ impl CoworkerManager {
 
         // Create the tmux window and spawn claude in the worktree
         // Pass repo_name so the coworker's tasks can be symlinked to the Lead's tasks
+        // Pass isolated_tasks to control whether they get a shared or private task list
         let repo_name = self.worktree_manager.repo_name();
         let session_id = tmux::spawn_claude(
             &self.session_name,
@@ -332,6 +349,7 @@ impl CoworkerManager {
             &working_dir,
             Some(repo_name),
             resume,
+            isolated_tasks,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -342,6 +360,7 @@ impl CoworkerManager {
             started_at: Utc::now(),
             current_task: None,
             session_id: Some(session_id),
+            isolated_tasks,
         };
 
         {
@@ -503,6 +522,7 @@ impl CoworkerManager {
         name: &str,
         resume: bool,
         prompt: Option<&str>,
+        isolated_tasks: bool,
     ) -> crate::Result<String> {
         // Check if already running
         {
@@ -589,6 +609,7 @@ impl CoworkerManager {
             &working_dir,
             Some(repo_name),
             resume,
+            isolated_tasks,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -599,6 +620,7 @@ impl CoworkerManager {
             started_at: Utc::now(),
             current_task: None,
             session_id: Some(session_id),
+            isolated_tasks,
         };
 
         {
@@ -660,6 +682,7 @@ impl CoworkerManager {
 
         // Spawn Claude in the existing worktree, resuming the previous session
         // so the coworker picks up where they left off
+        // Use shared task list (not isolated) for respawned coworkers
         let repo_name = self.worktree_manager.repo_name();
         let session_id = tmux::spawn_claude(
             &self.session_name,
@@ -667,6 +690,7 @@ impl CoworkerManager {
             &working_dir,
             Some(repo_name),
             true,
+            false,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -677,6 +701,7 @@ impl CoworkerManager {
             started_at: Utc::now(),
             current_task: None,
             session_id: Some(session_id),
+            isolated_tasks: false,
         };
 
         {
@@ -819,6 +844,7 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
+                    isolated_tasks: false,
                 },
             );
         }
@@ -849,6 +875,7 @@ mod tests {
                         started_at: Utc::now(),
                         current_task: None,
                         session_id: None,
+                        isolated_tasks: false,
                     },
                 );
             }
@@ -877,6 +904,7 @@ mod tests {
                         started_at: Utc::now(),
                         current_task: None,
                         session_id: None,
+                        isolated_tasks: false,
                     },
                 );
             }
@@ -919,6 +947,7 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
+                    isolated_tasks: false,
                 },
             );
         }
@@ -945,17 +974,18 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
+                    isolated_tasks: false,
                 },
             );
         }
 
         // spawn_with_name should fail if coworker is already running
-        let result = manager.spawn_with_name("lexington", false, None);
+        let result = manager.spawn_with_name("lexington", false, None, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
 
         // Also test with resume=true
-        let result = manager.spawn_with_name("lexington", true, None);
+        let result = manager.spawn_with_name("lexington", true, None, false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
     }
