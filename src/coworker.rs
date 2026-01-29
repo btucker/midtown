@@ -497,8 +497,11 @@ impl CoworkerManager {
             });
         }
 
-        // Send keys to the lead window
-        tmux::send_keys(&self.session_name, "lead", message)
+        // Send keys to the lead's Claude Code pane (pane .0), NOT the chat pane (.1).
+        // Without the pane qualifier, tmux targets the active pane which is often
+        // the chat TUI — causing nudge text to be sent as a user message, which
+        // triggers more @lead nudges in an infinite feedback loop.
+        tmux::send_keys(&self.session_name, "lead.0", message)
     }
 
     /// Spawn a coworker with a specific name.
