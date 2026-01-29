@@ -821,17 +821,26 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                 }
             } else {
                 // Coworker is idle and has no open PRs
-                match idle_since.get(coworker) {
-                    Some(since) => {
-                        // Check if they've been idle long enough
-                        if now.duration_since(*since) >= IDLE_SHUTDOWN_DURATION {
-                            to_shutdown.push(coworker.clone());
+                // Isolated coworkers (e.g., reviewers) are killed immediately when idle
+                if cw.isolated_tasks {
+                    to_shutdown.push(coworker.clone());
+                    debug!(
+                        "Isolated coworker {} is idle, scheduling immediate shutdown",
+                        coworker
+                    );
+                } else {
+                    match idle_since.get(coworker) {
+                        Some(since) => {
+                            // Check if they've been idle long enough
+                            if now.duration_since(*since) >= IDLE_SHUTDOWN_DURATION {
+                                to_shutdown.push(coworker.clone());
+                            }
                         }
-                    }
-                    None => {
-                        // Just became idle, start tracking
-                        idle_since.insert(coworker.clone(), now);
-                        debug!("Coworker {} is now idle, starting timer", coworker);
+                        None => {
+                            // Just became idle, start tracking
+                            idle_since.insert(coworker.clone(), now);
+                            debug!("Coworker {} is now idle, starting timer", coworker);
+                        }
                     }
                 }
             }
@@ -845,16 +854,32 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
 
     // Shutdown idle coworkers (outside the lock)
     for name in to_shutdown {
-        info!(
-            "Auto-shutting down idle coworker: {} (idle for 5+ minutes)",
-            name
-        );
+        // Check if this is an isolated coworker for the log message
+        let is_isolated = active_coworkers
+            .iter()
+            .find(|cw| cw.name == name)
+            .map(|cw| cw.isolated_tasks)
+            .unwrap_or(false);
+
+        if is_isolated {
+            info!(
+                "Auto-shutting down isolated coworker: {} (review complete)",
+                name
+            );
+        } else {
+            info!(
+                "Auto-shutting down idle coworker: {} (idle for 5+ minutes)",
+                name
+            );
+        }
 
         // Post system message to channel
-        let msg = Message::text(
-            "system",
-            format!("⏱️ Auto-shutting down idle coworker: {}", name),
-        );
+        let shutdown_msg = if is_isolated {
+            format!("🔍 Auto-shutting down reviewer: {} (review complete)", name)
+        } else {
+            format!("⏱️ Auto-shutting down idle coworker: {}", name)
+        };
+        let msg = Message::text("system", shutdown_msg);
         if let Err(e) = state.send_and_broadcast(&msg) {
             warn!("Failed to post shutdown message to channel: {}", e);
         }
@@ -1276,9 +1301,10 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                 name
             );
             // spawn_with_name handles waiting and sending the prompt internally
+            // Use shared task list (not isolated) for @mention spawns
             match state
                 .coworkers
-                .spawn_with_name(&name, true, Some(&nudge_text))
+                .spawn_with_name(&name, true, Some(&nudge_text), false)
             {
                 Ok(_) => {
                     info!("Spawned coworker {} via @mention", name);
@@ -1358,12 +1384,15 @@ async fn poll_prs_for_issues(
         .collect();
 
     // Run gh pr list command (include createdAt and isDraft for review filtering)
+    // Include state field to filter out merged/closed PRs after restart
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
             "list",
+            "--state",
+            "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
         ])
         .output()
         .await?;
@@ -1384,6 +1413,29 @@ async fn poll_prs_for_issues(
     {
         let mut review_tracker = state.pr_review_tracker.lock().await;
         review_tracker.cleanup();
+    }
+
+    // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
+    // open PRs, but verify via the state field to guard against stale/cached results)
+    let prs: Vec<serde_json::Value> = prs
+        .into_iter()
+        .filter(|pr| {
+            let state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("OPEN");
+            state == "OPEN"
+        })
+        .collect();
+
+    // Clean up persistent reviewer assignments for PRs that are no longer open
+    {
+        let open_pr_numbers: Vec<u64> = prs
+            .iter()
+            .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+            .collect();
+        let mut github_state = state.github_state.lock().await;
+        github_state.cleanup_closed_prs(&open_pr_numbers);
+        if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
+            warn!("Failed to save github-state.json after cleanup: {}", e);
+        }
     }
 
     for pr in &prs {
@@ -1436,7 +1488,11 @@ async fn poll_prs_for_issues(
                     "PR #{} owner {} is not active, spawning to address {}",
                     pr_number, owner, issue_type
                 );
-                match state.coworkers.spawn_with_name(owner, true, Some(&message)) {
+                // Use shared task list (not isolated) for PR issue spawns
+                match state
+                    .coworkers
+                    .spawn_with_name(owner, true, Some(&message), false)
+                {
                     Ok(_) => {
                         info!(
                             "Spawned {} to address {} on PR #{}",
@@ -1498,7 +1554,7 @@ async fn poll_prs_for_issues(
     }
 
     // Auto-spawn reviewers for PRs that need review
-    spawn_reviewers_for_prs(state, &prs, &active_coworkers).await;
+    spawn_reviewers_for_prs(state, &prs).await;
 
     Ok(())
 }
@@ -1510,15 +1566,11 @@ async fn poll_prs_for_issues(
 /// - Are old enough (past the review delay)
 /// - Don't have a Claude review comment yet
 /// - Haven't been assigned for review recently
-/// - Aren't owned by the potential reviewer (no self-reviews)
 ///
-/// For each eligible PR, it spawns a new coworker (or uses an idle one) and
-/// nudges them to run `/code-review:code-review <pr-number>`.
-async fn spawn_reviewers_for_prs(
-    state: &DaemonState,
-    prs: &[serde_json::Value],
-    active_coworkers: &[String],
-) {
+/// For each eligible PR, spawns a fresh coworker with an isolated task list
+/// and nudges them to run `/code-review:code-review <pr-number>`. The isolated
+/// task list ensures review sub-tasks don't pollute the shared task list.
+async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value]) {
     // Check rate limit
     let current_review_count = {
         let tracker = state.pr_review_tracker.lock().await;
@@ -1614,27 +1666,33 @@ async fn spawn_reviewers_for_prs(
             continue;
         }
 
-        // Get PR owner from branch prefix
-        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-        let pr_owner = coworker_from_branch(head_ref);
+        // Always spawn a fresh coworker for reviews with an isolated task list.
+        // This ensures review sub-tasks don't pollute the shared task list and
+        // can't be accidentally claimed by other coworkers.
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        debug!(
+            "Spawning isolated coworker to review PR #{}: {}",
+            pr_number,
+            truncate_str(title, 40)
+        );
 
-        // Find a reviewer (not the PR owner for no self-reviews)
-        let reviewer = find_available_reviewer(state, active_coworkers, pr_owner.as_deref()).await;
-
-        match reviewer {
-            Some(reviewer_name) => {
-                let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        // Spawn with isolated task list - review coworkers get their own task list
+        // so their sub-tasks don't pollute the shared task list. They'll be
+        // auto-killed when they go idle (no 5-minute wait).
+        match state.coworkers.spawn(false, None, true) {
+            Ok(new_coworker) => {
+                state.broadcast_coworker_update(&new_coworker, "running", None);
 
                 // Record the assignment (in-memory)
                 {
                     let mut tracker = state.pr_review_tracker.lock().await;
-                    tracker.assign(pr_number, &reviewer_name);
+                    tracker.assign(pr_number, &new_coworker);
                 }
 
                 // Persist the assignment to github-state.json
                 {
                     let mut github_state = state.github_state.lock().await;
-                    github_state.assign_reviewer(pr_number, &reviewer_name);
+                    github_state.assign_reviewer(pr_number, &new_coworker);
                     if let Err(e) =
                         crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
                     {
@@ -1642,7 +1700,10 @@ async fn spawn_reviewers_for_prs(
                     }
                 }
 
-                // Nudge the reviewer to run /code-review:code-review
+                // Give the new coworker time to start (async sleep)
+                tokio::time::sleep(Duration::from_secs(3)).await;
+
+                // Nudge the new reviewer to run /code-review:code-review
                 let nudge_msg = format!(
                     "Please review PR #{}: {}. Run: /code-review:code-review {}",
                     pr_number,
@@ -1650,31 +1711,31 @@ async fn spawn_reviewers_for_prs(
                     pr_number
                 );
 
-                match state.coworkers.nudge(&reviewer_name, &nudge_msg) {
+                match state.coworkers.nudge(&new_coworker, &nudge_msg) {
                     Ok(()) => {
                         info!(
-                            "Assigned {} to review PR #{}: {}",
-                            reviewer_name,
+                            "Spawned {} to review PR #{}: {}",
+                            new_coworker,
                             pr_number,
                             truncate_str(title, 40)
                         );
 
-                        // Post to channel about the assignment
+                        // Post to channel about the spawn
                         let channel_msg = Message::new(
                             "midtown",
-                            format!("🔍 {} assigned to review PR #{}", reviewer_name, pr_number),
+                            format!("🔍 Spawned {} to review PR #{}", new_coworker, pr_number),
                             MessageType::Text,
                         );
                         if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                            warn!("Failed to post review assignment to channel: {}", e);
+                            warn!("Failed to post spawn message to channel: {}", e);
                         }
 
                         reviews_spawned += 1;
                     }
                     Err(e) => {
                         warn!(
-                            "Failed to nudge {} to review PR #{}: {}",
-                            reviewer_name, pr_number, e
+                            "Failed to nudge newly spawned {} to review PR #{}: {}",
+                            new_coworker, pr_number, e
                         );
                         // Remove the assignment since we couldn't nudge (in-memory)
                         let mut tracker = state.pr_review_tracker.lock().await;
@@ -1692,98 +1753,8 @@ async fn spawn_reviewers_for_prs(
                     }
                 }
             }
-            None => {
-                // No available reviewer - try spawning a new coworker
-                debug!(
-                    "No available reviewer for PR #{}, attempting to spawn new coworker",
-                    pr_number
-                );
-
-                // Spawn without prompt - we'll handle the async wait and nudge ourselves
-                // to avoid blocking the tokio runtime with std::thread::sleep
-                match state.coworkers.spawn(false, None) {
-                    Ok(new_coworker) => {
-                        state.broadcast_coworker_update(&new_coworker, "running", None);
-                        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-
-                        // Record the assignment (in-memory)
-                        {
-                            let mut tracker = state.pr_review_tracker.lock().await;
-                            tracker.assign(pr_number, &new_coworker);
-                        }
-
-                        // Persist the assignment to github-state.json
-                        {
-                            let mut github_state = state.github_state.lock().await;
-                            github_state.assign_reviewer(pr_number, &new_coworker);
-                            if let Err(e) = crate::github_state::save_state_for_repo(
-                                &state.repo_name,
-                                &github_state,
-                            ) {
-                                warn!("Failed to save github-state.json: {}", e);
-                            }
-                        }
-
-                        // Give the new coworker time to start (async sleep)
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-
-                        // Nudge the new reviewer to run /code-review:code-review
-                        let nudge_msg = format!(
-                            "Please review PR #{}: {}. Run: /code-review:code-review {}",
-                            pr_number,
-                            truncate_str(title, 50),
-                            pr_number
-                        );
-
-                        match state.coworkers.nudge(&new_coworker, &nudge_msg) {
-                            Ok(()) => {
-                                info!(
-                                    "Spawned {} to review PR #{}: {}",
-                                    new_coworker,
-                                    pr_number,
-                                    truncate_str(title, 40)
-                                );
-
-                                // Post to channel about the spawn
-                                let channel_msg = Message::new(
-                                    "midtown",
-                                    format!(
-                                        "🔍 Spawned {} to review PR #{}",
-                                        new_coworker, pr_number
-                                    ),
-                                    MessageType::Text,
-                                );
-                                if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                                    warn!("Failed to post spawn message to channel: {}", e);
-                                }
-
-                                reviews_spawned += 1;
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to nudge newly spawned {} to review PR #{}: {}",
-                                    new_coworker, pr_number, e
-                                );
-                                // Remove the assignment since we couldn't nudge (in-memory)
-                                let mut tracker = state.pr_review_tracker.lock().await;
-                                tracker.mark_reviewed(pr_number);
-                                // Also remove from persistent state
-                                drop(tracker);
-                                let mut github_state = state.github_state.lock().await;
-                                github_state.remove_assignment(pr_number);
-                                if let Err(e) = crate::github_state::save_state_for_repo(
-                                    &state.repo_name,
-                                    &github_state,
-                                ) {
-                                    warn!("Failed to save github-state.json: {}", e);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Could not spawn new reviewer for PR #{}: {}", pr_number, e);
-                    }
-                }
+            Err(e) => {
+                debug!("Could not spawn new reviewer for PR #{}: {}", pr_number, e);
             }
         }
     }
@@ -1794,88 +1765,6 @@ async fn spawn_reviewers_for_prs(
             reviews_spawned
         );
     }
-}
-
-/// Find an available coworker to review a PR.
-///
-/// Prefers idle coworkers (those with no in_progress tasks).
-/// Excludes the PR owner to prevent self-reviews.
-///
-/// Returns None if no suitable reviewer is available.
-async fn find_available_reviewer(
-    state: &DaemonState,
-    active_coworkers: &[String],
-    pr_owner: Option<&str>,
-) -> Option<String> {
-    if active_coworkers.is_empty() {
-        return None;
-    }
-
-    // Get coworkers who are busy (have in_progress tasks)
-    let busy_coworkers = get_busy_coworkers(&state.repo_name);
-
-    // Get coworkers who have open PRs — they may be awaiting review and
-    // available to review other PRs despite having an in_progress task
-    let coworkers_with_open_prs: HashSet<String> = get_coworkers_with_open_prs()
-        .into_iter()
-        .map(|name| name.to_lowercase())
-        .collect();
-
-    // Get coworkers who are already assigned to review PRs (combine in-memory and persistent)
-    let reviewing_coworkers: HashSet<String> = {
-        let tracker = state.pr_review_tracker.lock().await;
-        let in_memory: HashSet<String> = tracker
-            .assigned
-            .values()
-            .filter(|(_, t)| t.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS))
-            .map(|(name, _)| name.to_lowercase())
-            .collect();
-        drop(tracker);
-
-        let github_state = state.github_state.lock().await;
-        let persistent: HashSet<String> = github_state
-            .assigned_reviewers()
-            .map(|name| name.to_lowercase())
-            .collect();
-
-        in_memory.union(&persistent).cloned().collect()
-    };
-
-    // Find available coworkers: either idle, or busy but awaiting review on their own PR
-    for coworker in active_coworkers {
-        let coworker_lower = coworker.to_lowercase();
-
-        // Skip if this is the PR owner (no self-reviews)
-        if let Some(owner) = pr_owner
-            && coworker_lower == owner.to_lowercase()
-        {
-            continue;
-        }
-
-        // Skip if busy with a task, UNLESS they have an open PR (likely awaiting review)
-        let is_busy = busy_coworkers
-            .iter()
-            .any(|b| b.eq_ignore_ascii_case(coworker));
-        if is_busy {
-            if coworkers_with_open_prs.contains(&coworker_lower) {
-                debug!(
-                    "{} is busy but has an open PR — eligible for review assignment",
-                    coworker
-                );
-            } else {
-                continue;
-            }
-        }
-
-        // Skip if already assigned to review another PR
-        if reviewing_coworkers.contains(&coworker_lower) {
-            continue;
-        }
-
-        return Some(coworker.clone());
-    }
-
-    None
 }
 
 /// Detect actionable issues for a PR.
@@ -2206,7 +2095,8 @@ fn handle_coworker_spawn(
     prompt: Option<String>,
 ) -> Response {
     // Pass prompt to spawn() - it handles waiting and nudging internally
-    match state.coworkers.spawn(resume, prompt.as_deref()) {
+    // Use shared task list (not isolated) for manual spawns
+    match state.coworkers.spawn(resume, prompt.as_deref(), false) {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
             state.broadcast_coworker_update(&name, "running", None);
@@ -2882,9 +2772,10 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
             "PR #{} owner {} is not active, spawning to address review feedback",
             pr_number, owner
         );
+        // Use shared task list (not isolated) for review feedback spawns
         match state
             .coworkers
-            .spawn_with_name(&owner, true, Some(&nudge_msg))
+            .spawn_with_name(&owner, true, Some(&nudge_msg), false)
         {
             Ok(_) => {
                 info!(
@@ -2986,7 +2877,11 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         );
 
         // spawn_with_name handles waiting and sending the prompt internally
-        match state.coworkers.spawn_with_name(&owner, true, Some(&prompt)) {
+        // Use shared task list (not isolated) for orphan recovery spawns
+        match state
+            .coworkers
+            .spawn_with_name(&owner, true, Some(&prompt), false)
+        {
             Ok(_) => {
                 info!("Respawned coworker {} successfully", owner);
                 state.broadcast_coworker_update(&owner, "running", None);
@@ -3238,7 +3133,11 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         );
 
         // spawn_with_name handles waiting and sending the prompt internally
-        match state.coworkers.spawn_with_name(&owner, true, Some(&prompt)) {
+        // Use shared task list (not isolated) for assigned task spawns
+        match state
+            .coworkers
+            .spawn_with_name(&owner, true, Some(&prompt), false)
+        {
             Ok(_) => {
                 info!("Spawned coworker {} for pending task #{}", owner, task_id);
                 state.broadcast_coworker_update(&owner, "running", None);
@@ -3365,9 +3264,10 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
 
         // Step 3: Now spawn the coworker with the pre-assigned name and prompt
         // spawn_with_name handles waiting and sending the prompt internally
+        // Use shared task list (not isolated) for pre-assigned task spawns
         match state
             .coworkers
-            .spawn_with_name(&coworker_name, false, Some(&prompt))
+            .spawn_with_name(&coworker_name, false, Some(&prompt), false)
         {
             Ok(_) => {
                 info!(

@@ -739,6 +739,7 @@ pub fn spawn_claude(
     working_dir: &str,
     repo_name: Option<&str>,
     resume: bool,
+    isolated_tasks: bool,
 ) -> crate::Result<String> {
     // Get bin_command from project config
     let bin_command = crate::config::get_bin_command();
@@ -754,15 +755,9 @@ pub fn spawn_claude(
     // Generate a unique session ID for this coworker
     let coworker_session_id = uuid::Uuid::new_v4().to_string();
 
-    // Get the shared task list ID for this repo (all coworkers use the same task list)
-    let task_list_id = repo_name
-        .map(crate::paths::task_list_id_for_repo)
-        .unwrap_or_else(crate::paths::task_list_id);
-
     // Build the claude command with session ID for task persistence
     // Use file paths for settings and prompt to avoid shell quoting issues
     // Set MIDTOWN_AGENT env var so the coworker's name appears in messages
-    // Set CLAUDE_CODE_TASK_LIST_ID so all coworkers share the same task list
     // Use --setting-sources project,local (plugins are now in --settings file)
     // Add --continue flag if resuming a previous session
     let session_flag = if resume {
@@ -770,10 +765,25 @@ pub fn spawn_claude(
     } else {
         format!(" --session-id {}", coworker_session_id)
     };
+
+    // Build environment variables - shared task list unless isolated
+    // Isolated coworkers (e.g., reviewers) get their own task list so their
+    // sub-tasks don't pollute the shared task list
+    let env_vars = if isolated_tasks {
+        format!("export MIDTOWN_AGENT='{}'", name)
+    } else {
+        let task_list_id = repo_name
+            .map(crate::paths::task_list_id_for_repo)
+            .unwrap_or_else(crate::paths::task_list_id);
+        format!(
+            "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}'",
+            name, task_list_id
+        )
+    };
+
     let command = format!(
-        "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
-        name,
-        task_list_id,
+        "{}; claude --dangerously-skip-permissions{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        env_vars,
         session_flag,
         settings_file.display(),
         prompt_file.display()
