@@ -31,14 +31,24 @@
     midtown: '#585858',     // DarkGray (daemon renamed to midtown)
   }
 
-  const SYSTEM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
+  // System-like senders are grouped together without blank lines between them
+  // (matches TUI's is_system_like_sender: daemon/system only, NOT github)
+  const SYSTEM_LIKE_SENDERS = new Set(['daemon', 'system', 'midtown'])
+
+  // Dim senders have their content rendered in DarkGray
+  // (matches TUI's is_dim_sender: daemon/github/system)
+  const DIM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
 
   function getSenderColor(name) {
     return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
   }
 
   function isSystemLike(sender) {
-    return SYSTEM_SENDERS.has(sender?.toLowerCase())
+    return SYSTEM_LIKE_SENDERS.has(sender?.toLowerCase())
+  }
+
+  function isDimSender(sender) {
+    return DIM_SENDERS.has(sender?.toLowerCase())
   }
 
   function isAction(msg) {
@@ -76,11 +86,15 @@
   }
 
   // Check if we need a blank line before this message
+  // Matches TUI: blank line on sender change, except between consecutive system-like senders
   function needsBlankLine(msgs, index) {
     if (index === 0) return false
     if (!senderChanged(msgs, index)) return false
     const prev = msgs[index - 1].from
-    return !isSystemLike(prev)
+    const curr = msgs[index].from
+    // No blank line between consecutive system-like senders (e.g., daemon → system)
+    if (isSystemLike(prev) && isSystemLike(curr)) return false
+    return true
   }
 
   // Render markdown-like formatting (bold, links)
@@ -133,42 +147,33 @@
     {:else}
       {@const currentTasks = getCurrentTasks($coworkers)}
       {#each $messages as msg, i}
-        {#if isSystemLike(msg.from) && !isAction(msg)}
-          <!-- System/daemon/midtown messages: full gray, no gutter -->
-          {#if needsBlankLine($messages, i)}
-            <div class="blank-line"></div>
-          {/if}
-          <div class="system-message">{@html renderContent(msg.content)}</div>
+        {#if needsBlankLine($messages, i)}
+          <div class="blank-line"></div>
+        {/if}
+
+        {#if senderChanged($messages, i)}
+          <!-- Author line: bold name + current task -->
+          <div class="sender-line">
+            <span class="sender-name" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
+            {#if currentTasks[msg.from.toLowerCase()]}
+              <span class="sender-task"> - {currentTasks[msg.from.toLowerCase()]}</span>
+            {/if}
+          </div>
+        {/if}
+
+        {#if isAction(msg)}
+          <!-- Action message: HH:MM * content -->
+          <div class="message-line">
+            <span class="time-gutter">{formatTime(msg.timestamp)}</span>
+            <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
+            <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
+          </div>
         {:else}
-          <!-- Regular and action messages -->
-          {#if needsBlankLine($messages, i)}
-            <div class="blank-line"></div>
-          {/if}
-
-          {#if senderChanged($messages, i)}
-            <!-- Author line: bold name + current task -->
-            <div class="sender-line">
-              <span class="sender-name" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
-              {#if currentTasks[msg.from.toLowerCase()]}
-                <span class="sender-task"> - {currentTasks[msg.from.toLowerCase()]}</span>
-              {/if}
-            </div>
-          {/if}
-
-          {#if isAction(msg)}
-            <!-- Action message: HH:MM * content -->
-            <div class="message-line">
-              <span class="time-gutter">{formatTime(msg.timestamp)}</span>
-              <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
-              <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
-            </div>
-          {:else}
-            <!-- Regular message: HH:MM content -->
-            <div class="message-line">
-              <span class="time-gutter">{formatTime(msg.timestamp)}</span>
-              <span class="message-text">{@html renderContent(msg.content)}</span>
-            </div>
-          {/if}
+          <!-- Regular message: HH:MM content -->
+          <div class="message-line">
+            <span class="time-gutter">{formatTime(msg.timestamp)}</span>
+            <span class="message-text" class:dim-text={isDimSender(msg.from)}>{@html renderContent(msg.content)}</span>
+          </div>
         {/if}
       {/each}
     {/if}
@@ -255,16 +260,18 @@
     min-width: 0;
   }
 
+  .message-text.dim-text {
+    color: #585858;
+  }
+
   .message-text :global(a),
-  .action-text :global(a),
-  .system-message :global(a) {
+  .action-text :global(a) {
     color: #5fafaf;
     text-decoration: none;
   }
 
   .message-text :global(a:hover),
-  .action-text :global(a:hover),
-  .system-message :global(a:hover) {
+  .action-text :global(a:hover) {
     text-decoration: underline;
   }
 
@@ -277,12 +284,6 @@
   .action-text {
     flex: 1;
     min-width: 0;
-  }
-
-  /* System/daemon/midtown messages: full gray, no gutter */
-  .system-message {
-    color: #585858;
-    padding-left: 0;
   }
 
   /* Input area */
