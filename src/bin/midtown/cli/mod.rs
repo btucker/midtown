@@ -58,8 +58,13 @@ pub fn handle_restart() -> Result<Response, String> {
 }
 
 /// Handle attach command (no daemon required - just attaches to tmux)
-pub fn handle_attach() -> Result<Response, String> {
-    daemon::handle_attach()
+pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
+    daemon::handle_attach(project)
+}
+
+/// Handle project list command (no daemon required)
+pub fn handle_project_list() -> Result<Response, String> {
+    daemon::handle_project_list()
 }
 
 /// Handle lead register-session command (no daemon required)
