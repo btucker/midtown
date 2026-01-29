@@ -226,7 +226,7 @@ required = [
 webhook_port = 47022                  # Web UI & webhook port (0 to disable)
 webhook_secret = "your-secret"        # GitHub webhook signature secret
 webhook_restart_interval_secs = 300   # Webhook forwarder restart interval
-pr_poll_interval_secs = 60            # PR polling interval
+pr_poll_interval_secs = 30            # PR polling interval
 chat_monitor_enabled = true           # Enable @mention routing
 ```
 
