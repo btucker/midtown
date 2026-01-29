@@ -2007,10 +2007,8 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
 
                 // Nudge the new reviewer to run /code-review:code-review
                 let nudge_msg = format!(
-                    "Please review PR #{}: {}. Run: /code-review:code-review {}",
-                    pr_number,
-                    truncate_str(title, 50),
-                    pr_number
+                    "First, post a /me status update: `midtown channel post \"/me reviewing PR #{}\"` — then run: /code-review:code-review {}",
+                    pr_number, pr_number
                 );
 
                 match state.coworkers.nudge(&new_coworker, &nudge_msg) {
