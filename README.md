@@ -197,6 +197,60 @@ Commands:
     shutdown <N>  Shutdown coworker by name
 ```
 
+## Configuration
+
+Midtown uses two config files:
+
+1. **Global config** at `~/.midtown/config.toml` — applies to all projects
+2. **Project config** at `~/.midtown/projects/<project>/config.toml` — overrides per project
+
+Project settings take precedence over global defaults. All fields are optional.
+
+### Example `config.toml`
+
+```toml
+# Global config: ~/.midtown/config.toml
+
+[default]
+bin_command = "midtown"         # CLI command to invoke midtown
+chat_layout = "auto"            # "auto", "split", or "window"
+chat_min_width = 160            # Min terminal width for split layout (auto mode)
+max_coworkers = 16              # Maximum concurrent coworkers
+
+[plugins]
+required = [
+    "superpowers@claude-plugins-official",
+]
+
+[daemon]
+webhook_port = 47022                  # Web UI & webhook port (0 to disable)
+webhook_secret = "your-secret"        # GitHub webhook signature secret
+webhook_restart_interval_secs = 300   # Webhook forwarder restart interval
+pr_poll_interval_secs = 60            # PR polling interval
+chat_monitor_enabled = true           # Enable @mention routing
+```
+
+Project config files use only the `[default]` fields (no section header needed):
+
+```toml
+# Project config: ~/.midtown/projects/myproject/config.toml
+bin_command = "cargo run --release --"
+max_coworkers = 4
+```
+
+### Environment Variable Overrides
+
+Daemon settings can be overridden with environment variables:
+
+| Variable | Overrides |
+|----------|-----------|
+| `MIDTOWN_WEBHOOK_PORT` | `webhook_port` |
+| `MIDTOWN_WEBHOOK_SECRET` | `webhook_secret` |
+| `MIDTOWN_WEBHOOK_RESTART_INTERVAL` | `webhook_restart_interval_secs` |
+| `MIDTOWN_PR_POLL_INTERVAL` | `pr_poll_interval_secs` |
+| `MIDTOWN_CHAT_MONITOR` | `chat_monitor_enabled` (set to `0` to disable) |
+| `MIDTOWN_MAX_COWORKERS` | `max_coworkers` |
+
 ## How It Works
 
 ### Coworkers
