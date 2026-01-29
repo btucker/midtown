@@ -40,7 +40,10 @@
 
 <main>
   <header>
-    <h1>Midtown</h1>
+    <div class="header-title">
+      <img src="/logo.png" alt="Midtown" class="header-logo" />
+      <h1>Midtown</h1>
+    </div>
     <span class="connection-status" class:connected={$connected}>
       {$connected ? 'Connected' : 'Disconnected'}
     </span>
@@ -136,6 +139,18 @@
     padding-top: calc(env(safe-area-inset-top) + 12px);
     background: #262626;
     border-bottom: 1px solid #3a3a3a;
+  }
+
+  .header-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .header-logo {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
   }
 
   h1 {
