@@ -277,10 +277,38 @@ impl WorktreeManager {
         }
     }
 
-    /// Safely clean up a coworker's worktree and branch if it has no commits.
+    /// Check if a coworker's worktree has uncommitted or staged changes.
+    ///
+    /// Returns `true` if the working tree is dirty (has modifications, staged
+    /// changes, or untracked files). This prevents data loss when cleaning up
+    /// worktrees that have work-in-progress that hasn't been committed yet.
+    pub fn has_uncommitted_changes(&self, coworker_name: &str) -> bool {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return false;
+        }
+
+        // git status --porcelain returns empty output for a clean tree
+        let output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["status", "--porcelain"])
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => !output.stdout.is_empty(),
+            _ => {
+                // If we can't determine, assume dirty (safe default)
+                true
+            }
+        }
+    }
+
+    /// Safely clean up a coworker's worktree and branch if it has no commits
+    /// and no uncommitted changes.
     ///
     /// Returns `Ok(true)` if the worktree was cleaned up.
-    /// Returns `Ok(false)` if the worktree has commits and was left intact.
+    /// Returns `Ok(false)` if the worktree has commits or uncommitted changes
+    /// and was left intact.
     /// Returns `Err` if the cleanup operation failed.
     pub fn safe_cleanup(&self, coworker_name: &str) -> WorktreeResult<bool> {
         let worktree_path = self.worktree_path(coworker_name);
@@ -290,6 +318,10 @@ impl WorktreeManager {
 
         if self.has_commits_beyond_base(coworker_name) {
             return Ok(false); // Has commits, don't delete
+        }
+
+        if self.has_uncommitted_changes(coworker_name) {
+            return Ok(false); // Has uncommitted work, don't delete
         }
 
         // Get the branch name before removing the worktree
@@ -687,6 +719,27 @@ branch refs/heads/bob/work
 
         assert_eq!(orphaned.len(), 1);
         assert!(orphaned.contains(&"worker-b".to_string()));
+    }
+
+    #[test]
+    fn test_safe_cleanup_dirty_worktree() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree (detached HEAD, no commits beyond base)
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Create an uncommitted file in the worktree
+        std::fs::write(wt_path.join("dirty.txt"), "uncommitted work").expect("write file");
+
+        // has_uncommitted_changes should detect the dirty file
+        assert!(manager.has_uncommitted_changes("testworker"));
+
+        // Safe cleanup should NOT delete (has uncommitted changes)
+        let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
+        assert!(!cleaned);
+        assert!(wt_path.exists());
+        // The file should still be there
+        assert!(wt_path.join("dirty.txt").exists());
     }
 
     #[test]
