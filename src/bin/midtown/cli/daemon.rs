@@ -620,15 +620,11 @@ pub fn handle_restart() -> Result<Response, String> {
         // Brief pause for the process to terminate
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Restart the chat with cargo run --release
+        // Restart the chat using the configured binary
+        let bin_command = midtown::config::get_bin_command();
+        let chat_cmd = format!("{} chat", bin_command);
         let _ = Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &chat_pane,
-                "cargo run --release -- chat",
-                "Enter",
-            ])
+            .args(["send-keys", "-t", &chat_pane, &chat_cmd, "Enter"])
             .status();
     }
 
