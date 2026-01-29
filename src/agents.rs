@@ -163,14 +163,14 @@ fn load_custom_prompt_files(filename: &str) -> String {
 /// `~/.midtown/projects/<repo>/LEAD.md` is appended if present.
 pub fn lead_system_prompt() -> String {
     let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
-    let common = common_prompt().replace("{name}", "Lead");
+    let common = common_prompt();
     let custom = load_custom_prompt_files("LEAD.md");
 
     let mut prompt = format!("{lead}\n{common}");
     if !custom.is_empty() {
         prompt = format!("{prompt}\n\n{custom}");
     }
-    prompt
+    prompt.replace("{name}", "Lead")
 }
 
 /// Load the coworker agent's system prompt with name substitution.
