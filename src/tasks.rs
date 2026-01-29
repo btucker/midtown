@@ -19,6 +19,9 @@ pub struct Task {
     pub description: Option<String>,
     #[serde(default, alias = "blockedBy")]
     pub blocked_by: Vec<String>,
+    /// File creation time, populated from filesystem metadata (not serialized).
+    #[serde(skip)]
+    pub created_at: Option<std::time::SystemTime>,
 }
 
 /// Task status matching Claude Code's TaskList tool.
@@ -76,8 +79,12 @@ fn read_tasks_from_dir(tasks_dir: &PathBuf) -> Vec<Task> {
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "json")
             && let Ok(content) = std::fs::read_to_string(&path)
-            && let Ok(task) = parse_task_json(&content)
+            && let Ok(mut task) = parse_task_json(&content)
         {
+            // Populate created_at from file metadata
+            if let Ok(metadata) = path.metadata() {
+                task.created_at = metadata.created().ok();
+            }
             tasks.push(task);
         }
     }
@@ -156,6 +163,7 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
         owner,
         description,
         blocked_by,
+        created_at: None,
     })
 }
 
@@ -300,11 +308,49 @@ pub fn get_pending_tasks_with_owners() -> Vec<(String, String, String)> {
 }
 
 /// Get pending tasks that have no owner (unclaimed and not started).
+///
+/// Applies a grace period to skip recently-created tasks, giving the creating
+/// coworker time to set ownership via TaskUpdate before the daemon claims them.
 pub fn get_pending_tasks_without_owners() -> Vec<Task> {
+    get_pending_tasks_without_owners_with_grace(TASK_CREATION_GRACE_SECS)
+}
+
+/// Grace period in seconds for newly created tasks.
+///
+/// Tasks created within this window are skipped by `get_pending_tasks_without_owners`
+/// to prevent the daemon from claiming tasks before the creating coworker sets ownership.
+const TASK_CREATION_GRACE_SECS: u64 = 45;
+
+/// Get pending tasks without owners, skipping tasks created within `grace_secs` seconds.
+pub fn get_pending_tasks_without_owners_with_grace(grace_secs: u64) -> Vec<Task> {
+    let now = std::time::SystemTime::now();
+    let grace = std::time::Duration::from_secs(grace_secs);
     read_tasks()
         .into_iter()
-        .filter(|t| t.status == TaskStatus::Pending && t.owner.is_none())
+        .filter(|t| {
+            t.status == TaskStatus::Pending
+                && t.owner.is_none()
+                && !is_within_grace_period(t, now, grace)
+        })
         .collect()
+}
+
+/// Check if a task was created within the grace period.
+///
+/// Returns true if the task's `created_at` is within `grace` of `now`.
+/// Returns false if `created_at` is unavailable (assumes task is old enough).
+fn is_within_grace_period(
+    task: &Task,
+    now: std::time::SystemTime,
+    grace: std::time::Duration,
+) -> bool {
+    match task.created_at {
+        Some(created) => now
+            .duration_since(created)
+            .map(|age| age < grace)
+            .unwrap_or(false),
+        None => false,
+    }
 }
 
 /// Update a task's owner and optionally status.
@@ -571,6 +617,7 @@ mod tests {
                 owner: Some("alice".to_string()),
                 description: None,
                 blocked_by: vec![],
+                created_at: None,
             },
             Task {
                 id: "2".to_string(),
@@ -579,6 +626,7 @@ mod tests {
                 owner: None,
                 description: None,
                 blocked_by: vec![],
+                created_at: None,
             },
             Task {
                 id: "3".to_string(),
@@ -587,6 +635,7 @@ mod tests {
                 owner: Some("bob".to_string()),
                 description: None,
                 blocked_by: vec![],
+                created_at: None,
             },
         ];
 
@@ -613,6 +662,7 @@ mod tests {
                 owner: Some("vernon".to_string()),
                 description: Some("Review PR #239 changes".to_string()),
                 blocked_by: vec![],
+                created_at: None,
             },
             Task {
                 id: "11".to_string(),
@@ -621,6 +671,7 @@ mod tests {
                 owner: None,
                 description: Some("Sub-task for PR #239 review".to_string()),
                 blocked_by: vec!["10".to_string()],
+                created_at: None,
             },
         ];
 
@@ -646,6 +697,7 @@ mod tests {
             owner: None,
             description: None,
             blocked_by: vec![],
+            created_at: None,
         };
         assert_eq!(extract_pr_number_from_task(&task), Some("42".to_string()));
     }
@@ -659,6 +711,7 @@ mod tests {
             owner: None,
             description: Some("Part of PR #239 review workflow".to_string()),
             blocked_by: vec![],
+            created_at: None,
         };
         assert_eq!(extract_pr_number_from_task(&task), Some("239".to_string()));
     }
@@ -672,6 +725,7 @@ mod tests {
             owner: None,
             description: Some("Generic scoring task".to_string()),
             blocked_by: vec![],
+            created_at: None,
         };
         assert_eq!(extract_pr_number_from_task(&task), None);
     }
@@ -686,6 +740,7 @@ mod tests {
                 owner: Some("vernon".to_string()),
                 description: None,
                 blocked_by: vec![],
+                created_at: None,
             },
             Task {
                 id: "101".to_string(),
@@ -694,6 +749,7 @@ mod tests {
                 owner: None,
                 description: None,
                 blocked_by: vec!["100".to_string()],
+                created_at: None,
             },
             Task {
                 id: "102".to_string(),
@@ -702,6 +758,7 @@ mod tests {
                 owner: None,
                 description: None,
                 blocked_by: vec!["101".to_string()],
+                created_at: None,
             },
         ];
 
@@ -728,6 +785,7 @@ mod tests {
             owner: Some("alice".to_string()),
             description: Some("Reviewing PR #88 changes".to_string()),
             blocked_by: vec![],
+            created_at: None,
         }];
 
         assert_eq!(
@@ -749,5 +807,108 @@ mod tests {
         let json = r#"{"id": "5", "subject": "Sub task", "status": "pending"}"#;
         let task = parse_task_json(json).unwrap();
         assert!(task.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn test_grace_period_filters_recently_created_tasks() {
+        use std::time::{Duration, SystemTime};
+
+        let now = SystemTime::now();
+        let grace = Duration::from_secs(45);
+
+        // Task created 10 seconds ago — within grace period, should be filtered
+        let recent_task = Task {
+            id: "1".to_string(),
+            subject: "Check PR #246 eligibility".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            created_at: Some(now - Duration::from_secs(10)),
+        };
+        assert!(is_within_grace_period(&recent_task, now, grace));
+
+        // Task created 60 seconds ago — outside grace period, should NOT be filtered
+        let old_task = Task {
+            id: "2".to_string(),
+            subject: "Score and filter issues".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            created_at: Some(now - Duration::from_secs(60)),
+        };
+        assert!(!is_within_grace_period(&old_task, now, grace));
+
+        // Task with no created_at — should NOT be filtered (assume old)
+        let no_time_task = Task {
+            id: "3".to_string(),
+            subject: "Some task".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            created_at: None,
+        };
+        assert!(!is_within_grace_period(&no_time_task, now, grace));
+    }
+
+    #[test]
+    fn test_grace_period_reproduces_split_bug() {
+        // Reproduces the bug: a coworker creates review sub-tasks but the daemon
+        // picks them up before ownership is set, splitting them across coworkers.
+        //
+        // Before the fix, all three tasks would be returned by the unowned filter.
+        // After the fix, only the old task is returned (recent ones are in grace period).
+        use std::time::{Duration, SystemTime};
+
+        let now = SystemTime::now();
+
+        let tasks = vec![
+            // Sub-task just created by reviewing coworker (5 seconds ago)
+            Task {
+                id: "471".to_string(),
+                subject: "Check PR #246 eligibility".to_string(),
+                status: TaskStatus::Pending,
+                owner: None, // Owner not yet set — coworker will TaskUpdate shortly
+                description: Some("Check if PR #246 is eligible".to_string()),
+                blocked_by: vec![],
+                created_at: Some(now - Duration::from_secs(5)),
+            },
+            // Another sub-task just created (3 seconds ago)
+            Task {
+                id: "472".to_string(),
+                subject: "Run 5 parallel code review agents".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: Some("Review agents for PR #246".to_string()),
+                blocked_by: vec![],
+                created_at: Some(now - Duration::from_secs(3)),
+            },
+            // An older task that legitimately has no owner (created 2 minutes ago)
+            Task {
+                id: "400".to_string(),
+                subject: "Fix bug in auth module".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec![],
+                created_at: Some(now - Duration::from_secs(120)),
+            },
+        ];
+
+        let grace = Duration::from_secs(TASK_CREATION_GRACE_SECS);
+        let filtered: Vec<&Task> = tasks
+            .iter()
+            .filter(|t| {
+                t.status == TaskStatus::Pending
+                    && t.owner.is_none()
+                    && !is_within_grace_period(t, now, grace)
+            })
+            .collect();
+
+        // Only the old task should pass the filter
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "400");
     }
 }
