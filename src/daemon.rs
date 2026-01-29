@@ -404,6 +404,16 @@ impl PrReviewTracker {
             })
             .map(|(pr_number, _)| *pr_number)
     }
+
+    /// Get the set of coworker names that are actively assigned to review PRs.
+    pub fn active_reviewers(&self) -> HashSet<String> {
+        let timeout = Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS);
+        self.assigned
+            .values()
+            .filter(|(_, t)| t.elapsed() < timeout)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 /// Shared daemon state.
@@ -823,8 +833,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 /// with their name as owner. After 5 minutes of continuous idle, they are
 /// automatically shut down.
 ///
-/// IMPORTANT: Coworkers with open PRs are NEVER auto-killed, regardless of
-/// idle time. This ensures they can respond to PR feedback and merge their work.
+/// IMPORTANT: Coworkers with open PRs or active review assignments are NEVER
+/// auto-killed, regardless of idle time. This ensures they can respond to PR
+/// feedback, merge their work, or complete their review.
 ///
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be auto-shutdown. This prevents spawn storms where
@@ -842,6 +853,12 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
 
     // Get coworkers with open PRs - they should NEVER be auto-killed
     let coworkers_with_open_prs = get_coworkers_with_open_prs();
+
+    // Get coworkers actively assigned to review PRs - they should not be considered idle
+    let active_reviewers = {
+        let tracker = state.pr_review_tracker.lock().await;
+        tracker.active_reviewers()
+    };
 
     let now = Instant::now();
     let now_utc = chrono::Utc::now();
@@ -877,12 +894,22 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(coworker));
 
-            if is_busy || has_open_pr {
-                // Coworker is busy or has open PR, remove from idle tracking
+            // Check if coworker is actively assigned to review a PR
+            let is_reviewing = active_reviewers
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case(coworker));
+
+            if is_busy || has_open_pr || is_reviewing {
+                // Coworker is busy, has open PR, or is reviewing - remove from idle tracking
                 if idle_since.remove(coworker).is_some() {
                     if has_open_pr {
                         debug!(
                             "Coworker {} has open PR, removed from idle tracking",
+                            coworker
+                        );
+                    } else if is_reviewing {
+                        debug!(
+                            "Coworker {} is actively reviewing a PR, removed from idle tracking",
                             coworker
                         );
                     } else {
@@ -893,7 +920,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                     }
                 }
             } else {
-                // Coworker is idle and has no open PRs
+                // Coworker is idle, has no open PRs, and is not reviewing
                 // Isolated coworkers (e.g., reviewers) are killed immediately when idle
                 if cw.isolated_tasks {
                     to_shutdown.push(coworker.clone());
@@ -4218,6 +4245,35 @@ mod tests {
         // After marking reviewed, should return None
         tracker.mark_reviewed(42);
         assert_eq!(tracker.pr_for_coworker("lexington"), None);
+    }
+
+    #[test]
+    fn test_pr_review_tracker_active_reviewers() {
+        let mut tracker = PrReviewTracker::new();
+        tracker.assign(42, "lexington");
+        tracker.assign(43, "park");
+        tracker.assign(44, "lexington"); // duplicate reviewer
+
+        let reviewers = tracker.active_reviewers();
+        assert!(reviewers.contains(&"lexington".to_string()));
+        assert!(reviewers.contains(&"park".to_string()));
+        // Should deduplicate
+        assert_eq!(reviewers.len(), 2);
+    }
+
+    #[test]
+    fn test_pr_review_tracker_active_reviewers_after_mark_reviewed() {
+        let mut tracker = PrReviewTracker::new();
+        tracker.assign(42, "lexington");
+        tracker.assign(43, "park");
+
+        // Mark lexington's review as done
+        tracker.mark_reviewed(42);
+
+        let reviewers = tracker.active_reviewers();
+        assert!(!reviewers.contains(&"lexington".to_string()));
+        assert!(reviewers.contains(&"park".to_string()));
+        assert_eq!(reviewers.len(), 1);
     }
 
     // Chat monitor @mention tests
