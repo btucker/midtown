@@ -115,6 +115,14 @@
     }
   }
 
+  function handleKeyDown(e) {
+    // Submit on Enter, allow Shift+Enter for new lines
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSubmit(e)
+    }
+  }
+
   function handleScroll() {
     if (!messagesContainer) return
     const { scrollTop, scrollHeight, clientHeight } = messagesContainer
@@ -165,12 +173,12 @@
   </div>
 
   <form class="input-area" onsubmit={handleSubmit}>
-    <input
-      type="text"
+    <textarea
       bind:value={inputText}
       placeholder="Message to lead..."
-      autocomplete="off"
-    />
+      rows="1"
+      onkeydown={handleKeyDown}
+    ></textarea>
     <button type="submit" disabled={!inputText.trim()}>Send</button>
   </form>
 </div>
@@ -280,22 +288,28 @@
     border-top: 1px solid #3a3a3a;
   }
 
-  input {
+  textarea {
     flex: 1;
     padding: 12px 16px;
     border: 1px solid #3a3a3a;
-    border-radius: 24px;
+    border-radius: 16px;
     background: #1c1c1c;
     color: #d0d0d0;
     font-size: 1rem;
+    font-family: inherit;
     outline: none;
+    resize: none;
+    min-height: 1.5em;
+    max-height: 8em;
+    overflow-y: auto;
+    field-sizing: content;
   }
 
-  input:focus {
+  textarea:focus {
     border-color: #5fafaf;
   }
 
-  input::placeholder {
+  textarea::placeholder {
     color: #585858;
   }
 
