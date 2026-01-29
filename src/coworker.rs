@@ -439,6 +439,44 @@ impl CoworkerManager {
         Ok(())
     }
 
+    /// Clean up orphaned worktrees that have no active coworker.
+    ///
+    /// For each orphaned worktree:
+    /// - If the branch has no commits beyond the base, delete it safely
+    /// - If the branch has commits, flag it (returned in the result)
+    ///
+    /// Returns a list of coworker names whose worktrees have unmerged commits
+    /// and should be flagged to the Lead.
+    pub fn cleanup_orphaned_worktrees(&self) -> Vec<String> {
+        let active_names: Vec<String> = {
+            let coworkers = self.coworkers.read().unwrap();
+            coworkers.keys().cloned().collect()
+        };
+
+        let orphaned = self.worktree_manager.find_orphaned_worktrees(&active_names);
+        let mut flagged = Vec::new();
+
+        for name in orphaned {
+            match self.worktree_manager.safe_cleanup(&name) {
+                Ok(true) => {
+                    tracing::info!("Cleaned up empty orphaned worktree for {}", name);
+                }
+                Ok(false) => {
+                    tracing::warn!(
+                        "Orphaned worktree for {} has unmerged commits - flagging to lead",
+                        name
+                    );
+                    flagged.push(name);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to cleanup orphaned worktree for {}: {}", name, e);
+                }
+            }
+        }
+
+        flagged
+    }
+
     /// List all coworkers.
     pub fn list(&self) -> Vec<Coworker> {
         let coworkers = self.coworkers.read().unwrap();
