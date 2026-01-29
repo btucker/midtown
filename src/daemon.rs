@@ -1358,12 +1358,15 @@ async fn poll_prs_for_issues(
         .collect();
 
     // Run gh pr list command (include createdAt and isDraft for review filtering)
+    // Include state field to filter out merged/closed PRs after restart
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
             "list",
+            "--state",
+            "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
         ])
         .output()
         .await?;
@@ -1384,6 +1387,29 @@ async fn poll_prs_for_issues(
     {
         let mut review_tracker = state.pr_review_tracker.lock().await;
         review_tracker.cleanup();
+    }
+
+    // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
+    // open PRs, but verify via the state field to guard against stale/cached results)
+    let prs: Vec<serde_json::Value> = prs
+        .into_iter()
+        .filter(|pr| {
+            let state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("OPEN");
+            state == "OPEN"
+        })
+        .collect();
+
+    // Clean up persistent reviewer assignments for PRs that are no longer open
+    {
+        let open_pr_numbers: Vec<u64> = prs
+            .iter()
+            .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+            .collect();
+        let mut github_state = state.github_state.lock().await;
+        github_state.cleanup_closed_prs(&open_pr_numbers);
+        if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
+            warn!("Failed to save github-state.json after cleanup: {}", e);
+        }
     }
 
     for pr in &prs {
