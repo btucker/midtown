@@ -27,13 +27,13 @@ Midtown provides the infrastructure for this coordination:
 Access Midtown remotely via the built-in web interface:
 
 ```bash
-midtown start  # Web server starts on port 3001
+midtown start  # Web server starts on port 47022
 ```
 
 The web app provides:
 - **Real-time chat** with WebSocket updates and markdown rendering
 - **Kanban board** showing tasks and PRs at a glance
-- **Lead tab** for streaming the Lead's tmux session
+- **Tmux tab** for streaming any tmux window
 - **Mobile-friendly** Svelte interface for on-the-go monitoring
 
 ### Kanban Board
