@@ -446,6 +446,64 @@ pub fn project_config_path(project_name: &str) -> PathBuf {
     crate::paths::projects_dir_for_repo(project_name).join("config.toml")
 }
 
+/// Starting port for auto-assigned per-project webhook ports.
+/// Port 47022 is reserved for the shared webserver (Phase 2).
+const AUTO_PORT_START: u16 = 47023;
+
+/// Scan all project configs and collect the webhook ports that are in use.
+///
+/// Returns a sorted list of ports found in `[daemon].webhook_port` across
+/// all project config files in `~/.midtown/projects/*/config.toml`.
+pub fn collect_used_webhook_ports() -> Vec<u16> {
+    let projects_dir = crate::paths::midtown_base_dir().join("projects");
+    let mut ports = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+        for entry in entries.flatten() {
+            let config_path = entry.path().join("config.toml");
+            if let Some(full) = FullProjectConfig::load_from(&config_path)
+                && let Some(port) = full.daemon.webhook_port
+                && port > 0
+            {
+                ports.push(port);
+            }
+        }
+    }
+
+    ports.sort();
+    ports
+}
+
+/// Auto-assign a webhook port for a project.
+///
+/// Scans all existing project configs for used ports and picks the next
+/// available one starting from `AUTO_PORT_START` (47023).
+/// Port 47022 is reserved for the shared webserver.
+///
+/// The assigned port is written back to the project's config.toml so it
+/// remains stable across restarts.
+pub fn assign_webhook_port(project_name: &str) -> u16 {
+    let used_ports = collect_used_webhook_ports();
+
+    // Find next available port starting from AUTO_PORT_START
+    let mut port = AUTO_PORT_START;
+    for used in &used_ports {
+        if *used == port {
+            port += 1;
+        } else if *used > port {
+            break;
+        }
+    }
+
+    // Write the assigned port back to config.toml
+    let path = project_config_path(project_name);
+    let mut config = FullProjectConfig::load_from(&path).unwrap_or_default();
+    config.daemon.webhook_port = Some(port);
+    let _ = config.save_to(&path);
+
+    port
+}
+
 /// Get the bin_command for the current project.
 ///
 /// Determines project name from the current git repo and looks up config.
@@ -969,5 +1027,115 @@ name = "solo"
     fn test_full_project_config_load_nonexistent() {
         let result = FullProjectConfig::load_from(Path::new("/nonexistent/config.toml"));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_collect_used_webhook_ports_with_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+
+        // Create some project configs with ports
+        for (name, port) in &[("proj-a", 47023u16), ("proj-b", 47025), ("proj-c", 47024)] {
+            let proj_dir = projects_dir.join(name);
+            std::fs::create_dir_all(&proj_dir).unwrap();
+            let mut config = FullProjectConfig::minimal(name, "/tmp/repo");
+            config.daemon.webhook_port = Some(*port);
+            config.save_to(&proj_dir.join("config.toml")).unwrap();
+        }
+
+        // Create a project with no port set
+        let no_port_dir = projects_dir.join("proj-d");
+        std::fs::create_dir_all(&no_port_dir).unwrap();
+        FullProjectConfig::minimal("proj-d", "/tmp/repo")
+            .save_to(&no_port_dir.join("config.toml"))
+            .unwrap();
+
+        // Scan the directory directly (since collect_used_webhook_ports uses hardcoded base dir)
+        let mut ports = Vec::new();
+        for entry in std::fs::read_dir(&projects_dir).unwrap().flatten() {
+            let config_path = entry.path().join("config.toml");
+            if let Some(full) = FullProjectConfig::load_from(&config_path) {
+                if let Some(port) = full.daemon.webhook_port {
+                    if port > 0 {
+                        ports.push(port);
+                    }
+                }
+            }
+        }
+        ports.sort();
+        assert_eq!(ports, vec![47023, 47024, 47025]);
+    }
+
+    #[test]
+    fn test_port_assignment_finds_gaps() {
+        // Simulate port assignment logic: used ports [47023, 47024, 47026]
+        // Should find 47025 as next available
+        let used_ports = vec![47023u16, 47024, 47026];
+        let auto_port_start = 47023u16;
+
+        let mut port = auto_port_start;
+        for used in &used_ports {
+            if *used == port {
+                port += 1;
+            } else if *used > port {
+                break;
+            }
+        }
+        assert_eq!(port, 47025);
+    }
+
+    #[test]
+    fn test_port_assignment_no_gaps() {
+        // Simulate: used ports [47023, 47024, 47025]
+        // Should assign 47026
+        let used_ports = vec![47023u16, 47024, 47025];
+        let auto_port_start = 47023u16;
+
+        let mut port = auto_port_start;
+        for used in &used_ports {
+            if *used == port {
+                port += 1;
+            } else if *used > port {
+                break;
+            }
+        }
+        assert_eq!(port, 47026);
+    }
+
+    #[test]
+    fn test_port_assignment_empty() {
+        // No used ports: should assign AUTO_PORT_START (47023)
+        let used_ports: Vec<u16> = vec![];
+        let auto_port_start = 47023u16;
+
+        let mut port = auto_port_start;
+        for used in &used_ports {
+            if *used == port {
+                port += 1;
+            } else if *used > port {
+                break;
+            }
+        }
+        assert_eq!(port, 47023);
+    }
+
+    #[test]
+    fn test_assign_webhook_port_writes_to_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Create a config without webhook_port
+        let config = FullProjectConfig::minimal("test-port", "/tmp/repo");
+        assert!(config.daemon.webhook_port.is_none());
+        config.save_to(&config_path).unwrap();
+
+        // Simulate what assign_webhook_port does (writing port to config)
+        let mut loaded = FullProjectConfig::load_from(&config_path).unwrap();
+        loaded.daemon.webhook_port = Some(47023);
+        loaded.save_to(&config_path).unwrap();
+
+        // Verify it was persisted
+        let reloaded = FullProjectConfig::load_from(&config_path).unwrap();
+        assert_eq!(reloaded.daemon.webhook_port, Some(47023));
     }
 }

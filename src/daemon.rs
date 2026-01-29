@@ -159,7 +159,7 @@ impl Default for DaemonConfig {
             crate::config::get_project_daemon_config(&project_name)
         };
 
-        // Webhook port: env var -> config.toml -> default
+        // Webhook port: env var -> config.toml -> auto-assign per project
         // Note: MIDTOWN_WEBHOOK_PORT=0 disables webhook entirely
         let webhook_port = match std::env::var("MIDTOWN_WEBHOOK_PORT").ok() {
             Some(s) => s
@@ -170,7 +170,14 @@ impl Default for DaemonConfig {
             None => match daemon_section.webhook_port {
                 Some(0) => None,
                 Some(p) => Some(p),
-                None => Some(DEFAULT_WEBHOOK_PORT),
+                None => {
+                    // Auto-assign a unique port per project, or use default if no project
+                    if project_name.is_empty() {
+                        Some(DEFAULT_WEBHOOK_PORT)
+                    } else {
+                        Some(crate::config::assign_webhook_port(&project_name))
+                    }
+                }
             },
         };
 
