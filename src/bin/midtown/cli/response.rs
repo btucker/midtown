@@ -163,7 +163,7 @@ impl Response {
                     out.push_str(&format!("\nPRs: {} open\n", full.pull_requests.len()));
                     for pr in &full.pull_requests {
                         out.push_str(&format!(
-                            "  #{} {} ({}) - {}\n",
+                            "  PR#{} {} ({}) - {}\n",
                             pr.number, pr.title, pr.author, pr.status
                         ));
                     }
@@ -261,7 +261,7 @@ impl Response {
                 let mut out = String::from("Pull Requests\n─────────────────────────────\n");
                 for pr in pull_requests {
                     out.push_str(&format!(
-                        "#{:<5} {:10} {:12} {}\n",
+                        "PR#{:<5} {:10} {:12} {}\n",
                         pr.number, pr.status, pr.author, pr.title
                     ));
                 }
@@ -411,6 +411,6 @@ mod tests {
         assert!(pretty.contains("Tasks: 1 open"));
         assert!(pretty.contains("[in_progress] implement auth endpoint (lex)"));
         assert!(pretty.contains("PRs: 1 open"));
-        assert!(pretty.contains("#42 Add auth (lex) - awaiting review"));
+        assert!(pretty.contains("PR#42 Add auth (lex) - awaiting review"));
     }
 }

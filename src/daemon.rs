@@ -3251,13 +3251,16 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         .unwrap_or_default();
 
     // Fetch PRs from all repos in the project
+    let is_multi_repo = state.all_repo_paths.len() > 1;
     let mut prs = Vec::new();
     let mut merged_prs = Vec::new();
     for repo_path in &state.all_repo_paths {
-        let repo_label = repo_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown");
+        // Only include repo label when the project has multiple repos
+        let repo_label = if is_multi_repo {
+            repo_path.file_name().and_then(|s| s.to_str())
+        } else {
+            None
+        };
         prs.extend(fetch_kanban_prs(
             &reviewer_assignments,
             repo_path,
@@ -3311,12 +3314,12 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
 
 /// Fetch open PRs with rich data for the kanban board.
 ///
-/// For multi-repo projects, this is called once per repo with the repo's path
-/// and a short label (directory name) to include in the response.
+/// Called once per repo with the repo's path. The `repo_label` is `Some(name)`
+/// only for multi-repo projects (to display a repo badge on kanban cards).
 fn fetch_kanban_prs(
     reviewer_assignments: &HashMap<u64, (String, Instant)>,
     repo_path: &std::path::Path,
-    repo_label: &str,
+    repo_label: Option<&str>,
 ) -> Vec<serde_json::Value> {
     let output = std::process::Command::new("gh")
         .current_dir(repo_path)
@@ -3410,10 +3413,10 @@ fn fetch_kanban_prs(
 
 /// Fetch recently merged PRs for the kanban Done column.
 ///
-/// For multi-repo projects, called once per repo with its path and label.
+/// Called once per repo. The `repo_label` is `Some(name)` only for multi-repo projects.
 fn fetch_kanban_merged_prs(
     repo_path: &std::path::Path,
-    repo_label: &str,
+    repo_label: Option<&str>,
 ) -> Vec<serde_json::Value> {
     let output = std::process::Command::new("gh")
         .current_dir(repo_path)
