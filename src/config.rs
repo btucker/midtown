@@ -1054,12 +1054,11 @@ name = "solo"
         let mut ports = Vec::new();
         for entry in std::fs::read_dir(&projects_dir).unwrap().flatten() {
             let config_path = entry.path().join("config.toml");
-            if let Some(full) = FullProjectConfig::load_from(&config_path) {
-                if let Some(port) = full.daemon.webhook_port {
-                    if port > 0 {
-                        ports.push(port);
-                    }
-                }
+            if let Some(full) = FullProjectConfig::load_from(&config_path)
+                && let Some(port) = full.daemon.webhook_port
+                && port > 0
+            {
+                ports.push(port);
             }
         }
         ports.sort();
