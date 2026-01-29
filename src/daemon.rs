@@ -364,6 +364,18 @@ impl PrReviewTracker {
     pub fn mark_reviewed(&mut self, pr_number: u64) {
         self.assigned.remove(&pr_number);
     }
+
+    /// Get the PR number assigned to a specific coworker.
+    pub fn pr_for_coworker(&self, coworker: &str) -> Option<u64> {
+        self.assigned
+            .iter()
+            .find(|(_, (name, assigned_at))| {
+                name == coworker
+                    && assigned_at.elapsed()
+                        < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
+            })
+            .map(|(pr_number, _)| *pr_number)
+    }
 }
 
 /// Shared daemon state.
@@ -894,24 +906,86 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             .map(|cw| cw.isolated_tasks)
             .unwrap_or(false);
 
-        if is_isolated {
-            info!(
-                "Auto-shutting down isolated coworker: {} (review complete)",
-                name
-            );
+        // For isolated coworkers (reviewers), verify the review was actually posted
+        let (should_shutdown, shutdown_msg) = if is_isolated {
+            // Look up the PR this reviewer was assigned to
+            let pr_number = {
+                // Try in-memory tracker first
+                let tracker = state.pr_review_tracker.lock().await;
+                tracker.pr_for_coworker(&name)
+            }
+            .or_else(|| {
+                // Fall back to persistent state
+                let github_state = state.github_state.blocking_lock();
+                github_state.pr_for_reviewer(&name)
+            });
+
+            match pr_number {
+                Some(pr) => {
+                    // Check if review was actually posted
+                    if pr_has_claude_review(pr) {
+                        info!(
+                            "Auto-shutting down reviewer: {} (review verified for PR #{})",
+                            name, pr
+                        );
+                        (
+                            true,
+                            format!(
+                                "🔍 Auto-shutting down reviewer: {} (review complete for PR #{})",
+                                name, pr
+                            ),
+                        )
+                    } else {
+                        warn!(
+                            "Reviewer {} is idle but no review found for PR #{} - keeping alive",
+                            name, pr
+                        );
+                        // Don't shutdown - let them continue working
+                        // Post a warning to the channel so the team knows
+                        let warning_msg = Message::text(
+                            "system",
+                            format!(
+                                "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
+                                name, pr
+                            ),
+                        );
+                        if let Err(e) = state.send_and_broadcast(&warning_msg) {
+                            warn!("Failed to post warning message to channel: {}", e);
+                        }
+                        (false, String::new())
+                    }
+                }
+                None => {
+                    // Can't find PR assignment - shut down with warning
+                    warn!(
+                        "Isolated coworker {} has no PR assignment found, shutting down",
+                        name
+                    );
+                    (
+                        true,
+                        format!(
+                            "⚠️ Auto-shutting down reviewer: {} (no PR assignment found)",
+                            name
+                        ),
+                    )
+                }
+            }
         } else {
             info!(
                 "Auto-shutting down idle coworker: {} (idle for 5+ minutes)",
                 name
             );
+            (
+                true,
+                format!("⏱️ Auto-shutting down idle coworker: {}", name),
+            )
+        };
+
+        if !should_shutdown {
+            continue;
         }
 
         // Post system message to channel
-        let shutdown_msg = if is_isolated {
-            format!("🔍 Auto-shutting down reviewer: {} (review complete)", name)
-        } else {
-            format!("⏱️ Auto-shutting down idle coworker: {}", name)
-        };
         let msg = Message::text("system", shutdown_msg);
         if let Err(e) = state.send_and_broadcast(&msg) {
             warn!("Failed to post shutdown message to channel: {}", e);
@@ -3692,6 +3766,21 @@ mod tests {
         assert!(tracker.is_assigned(42));
         assert!(tracker.is_assigned(43));
         assert_eq!(tracker.active_count(), 2);
+    }
+
+    #[test]
+    fn test_pr_review_tracker_pr_for_coworker() {
+        let mut tracker = PrReviewTracker::new();
+        tracker.assign(42, "lexington");
+        tracker.assign(43, "park");
+
+        assert_eq!(tracker.pr_for_coworker("lexington"), Some(42));
+        assert_eq!(tracker.pr_for_coworker("park"), Some(43));
+        assert_eq!(tracker.pr_for_coworker("york"), None);
+
+        // After marking reviewed, should return None
+        tracker.mark_reviewed(42);
+        assert_eq!(tracker.pr_for_coworker("lexington"), None);
     }
 
     // Chat monitor @mention tests
