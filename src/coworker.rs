@@ -504,6 +504,26 @@ impl CoworkerManager {
         tmux::send_keys(&self.session_name, "lead.0", message)
     }
 
+    /// Send a bell notification to the human's terminal.
+    ///
+    /// This is triggered when someone posts an @user mention in the channel.
+    /// The bell is sent to the lead's chat pane (.1) since that's the pane
+    /// the human interacts with directly.
+    pub fn notify_user(&self) -> crate::Result<()> {
+        // Check if lead window exists (the human operates through the lead session)
+        if !tmux::window_exists(&self.session_name, "lead")? {
+            return Err(crate::Error::Rpc {
+                code: -32602,
+                message: "Lead session not found".to_string(),
+            });
+        }
+
+        // Send bell to the lead's chat pane (.1) where the human types.
+        // Also send to pane .0 (Claude Code) to cover both panes.
+        let _ = tmux::send_bell(&self.session_name, "lead.1");
+        tmux::send_bell(&self.session_name, "lead.0")
+    }
+
     /// Spawn a coworker with a specific name.
     ///
     /// Unlike `spawn()` which picks a random available name, this takes an explicit
