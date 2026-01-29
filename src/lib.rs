@@ -66,6 +66,9 @@ pub mod webhook;
 // Web server for Svelte mobile app
 pub mod web;
 
+// Standalone multi-project webserver
+pub mod webserver;
+
 // Agent nudging subsystem (dementus)
 pub mod nudge;
 
