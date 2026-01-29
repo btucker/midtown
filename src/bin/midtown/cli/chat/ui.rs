@@ -108,7 +108,7 @@ fn get_sender_color(name: &str) -> Color {
 }
 
 /// Minimum height of the kanban board (including borders)
-const MIN_KANBAN_HEIGHT: u16 = 5;
+const MIN_KANBAN_HEIGHT: u16 = 6;
 
 /// Calculate the dynamic kanban board height based on In Progress and Review columns
 ///
@@ -116,9 +116,10 @@ const MIN_KANBAN_HEIGHT: u16 = 5;
 /// active work that should always be visible. Backlog and Done columns truncate
 /// because they're expected to have many items.
 fn calculate_kanban_height(in_progress_count: usize, review_count: usize) -> u16 {
-    // Each In Progress and Review item takes 2 lines (title + owner/duration)
+    // In Progress items take 2 lines (title + owner/duration)
+    // Review items take 3 lines (title + author + reviewer)
     let in_progress_lines = in_progress_count * 2;
-    let review_lines = review_count * 2;
+    let review_lines = review_count * 3;
 
     // Use the max of the two "important" columns
     let needed_inner_height = in_progress_lines.max(review_lines);
