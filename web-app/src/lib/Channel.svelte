@@ -31,20 +31,11 @@
     midtown: '#585858',     // DarkGray (daemon renamed to midtown)
   }
 
-  // System-like senders are grouped together without blank lines between them
-  // (matches TUI's is_system_like_sender: daemon/system only, NOT github)
-  const SYSTEM_LIKE_SENDERS = new Set(['daemon', 'system', 'midtown'])
-
-  // Dim senders have their content rendered in DarkGray
-  // (matches TUI's is_dim_sender: daemon/github/system)
+  // Senders whose content is rendered in DarkGray (system infrastructure actors)
   const DIM_SENDERS = new Set(['daemon', 'midtown', 'github', 'system'])
 
   function getSenderColor(name) {
     return AVENUE_COLORS[name?.toLowerCase()] || '#d0d0d0'
-  }
-
-  function isSystemLike(sender) {
-    return SYSTEM_LIKE_SENDERS.has(sender?.toLowerCase())
   }
 
   function isDimSender(sender) {
@@ -85,16 +76,10 @@
     return msgs[index].from !== msgs[index - 1].from
   }
 
-  // Check if we need a blank line before this message
-  // Matches TUI: blank line on sender change, except between consecutive system-like senders
+  // Blank line before every sender change for consistent visual separation
   function needsBlankLine(msgs, index) {
     if (index === 0) return false
-    if (!senderChanged(msgs, index)) return false
-    const prev = msgs[index - 1].from
-    const curr = msgs[index].from
-    // No blank line between consecutive system-like senders (e.g., daemon → system)
-    if (isSystemLike(prev) && isSystemLike(curr)) return false
-    return true
+    return senderChanged(msgs, index)
   }
 
   // Render markdown-like formatting (bold, links)
