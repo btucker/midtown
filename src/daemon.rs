@@ -459,8 +459,10 @@ struct DaemonState {
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Tracker for PRs assigned for review
     pr_review_tracker: Mutex<PrReviewTracker>,
-    /// Repository name
+    /// Repository name (primary repo)
     repo_name: String,
+    /// Paths to all repos in the project (primary + additional)
+    all_repo_paths: Vec<PathBuf>,
     /// Last time a coworker was spawned for orphan recovery (rate limiting)
     last_orphan_spawn: Mutex<Option<Instant>>,
     /// Tracks when each pending task was last nudged (task_id -> last nudge time)
@@ -490,10 +492,12 @@ impl DaemonState {
         self.coworkers.list().len() >= dev_cap
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new(
         socket_path: PathBuf,
         coworkers: CoworkerManager,
         repo_name: String,
+        all_repo_paths: Vec<PathBuf>,
         channel: Channel,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
         max_coworkers: usize,
@@ -515,6 +519,7 @@ impl DaemonState {
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
+            all_repo_paths,
             last_orphan_spawn: Mutex::new(None),
             pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
             github_state: Mutex::new(github_state),
@@ -765,10 +770,25 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Create daemon state (pass channel and web updates sender so messages
     // are broadcast to WebSocket clients in real-time)
+    // Build list of all repo paths for multi-repo PR fetching
+    let all_repo_paths = {
+        let mut paths = vec![config.workdir.clone()];
+        if let Some(full_config) = crate::config::load_full_project_config(&project_name) {
+            for repo in full_config.project.repos() {
+                let path = PathBuf::from(repo);
+                if path != config.workdir {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
+    };
+
     let state = Arc::new(DaemonState::new(
         config.socket_path.clone(),
         coworker_manager,
         repo_name.clone(),
+        all_repo_paths,
         channel,
         web_updates_tx,
         config.max_coworkers,
@@ -3114,23 +3134,76 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         })
         .unwrap_or_default();
 
-    let prs = fetch_kanban_prs(&reviewer_assignments);
-    let merged_prs = fetch_kanban_merged_prs();
+    // Fetch PRs from all repos in the project
+    let mut prs = Vec::new();
+    let mut merged_prs = Vec::new();
+    for repo_path in &state.all_repo_paths {
+        let repo_label = repo_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        prs.extend(fetch_kanban_prs(
+            &reviewer_assignments,
+            repo_path,
+            repo_label,
+        ));
+        merged_prs.extend(fetch_kanban_merged_prs(repo_path, repo_label));
+    }
+
+    // Build repo metadata for TUI status lines
+    let repos: Vec<serde_json::Value> = state
+        .all_repo_paths
+        .iter()
+        .map(|repo_path| {
+            let label = repo_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            // Get the full owner/name from gh
+            let full_name = std::process::Command::new("gh")
+                .current_dir(repo_path)
+                .args([
+                    "repo",
+                    "view",
+                    "--json",
+                    "nameWithOwner",
+                    "--jq",
+                    ".nameWithOwner",
+                ])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            serde_json::json!({
+                "label": label,
+                "full_name": full_name,
+            })
+        })
+        .collect();
 
     Response::success(
         id,
         serde_json::json!({
             "prs": prs,
             "merged_prs": merged_prs,
+            "repos": repos,
         }),
     )
 }
 
 /// Fetch open PRs with rich data for the kanban board.
+///
+/// For multi-repo projects, this is called once per repo with the repo's path
+/// and a short label (directory name) to include in the response.
 fn fetch_kanban_prs(
     reviewer_assignments: &HashMap<u64, (String, Instant)>,
+    repo_path: &std::path::Path,
+    repo_label: &str,
 ) -> Vec<serde_json::Value> {
     let output = std::process::Command::new("gh")
+        .current_dir(repo_path)
         .args([
             "pr",
             "list",
@@ -3204,6 +3277,7 @@ fn fetch_kanban_prs(
                             "ci_status": ci_status,
                             "reviewer": reviewer,
                             "reviewed_at": reviewer_assigned_at,
+                            "repo": repo_label,
                         }))
                     })
                     .collect()
@@ -3219,8 +3293,14 @@ fn fetch_kanban_prs(
 }
 
 /// Fetch recently merged PRs for the kanban Done column.
-fn fetch_kanban_merged_prs() -> Vec<serde_json::Value> {
+///
+/// For multi-repo projects, called once per repo with its path and label.
+fn fetch_kanban_merged_prs(
+    repo_path: &std::path::Path,
+    repo_label: &str,
+) -> Vec<serde_json::Value> {
     let output = std::process::Command::new("gh")
+        .current_dir(repo_path)
         .args([
             "pr",
             "list",
@@ -3255,6 +3335,7 @@ fn fetch_kanban_merged_prs() -> Vec<serde_json::Value> {
                         "number": number,
                         "title": title,
                         "merged_at": merged_at,
+                        "repo": repo_label,
                     }))
                 })
                 .collect()
