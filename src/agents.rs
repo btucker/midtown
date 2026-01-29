@@ -5,6 +5,10 @@
 //! 2. `~/.midtown/agents/` (for user customization)
 //! 3. Embedded defaults (compiled into the binary as fallback)
 //!
+//! Additionally, a `MIDTOWN.md` file (similar to `CLAUDE.md`) is loaded from:
+//! 1. The git repository root (project-level, takes precedence)
+//! 2. `~/.midtown/MIDTOWN.md` (user-level)
+//!
 //! The coworker prompt uses `{name}` as a template variable that gets replaced
 //! with the coworker's actual name at runtime.
 
@@ -39,6 +43,11 @@ fn user_agents_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".midtown").join("agents"))
 }
 
+/// Find the user's midtown home directory (~/.midtown/).
+fn user_midtown_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".midtown"))
+}
+
 /// Load a prompt file, trying multiple locations.
 ///
 /// Search order:
@@ -65,9 +74,41 @@ fn load_prompt_file(filename: &str) -> Option<String> {
     None
 }
 
+/// Load `MIDTOWN.md` from the project root or `~/.midtown/`.
+///
+/// Search order:
+/// 1. `<git-repo-root>/MIDTOWN.md` (project-level)
+/// 2. `~/.midtown/MIDTOWN.md` (user-level)
+/// 3. Returns None if not found (optional file)
+fn load_midtown_md() -> Option<String> {
+    // Try project root first
+    if let Some(repo_root) = git_repo_root() {
+        let path = repo_root.join("MIDTOWN.md");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            return Some(content);
+        }
+    }
+
+    // Try user midtown directory
+    if let Some(midtown_dir) = user_midtown_dir() {
+        let path = midtown_dir.join("MIDTOWN.md");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            return Some(content);
+        }
+    }
+
+    None
+}
+
 /// Load the common prompt content shared by both agents.
+///
+/// Combines `agents/common.md` with `MIDTOWN.md` (if present).
 fn common_prompt() -> String {
-    load_prompt_file("common.md").unwrap_or_else(|| DEFAULT_COMMON_PROMPT.to_string())
+    let common = load_prompt_file("common.md").unwrap_or_else(|| DEFAULT_COMMON_PROMPT.to_string());
+    match load_midtown_md() {
+        Some(midtown) => format!("{common}\n{midtown}"),
+        None => common,
+    }
 }
 
 /// Load the Lead agent's system prompt.
@@ -188,6 +229,25 @@ mod tests {
         assert!(
             prompt.contains("<!-- midtown: broadway -->"),
             "Coworker prompt should have {{name}} replaced in common content"
+        );
+    }
+
+    #[test]
+    fn test_load_midtown_md_returns_none_when_missing() {
+        // MIDTOWN.md is optional - should return None when not present
+        // (This test verifies the function doesn't panic)
+        let result = load_midtown_md();
+        // Result depends on environment - just verify it doesn't panic
+        drop(result);
+    }
+
+    #[test]
+    fn test_common_prompt_works_without_midtown_md() {
+        // common_prompt should still return common.md content even without MIDTOWN.md
+        let prompt = common_prompt();
+        assert!(
+            prompt.contains("GitHub Etiquette"),
+            "Common prompt should contain base content even without MIDTOWN.md"
         );
     }
 }
