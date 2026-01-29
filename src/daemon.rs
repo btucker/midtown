@@ -374,25 +374,11 @@ struct DaemonState {
 impl DaemonState {
     fn new(
         socket_path: PathBuf,
-        workdir: PathBuf,
+        coworkers: CoworkerManager,
+        repo_name: String,
         channel: Channel,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
     ) -> crate::Result<Self> {
-        // Derive the tmux session name using git-aware repo detection
-        let repo_name = crate::paths::detect_repo_name().unwrap_or_else(|| {
-            workdir
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "default".to_string())
-        });
-        let session_name = format!("midtown-{}", repo_name);
-
-        // Create worktree manager for coworker isolation
-        let worktree_manager = WorktreeManager::new(workdir).map_err(|e| crate::Error::Rpc {
-            code: -32603,
-            message: format!("Failed to initialize worktree manager: {}", e),
-        })?;
-
         // Load persistent GitHub state
         let github_state =
             crate::github_state::load_state_for_repo(&repo_name).unwrap_or_else(|e| {
@@ -401,7 +387,7 @@ impl DaemonState {
             });
 
         Ok(Self {
-            coworkers: CoworkerManager::new(session_name, worktree_manager),
+            coworkers,
             channel,
             socket_path,
             nudged_messages: std::sync::RwLock::new(HashSet::new()),
@@ -424,6 +410,13 @@ impl DaemonState {
             web::broadcast_channel_message(tx, message);
         }
         Ok(())
+    }
+
+    /// Broadcast a coworker status change to WebSocket clients.
+    fn broadcast_coworker_update(&self, name: &str, status: &str, current_task: Option<&str>) {
+        if let Some(ref tx) = self.web_updates_tx {
+            web::broadcast_coworker_status(tx, name, status, current_task);
+        }
     }
 }
 
@@ -527,6 +520,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let listener = UnixListener::bind(&config.socket_path)?;
     info!("Listening on {}", config.socket_path.display());
 
+    // Create worktree manager and coworker manager early so they can be
+    // shared with the web server (for the /api/status endpoint)
+    let session_name = format!("midtown-{}", repo_name);
+    let worktree_manager =
+        WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Failed to initialize worktree manager: {}", e),
+        })?;
+    let coworker_manager = CoworkerManager::new(session_name, worktree_manager);
+
     // Start webhook server and gh forwarder watchdog if configured
     let mut webhook_rx = None;
     let mut web_updates_tx = None;
@@ -539,7 +542,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             repo: repo_name.clone(),
             web_static_dir: None, // Use default location
         };
-        match start_webhook_server(webhook_config).await {
+        match start_webhook_server(webhook_config, Some(coworker_manager.clone())).await {
             Ok((rx, updates_tx)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
@@ -565,7 +568,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // are broadcast to WebSocket clients in real-time)
     let state = Arc::new(DaemonState::new(
         config.socket_path.clone(),
-        config.workdir,
+        coworker_manager,
+        repo_name.clone(),
         channel,
         web_updates_tx,
     )?);
@@ -834,6 +838,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         }
 
         // Shutdown the coworker
+        state.broadcast_coworker_update(&name, "stopped", None);
         if let Err(e) = state.coworkers.shutdown(&name) {
             warn!("Failed to shutdown idle coworker {}: {}", name, e);
         }
@@ -1415,6 +1420,7 @@ async fn poll_prs_for_issues(
                             "Spawned {} to address {} on PR #{}",
                             owner, issue_type, pr_number
                         );
+                        state.broadcast_coworker_update(owner, "running", None);
                         let msg = Message::text(
                             "midtown",
                             format!(
@@ -1675,6 +1681,7 @@ async fn spawn_reviewers_for_prs(
                 // to avoid blocking the tokio runtime with std::thread::sleep
                 match state.coworkers.spawn(false, None) {
                     Ok(new_coworker) => {
+                        state.broadcast_coworker_update(&new_coworker, "running", None);
                         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
                         // Record the assignment (in-memory)
@@ -2180,6 +2187,7 @@ fn handle_coworker_spawn(
     match state.coworkers.spawn(resume, prompt.as_deref()) {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
+            state.broadcast_coworker_update(&name, "running", None);
 
             Response::success(
                 id,
@@ -2204,6 +2212,7 @@ fn handle_coworker_spawn(
 
 /// Handle coworker.shutdown RPC method.
 fn handle_coworker_shutdown(id: RequestId, name: &str, state: &DaemonState) -> Response {
+    state.broadcast_coworker_update(name, "stopped", None);
     match state.coworkers.shutdown(name) {
         Ok(()) => {
             info!("Shutdown coworker: {}", name);
@@ -2958,6 +2967,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         match state.coworkers.spawn_with_name(&owner, true, Some(&prompt)) {
             Ok(_) => {
                 info!("Respawned coworker {} successfully", owner);
+                state.broadcast_coworker_update(&owner, "running", None);
 
                 // Update last spawn time for rate limiting
                 {
@@ -3112,6 +3122,7 @@ async fn check_for_duplicate_task_workers(state: &DaemonState) {
             );
 
             // Shutdown the duplicate
+            state.broadcast_coworker_update(&duplicate, "stopped", None);
             if let Err(e) = state.coworkers.shutdown(&duplicate) {
                 warn!("Failed to shutdown duplicate worker {}: {}", duplicate, e);
                 continue;
@@ -3208,6 +3219,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         match state.coworkers.spawn_with_name(&owner, true, Some(&prompt)) {
             Ok(_) => {
                 info!("Spawned coworker {} for pending task #{}", owner, task_id);
+                state.broadcast_coworker_update(&owner, "running", None);
 
                 // Post to channel
                 let msg = Message::text(

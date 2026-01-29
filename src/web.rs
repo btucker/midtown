@@ -22,6 +22,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
+use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::tmux;
 
@@ -54,6 +55,8 @@ pub struct WebState {
     pub config: WebConfig,
     /// Broadcast channel for real-time updates
     pub updates_tx: broadcast::Sender<WebUpdate>,
+    /// Coworker manager for querying live coworker state
+    pub coworkers: Option<CoworkerManager>,
 }
 
 /// Types of real-time updates sent to clients
@@ -316,9 +319,27 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     .await
     .unwrap_or_default();
 
+    let coworkers_data: Vec<serde_json::Value> = state
+        .coworkers
+        .as_ref()
+        .map(|mgr| {
+            mgr.list()
+                .into_iter()
+                .map(|cw| {
+                    serde_json::json!({
+                        "name": cw.name,
+                        "status": cw.status.to_string(),
+                        "current_task": cw.current_task,
+                        "started_at": cw.started_at.to_rfc3339(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let status = serde_json::json!({
         "daemon": "running",
-        "coworkers": [],
+        "coworkers": coworkers_data,
         "tasks": tasks,
         "pull_requests": pull_requests,
         "merged_prs": merged_prs,
@@ -447,6 +468,22 @@ pub fn create_updates_channel() -> (broadcast::Sender<WebUpdate>, broadcast::Rec
     broadcast::channel(100)
 }
 
+/// Broadcast a coworker status change to all WebSocket clients
+pub fn broadcast_coworker_status(
+    tx: &broadcast::Sender<WebUpdate>,
+    name: &str,
+    status: &str,
+    current_task: Option<&str>,
+) {
+    let update = WebUpdate::CoworkerStatus(CoworkerStatusData {
+        name: name.to_string(),
+        status: status.to_string(),
+        current_task: current_task.map(|s| s.to_string()),
+    });
+
+    let _ = tx.send(update);
+}
+
 /// Broadcast a new channel message to all WebSocket clients
 pub fn broadcast_channel_message(tx: &broadcast::Sender<WebUpdate>, message: &Message) {
     let update = WebUpdate::ChannelMessage(ChannelMessageData {
@@ -487,5 +524,34 @@ mod tests {
         let json = serde_json::to_string(&update).unwrap();
         assert!(json.contains("channel_message"));
         assert!(json.contains("Hello"));
+    }
+
+    #[test]
+    fn test_coworker_status_update_serialization() {
+        let update = WebUpdate::CoworkerStatus(CoworkerStatusData {
+            name: "lexington".to_string(),
+            status: "running".to_string(),
+            current_task: Some("Fix auth bug".to_string()),
+        });
+
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains("coworker_status"));
+        assert!(json.contains("lexington"));
+        assert!(json.contains("running"));
+        assert!(json.contains("Fix auth bug"));
+    }
+
+    #[test]
+    fn test_coworker_status_update_without_task() {
+        let update = WebUpdate::CoworkerStatus(CoworkerStatusData {
+            name: "park".to_string(),
+            status: "stopped".to_string(),
+            current_task: None,
+        });
+
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains("coworker_status"));
+        assert!(json.contains("park"));
+        assert!(json.contains("stopped"));
     }
 }
