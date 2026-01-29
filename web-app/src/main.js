@@ -7,11 +7,13 @@ const app = mount(App, {
 })
 
 // Register service worker with auto-update
-// When a new version is available, it will automatically reload
+// When a new version is available, prompt user before reloading
 registerSW({
   onNeedRefresh() {
-    // New content available - reload to get latest version
-    window.location.reload()
+    // Let user choose when to update to avoid losing unsaved work
+    if (confirm('A new version is available. Reload to update?')) {
+      window.location.reload()
+    }
   },
   onOfflineReady() {
     console.log('App ready to work offline')
