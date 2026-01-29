@@ -172,7 +172,7 @@ async fn dev_placeholder() -> impl IntoResponse {
             margin: 0;
         }
         h1 { color: #00d9ff; }
-        .status { color: #4ade80; }
+        .status { color: #00d050; }
         code {
             background: #16213e;
             padding: 2px 6px;

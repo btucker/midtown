@@ -29,7 +29,7 @@
   function ciStatusColor(status) {
     switch (status) {
       case 'passed':
-        return '#4ade80'
+        return '#00d050'
       case 'failed':
         return '#ef4444'
       case 'running':
@@ -70,7 +70,7 @@
   function ciDot(status) {
     switch (status) {
       case 'approved':
-        return { color: '#4ade80' }
+        return { color: '#00d050' }
       case 'changes requested':
         return { color: '#e94560' }
       case 'awaiting review':
