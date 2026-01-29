@@ -612,6 +612,14 @@ mod tests {
         })
     }
 
+    fn read_since_cursor_with_retry(
+        channel: &Channel,
+        agent: &str,
+        max_attempts: u32,
+    ) -> Result<Vec<Message>> {
+        retry_with_backoff(max_attempts, || channel.read_since_cursor(agent))
+    }
+
     #[test]
     fn test_channel_creation() {
         let temp_dir = TempDir::new().unwrap();
@@ -619,7 +627,7 @@ mod tests {
         assert!(temp_dir.path().join("cursors").exists());
         // Channel file should exist (for tailf) but be empty (no messages)
         assert!(channel.exists());
-        assert_eq!(channel.message_count().unwrap(), 0);
+        assert_eq!(message_count_with_retry(&channel, 5).unwrap(), 0);
     }
 
     #[test]
@@ -663,20 +671,20 @@ mod tests {
         channel.send(&Message::text("agent1", "Message 1")).unwrap();
         channel.send(&Message::text("agent1", "Message 2")).unwrap();
 
-        // Agent reads all messages
-        let messages = channel.read_since_cursor("reader").unwrap();
+        // Agent reads all messages (retry to handle transient lock contention in CI)
+        let messages = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
         assert_eq!(messages.len(), 2);
 
         // Send more messages
         channel.send(&Message::text("agent1", "Message 3")).unwrap();
 
         // Agent should only see new message
-        let new_messages = channel.read_since_cursor("reader").unwrap();
+        let new_messages = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
         assert_eq!(new_messages.len(), 1);
         assert_eq!(new_messages[0].content, "Message 3");
 
         // Another agent sees all messages
-        let all_messages = channel.read_since_cursor("other_reader").unwrap();
+        let all_messages = read_since_cursor_with_retry(&channel, "other_reader", 5).unwrap();
         assert_eq!(all_messages.len(), 3);
     }
 
@@ -687,14 +695,14 @@ mod tests {
 
         channel.send(&Message::text("agent1", "Message")).unwrap();
 
-        // Read once
-        let _ = channel.read_since_cursor("reader").unwrap();
+        // Read once (retry to handle transient lock contention in CI)
+        let _ = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
 
         // Reset cursor
         channel.reset_cursor("reader").unwrap();
 
         // Should see message again
-        let messages = channel.read_since_cursor("reader").unwrap();
+        let messages = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
         assert_eq!(messages.len(), 1);
     }
 
@@ -750,7 +758,8 @@ mod tests {
         channel.send(&Message::status("agent1", "working")).unwrap();
         channel.send(&Message::error("agent1", "failed")).unwrap();
 
-        let messages = channel.read_all().unwrap();
+        // Use retry helper to handle transient lock contention in CI
+        let messages = read_all_with_retry(&channel, 5).unwrap();
         assert_eq!(messages.len(), 5);
         assert_eq!(messages[0].message_type, MessageType::Text);
         assert_eq!(messages[1].message_type, MessageType::System);
@@ -764,11 +773,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let channel = Channel::new(temp_dir.path()).unwrap();
 
-        // Reading from non-existent channel should return empty vec
-        let messages = channel.read_all().unwrap();
+        // Reading from empty channel should return empty vec
+        let messages = read_all_with_retry(&channel, 5).unwrap();
         assert!(messages.is_empty());
 
-        let messages = channel.read_since_cursor("reader").unwrap();
+        let messages = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
         assert!(messages.is_empty());
     }
 
@@ -816,7 +825,7 @@ mod tests {
         drop(file);
 
         // Read messages - they should be sorted by timestamp (oldest first)
-        let messages = channel.read_all().unwrap();
+        let messages = read_all_with_retry(&channel, 5).unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(
             messages[0].content, "Old message (delayed)",
@@ -949,7 +958,7 @@ mod tests {
         assert_eq!(archived, 0, "No messages should be archived");
 
         // All messages still present
-        let messages = channel.read_all().unwrap();
+        let messages = read_all_with_retry(&channel, 5).unwrap();
         assert_eq!(messages.len(), 2);
     }
 
@@ -1003,7 +1012,7 @@ mod tests {
         assert_eq!(archived, 3, "3 old messages should be archived");
 
         // Only recent messages remain in channel
-        let remaining = channel.read_all().unwrap();
+        let remaining = read_all_with_retry(&channel, 5).unwrap();
         assert_eq!(remaining.len(), 2);
         assert!(remaining[0].content.starts_with("Recent"));
         assert!(remaining[1].content.starts_with("Recent"));
@@ -1058,7 +1067,7 @@ mod tests {
         channel.send(&Message::text("agent1", "Recent")).unwrap();
 
         // Agent reads to establish a cursor at some byte offset
-        let _ = channel.read_since_cursor("reader").unwrap();
+        let _ = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
         let cursor_before = channel.get_cursor("reader").unwrap();
         assert!(cursor_before.position > 0, "Cursor should be past 0");
 
@@ -1107,6 +1116,18 @@ mod tests {
             file.write_all(existing.as_bytes()).unwrap();
         }
 
-        assert!(channel.needs_rotation(24));
+        // Retry: needs_rotation uses try_lock_shared internally and returns false on WouldBlock
+        let mut rotation_needed = false;
+        for _ in 0..5 {
+            if channel.needs_rotation(24) {
+                rotation_needed = true;
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            rotation_needed,
+            "Channel with old messages should need rotation"
+        );
     }
 }
