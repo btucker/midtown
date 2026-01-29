@@ -864,7 +864,7 @@ mod tests {
 
         let now = SystemTime::now();
 
-        let tasks = vec![
+        let tasks = [
             // Sub-task just created by reviewing coworker (5 seconds ago)
             Task {
                 id: "471".to_string(),
