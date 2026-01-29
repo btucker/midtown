@@ -365,6 +365,11 @@
     color: #888;
   }
 
+  /* When collapsed, hide card details to show only headings */
+  .kanban-wrapper:not(.expanded) .card-detail {
+    display: none;
+  }
+
   .pipe {
     color: #555;
   }
@@ -383,8 +388,23 @@
     line-height: 1.3;
   }
 
+  /* When collapsed, limit to single line for compact headings */
+  .kanban-wrapper:not(.expanded) .task-subject,
+  .kanban-wrapper:not(.expanded) .pr-title {
+    -webkit-line-clamp: 1;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    display: block;
+  }
+
   .pr-number-line {
     margin-bottom: 2px;
+  }
+
+  /* When collapsed, Done column cards should inline PR# with title */
+  .kanban-wrapper:not(.expanded) .pr-number-line {
+    display: inline;
+    margin-bottom: 0;
   }
 
   .ci-dot {
