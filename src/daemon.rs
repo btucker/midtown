@@ -85,6 +85,8 @@ pub enum PrIssueType {
     NeedsReview,
     /// PR has review comments from non-owners
     ReviewComment,
+    /// PR review is complete (Claude review posted), author should act
+    ReviewComplete,
 }
 
 impl std::fmt::Display for PrIssueType {
@@ -96,6 +98,7 @@ impl std::fmt::Display for PrIssueType {
             PrIssueType::Approved => write!(f, "approved"),
             PrIssueType::NeedsReview => write!(f, "needs review"),
             PrIssueType::ReviewComment => write!(f, "review comment"),
+            PrIssueType::ReviewComplete => write!(f, "review complete"),
         }
     }
 }
@@ -1819,6 +1822,92 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                     }
                 }
             }
+
+            // Nudge the PR author — review is complete but PR is still open,
+            // so the author needs to address feedback and/or merge.
+            let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+            let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+            let owner = head_ref.split('/').next().unwrap_or("");
+
+            if !owner.is_empty() {
+                // Check cooldown to avoid spamming
+                let should_nudge = {
+                    let tracker = state.pr_issue_tracker.lock().await;
+                    tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
+                };
+
+                if should_nudge {
+                    let nudge_msg = format!(
+                        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.",
+                        pr_number,
+                        truncate_str(title, 40)
+                    );
+
+                    let active_coworkers: Vec<String> = state
+                        .coworkers
+                        .list()
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .collect();
+
+                    if active_coworkers.contains(&owner.to_string()) {
+                        // Owner is active — nudge them
+                        match state.coworkers.nudge(owner, &nudge_msg) {
+                            Ok(()) => {
+                                info!(
+                                    "Nudged {} about completed review on PR #{}",
+                                    owner, pr_number
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to nudge {} about completed review on PR #{}: {}",
+                                    owner, pr_number, e
+                                );
+                            }
+                        }
+                    } else {
+                        // Owner is not active — spawn them to address the review
+                        info!(
+                            "PR #{} owner {} is idle/shutdown, spawning to address completed review",
+                            pr_number, owner
+                        );
+                        match state
+                            .coworkers
+                            .spawn_with_name(owner, true, Some(&nudge_msg), false)
+                        {
+                            Ok(_) => {
+                                info!(
+                                    "Spawned {} to address completed review on PR #{}",
+                                    owner, pr_number
+                                );
+                                state.broadcast_coworker_update(owner, "running", None);
+                                let msg = Message::text(
+                                    "midtown",
+                                    format!(
+                                        "🚀 Spawned {} to address review feedback on PR #{}",
+                                        owner, pr_number
+                                    ),
+                                );
+                                if let Err(e) = state.send_and_broadcast(&msg) {
+                                    warn!("Failed to post spawn message: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to spawn {} for PR #{} review complete: {}",
+                                    owner, pr_number, e
+                                );
+                            }
+                        }
+                    }
+
+                    // Record the nudge to prevent spamming
+                    let mut tracker = state.pr_issue_tracker.lock().await;
+                    tracker.record_nudge(pr_number, PrIssueType::ReviewComplete);
+                }
+            }
+
             continue;
         }
 
@@ -1979,6 +2068,9 @@ fn get_issue_action(issue_type: PrIssueType) -> &'static str {
         PrIssueType::Approved => "ready to merge!",
         PrIssueType::NeedsReview => "spawning reviewer",
         PrIssueType::ReviewComment => "please address review feedback and merge if appropriate",
+        PrIssueType::ReviewComplete => {
+            "review is complete — please address feedback and merge if appropriate"
+        }
     }
 }
 
@@ -3613,6 +3705,7 @@ mod tests {
         let tracker = PrIssueTracker::new();
         assert!(tracker.should_nudge(42, PrIssueType::MergeConflict));
         assert!(tracker.should_nudge(42, PrIssueType::CiFailed));
+        assert!(tracker.should_nudge(42, PrIssueType::ReviewComplete));
     }
 
     #[test]
@@ -3631,6 +3724,20 @@ mod tests {
     }
 
     #[test]
+    fn test_pr_issue_tracker_review_complete_independent_of_other_types() {
+        let mut tracker = PrIssueTracker::new();
+
+        // Recording a ReviewComment nudge should not block ReviewComplete
+        tracker.record_nudge(42, PrIssueType::ReviewComment);
+        assert!(tracker.should_nudge(42, PrIssueType::ReviewComplete));
+
+        // Recording ReviewComplete should block itself but not others
+        tracker.record_nudge(42, PrIssueType::ReviewComplete);
+        assert!(!tracker.should_nudge(42, PrIssueType::ReviewComplete));
+        assert!(tracker.should_nudge(42, PrIssueType::Approved));
+    }
+
+    #[test]
     fn test_pr_issue_type_display() {
         assert_eq!(PrIssueType::MergeConflict.to_string(), "merge conflict");
         assert_eq!(PrIssueType::CiFailed.to_string(), "CI failed");
@@ -3640,6 +3747,7 @@ mod tests {
         );
         assert_eq!(PrIssueType::Approved.to_string(), "approved");
         assert_eq!(PrIssueType::NeedsReview.to_string(), "needs review");
+        assert_eq!(PrIssueType::ReviewComplete.to_string(), "review complete");
     }
 
     #[test]
@@ -3742,6 +3850,10 @@ mod tests {
         assert_eq!(
             get_issue_action(PrIssueType::NeedsReview),
             "spawning reviewer"
+        );
+        assert_eq!(
+            get_issue_action(PrIssueType::ReviewComplete),
+            "review is complete — please address feedback and merge if appropriate"
         );
     }
 
