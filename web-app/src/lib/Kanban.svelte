@@ -1,9 +1,48 @@
 <script>
-  import { kanbanData } from './store.js'
+  import { kanbanData, repoStatus } from './store.js'
 
   const repoUrl = 'https://github.com/btucker/midtown'
 
   let expanded = $state(false)
+
+  // Format relative time for display (e.g., "3m", "2h", "1d")
+  function formatRelativeTime(timestamp) {
+    if (!timestamp) return ''
+    try {
+      const date = new Date(timestamp)
+      const now = new Date()
+      const diffMs = now - date
+      const diffMins = Math.floor(diffMs / 60000)
+
+      if (diffMins < 1) return '<1m'
+      if (diffMins < 60) return `${diffMins}m`
+      const diffHours = Math.floor(diffMins / 60)
+      if (diffHours < 24) return `${diffHours}h`
+      const diffDays = Math.floor(diffHours / 24)
+      return `${diffDays}d`
+    } catch {
+      return ''
+    }
+  }
+
+  // CI status dot color
+  function ciStatusColor(status) {
+    switch (status) {
+      case 'passed':
+        return '#4ade80'
+      case 'failed':
+        return '#ef4444'
+      case 'running':
+        return '#fbbf24'
+      default:
+        return '#666'
+    }
+  }
+
+  // CI status dot character
+  function ciStatusDot(status) {
+    return status && status !== 'unknown' ? '●' : '○'
+  }
   let selectedItem = $state(null)
 
   function toggleExpand() {
@@ -67,7 +106,23 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="kanban-header" onclick={toggleExpand}>
-    <span class="kanban-title">Kanban</span>
+    <div class="repo-status">
+      <span class="repo-name">{$repoStatus.repoName || 'midtown'}</span>
+      {#if $repoStatus.commitHash}
+        <span class="commit-hash">{$repoStatus.commitHash}</span>
+        {#if $repoStatus.commitTime}
+          <span class="commit-time">{formatRelativeTime($repoStatus.commitTime)}</span>
+        {/if}
+      {/if}
+      <span class="ci-status" style="color: {ciStatusColor($repoStatus.ciStatus)}">{ciStatusDot($repoStatus.ciStatus)}</span>
+      {#if $repoStatus.releaseTag}
+        <span class="release-label">Releases:</span>
+        <span class="release-tag">{$repoStatus.releaseTag}</span>
+        {#if $repoStatus.releaseTime}
+          <span class="release-time">{formatRelativeTime($repoStatus.releaseTime)}</span>
+        {/if}
+      {/if}
+    </div>
     <span class="chevron" class:expanded>▲</span>
   </div>
 
@@ -243,11 +298,47 @@
     background: #1a2744;
   }
 
-  .kanban-title {
+  .repo-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 0.7rem;
+    overflow: hidden;
+  }
+
+  .repo-name {
+    color: #666;
+    flex-shrink: 0;
+  }
+
+  .commit-hash {
+    color: #fbbf24;
+    font-family: ui-monospace, monospace;
+    flex-shrink: 0;
+  }
+
+  .commit-time {
+    color: #666;
+    flex-shrink: 0;
+  }
+
+  .ci-status {
+    flex-shrink: 0;
+  }
+
+  .release-label {
+    color: #666;
+    flex-shrink: 0;
+  }
+
+  .release-tag {
     color: #00d9ff;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+
+  .release-time {
+    color: #666;
+    flex-shrink: 0;
   }
 
   .chevron {

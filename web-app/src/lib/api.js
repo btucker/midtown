@@ -1,4 +1,11 @@
-import { messages, connected, coworkers, daemonStatus, kanbanData } from './store.js'
+import {
+  messages,
+  connected,
+  coworkers,
+  daemonStatus,
+  kanbanData,
+  repoStatus,
+} from './store.js'
 
 let ws = null
 let reconnectTimeout = null
@@ -27,6 +34,7 @@ export async function fetchStatus() {
       daemonStatus.set(data)
       coworkers.set(data.coworkers || [])
       updateKanbanData(data)
+      updateRepoStatus(data)
     }
   } catch (err) {
     console.error('Failed to fetch status:', err)
@@ -52,6 +60,18 @@ function updateKanbanData(data) {
       title: pr.title,
       mergedAt: pr.mergedAt,
     })),
+  })
+}
+
+function updateRepoStatus(data) {
+  const rs = data.repo_status || {}
+  repoStatus.set({
+    repoName: data.repo_name || '',
+    commitHash: rs.commit_hash || '',
+    commitTime: rs.commit_time || null,
+    ciStatus: rs.ci_status || null,
+    releaseTag: rs.release_tag || null,
+    releaseTime: rs.release_time || null,
   })
 }
 
