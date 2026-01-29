@@ -454,10 +454,21 @@ struct DaemonState {
     max_coworkers: usize,
 }
 
+/// Number of coworker slots reserved for reviewers.
+/// Dev coworker spawning is capped at `max_coworkers - REVIEW_HEADROOM`.
+const REVIEW_HEADROOM: usize = 2;
+
 impl DaemonState {
-    /// Check if the daemon is at the maximum coworker limit.
+    /// Check if the daemon is at the maximum coworker limit (absolute cap).
     fn is_at_coworker_limit(&self) -> bool {
         self.coworkers.list().len() >= self.max_coworkers
+    }
+
+    /// Check if the daemon is at the dev coworker limit.
+    /// Reserves `REVIEW_HEADROOM` slots for reviewers, but always allows at least 1 dev slot.
+    fn is_at_dev_limit(&self) -> bool {
+        let dev_cap = self.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1);
+        self.coworkers.list().len() >= dev_cap
     }
 
     fn new(
@@ -676,7 +687,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         web_updates_tx,
         config.max_coworkers,
     )?);
-    info!("Max coworkers limit: {}", config.max_coworkers);
+    info!(
+        "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",
+        config.max_coworkers,
+        config.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
+        REVIEW_HEADROOM
+    );
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -1513,17 +1529,17 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
         let nudge_text = format!("{} said: {}", msg.from, msg.content);
 
         if !is_running {
-            // Check max coworkers limit before spawning
-            if state.is_at_coworker_limit() {
+            // Check dev coworkers limit before spawning (reserve slots for reviewers)
+            if state.is_at_dev_limit() {
                 debug!(
-                    "Max coworkers limit ({}) reached, cannot spawn {} for @mention",
-                    state.max_coworkers, name
+                    "Dev coworkers limit reached, cannot spawn {} for @mention",
+                    name
                 );
                 let err_msg = Message::text(
                     "midtown",
                     format!(
-                        "⚠️ Cannot spawn {} for @mention: max coworkers limit ({}) reached",
-                        name, state.max_coworkers
+                        "⚠️ Cannot spawn {} for @mention: dev coworkers limit reached",
+                        name
                     ),
                 );
                 let _ = state.send_and_broadcast(&err_msg);
@@ -1719,11 +1735,11 @@ async fn poll_prs_for_issues(
                     }
                 }
             } else if !owner.is_empty() {
-                // Owner is not active — check limit before spawning
-                if state.is_at_coworker_limit() {
+                // Owner is not active — check dev limit before spawning (reserve slots for reviewers)
+                if state.is_at_dev_limit() {
                     debug!(
-                        "Max coworkers limit ({}) reached, cannot spawn {} for PR #{}",
-                        state.max_coworkers, owner, pr_number
+                        "Dev coworkers limit reached, cannot spawn {} for PR #{}",
+                        owner, pr_number
                     );
                     false
                 } else {
@@ -1951,11 +1967,11 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                 );
                             }
                         }
-                    } else if state.is_at_coworker_limit() {
-                        // At coworker limit — post to channel instead of spawning
+                    } else if state.is_at_dev_limit() {
+                        // At dev limit — post to channel instead of spawning (reserve slots for reviewers)
                         debug!(
-                            "Max coworkers limit ({}) reached, cannot spawn {} for PR #{}",
-                            state.max_coworkers, owner, pr_number
+                            "Dev coworkers limit reached, cannot spawn {} for PR #{}",
+                            owner, pr_number
                         );
                     } else {
                         // Owner is not active — spawn them to address the review
@@ -2526,15 +2542,16 @@ fn handle_coworker_spawn(
     resume: bool,
     prompt: Option<String>,
 ) -> Response {
-    // Check max coworkers limit
-    if state.is_at_coworker_limit() {
+    // Check dev coworkers limit (reserve slots for reviewers)
+    if state.is_at_dev_limit() {
         return Response::error(
             id,
             RpcError::new(
                 -32603,
                 format!(
-                    "Max coworkers limit ({}) reached. Adjust with MIDTOWN_MAX_COWORKERS or max_coworkers in config.toml",
-                    state.max_coworkers
+                    "Dev coworkers limit ({}) reached (reserving {} slots for reviewers). Adjust with MIDTOWN_MAX_COWORKERS or max_coworkers in config.toml",
+                    state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
+                    REVIEW_HEADROOM
                 ),
             ),
         );
@@ -2891,6 +2908,7 @@ fn handle_status(id: RequestId, state: &DaemonState) -> Response {
             "daemon_running": true,
             "active_coworkers": state.coworkers.count(),
             "max_coworkers": state.max_coworkers,
+            "max_dev_coworkers": state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
             "pending_tasks": pending_count,
             "socket_path": state.socket_path.to_string_lossy(),
             "coworkers": coworkers,
@@ -3575,12 +3593,9 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         .map(|cw| cw.name.to_lowercase())
         .collect();
 
-    // Check max coworkers limit before attempting recovery
-    if state.is_at_coworker_limit() {
-        debug!(
-            "Max coworkers limit ({}) reached, deferring orphan recovery",
-            state.max_coworkers
-        );
+    // Check dev coworkers limit before attempting recovery (reserve slots for reviewers)
+    if state.is_at_dev_limit() {
+        debug!("Dev coworkers limit reached, deferring orphan recovery");
         return;
     }
 
@@ -3853,11 +3868,11 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             continue;
         }
 
-        // Check max coworkers limit before spawning (use live count, not stale snapshot)
-        if state.is_at_coworker_limit() {
+        // Check dev coworkers limit before spawning (reserve slots for reviewers)
+        if state.is_at_dev_limit() {
             debug!(
-                "Max coworkers limit ({}) reached, deferring spawn for task #{} owned by {}",
-                state.max_coworkers, task_id, owner
+                "Dev coworkers limit reached, deferring spawn for task #{} owned by {}",
+                task_id, owner
             );
             continue;
         }
@@ -3917,11 +3932,11 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
     let mut task_coworker_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for task in pending_unowned {
-        // Check max coworkers limit before spawning
-        if state.is_at_coworker_limit() {
+        // Check dev coworkers limit before spawning (reserve slots for reviewers)
+        if state.is_at_dev_limit() {
             debug!(
-                "Max coworkers limit ({}) reached, deferring unowned task #{}",
-                state.max_coworkers, task.id
+                "Dev coworkers limit reached, deferring unowned task #{}",
+                task.id
             );
             break;
         }
@@ -4641,6 +4656,40 @@ mod tests {
 
         let (reviewer, _) = extract_reviewer_from_pr_comments(&[]);
         assert_eq!(reviewer, None);
+    }
+
+    #[test]
+    fn test_review_headroom_constant() {
+        assert_eq!(REVIEW_HEADROOM, 2);
+    }
+
+    #[test]
+    fn test_dev_limit_calculation() {
+        // Helper: compute dev cap the same way is_at_dev_limit does
+        let dev_cap = |max_coworkers: usize| -> usize {
+            max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1)
+        };
+
+        // Normal case: max_coworkers=6, dev cap should be 4
+        assert_eq!(dev_cap(6), 4);
+
+        // max_coworkers=4, dev cap should be 2
+        assert_eq!(dev_cap(4), 2);
+
+        // max_coworkers=3, dev cap should be 1
+        assert_eq!(dev_cap(3), 1);
+
+        // Edge case: max_coworkers=2, dev cap should be 1 (not 0)
+        assert_eq!(dev_cap(2), 1);
+
+        // Edge case: max_coworkers=1, dev cap should be 1 (floor at 1)
+        assert_eq!(dev_cap(1), 1);
+
+        // Edge case: max_coworkers=0, dev cap should be 1 (floor at 1 via .max(1))
+        assert_eq!(dev_cap(0), 1);
+
+        // Large case: max_coworkers=10, dev cap should be 8
+        assert_eq!(dev_cap(10), 8);
     }
 
     #[test]
