@@ -33,7 +33,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::coworker::CoworkerManager;
 use crate::message::{Message, MessageType};
-use crate::web::{self, WebConfig, WebState, WebUpdate};
+use crate::web::{self, MobileChannelPost, WebConfig, WebState, WebUpdate};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -97,14 +97,20 @@ const GITHUB_SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 
 /// Start the webhook HTTP server
 ///
-/// Returns a channel receiver for translated messages and a broadcast sender
-/// for pushing real-time updates to WebSocket clients.
+/// Returns a channel receiver for translated messages, a broadcast sender
+/// for pushing real-time updates to WebSocket clients, and a receiver for
+/// mobile channel posts that need to be processed by the daemon.
 pub async fn start_webhook_server(
     config: WebhookConfig,
     coworker_manager: Option<CoworkerManager>,
-) -> crate::Result<(mpsc::Receiver<WebhookEvent>, broadcast::Sender<WebUpdate>)> {
+) -> crate::Result<(
+    mpsc::Receiver<WebhookEvent>,
+    broadcast::Sender<WebUpdate>,
+    mpsc::Receiver<MobileChannelPost>,
+)> {
     let (tx, rx) = mpsc::channel(100);
     let (web_updates_tx, _) = broadcast::channel(100);
+    let (mobile_tx, mobile_rx) = mpsc::channel(100);
 
     let webhook_state = Arc::new(WebhookState {
         config: config.clone(),
@@ -124,6 +130,7 @@ pub async fn start_webhook_server(
         config: web_config,
         updates_tx: web_updates_tx.clone(),
         coworkers: coworker_manager,
+        channel_post_tx: mobile_tx,
     });
 
     // CORS layer for development (allows requests from Vite dev server)
@@ -154,7 +161,7 @@ pub async fn start_webhook_server(
         }
     });
 
-    Ok((rx, web_updates_tx))
+    Ok((rx, web_updates_tx, mobile_rx))
 }
 
 /// Health check endpoint
