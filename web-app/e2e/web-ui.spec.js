@@ -18,7 +18,7 @@ test.describe('Web UI', () => {
       await page.goto('/')
 
       // Channel tab should be active by default
-      const channelBtn = page.getByRole('button', { name: 'Channel' })
+      const channelBtn = page.locator('nav').getByRole('button', { name: 'Channel' })
       await expect(channelBtn).toHaveClass(/active/)
 
       // Wait for messages to load from the API
@@ -48,7 +48,7 @@ test.describe('Web UI', () => {
       await page.goto('/')
 
       // Navigate to Status tab
-      await page.getByRole('button', { name: 'Status' }).click()
+      await page.locator('nav').getByRole('button', { name: 'Status' }).click()
 
       // Daemon section should be visible with status text
       await expect(page.locator('h2', { hasText: 'Daemon' })).toBeVisible()
@@ -61,7 +61,7 @@ test.describe('Web UI', () => {
 
     test('shows coworker section', async ({ page }) => {
       await page.goto('/')
-      await page.getByRole('button', { name: 'Status' }).click()
+      await page.locator('nav').getByRole('button', { name: 'Status' }).click()
 
       // Coworkers heading should show count
       const coworkersHeading = page.locator('h2', { hasText: /Coworkers/ })
@@ -77,14 +77,15 @@ test.describe('Web UI', () => {
 
     test('shows tasks section', async ({ page }) => {
       await page.goto('/')
-      await page.getByRole('button', { name: 'Status' }).click()
+      await page.locator('nav').getByRole('button', { name: 'Status' }).click()
 
       // Tasks heading should be present
       await expect(page.locator('h2', { hasText: 'Tasks' })).toBeVisible()
 
-      // Should show either task items or "No tasks" message
-      const taskList = page.locator('.task-list')
-      const emptyMsg = page.locator('.empty', { hasText: 'No tasks' })
+      // Should show either task items or "No tasks" message within status container
+      const statusContainer = page.locator('.status-container')
+      const taskList = statusContainer.locator('.task-list')
+      const emptyMsg = statusContainer.locator('p.empty', { hasText: 'No tasks' })
       const hasTasks = await taskList.isVisible().catch(() => false)
       const hasEmpty = await emptyMsg.isVisible().catch(() => false)
       expect(hasTasks || hasEmpty).toBe(true)
@@ -92,7 +93,7 @@ test.describe('Web UI', () => {
 
     test('refresh button triggers data reload', async ({ page }) => {
       await page.goto('/')
-      await page.getByRole('button', { name: 'Status' }).click()
+      await page.locator('nav').getByRole('button', { name: 'Status' }).click()
 
       // Intercept the status API call
       const statusPromise = page.waitForResponse(
@@ -113,8 +114,8 @@ test.describe('Web UI', () => {
       await page.goto('/')
 
       // Channel should be active initially
-      const channelBtn = page.getByRole('button', { name: 'Channel' })
-      const statusBtn = page.getByRole('button', { name: 'Status' })
+      const channelBtn = page.locator('nav').getByRole('button', { name: 'Channel' })
+      const statusBtn = page.locator('nav').getByRole('button', { name: 'Status' })
       await expect(channelBtn).toHaveClass(/active/)
 
       // Click Status tab
