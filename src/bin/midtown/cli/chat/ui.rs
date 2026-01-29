@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use midtown::{Message, MessageType};
@@ -147,6 +147,16 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     let (_pending, in_progress, _completed) = app.tasks_by_status();
     let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
 
+    // Calculate dynamic input box height based on content
+    // Inner width = frame width minus 2 for left/right borders
+    let inner_width = f.area().width.saturating_sub(2);
+    let input_text = if app.input_mode || !app.input_text.is_empty() {
+        app.input_text.as_str()
+    } else {
+        ""
+    };
+    let input_height = input_box_height(input_text, inner_width);
+
     // Split into repo status (top), kanban, chat, and input (bottom) panels
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -154,7 +164,7 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
             Constraint::Length(REPO_STATUS_HEIGHT),
             Constraint::Length(kanban_height),
             Constraint::Min(10),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
         ])
         .split(f.area());
 
@@ -704,6 +714,80 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(paragraph, inner);
 }
 
+/// Maximum number of text lines visible in the input box (excluding borders)
+const MAX_INPUT_LINES: u16 = 8;
+
+/// Calculate the number of visual (wrapped) lines a string occupies at the given width.
+///
+/// Uses display width (unicode-aware) so wide characters and emoji are handled correctly.
+fn count_visual_lines(text: &str, width: u16) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+    let width = width as usize;
+    use unicode_width::UnicodeWidthChar;
+
+    let mut lines: u16 = 1;
+    let mut col: usize = 0;
+
+    for ch in text.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col + w > width {
+            lines += 1;
+            col = w;
+        } else {
+            col += w;
+        }
+    }
+    lines
+}
+
+/// Calculate the height the input box needs (including 2 rows for borders).
+fn input_box_height(text: &str, inner_width: u16) -> u16 {
+    let visual_lines = count_visual_lines(text, inner_width);
+    let clamped = visual_lines.min(MAX_INPUT_LINES);
+    clamped + 2 // +2 for top and bottom border
+}
+
+/// Compute the (row, col) cursor position within wrapped text.
+///
+/// `cursor_char` is the character index of the cursor in `text`.
+/// Returns (row, col) where row is 0-based line number and col is the display column.
+fn cursor_position_in_wrapped(text: &str, cursor_char: usize, width: u16) -> (u16, u16) {
+    if width == 0 {
+        return (0, 0);
+    }
+    let width = width as usize;
+    use unicode_width::UnicodeWidthChar;
+
+    let mut row: u16 = 0;
+    let mut col: usize = 0;
+
+    for (char_idx, ch) in text.chars().enumerate() {
+        // When cursor is at a wrap boundary (col == width), wrap first
+        if col >= width {
+            row += 1;
+            col = 0;
+        }
+        if char_idx == cursor_char {
+            return (row, col as u16);
+        }
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col + w > width {
+            row += 1;
+            col = w;
+        } else {
+            col += w;
+        }
+    }
+    // Cursor at end of text — check if it landed on a wrap boundary
+    if col >= width {
+        row += 1;
+        col = 0;
+    }
+    (row, col as u16)
+}
+
 /// Draw the input box for typing messages
 fn draw_input_box(f: &mut Frame, app: &App, area: Rect) {
     let border_color = if app.input_mode {
@@ -729,16 +813,20 @@ fn draw_input_box(f: &mut Frame, app: &App, area: Rect) {
         ""
     };
 
-    let paragraph = Paragraph::new(Line::from(display_text.to_string()))
-        .style(Style::default().fg(Color::White));
+    let paragraph = Paragraph::new(display_text)
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false });
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
 
     // Show cursor when in input mode
     if app.input_mode {
-        let cursor_col = super::display_width_up_to(&app.input_text, app.input_cursor);
-        f.set_cursor_position((inner.x + cursor_col, inner.y));
+        let (cursor_row, cursor_col) =
+            cursor_position_in_wrapped(&app.input_text, app.input_cursor, inner.width);
+        // Clamp cursor row to visible area
+        let visible_row = cursor_row.min(inner.height.saturating_sub(1));
+        f.set_cursor_position((inner.x + cursor_col, inner.y + visible_row));
     }
 }
 
@@ -1966,5 +2054,105 @@ mod tests {
             first_line_content.contains("Fix something"),
             "Should find task with case-insensitive lookup"
         );
+    }
+
+    // --- Tests for input box expansion / wrapping ---
+
+    #[test]
+    fn test_count_visual_lines_empty() {
+        assert_eq!(count_visual_lines("", 40), 1);
+    }
+
+    #[test]
+    fn test_count_visual_lines_fits() {
+        assert_eq!(count_visual_lines("hello", 40), 1);
+    }
+
+    #[test]
+    fn test_count_visual_lines_exact_width() {
+        // Exactly fills one line — should not wrap to a second
+        assert_eq!(count_visual_lines("abcde", 5), 1);
+    }
+
+    #[test]
+    fn test_count_visual_lines_wraps() {
+        // 10 chars at width 4 → 3 lines (4+4+2)
+        assert_eq!(count_visual_lines("abcdefghij", 4), 3);
+    }
+
+    #[test]
+    fn test_count_visual_lines_wide_chars() {
+        // '界' is display-width 2. Two of them = 4 columns.
+        // At width 3, first char (2 cols) fits, second (2 cols) would exceed → wraps
+        assert_eq!(count_visual_lines("界界", 3), 2);
+    }
+
+    #[test]
+    fn test_count_visual_lines_zero_width() {
+        assert_eq!(count_visual_lines("hello", 0), 1);
+    }
+
+    #[test]
+    fn test_input_box_height_empty() {
+        // Empty text = 1 visual line + 2 borders = 3
+        assert_eq!(input_box_height("", 40), 3);
+    }
+
+    #[test]
+    fn test_input_box_height_single_line() {
+        assert_eq!(input_box_height("hello", 40), 3);
+    }
+
+    #[test]
+    fn test_input_box_height_wrapping() {
+        // 10 chars at width 4 → 3 visual lines + 2 borders = 5
+        assert_eq!(input_box_height("abcdefghij", 4), 5);
+    }
+
+    #[test]
+    fn test_input_box_height_capped() {
+        // Very long text should cap at MAX_INPUT_LINES + 2
+        let long_text = "a".repeat(1000);
+        assert_eq!(input_box_height(&long_text, 10), MAX_INPUT_LINES + 2);
+    }
+
+    #[test]
+    fn test_cursor_position_start() {
+        assert_eq!(cursor_position_in_wrapped("hello", 0, 40), (0, 0));
+    }
+
+    #[test]
+    fn test_cursor_position_middle() {
+        assert_eq!(cursor_position_in_wrapped("hello", 3, 40), (0, 3));
+    }
+
+    #[test]
+    fn test_cursor_position_end() {
+        assert_eq!(cursor_position_in_wrapped("hello", 5, 40), (0, 5));
+    }
+
+    #[test]
+    fn test_cursor_position_after_wrap() {
+        // "abcdefghij" at width 4: line 0 = "abcd", line 1 = "efgh", line 2 = "ij"
+        // Cursor at char 5 ('f') → row 1, col 1
+        assert_eq!(cursor_position_in_wrapped("abcdefghij", 5, 4), (1, 1));
+    }
+
+    #[test]
+    fn test_cursor_position_at_wrap_boundary() {
+        // Cursor at char 4 ('e') → start of second line: row 1, col 0
+        assert_eq!(cursor_position_in_wrapped("abcdefghij", 4, 4), (1, 0));
+    }
+
+    #[test]
+    fn test_cursor_position_wide_char() {
+        // '界' takes 2 columns. At width 5: "界" (2 cols), then 'a' (1 col) = 3 cols
+        // Cursor at char 1 (after '界') → row 0, col 2
+        assert_eq!(cursor_position_in_wrapped("界a", 1, 5), (0, 2));
+    }
+
+    #[test]
+    fn test_cursor_position_zero_width() {
+        assert_eq!(cursor_position_in_wrapped("hello", 3, 0), (0, 0));
     }
 }
