@@ -568,6 +568,16 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
 /// This function will block until the daemon receives a shutdown signal
 /// (SIGTERM or SIGINT) or the socket is removed.
 pub async fn run(config: DaemonConfig) -> crate::Result<()> {
+    // Install panic hook so unhandled panics are logged to stderr before aborting
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!(
+            "=== DAEMON PANIC at {} ===",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
+        default_hook(info);
+    }));
+
     // Initialize logging
     let filter = if config.verbose { "debug" } else { "info" };
     tracing_subscriber::fmt()

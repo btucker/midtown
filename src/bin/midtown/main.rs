@@ -201,20 +201,38 @@ fn main() {
             let stdout_path = log_dir.join("daemon.out");
             let stderr_path = log_dir.join("daemon.err");
 
-            let stdout = match std::fs::File::create(&stdout_path) {
+            let stdout = match std::fs::File::options()
+                .append(true)
+                .create(true)
+                .open(&stdout_path)
+            {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("Failed to create stdout log: {}", e);
+                    eprintln!("Failed to open stdout log: {}", e);
                     std::process::exit(1);
                 }
             };
-            let stderr = match std::fs::File::create(&stderr_path) {
+            let stderr = match std::fs::File::options()
+                .append(true)
+                .create(true)
+                .open(&stderr_path)
+            {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("Failed to create stderr log: {}", e);
+                    eprintln!("Failed to open stderr log: {}", e);
                     std::process::exit(1);
                 }
             };
+
+            // Write startup separator to both logs so runs are distinguishable
+            use std::io::Write;
+            let separator = format!(
+                "\n=== Daemon started at {} ===\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+            // Best-effort writes; if these fail, the daemon will still start
+            let _ = (&stdout).write_all(separator.as_bytes());
+            let _ = (&stderr).write_all(separator.as_bytes());
 
             // Note: We don't use daemonize's pid_file feature because we have
             // our own PID file with flock-based locking for singleton enforcement.
