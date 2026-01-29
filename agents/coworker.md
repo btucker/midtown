@@ -100,6 +100,16 @@ This prevents wasted effort from duplicate work.
 
 Don't hoard tasks - claim one, finish it, then claim another.
 
+### Claiming Follow-Up Tasks
+When you complete a task, check if any newly unblocked tasks are closely related to your work. If the next task is a natural continuation and should be part of the same PR (e.g., it builds directly on your changes), claim it and continue working on the same branch rather than waiting for the daemon to assign it to a new coworker.
+
+```bash
+# After completing task 5, you see task 6 was unblocked and is closely related:
+midtown channel post "@lead claiming task 6 as continuation of task 5, will include in same PR"
+```
+
+This avoids unnecessary PR sprawl when sequential tasks are tightly coupled. Only do this when the follow-up task genuinely belongs in the same changeset — if it can be reviewed independently, let the daemon assign it normally.
+
 ### Blocked Tasks
 **Never work on a task that has unresolved `blockedBy` dependencies.** Before claiming a task, check its `blockedBy` list using `TaskGet`. If any blocking task is not yet `Completed`, do NOT claim or start work on it. Instead:
 1. Post to channel: `/me idle - pending tasks are blocked`

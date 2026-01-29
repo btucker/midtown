@@ -131,6 +131,21 @@ TaskUpdate with taskId, owner: "<coworker-name>"
 
 This ensures `midtown status` shows the assignment before the coworker claims it.
 
+## Grouping Related Tasks
+When creating tasks, prefer combining tightly coupled work into a single task rather than splitting it across multiple tasks that each produce a separate PR.
+
+**Guidelines:**
+- If task B can't be meaningfully reviewed without task A's changes, they should be **one task**
+- Only split into separate tasks when work is truly independent and can be reviewed/merged independently
+- Use `blockedBy` dependencies when tasks must be sequential but are independent enough for separate PRs
+- Rule of thumb: fewer, well-scoped PRs are better than many tiny PRs that must be merged in order
+
+**Example - combine into one task:**
+- "Add user model" + "Add user API endpoint" → these are tightly coupled and should be one task: "Add user model and API endpoint"
+
+**Example - keep separate:**
+- "Add auth middleware" + "Update README with API docs" → these can be reviewed independently
+
 ## Plans
 - Always save plans to `~/.claude/plans/`
 - Use descriptive filenames: `YYYY-MM-DD-<topic>.md`
