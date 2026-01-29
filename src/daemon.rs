@@ -606,6 +606,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             .unwrap_or_else(|| "default".to_string())
     });
 
+    // Derive project name from config.toml [project].name, falling back to repo name.
+    // This is used for the tmux session name (midtown-{project}).
+    let project_name = crate::config::load_full_project_config(&repo_name)
+        .and_then(|c| c.project.name().map(|s| s.to_string()))
+        .unwrap_or_else(|| repo_name.clone());
+
     // Create channel for the repo
     let channel = Channel::for_repo(&repo_name)?;
     info!("Channel: {}", channel.base_dir().display());
@@ -621,7 +627,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Create worktree manager and coworker manager early so they can be
     // shared with the web server (for the /api/status endpoint)
-    let session_name = format!("midtown-{}", repo_name);
+    let session_name = format!("midtown-{}", project_name);
     let worktree_manager =
         WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
             code: -32603,

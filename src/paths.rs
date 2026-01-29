@@ -90,6 +90,27 @@ pub fn detect_repo_name() -> Option<String> {
         })
 }
 
+/// Detect the project name for the current repository.
+///
+/// Priority:
+/// 1. `[project].name` from the per-project config.toml
+/// 2. Git repository directory name (from `detect_repo_name()`)
+///
+/// This is the canonical way to get the project name for use in
+/// tmux session names, display labels, etc.
+pub fn detect_project_name() -> Option<String> {
+    let repo_name = detect_repo_name()?;
+
+    // Check if the project config has an explicit name
+    if let Some(name) = crate::config::load_full_project_config(&repo_name)
+        .and_then(|c| c.project.name().map(|s| s.to_string()))
+    {
+        return Some(name);
+    }
+
+    Some(repo_name)
+}
+
 /// Get the state directory for midtown.
 ///
 /// Uses `XDG_STATE_HOME` if set, otherwise `~/.local/state`.

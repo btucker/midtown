@@ -9,19 +9,22 @@ use std::process::{Command, Stdio};
 
 use crate::cli::Response;
 
-/// Get the tmux session name based on the repo name.
-/// Format: midtown-{repo_name}
+/// Get the tmux session name based on the project name.
+/// Format: midtown-{project_name}
+///
+/// The project name is resolved from config.toml `[project].name`,
+/// falling back to the git repo directory name.
 ///
 /// Returns an error if not in a git repository, since a tmux session
 /// requires a valid project context.
 fn session_name() -> Result<String, String> {
-    let repo_name = midtown::paths::detect_repo_name().or_else(|| {
+    let project_name = midtown::paths::detect_project_name().or_else(|| {
         repo_root()
             .ok()
             .and_then(|r| r.file_name().map(|s| s.to_string_lossy().to_string()))
     });
 
-    match repo_name {
+    match project_name {
         Some(name) => Ok(format!("midtown-{}", name)),
         None => Err(
             "Not in a git repository. Run midtown from within a git repo or use --repo."
