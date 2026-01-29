@@ -645,6 +645,18 @@ pub fn handle_restart() -> Result<Response, String> {
     }
 }
 
+/// Clear stale Lead session ID file for a project.
+///
+/// When no tmux session is running, the session-id file from a previous
+/// session is stale. Removing it ensures a fresh Claude Code session
+/// is created instead of resuming the old one.
+fn clear_stale_lead_session(repo: &Path) {
+    let session_file = lead_session_file(repo);
+    if session_file.exists() {
+        let _ = std::fs::remove_file(&session_file);
+    }
+}
+
 /// Handle `midtown attach` command.
 ///
 /// Attaches to the project's tmux session.
@@ -656,6 +668,11 @@ pub fn handle_attach() -> Result<Response, String> {
 
     // Auto-create session if it doesn't exist
     if !session_exists(&session) {
+        // No active tmux session means Lead is not running.
+        // Clear any stale session-id file so we start a fresh
+        // Claude Code session instead of resuming the old one.
+        clear_stale_lead_session(&repo);
+
         // Start midtown (daemon + tmux session)
         handle_start(false)?;
 
@@ -1087,6 +1104,50 @@ mod tests {
             "Resume command must include --resume flag, got: {}",
             cmd
         );
+    }
+
+    #[test]
+    fn test_handle_start_clears_stale_session_id() {
+        // Bug: When no tmux session is running but a session-id file exists
+        // from a previous session, handle_start would resume the old session
+        // instead of creating a new one.
+        //
+        // After the fix, handle_start (when called without an active tmux session)
+        // should delete the stale session-id file so a fresh session is created.
+        let temp = TempDir::new().unwrap();
+        let unique_name = format!("test-project-{}", uuid::Uuid::new_v4());
+        let repo_path = temp.path().join(&unique_name);
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        // Simulate a stale session-id file from a previous session
+        let session_file = lead_session_file(&repo_path);
+        if let Some(parent) = session_file.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&session_file, "old-session-id-12345").unwrap();
+        assert!(session_file.exists());
+
+        // Call clear_stale_lead_session (the function handle_attach uses
+        // when no tmux session exists)
+        clear_stale_lead_session(&repo_path);
+
+        // The session file should be deleted
+        assert!(
+            !session_file.exists(),
+            "Stale session-id file should be deleted when no tmux session is running"
+        );
+
+        // Now get_or_create should create a NEW session
+        let (session_id, is_existing) = get_or_create_lead_session_id(&repo_path).unwrap();
+
+        // Clean up
+        let _ = std::fs::remove_file(&session_file);
+        if let Some(parent) = session_file.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+
+        assert!(!is_existing, "Should create a new session, not resume");
+        assert_ne!(session_id, "old-session-id-12345");
     }
 
     #[test]
