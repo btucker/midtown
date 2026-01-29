@@ -473,6 +473,9 @@ struct DaemonState {
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
+    /// Web Push notification manager for sending notifications to PWA clients
+    /// (shared with the webserver to avoid race conditions on subscription storage)
+    push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
 }
 
 /// Number of coworker slots reserved for reviewers.
@@ -501,6 +504,7 @@ impl DaemonState {
         channel: Channel,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
         max_coworkers: usize,
+        push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
     ) -> crate::Result<Self> {
         // Load persistent GitHub state
         let github_state =
@@ -525,6 +529,7 @@ impl DaemonState {
             github_state: Mutex::new(github_state),
             web_updates_tx,
             max_coworkers,
+            push_manager,
         })
     }
 
@@ -535,6 +540,29 @@ impl DaemonState {
             web::broadcast_channel_message(tx, message);
         }
         Ok(())
+    }
+
+    /// Send a web push notification to all subscribed PWA clients.
+    ///
+    /// This is fire-and-forget: push sending runs in a background task.
+    fn send_push_notification(&self, title: &str, body: &str, tag: &str) {
+        if let Some(ref pm) = self.push_manager {
+            let payload = crate::push::PushPayload {
+                title: title.to_string(),
+                body: body.to_string(),
+                tag: Some(tag.to_string()),
+                url: None,
+            };
+            let subs = pm.load_subscriptions();
+            if subs.is_empty() {
+                return;
+            }
+            // Clone the Arc to share the same PushManager instance with the async task
+            let pm = pm.clone();
+            tokio::spawn(async move {
+                pm.send_to_all(&payload).await;
+            });
+        }
     }
 
     /// Broadcast a coworker status change to WebSocket clients.
@@ -736,6 +764,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut webhook_rx = None;
     let mut web_updates_tx = None;
     let mut mobile_rx: Option<tokio::sync::mpsc::Receiver<crate::web::MobileChannelPost>> = None;
+    let mut shared_push_manager: Option<std::sync::Arc<crate::push::PushManager>> = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
     if let Some(port) = config.webhook_port {
@@ -746,11 +775,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             web_static_dir: None, // Use default location
         };
         match start_webhook_server(webhook_config, Some(coworker_manager.clone())).await {
-            Ok((rx, updates_tx, mob_rx)) => {
+            Ok((rx, updates_tx, mob_rx, push_mgr)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
                 web_updates_tx = Some(updates_tx);
                 mobile_rx = Some(mob_rx);
+                shared_push_manager = push_mgr;
 
                 // Spawn webhook forwarder watchdog task
                 let restart_interval = config.webhook_restart_interval_secs;
@@ -792,6 +822,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         channel,
         web_updates_tx,
         config.max_coworkers,
+        shared_push_manager,
     )?);
     info!(
         "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",
@@ -2881,7 +2912,8 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
             }
 
             // Nudge the Lead when a coworker explicitly mentions @lead
-            if is_coworker_sender(from) && content.to_lowercase().contains("@lead") {
+            let content_lower = content.to_lowercase();
+            if is_coworker_sender(from) && content_lower.contains("@lead") {
                 // Use message ID to avoid duplicate nudges
                 let should_nudge = {
                     let nudged = state.nudged_messages.read().unwrap();
@@ -2909,15 +2941,28 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                     if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
                         warn!("Failed to nudge Lead about @lead mention: {}", e);
                     }
+
+                    // Send push notification to mobile PWA
+                    state.send_push_notification(
+                        &format!("@lead from {}", from),
+                        &summary,
+                        "mention",
+                    );
                 }
             }
 
-            // Send bell notification to human when @user is mentioned
-            if content.to_lowercase().contains("@user") && from != "user" {
+            // Send bell notification and push notification for @user mentions
+            if content_lower.contains("@user") && from != "user" {
                 info!("Bell notification: @user mentioned by {}", from);
                 if let Err(e) = state.coworkers.notify_user() {
                     warn!("Failed to send bell notification for @user mention: {}", e);
                 }
+                let summary = if content.len() > 100 {
+                    format!("{}...", &content[..97])
+                } else {
+                    content.clone()
+                };
+                state.send_push_notification(&format!("@user from {}", from), &summary, "mention");
             }
 
             Response::success(

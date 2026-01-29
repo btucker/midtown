@@ -100,8 +100,9 @@ const GITHUB_SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 /// Start the webhook HTTP server
 ///
 /// Returns a channel receiver for translated messages, a broadcast sender
-/// for pushing real-time updates to WebSocket clients, and a receiver for
-/// mobile channel posts that need to be processed by the daemon.
+/// for pushing real-time updates to WebSocket clients, a receiver for
+/// mobile channel posts that need to be processed by the daemon, and
+/// the shared push notification manager.
 pub async fn start_webhook_server(
     config: WebhookConfig,
     coworker_manager: Option<CoworkerManager>,
@@ -109,6 +110,7 @@ pub async fn start_webhook_server(
     mpsc::Receiver<WebhookEvent>,
     broadcast::Sender<WebUpdate>,
     mpsc::Receiver<MobileChannelPost>,
+    Option<Arc<crate::push::PushManager>>,
 )> {
     let (tx, rx) = mpsc::channel(100);
     let (web_updates_tx, _) = broadcast::channel(100);
@@ -128,11 +130,24 @@ pub async fn start_webhook_server(
         repo: config.repo.clone(),
     };
 
+    let push_manager: Option<Arc<crate::push::PushManager>> = match crate::push::PushManager::new()
+    {
+        Ok(pm) => {
+            tracing::info!("Web Push notification manager initialized");
+            Some(Arc::new(pm))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize push manager: {}", e);
+            None
+        }
+    };
+
     let web_state = Arc::new(WebState {
         config: web_config,
         updates_tx: web_updates_tx.clone(),
         coworkers: coworker_manager,
         channel_post_tx: mobile_tx,
+        push_manager: push_manager.clone(),
     });
 
     // CORS layer for development (allows requests from Vite dev server)
@@ -163,7 +178,7 @@ pub async fn start_webhook_server(
         }
     });
 
-    Ok((rx, web_updates_tx, mobile_rx))
+    Ok((rx, web_updates_tx, mobile_rx, push_manager))
 }
 
 /// Health check endpoint

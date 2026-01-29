@@ -1,0 +1,50 @@
+import { precacheAndRoute } from 'workbox-precaching'
+
+// Workbox precaching - the manifest is injected by vite-plugin-pwa at build time
+precacheAndRoute(self.__WB_MANIFEST)
+
+// Handle incoming push notifications
+self.addEventListener('push', (event) => {
+  if (!event.data) return
+
+  let data
+  try {
+    data = event.data.json()
+  } catch {
+    data = { title: 'Midtown', body: event.data.text() }
+  }
+
+  const title = data.title || 'Midtown'
+  const options = {
+    body: data.body || '',
+    icon: '/pwa-192x192.png',
+    badge: '/pwa-192x192.png',
+    tag: data.tag || 'default',
+    renotify: true,
+    data: {
+      url: data.url || '/',
+    },
+  }
+
+  event.waitUntil(self.registration.showNotification(title, options))
+})
+
+// Handle notification click - open or focus the PWA
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+
+  const targetUrl = event.notification.data?.url || '/'
+
+  event.waitUntil(
+    clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then((windowClients) => {
+        for (const client of windowClients) {
+          if (client.url.includes(self.location.origin) && 'focus' in client) {
+            return client.focus()
+          }
+        }
+        return clients.openWindow(targetUrl)
+      })
+  )
+})

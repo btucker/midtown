@@ -4,14 +4,14 @@
 //! connections for live updates (channel messages, coworker status, etc.)
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{
         Query, State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ use tracing::{debug, error, info, warn};
 use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
 use crate::message::Message;
+use crate::push::PushManager;
 use crate::tmux;
 
 /// Configuration for the web server
@@ -64,6 +65,8 @@ pub struct WebState {
     pub coworkers: Option<CoworkerManager>,
     /// Sender for channel posts to be processed by the daemon
     pub channel_post_tx: mpsc::Sender<MobileChannelPost>,
+    /// Web Push notification manager (shared with daemon)
+    pub push_manager: Option<Arc<PushManager>>,
 }
 
 /// Types of real-time updates sent to clients
@@ -132,6 +135,9 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             .route("/api/lead-pane", get(api_lead_pane))
             .route("/api/tmux-pane", get(api_tmux_pane))
             .route("/api/tmux-windows", get(api_tmux_windows))
+            .route("/api/push/vapid-key", get(api_push_vapid_key))
+            .route("/api/push/subscribe", post(api_push_subscribe))
+            .route("/api/push/unsubscribe", post(api_push_unsubscribe))
             .fallback_service(serve_dir)
             .with_state(state)
     } else {
@@ -148,6 +154,9 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             .route("/api/lead-pane", get(api_lead_pane))
             .route("/api/tmux-pane", get(api_tmux_pane))
             .route("/api/tmux-windows", get(api_tmux_windows))
+            .route("/api/push/vapid-key", get(api_push_vapid_key))
+            .route("/api/push/subscribe", post(api_push_subscribe))
+            .route("/api/push/unsubscribe", post(api_push_unsubscribe))
             .route("/", get(dev_placeholder))
             .with_state(state)
     }
@@ -571,6 +580,81 @@ async fn api_tmux_windows(
     Ok(axum::Json(serde_json::json!({ "windows": windows })))
 }
 
+/// Get the VAPID public key for push subscription.
+async fn api_push_vapid_key(
+    State(state): State<Arc<WebState>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let push = state
+        .push_manager
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let key = push.vapid_public_key_base64().map_err(|e| {
+        error!("Failed to get VAPID public key: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(axum::Json(serde_json::json!({ "publicKey": key })))
+}
+
+/// Subscribe request body from the browser.
+#[derive(Debug, Deserialize)]
+struct PushSubscribeRequest {
+    endpoint: String,
+    p256dh: String,
+    auth: String,
+}
+
+/// Subscribe a client for push notifications.
+async fn api_push_subscribe(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<PushSubscribeRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let push = state
+        .push_manager
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let sub = crate::push::PushSubscription {
+        endpoint: body.endpoint,
+        p256dh: body.p256dh,
+        auth: body.auth,
+    };
+
+    push.add_subscription(sub).map_err(|e| {
+        error!("Failed to store push subscription: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    info!("New push subscription registered");
+    Ok(StatusCode::CREATED)
+}
+
+/// Unsubscribe request body.
+#[derive(Debug, Deserialize)]
+struct PushUnsubscribeRequest {
+    endpoint: String,
+}
+
+/// Unsubscribe a client from push notifications.
+async fn api_push_unsubscribe(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<PushUnsubscribeRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let push = state
+        .push_manager
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    push.remove_subscription(&body.endpoint).map_err(|e| {
+        error!("Failed to remove push subscription: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    info!("Push subscription removed");
+    Ok(StatusCode::OK)
+}
+
 /// WebSocket upgrade handler
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<WebState>>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_websocket(socket, state))
@@ -715,6 +799,7 @@ mod tests {
             updates_tx,
             coworkers: None,
             channel_post_tx,
+            push_manager: None,
         });
 
         let json = r#"{"type": "send_message", "content": "hello from mobile"}"#;
