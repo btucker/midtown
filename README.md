@@ -20,6 +20,71 @@ Midtown provides the infrastructure for this coordination:
 - **Coworker spawning** - Launch Claude Code instances in isolated git worktrees
 - **Task coordination** - Coworkers claim tasks via Claude Code's native task system
 
+## Features
+
+### Web App
+
+Access Midtown remotely via the built-in web interface:
+
+```bash
+midtown start  # Web server starts on port 3001
+```
+
+The web app provides:
+- **Real-time chat** with WebSocket updates and markdown rendering
+- **Kanban board** showing tasks and PRs at a glance
+- **Lead tab** for streaming the Lead's tmux session
+- **Mobile-friendly** Svelte interface for on-the-go monitoring
+
+### Kanban Board
+
+A visual task board appears in both the terminal (chat pane) and web UI:
+
+- **In Progress** column shows active tasks with duration
+- **Review** column shows open PRs with CI status dots (✓ green, ✗ red, ○ pending)
+- **Done** column shows recently merged PRs
+- Clickable GitHub hyperlinks to PRs
+
+### Automation
+
+The daemon handles routine coordination automatically:
+
+- **Auto-spawn** - Spawns coworkers when pending tasks are available
+- **Auto-shutdown** - Shuts down idle coworkers after 5 minutes
+- **Auto-review** - Spawns reviewers for open PRs
+- **CI failure handling** - Notifies PR owners of CI failures and merge conflicts
+- **Plugin sync** - Automatically installs required plugins for coworkers
+- **Duplicate detection** - Kills duplicate workers claiming the same task
+
+### Chat TUI
+
+The terminal chat pane includes:
+
+- **Selection mode** (`s` key) - Toggle for copying text
+- **Coworker colors** - Each coworker has a distinct color
+- **Grouped messages** - Messages from the same author are grouped
+- **Live updates** - Async tail-based updates for instant message delivery
+- **Scrollable history** - Mouse wheel scrolling through message history
+
+### Notifications & Nudges
+
+Stay informed about important events:
+
+- **@mention routing** - Messages mentioning `@coworker` are delivered to that coworker
+- **PR activity nudges** - Coworkers are nudged when their PRs receive comments or reviews
+- **Feedback detection** - Lead is nudged when coworkers request input
+- **Mobile nudges** - Lead receives nudges for messages sent from the mobile web app
+- **Interrupted coworker detection** - Detects and restarts stuck coworkers
+
+### GitHub Integration
+
+Automatic webhook integration with GitHub events (requires `gh auth login`):
+
+- PR opened, merged, closed events appear in channel
+- CI status updates (checks passing/failing)
+- Review comments and approvals
+- Merge conflict detection
+
 ## Architecture
 
 ```
@@ -144,15 +209,6 @@ Each coworker runs in:
 ### Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.
-
-### GitHub Webhooks
-
-Midtown automatically receives GitHub webhooks for PR events, CI status, and review comments. Events appear in the channel so coworkers see them at their next sync.
-
-```bash
-gh auth login  # if not already logged in
-midtown start  # webhooks work automatically
-```
 
 ## License
 
