@@ -241,7 +241,7 @@ fn draw_repo_status_line(f: &mut Frame, app: &App, area: Rect) {
 
     // CI status dot
     let (ci_char, ci_color) = match status.ci_status {
-        CiStatus::Passed => ("●", Color::Green),
+        CiStatus::Passed => ("●", Color::Rgb(0, 208, 80)),
         CiStatus::Failed => ("●", Color::Red),
         CiStatus::Running => ("●", Color::Yellow),
         CiStatus::Unknown => ("○", Color::DarkGray),
@@ -304,7 +304,7 @@ fn ci_status_dot(status: &CiStatus) -> &'static str {
 /// Get the color for CI status dot
 fn ci_status_color(status: &CiStatus) -> Color {
     match status {
-        CiStatus::Passed => Color::Green,
+        CiStatus::Passed => Color::Rgb(0, 208, 80),
         CiStatus::Failed => Color::Red,
         CiStatus::Running => Color::Yellow,
         CiStatus::Unknown => Color::DarkGray,
