@@ -28,6 +28,11 @@ use crate::web::{self, WebUpdate};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
 
+/// Default maximum number of concurrent coworkers.
+///
+/// This matches the total number of available name slots (10 avenues + 6 overflow).
+pub const DEFAULT_MAX_COWORKERS: usize = 16;
+
 /// Configuration for the daemon server.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -49,6 +54,8 @@ pub struct DaemonConfig {
     pub pr_poll_interval_secs: u64,
     /// Enable chat monitor for @mention routing. Default: true.
     pub chat_monitor_enabled: bool,
+    /// Maximum number of concurrent coworkers. Default: 16.
+    pub max_coworkers: usize,
 }
 
 /// Default interval for restarting the webhook forwarder (5 minutes)
@@ -162,6 +169,20 @@ impl Default for DaemonConfig {
             .map(|s| s != "0")
             .unwrap_or(true);
 
+        // Max concurrent coworkers: env var > project config > global config > default (16)
+        let max_coworkers = std::env::var("MIDTOWN_MAX_COWORKERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| {
+                let project_name = crate::paths::detect_repo_name().unwrap_or_default();
+                if project_name.is_empty() {
+                    crate::config::GlobalConfig::load().default.max_coworkers()
+                } else {
+                    crate::config::get_project_config(&project_name).max_coworkers()
+                }
+            })
+            .unwrap_or(DEFAULT_MAX_COWORKERS);
+
         Self {
             // Use repo-specific socket path to isolate daemons per project
             socket_path: crate::paths::daemon_socket(),
@@ -174,6 +195,7 @@ impl Default for DaemonConfig {
             webhook_restart_interval_secs,
             pr_poll_interval_secs,
             chat_monitor_enabled,
+            max_coworkers,
         }
     }
 }
@@ -369,15 +391,23 @@ struct DaemonState {
     github_state: Mutex<crate::github_state::GitHubState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
+    /// Maximum number of concurrent coworkers
+    max_coworkers: usize,
 }
 
 impl DaemonState {
+    /// Check if the daemon is at the maximum coworker limit.
+    fn is_at_coworker_limit(&self) -> bool {
+        self.coworkers.list().len() >= self.max_coworkers
+    }
+
     fn new(
         socket_path: PathBuf,
         coworkers: CoworkerManager,
         repo_name: String,
         channel: Channel,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
+        max_coworkers: usize,
     ) -> crate::Result<Self> {
         // Load persistent GitHub state
         let github_state =
@@ -400,6 +430,7 @@ impl DaemonState {
             pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
             github_state: Mutex::new(github_state),
             web_updates_tx,
+            max_coworkers,
         })
     }
 
@@ -574,7 +605,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         repo_name.clone(),
         channel,
         web_updates_tx,
+        config.max_coworkers,
     )?);
+    info!("Max coworkers limit: {}", config.max_coworkers);
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -1295,6 +1328,23 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
         let nudge_text = format!("{} said: {}", msg.from, msg.content);
 
         if !is_running {
+            // Check max coworkers limit before spawning
+            if state.is_at_coworker_limit() {
+                debug!(
+                    "Max coworkers limit ({}) reached, cannot spawn {} for @mention",
+                    state.max_coworkers, name
+                );
+                let err_msg = Message::text(
+                    "midtown",
+                    format!(
+                        "⚠️ Cannot spawn {} for @mention: max coworkers limit ({}) reached",
+                        name, state.max_coworkers
+                    ),
+                );
+                let _ = state.send_and_broadcast(&err_msg);
+                continue;
+            }
+
             // Spawn the coworker with resume flag and the @mention message as prompt
             info!(
                 "Spawning mentioned coworker {} (not currently running)",
@@ -1483,53 +1533,61 @@ async fn poll_prs_for_issues(
                     }
                 }
             } else if !owner.is_empty() {
-                // Owner is not active — spawn them with the issue prompt
-                info!(
-                    "PR #{} owner {} is not active, spawning to address {}",
-                    pr_number, owner, issue_type
-                );
-                // Use shared task list (not isolated) for PR issue spawns
-                match state
-                    .coworkers
-                    .spawn_with_name(owner, true, Some(&message), false)
-                {
-                    Ok(_) => {
-                        info!(
-                            "Spawned {} to address {} on PR #{}",
-                            owner, issue_type, pr_number
-                        );
-                        state.broadcast_coworker_update(owner, "running", None);
-                        let msg = Message::text(
-                            "midtown",
-                            format!(
-                                "🚀 Spawned {} to address {} on PR #{}",
+                // Owner is not active — check limit before spawning
+                if state.is_at_coworker_limit() {
+                    debug!(
+                        "Max coworkers limit ({}) reached, cannot spawn {} for PR #{}",
+                        state.max_coworkers, owner, pr_number
+                    );
+                    false
+                } else {
+                    info!(
+                        "PR #{} owner {} is not active, spawning to address {}",
+                        pr_number, owner, issue_type
+                    );
+                    // Use shared task list (not isolated) for PR issue spawns
+                    match state
+                        .coworkers
+                        .spawn_with_name(owner, true, Some(&message), false)
+                    {
+                        Ok(_) => {
+                            info!(
+                                "Spawned {} to address {} on PR #{}",
                                 owner, issue_type, pr_number
-                            ),
-                        );
-                        if let Err(e) = state.send_and_broadcast(&msg) {
-                            warn!("Failed to post spawn message: {}", e);
+                            );
+                            state.broadcast_coworker_update(owner, "running", None);
+                            let msg = Message::text(
+                                "midtown",
+                                format!(
+                                    "🚀 Spawned {} to address {} on PR #{}",
+                                    owner, issue_type, pr_number
+                                ),
+                            );
+                            if let Err(e) = state.send_and_broadcast(&msg) {
+                                warn!("Failed to post spawn message: {}", e);
+                            }
+                            true
                         }
-                        true
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to spawn {} for PR #{} {}: {}",
-                            owner, pr_number, issue_type, e
-                        );
-                        // Fall back to posting to channel (indicate spawn was attempted)
-                        let channel_message = format!(
-                            "PR #{} ({}) owned by {} - {}: {} (spawn failed)",
-                            pr_number,
-                            truncate_str(title, 40),
-                            owner,
-                            issue_type,
-                            get_issue_action(issue_type)
-                        );
-                        let msg = Message::new("midtown", channel_message, MessageType::Text);
-                        if let Err(e) = state.send_and_broadcast(&msg) {
-                            warn!("Failed to post PR issue to channel: {}", e);
+                        Err(e) => {
+                            warn!(
+                                "Failed to spawn {} for PR #{} {}: {}",
+                                owner, pr_number, issue_type, e
+                            );
+                            // Fall back to posting to channel (indicate spawn was attempted)
+                            let channel_message = format!(
+                                "PR #{} ({}) owned by {} - {}: {} (spawn failed)",
+                                pr_number,
+                                truncate_str(title, 40),
+                                owner,
+                                issue_type,
+                                get_issue_action(issue_type)
+                            );
+                            let msg = Message::new("midtown", channel_message, MessageType::Text);
+                            if let Err(e) = state.send_and_broadcast(&msg) {
+                                warn!("Failed to post PR issue to channel: {}", e);
+                            }
+                            true
                         }
-                        true
                     }
                 }
             } else {
@@ -1675,6 +1733,15 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             pr_number,
             truncate_str(title, 40)
         );
+
+        // Check max coworkers limit before spawning
+        if state.is_at_coworker_limit() {
+            debug!(
+                "Max coworkers limit ({}) reached, cannot spawn reviewer for PR #{}",
+                state.max_coworkers, pr_number
+            );
+            continue;
+        }
 
         // Spawn with isolated task list - review coworkers get their own task list
         // so their sub-tasks don't pollute the shared task list. They'll be
@@ -2094,6 +2161,20 @@ fn handle_coworker_spawn(
     resume: bool,
     prompt: Option<String>,
 ) -> Response {
+    // Check max coworkers limit
+    if state.is_at_coworker_limit() {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32603,
+                format!(
+                    "Max coworkers limit ({}) reached. Adjust with MIDTOWN_MAX_COWORKERS or max_coworkers in config.toml",
+                    state.max_coworkers
+                ),
+            ),
+        );
+    }
+
     // Pass prompt to spawn() - it handles waiting and nudging internally
     // Use shared task list (not isolated) for manual spawns
     match state.coworkers.spawn(resume, prompt.as_deref(), false) {
@@ -2444,6 +2525,7 @@ fn handle_status(id: RequestId, state: &DaemonState) -> Response {
             "success": true,
             "daemon_running": true,
             "active_coworkers": state.coworkers.count(),
+            "max_coworkers": state.max_coworkers,
             "pending_tasks": pending_count,
             "socket_path": state.socket_path.to_string_lossy(),
             "coworkers": coworkers,
@@ -2850,6 +2932,15 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         .map(|cw| cw.name.to_lowercase())
         .collect();
 
+    // Check max coworkers limit before attempting recovery
+    if state.is_at_coworker_limit() {
+        debug!(
+            "Max coworkers limit ({}) reached, deferring orphan recovery",
+            state.max_coworkers
+        );
+        return;
+    }
+
     // Find orphaned tasks (in_progress with owner not in active list)
     // Rate limit: only recover ONE coworker per tick to prevent spawn storms
     for (task_id, task_subject, owner) in in_progress {
@@ -3076,9 +3167,9 @@ fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
 /// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
 fn spawn_for_pending_tasks(state: &DaemonState) {
     // Get list of currently active coworkers
-    let active_names: std::collections::HashSet<String> = state
-        .coworkers
-        .list()
+    let active_coworkers = state.coworkers.list();
+    let active_count = active_coworkers.len();
+    let active_names: std::collections::HashSet<String> = active_coworkers
         .iter()
         .map(|cw| cw.name.to_lowercase())
         .collect();
@@ -3117,6 +3208,15 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                     cooldowns.insert(task_key, Instant::now());
                 }
             }
+            continue;
+        }
+
+        // Check max coworkers limit before spawning
+        if active_count >= state.max_coworkers {
+            debug!(
+                "Max coworkers limit ({}) reached, deferring spawn for task #{} owned by {}",
+                state.max_coworkers, task_id, owner
+            );
             continue;
         }
 
@@ -3175,6 +3275,15 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
     let mut task_coworker_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for task in pending_unowned {
+        // Check max coworkers limit before spawning
+        if state.is_at_coworker_limit() {
+            debug!(
+                "Max coworkers limit ({}) reached, deferring unowned task #{}",
+                state.max_coworkers, task.id
+            );
+            break;
+        }
+
         // Step 1: Determine the coworker name by checking multiple grouping strategies.
         // Priority: in-memory PR map → in-memory blockedBy map → disk PR owner →
         //           blockedBy relationship → new coworker name

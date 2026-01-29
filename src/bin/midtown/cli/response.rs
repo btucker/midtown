@@ -25,6 +25,8 @@ pub enum Response {
 pub struct StatusResponse {
     pub daemon_running: bool,
     pub active_coworkers: usize,
+    #[serde(default)]
+    pub max_coworkers: Option<usize>,
     pub pending_tasks: usize,
     pub socket_path: String,
     /// Lead session name (usually "midtown-lead")
@@ -122,7 +124,13 @@ impl Response {
                     let mut out = String::new();
 
                     // Coworkers section
-                    out.push_str(&format!("Coworkers: {} active\n", full.coworkers.len()));
+                    let coworker_header = match status.max_coworkers {
+                        Some(max) => {
+                            format!("Coworkers: {}/{} active\n", full.coworkers.len(), max)
+                        }
+                        None => format!("Coworkers: {} active\n", full.coworkers.len()),
+                    };
+                    out.push_str(&coworker_header);
                     for cw in &full.coworkers {
                         let task_desc = match &cw.current_task {
                             Some(task) => format!("working on: {}", task),
@@ -179,24 +187,30 @@ impl Response {
                         Some(false) => "stopped",
                         None => "unknown",
                     };
-                    format!(
-                        "Midtown Status\n\
-                         ─────────────────────────────\n\
-                         Daemon:           {}\n\
-                         Lead session:     {}\n\
-                         Active coworkers: {}\n\
-                         Pending tasks:    {}\n\
-                         Socket:           {}",
-                        if status.daemon_running {
-                            "running"
-                        } else {
-                            "stopped"
-                        },
-                        lead_status,
-                        status.active_coworkers,
-                        status.pending_tasks,
-                        status.socket_path
-                    )
+                    {
+                        let coworker_display = match status.max_coworkers {
+                            Some(max) => format!("{}/{}", status.active_coworkers, max),
+                            None => format!("{}", status.active_coworkers),
+                        };
+                        format!(
+                            "Midtown Status\n\
+                             ─────────────────────────────\n\
+                             Daemon:           {}\n\
+                             Lead session:     {}\n\
+                             Active coworkers: {}\n\
+                             Pending tasks:    {}\n\
+                             Socket:           {}",
+                            if status.daemon_running {
+                                "running"
+                            } else {
+                                "stopped"
+                            },
+                            lead_status,
+                            coworker_display,
+                            status.pending_tasks,
+                            status.socket_path
+                        )
+                    }
                 }
             }
             Response::Coworkers { coworkers } => {
@@ -352,6 +366,7 @@ mod tests {
         let status = StatusResponse {
             daemon_running: true,
             active_coworkers: 2,
+            max_coworkers: Some(16),
             pending_tasks: 1,
             socket_path: "/tmp/test.sock".to_string(),
             lead_session: Some("midtown-lead".to_string()),
@@ -390,7 +405,7 @@ mod tests {
         let response = Response::Status(status);
         let pretty = response.to_pretty();
 
-        assert!(pretty.contains("Coworkers: 2 active"));
+        assert!(pretty.contains("Coworkers: 2/16 active"));
         assert!(pretty.contains("lex - working on: implement auth endpoint"));
         assert!(pretty.contains("park - idle"));
         assert!(pretty.contains("Tasks: 1 open"));
