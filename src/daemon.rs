@@ -344,7 +344,8 @@ pub struct PrReviewTracker {
 pub const PR_REVIEW_DELAY_SECS: u64 = 120;
 
 /// How long a review assignment is valid before it can be reassigned (10 minutes)
-pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
+/// Re-exported from github_state for use by the in-memory tracker.
+pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
 
 /// Maximum number of concurrent review assignments (rate limiting)
 pub const MAX_CONCURRENT_REVIEWS: usize = 4;
@@ -1581,6 +1582,7 @@ async fn poll_prs_for_issues(
             .collect();
         let mut github_state = state.github_state.lock().await;
         github_state.cleanup_closed_prs(&open_pr_numbers);
+        github_state.cleanup_expired_assignments();
         if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
             warn!("Failed to save github-state.json after cleanup: {}", e);
         }
