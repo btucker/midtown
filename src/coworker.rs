@@ -84,6 +84,9 @@ pub struct CoworkerManager {
     worktree_manager: Arc<WorktreeManager>,
     /// The tmux session name for the project (e.g., "midtown-projectname")
     session_name: String,
+    /// Names of coworkers discovered from tmux on startup (before daemon was managing them).
+    /// Used to nudge them to continue their tasks after daemon restart.
+    discovered_on_startup: Arc<RwLock<Vec<String>>>,
 }
 
 impl CoworkerManager {
@@ -98,11 +101,17 @@ impl CoworkerManager {
             coworkers: Arc::new(RwLock::new(HashMap::new())),
             worktree_manager: Arc::new(worktree_manager),
             session_name: session,
+            discovered_on_startup: Arc::new(RwLock::new(Vec::new())),
         };
 
         // Discover existing coworkers from tmux on startup
-        if let Err(e) = manager.discover_existing() {
-            tracing::warn!("Failed to discover existing coworkers: {}", e);
+        match manager.discover_existing() {
+            Ok(names) => {
+                *manager.discovered_on_startup.write().unwrap() = names;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to discover existing coworkers: {}", e);
+            }
         }
 
         manager
@@ -113,11 +122,23 @@ impl CoworkerManager {
         &self.session_name
     }
 
+    /// Take the list of coworker names discovered from tmux on startup.
+    ///
+    /// This drains the list so it can only be consumed once. The daemon uses
+    /// this to nudge discovered coworkers to continue their assigned tasks
+    /// after a daemon restart.
+    pub fn take_discovered_on_startup(&self) -> Vec<String> {
+        std::mem::take(&mut *self.discovered_on_startup.write().unwrap())
+    }
+
     /// Discover existing coworker windows from tmux and add them to tracking.
     ///
     /// This is called on startup to recover coworkers that were running before
     /// the daemon was restarted. The coworkers continue running uninterrupted.
-    fn discover_existing(&self) -> crate::Result<()> {
+    ///
+    /// Returns the names of discovered coworkers so the daemon can nudge them
+    /// to continue their assigned tasks.
+    fn discover_existing(&self) -> crate::Result<Vec<String>> {
         // Get all known coworker names
         let all_names: std::collections::HashSet<&str> = AVENUE_NAMES
             .iter()
@@ -130,11 +151,11 @@ impl CoworkerManager {
             Ok(w) => w,
             Err(_) => {
                 // Session might not exist yet, that's OK
-                return Ok(());
+                return Ok(Vec::new());
             }
         };
 
-        let mut discovered = 0;
+        let mut discovered_names = Vec::new();
         let mut coworkers = self.coworkers.write().unwrap();
 
         for window_name in windows {
@@ -169,18 +190,18 @@ impl CoworkerManager {
             };
 
             coworkers.insert(window_name.clone(), coworker);
-            discovered += 1;
+            discovered_names.push(window_name.clone());
             tracing::info!("Discovered existing coworker: {}", window_name);
         }
 
-        if discovered > 0 {
+        if !discovered_names.is_empty() {
             tracing::info!(
                 "Discovered {} existing coworker(s) from tmux session",
-                discovered
+                discovered_names.len()
             );
         }
 
-        Ok(())
+        Ok(discovered_names)
     }
 
     /// Get a randomly selected available avenue name.

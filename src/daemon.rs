@@ -724,6 +724,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Skip the first tick (which fires immediately)
     channel_rotation_interval.tick().await;
 
+    // Nudge any coworkers discovered from tmux to continue their tasks.
+    // This runs once at startup after the daemon has fully initialized.
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            nudge_discovered_coworkers(&state).await;
+        });
+    }
+
     // Main accept loop
     loop {
         let shutdown_rx = shutdown_tx.subscribe();
@@ -3677,6 +3686,122 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                 }
             }
         }
+    }
+}
+
+/// Nudge coworkers that were discovered from tmux on daemon startup.
+///
+/// After a daemon restart, existing coworkers are found in tmux but they may
+/// be stuck waiting for input or idle. This function checks if each discovered
+/// coworker has an assigned task (in_progress with them as owner) or a reviewer
+/// assignment (in github-state.json), and nudges them to continue.
+///
+/// This runs once at startup, with a short delay to let coworkers settle.
+async fn nudge_discovered_coworkers(state: &DaemonState) {
+    let discovered = state.coworkers.take_discovered_on_startup();
+    if discovered.is_empty() {
+        return;
+    }
+
+    info!(
+        "Checking {} discovered coworker(s) for tasks to resume",
+        discovered.len()
+    );
+
+    // Small delay to let things settle after daemon startup
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    // Get in_progress tasks with owners
+    let in_progress = get_in_progress_tasks_with_owners();
+
+    // Build a map of owner -> (task_id, task_subject)
+    let mut owner_tasks: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+    for (task_id, task_subject, owner) in &in_progress {
+        let owner_lower = owner.trim().trim_matches('"').to_lowercase();
+        if !owner_lower.is_empty() {
+            owner_tasks.insert(owner_lower, (task_id.clone(), task_subject.clone()));
+        }
+    }
+
+    // Check reviewer assignments from github-state.json
+    let reviewer_prs: std::collections::HashMap<String, u64> = {
+        let github_state = state.github_state.lock().await;
+        discovered
+            .iter()
+            .filter_map(|name| {
+                github_state
+                    .pr_for_reviewer(name)
+                    .map(|pr| (name.to_lowercase(), pr))
+            })
+            .collect()
+    };
+
+    for name in &discovered {
+        let name_lower = name.to_lowercase();
+
+        // Check for an in_progress task owned by this coworker
+        if let Some((task_id, task_subject)) = owner_tasks.get(&name_lower) {
+            let prompt = format!(
+                "Resume task #{}: {}. The daemon was restarted and discovered you still running. Check your git status and continue where you left off.",
+                task_id, task_subject
+            );
+
+            info!(
+                "Nudging discovered coworker {} to resume task #{}",
+                name, task_id
+            );
+
+            if let Err(e) = state.coworkers.nudge(name, &prompt) {
+                warn!("Failed to nudge discovered coworker {}: {}", name, e);
+            }
+
+            // Post recovery message to channel
+            let msg = Message::text(
+                "midtown",
+                format!(
+                    "♻️ Nudged discovered coworker {} to resume task #{}",
+                    name, task_id
+                ),
+            );
+            if let Err(e) = state.send_and_broadcast(&msg) {
+                warn!("Failed to post discovery nudge message: {}", e);
+            }
+        } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
+            // Coworker was assigned to review a PR
+            let prompt = format!(
+                "Resume reviewing PR #{}. The daemon was restarted and discovered you still running. Continue your code review where you left off.",
+                pr_number
+            );
+
+            info!(
+                "Nudging discovered coworker {} to resume review of PR #{}",
+                name, pr_number
+            );
+
+            if let Err(e) = state.coworkers.nudge(name, &prompt) {
+                warn!("Failed to nudge discovered reviewer {}: {}", name, e);
+            }
+
+            let msg = Message::text(
+                "midtown",
+                format!(
+                    "♻️ Nudged discovered reviewer {} to resume PR #{} review",
+                    name, pr_number
+                ),
+            );
+            if let Err(e) = state.send_and_broadcast(&msg) {
+                warn!("Failed to post discovery nudge message: {}", e);
+            }
+        } else {
+            debug!(
+                "Discovered coworker {} has no assigned task or review - skipping nudge",
+                name
+            );
+        }
+
+        // Small delay between nudges to avoid overwhelming tmux
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
 
