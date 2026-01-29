@@ -917,11 +917,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 check_and_nudge_interrupted_coworkers(&state).await;
             }
 
-            // Periodic orphan check and duplicate detection
+            // Periodic orphan check, duplicate detection, and worktree cleanup
             _ = orphan_check_interval.tick() => {
                 check_for_duplicate_task_workers(&state).await;
                 check_and_recover_orphans(&state).await;
                 spawn_for_pending_tasks(&state);
+                cleanup_orphaned_worktrees(&state);
             }
 
             // Periodic channel log rotation
@@ -4031,6 +4032,25 @@ fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
 
 /// Spawn coworkers for pending tasks.
 ///
+/// Clean up orphaned worktrees that have no active coworker.
+///
+/// Worktrees with no commits beyond the base branch are deleted.
+/// Worktrees with unmerged commits are flagged to the Lead via channel.
+fn cleanup_orphaned_worktrees(state: &DaemonState) {
+    let flagged = state.coworkers.cleanup_orphaned_worktrees();
+
+    for name in flagged {
+        let msg = Message::system(format!(
+            "⚠️ Orphaned worktree for '{}' has unmerged commits. \
+             Please review and merge or delete the branch manually.",
+            name
+        ));
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to send orphan flag message for {}: {}", name, e);
+        }
+    }
+}
+
 /// Handles two cases:
 /// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
 /// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge

@@ -222,6 +222,149 @@ impl WorktreeManager {
     pub fn repo_name(&self) -> &str {
         &self.repo_name
     }
+
+    /// Check if a coworker's worktree branch has commits beyond the base (detached HEAD).
+    ///
+    /// Returns `true` if the branch has unique commits that are not on the main branch.
+    /// Returns `false` if the branch has no commits beyond the base, or if the
+    /// worktree is in detached HEAD state with no branch.
+    pub fn has_commits_beyond_base(&self, coworker_name: &str) -> bool {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return false;
+        }
+
+        // Get the current branch in the worktree
+        let branch_output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output();
+
+        let branch = match branch_output {
+            Ok(output) if output.status.success() => {
+                let b = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if b == "HEAD" {
+                    // Detached HEAD - no branch, no commits to check
+                    return false;
+                }
+                b
+            }
+            _ => return false,
+        };
+
+        // Get the default branch name (main or master)
+        let default_branch = detect_default_branch(&self.repo_root).unwrap_or("main".to_string());
+
+        // Count commits on this branch that aren't on the default branch
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args([
+                "rev-list",
+                "--count",
+                &format!("{}..{}", default_branch, branch),
+            ])
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                count_str.parse::<u64>().unwrap_or(0) > 0
+            }
+            _ => {
+                // If we can't determine, assume it has commits (safe default)
+                true
+            }
+        }
+    }
+
+    /// Check if a coworker's worktree has uncommitted or staged changes.
+    ///
+    /// Returns `true` if the working tree is dirty (has modifications, staged
+    /// changes, or untracked files). This prevents data loss when cleaning up
+    /// worktrees that have work-in-progress that hasn't been committed yet.
+    pub fn has_uncommitted_changes(&self, coworker_name: &str) -> bool {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return false;
+        }
+
+        // git status --porcelain returns empty output for a clean tree
+        let output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["status", "--porcelain"])
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => !output.stdout.is_empty(),
+            _ => {
+                // If we can't determine, assume dirty (safe default)
+                true
+            }
+        }
+    }
+
+    /// Safely clean up a coworker's worktree and branch if it has no commits
+    /// and no uncommitted changes.
+    ///
+    /// Returns `Ok(true)` if the worktree was cleaned up.
+    /// Returns `Ok(false)` if the worktree has commits or uncommitted changes
+    /// and was left intact.
+    /// Returns `Err` if the cleanup operation failed.
+    pub fn safe_cleanup(&self, coworker_name: &str) -> WorktreeResult<bool> {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return Ok(true); // Already gone
+        }
+
+        if self.has_commits_beyond_base(coworker_name) {
+            return Ok(false); // Has commits, don't delete
+        }
+
+        if self.has_uncommitted_changes(coworker_name) {
+            return Ok(false); // Has uncommitted work, don't delete
+        }
+
+        // Get the branch name before removing the worktree
+        let branch_name = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|b| b != "HEAD");
+
+        // Remove the worktree
+        self.force_cleanup(coworker_name)?;
+
+        // Delete the branch if it was a named branch (not detached HEAD)
+        if let Some(branch) = branch_name {
+            let _ = Command::new("git")
+                .current_dir(&self.repo_root)
+                .args(["branch", "-D", &branch])
+                .output();
+        }
+
+        Ok(true)
+    }
+
+    /// Find orphaned worktrees - worktrees that exist on disk but have no
+    /// corresponding active coworker.
+    ///
+    /// Returns a list of coworker names whose worktrees are orphaned.
+    pub fn find_orphaned_worktrees(&self, active_coworkers: &[String]) -> Vec<String> {
+        let worktrees = match self.list() {
+            Ok(wt) => wt,
+            Err(_) => return vec![],
+        };
+
+        worktrees
+            .into_iter()
+            .filter(|wt| wt.is_coworker)
+            .filter_map(|wt| wt.coworker_name)
+            .filter(|name| !active_coworkers.contains(name))
+            .collect()
+    }
 }
 
 /// Information about a worktree
@@ -261,6 +404,38 @@ fn repo_name_from_path(repo_path: &Path) -> WorktreeResult<String> {
         .and_then(|name| name.to_str())
         .map(|s| s.to_string())
         .ok_or_else(|| WorktreeError::RepoDetection("Could not determine repo name".to_string()))
+}
+
+/// Detect the default branch (main or master) for a repository.
+fn detect_default_branch(repo_root: &Path) -> Option<String> {
+    // Try origin/HEAD first
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return refname
+            .strip_prefix("refs/remotes/origin/")
+            .map(|s| s.to_string());
+    }
+
+    // Fallback: check if "main" or "master" branch exists
+    for branch in &["main", "master"] {
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch)])
+            .output();
+        if let Ok(o) = output
+            && o.status.success()
+        {
+            return Some(branch.to_string());
+        }
+    }
+
+    None
 }
 
 /// Get the base path for worktrees (~/.midtown/coworkers/<repo>/).
@@ -396,5 +571,206 @@ branch refs/heads/bob/work
             check_coworker_worktree(&PathBuf::from("/home/user/other/repo"), &base);
         assert!(!is_coworker);
         assert!(name.is_none());
+    }
+
+    use std::process::Command as TestCommand;
+    use tempfile::TempDir;
+
+    /// Create a temp git repo with an initial commit
+    fn create_test_repo() -> (WorktreeManager, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        TestCommand::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        TestCommand::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config email");
+        TestCommand::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config name");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("initial commit");
+
+        let manager =
+            WorktreeManager::new(temp_dir.path().to_path_buf()).expect("create worktree manager");
+        (manager, temp_dir)
+    }
+
+    #[test]
+    fn test_has_commits_beyond_base_detached_head() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree (detached HEAD, no branch)
+        let _path = manager.create("testworker").expect("create worktree");
+
+        // Detached HEAD has no commits beyond base
+        assert!(!manager.has_commits_beyond_base("testworker"));
+    }
+
+    #[test]
+    fn test_has_commits_beyond_base_with_branch_no_commits() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Create a branch in the worktree (same commit as main)
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+
+        // No extra commits
+        assert!(!manager.has_commits_beyond_base("testworker"));
+    }
+
+    #[test]
+    fn test_has_commits_beyond_base_with_commits() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Create a branch and add a commit
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Feature work"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("add commit");
+
+        // Now has commits beyond base
+        assert!(manager.has_commits_beyond_base("testworker"));
+    }
+
+    #[test]
+    fn test_safe_cleanup_empty_branch() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree (detached HEAD)
+        let wt_path = manager.create("testworker").expect("create worktree");
+        assert!(wt_path.exists());
+
+        // Safe cleanup should succeed (no commits)
+        let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
+        assert!(cleaned);
+        assert!(!wt_path.exists());
+    }
+
+    #[test]
+    fn test_safe_cleanup_branch_with_commits() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree with a branch and commit
+        let wt_path = manager.create("testworker").expect("create worktree");
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Feature work"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("add commit");
+
+        // Safe cleanup should NOT delete (has commits)
+        let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
+        assert!(!cleaned);
+        assert!(wt_path.exists());
+    }
+
+    #[test]
+    fn test_safe_cleanup_nonexistent() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Safe cleanup of nonexistent worktree should return true
+        let cleaned = manager
+            .safe_cleanup("nonexistent")
+            .expect("safe cleanup nonexistent");
+        assert!(cleaned);
+    }
+
+    #[test]
+    fn test_find_orphaned_worktrees() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create two worktrees
+        manager.create("worker-a").expect("create worktree a");
+        manager.create("worker-b").expect("create worktree b");
+
+        // worker-a is active, worker-b is not
+        let active = vec!["worker-a".to_string()];
+        let orphaned = manager.find_orphaned_worktrees(&active);
+
+        assert_eq!(orphaned.len(), 1);
+        assert!(orphaned.contains(&"worker-b".to_string()));
+    }
+
+    #[test]
+    fn test_safe_cleanup_dirty_worktree() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree (detached HEAD, no commits beyond base)
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Create an uncommitted file in the worktree
+        std::fs::write(wt_path.join("dirty.txt"), "uncommitted work").expect("write file");
+
+        // has_uncommitted_changes should detect the dirty file
+        assert!(manager.has_uncommitted_changes("testworker"));
+
+        // Safe cleanup should NOT delete (has uncommitted changes)
+        let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
+        assert!(!cleaned);
+        assert!(wt_path.exists());
+        // The file should still be there
+        assert!(wt_path.join("dirty.txt").exists());
+    }
+
+    #[test]
+    fn test_detect_default_branch() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        TestCommand::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        TestCommand::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config email");
+        TestCommand::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config name");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("initial commit");
+
+        // Should detect whatever default branch was created (usually "main" on modern git)
+        let default = detect_default_branch(temp_dir.path());
+        assert!(
+            default.is_some(),
+            "Should detect a default branch (main or master)"
+        );
     }
 }
