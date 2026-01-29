@@ -38,14 +38,8 @@ pub struct WebConfig {
 
 impl Default for WebConfig {
     fn default() -> Self {
-        // Default to looking for web app in executable's directory
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."));
-
         Self {
-            static_dir: exe_dir.join("web"),
+            static_dir: crate::resolve_web_dir(),
             repo: "default".to_string(),
         }
     }
