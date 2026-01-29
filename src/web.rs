@@ -431,6 +431,21 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     .await
     .unwrap_or_default();
 
+    // Build a map of coworker name -> current task subject from in_progress tasks
+    let coworker_tasks: std::collections::HashMap<String, String> = tasks
+        .iter()
+        .filter_map(|t| {
+            let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            let owner = t.get("owner").and_then(|o| o.as_str()).unwrap_or("");
+            let subject = t.get("subject").and_then(|s| s.as_str()).unwrap_or("");
+            if status == "in_progress" && !owner.is_empty() {
+                Some((owner.to_lowercase(), subject.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let coworkers_data: Vec<serde_json::Value> = state
         .coworkers
         .as_ref()
@@ -438,10 +453,12 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             mgr.list()
                 .into_iter()
                 .map(|cw| {
+                    // Look up current task from task storage (case-insensitive)
+                    let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
                     serde_json::json!({
                         "name": cw.name,
                         "status": cw.status.to_string(),
-                        "current_task": cw.current_task,
+                        "current_task": current_task,
                         "started_at": cw.started_at.to_rfc3339(),
                     })
                 })
