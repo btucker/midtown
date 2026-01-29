@@ -399,6 +399,16 @@ async fn api_tmux_pane(
 ) -> Result<impl IntoResponse, StatusCode> {
     let session = format!("{}{}", tmux::SESSION_PREFIX, state.config.repo);
     let window = params.window;
+
+    // Validate window name: only allow non-empty alphanumeric, hyphens, and underscores
+    if window.is_empty()
+        || !window
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     let target = format!("{}:{}", session, window);
 
     let content = tokio::task::spawn_blocking(move || tmux::capture_pane(&target))
@@ -619,6 +629,38 @@ mod tests {
         assert!(json.contains("lexington"));
         assert!(json.contains("running"));
         assert!(json.contains("Fix auth bug"));
+    }
+
+    #[test]
+    fn test_tmux_pane_query_parsing() {
+        // Valid window names
+        let json = r#"{"window": "lead"}"#;
+        let query: TmuxPaneQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.window, "lead");
+
+        let json = r#"{"window": "riverside"}"#;
+        let query: TmuxPaneQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.window, "riverside");
+    }
+
+    #[test]
+    fn test_tmux_window_name_validation() {
+        // Valid names: non-empty, alphanumeric, hyphens, underscores
+        let valid = |name: &str| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        };
+
+        assert!(valid("lead"));
+        assert!(valid("riverside"));
+        assert!(valid("my-window"));
+        assert!(valid("window_1"));
+        assert!(!valid("foo:bar"));
+        assert!(!valid("foo;bar"));
+        assert!(!valid("foo bar"));
+        assert!(!valid(""));
     }
 
     #[test]

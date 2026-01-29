@@ -602,12 +602,14 @@ pub fn list_all_windows(session: &str) -> crate::Result<Vec<String>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut seen = std::collections::HashSet::new();
     let windows: Vec<String> = stdout
         .lines()
         .map(|s| {
             // Strip status suffix (e.g., "york:done#204" -> "york")
             s.split(':').next().unwrap_or(s).to_string()
         })
+        .filter(|name| seen.insert(name.clone()))
         .collect();
 
     Ok(windows)

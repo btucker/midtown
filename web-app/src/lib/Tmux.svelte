@@ -7,6 +7,7 @@
   let windows = $state([])
   let selectedWindow = $state('lead')
   let interval = null
+  let windowInterval = null
 
   async function fetchWindows() {
     try {
@@ -66,8 +67,6 @@
     // Refresh windows every 10 seconds
     windowInterval = setInterval(fetchWindows, 10000)
   }
-
-  let windowInterval = null
 
   function stopPolling() {
     if (interval) {
