@@ -50,7 +50,7 @@ midtown channel post "@lead yes, the auth module exports a validate function"
 midtown channel post "@columbus the endpoint is at /api/v1/auth"
 ```
 
-Without the @mention, the daemon cannot route your reply and the other person may never see it. BUT REMEMBER, never @mention on Github because these aren't github accounts!!
+Without the @mention, the daemon cannot route your reply and the other person may never see it.
 
 ### Idle Status (No Feedback Needed)
 When you become idle, simply post your status without requesting feedback:
