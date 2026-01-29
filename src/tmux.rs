@@ -577,6 +577,42 @@ pub fn send_keys_raw(session: &str, name: &str, keys: &str) -> crate::Result<()>
     Ok(())
 }
 
+/// List all tmux windows in the project session (including "lead").
+///
+/// Returns a vector of base window names (status suffixes stripped).
+/// Used by the web UI to let users pick which window to view.
+pub fn list_all_windows(session: &str) -> crate::Result<Vec<String>> {
+    let output = Command::new("tmux")
+        .args(["list-windows", "-t", session, "-F", "#{window_name}"])
+        .output()
+        .map_err(Error::Io)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no server running")
+            || stderr.contains("session not found")
+            || stderr.contains("can't find session")
+        {
+            return Ok(Vec::new());
+        }
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!("Failed to list tmux windows: {}", stderr),
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let windows: Vec<String> = stdout
+        .lines()
+        .map(|s| {
+            // Strip status suffix (e.g., "york:done#204" -> "york")
+            s.split(':').next().unwrap_or(s).to_string()
+        })
+        .collect();
+
+    Ok(windows)
+}
+
 /// List all coworker windows in the project session.
 ///
 /// Returns a vector of window names (excluding "Lead" which is the main window).
