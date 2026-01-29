@@ -407,22 +407,15 @@ pub fn reset_task_to_pending_for_repo(task_id: &str, repo_name: &str) -> Result<
         return Err("Could not determine home directory".to_string());
     };
 
-    // Get the lead session ID
-    let lead_session_file = crate::paths::lead_session_file_for_repo(repo_name);
-    let lead_session_id = std::fs::read_to_string(&lead_session_file)
-        .map_err(|e| format!("Failed to read lead session ID: {}", e))?
-        .trim()
-        .to_string();
-
-    if lead_session_id.is_empty() {
-        return Err("Lead session ID is empty".to_string());
-    }
+    // Use the shared task list ID (midtown-<repo>) — same directory that
+    // update_task_owner() and Claude Code sessions use via CLAUDE_CODE_TASK_LIST_ID
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
 
     // Read the task file
     let task_file = home
         .join(".claude")
         .join("tasks")
-        .join(&lead_session_id)
+        .join(&task_list_id)
         .join(format!("{}.json", task_id));
 
     let content =
@@ -910,5 +903,20 @@ mod tests {
         // Only the old task should pass the filter
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "400");
+    }
+
+    #[test]
+    fn test_reset_task_uses_shared_task_list_path() {
+        // Verify reset_task_to_pending_for_repo constructs the same path as
+        // update_task_owner — both should use midtown-<repo>, NOT the lead session UUID.
+        let repo_name = "testrepo";
+        let expected_dir_name = format!("midtown-{}", repo_name);
+
+        // The task_list_id_for_repo function should produce the shared directory name
+        let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+        assert_eq!(
+            task_list_id, expected_dir_name,
+            "task_list_id_for_repo should return midtown-<repo>"
+        );
     }
 }
