@@ -57,12 +57,24 @@ enum Commands {
         /// Run in foreground (don't daemonize) - for debugging
         #[arg(long)]
         foreground: bool,
+
+        /// Project name (overrides auto-detection)
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Start midtown (daemon + tmux session)
     Start {
         /// Start daemon only, without tmux session
         #[arg(long)]
         daemon_only: bool,
+
+        /// Project name (overrides auto-detection)
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Additional repository paths to include
+        #[arg(long = "repo")]
+        repos: Vec<std::path::PathBuf>,
     },
     /// Stop midtown (daemon + tmux session)
     Stop {
@@ -147,9 +159,11 @@ fn main() {
     }
 
     // Default to Start if no command provided
-    let command = cli
-        .command
-        .unwrap_or(Commands::Start { daemon_only: false });
+    let command = cli.command.unwrap_or(Commands::Start {
+        daemon_only: false,
+        project: None,
+        repos: vec![],
+    });
 
     // Handle commands that don't require daemon connection
     if let Commands::Task {
@@ -168,6 +182,7 @@ fn main() {
         verbose,
         webhook_port,
         foreground,
+        project,
     } = &command
     {
         let mut config = midtown::daemon::DaemonConfig::default();
@@ -181,6 +196,9 @@ fn main() {
         // CLI flag overrides env var
         if webhook_port.is_some() {
             config.webhook_port = *webhook_port;
+        }
+        if let Some(p) = project {
+            config.project_name = Some(p.clone());
         }
 
         // Daemonize unless --foreground is set
@@ -278,8 +296,13 @@ fn main() {
     }
 
     // Start command (starts daemon, doesn't need existing connection)
-    if let Commands::Start { daemon_only } = &command {
-        let result = cli::handle_start(*daemon_only);
+    if let Commands::Start {
+        daemon_only,
+        project,
+        repos,
+    } = &command
+    {
+        let result = cli::handle_start(*daemon_only, project.clone(), repos.clone());
         handle_result(format, result);
         return;
     }

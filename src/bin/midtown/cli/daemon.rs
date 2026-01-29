@@ -9,6 +9,56 @@ use std::process::{Command, Stdio};
 
 use crate::cli::Response;
 
+/// Validate that a project name contains only safe characters.
+///
+/// Allowed: alphanumeric, hyphens, underscores, dots.
+/// This prevents shell injection when the name is embedded in shell commands
+/// (e.g., `export CLAUDE_CODE_TASK_LIST_ID='midtown-{name}'`).
+fn validate_project_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Project name cannot be empty".to_string());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!(
+            "Invalid project name '{}': only alphanumeric characters, hyphens, underscores, and dots are allowed",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve the project name from an explicit flag, config, or repo directory name.
+///
+/// Priority: explicit flag > config.toml `[project].name` > git repo directory name.
+/// Validates user-provided names to prevent shell injection.
+fn resolve_project_name(project: &Option<String>) -> Option<String> {
+    if let Some(name) = project {
+        return Some(name.clone());
+    }
+    midtown::paths::detect_project_name().or_else(|| {
+        repo_root()
+            .ok()
+            .and_then(|r| r.file_name().map(|s| s.to_string_lossy().to_string()))
+    })
+}
+
+/// Get the tmux session name for an explicit or inferred project.
+/// Format: midtown-{project_name}
+///
+/// Returns an error if no project name can be determined.
+fn session_name_for(project: &Option<String>) -> Result<String, String> {
+    match resolve_project_name(project) {
+        Some(name) => Ok(format!("midtown-{}", name)),
+        None => Err(
+            "Not in a git repository. Run midtown from within a git repo or use --repo."
+                .to_string(),
+        ),
+    }
+}
+
 /// Get the tmux session name based on the project name.
 /// Format: midtown-{project_name}
 ///
@@ -18,19 +68,7 @@ use crate::cli::Response;
 /// Returns an error if not in a git repository, since a tmux session
 /// requires a valid project context.
 fn session_name() -> Result<String, String> {
-    let project_name = midtown::paths::detect_project_name().or_else(|| {
-        repo_root()
-            .ok()
-            .and_then(|r| r.file_name().map(|s| s.to_string_lossy().to_string()))
-    });
-
-    match project_name {
-        Some(name) => Ok(format!("midtown-{}", name)),
-        None => Err(
-            "Not in a git repository. Run midtown from within a git repo or use --repo."
-                .to_string(),
-        ),
-    }
+    session_name_for(&None)
 }
 
 /// Get the socket path for the daemon.
@@ -260,6 +298,109 @@ fn lead_session_file(repo: &Path) -> PathBuf {
     midtown::paths::lead_session_file_for_repo(&repo_name)
 }
 
+/// Get the path to the Lead session ID file for a named project.
+fn lead_session_file_for_project(project_name: &str) -> PathBuf {
+    midtown::paths::lead_session_file_for_repo(project_name)
+}
+
+/// Get or create the Lead session ID for a named project.
+///
+/// Like `get_or_create_lead_session_id` but uses a project name string
+/// instead of a repo path.
+fn get_or_create_lead_session_id_by_name(project_name: &str) -> Result<(String, bool), String> {
+    let session_file = lead_session_file_for_project(project_name);
+
+    // Try to read existing session ID
+    if session_file.exists() {
+        let session_id = std::fs::read_to_string(&session_file)
+            .map_err(|e| format!("Failed to read session ID: {}", e))?
+            .trim()
+            .to_string();
+        if !session_id.is_empty() {
+            return Ok((session_id, true)); // true = existing session
+        }
+    }
+
+    // Generate new session ID
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    // Ensure directory exists
+    if let Some(parent) = session_file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create session directory: {}", e))?;
+    }
+
+    // Store the session ID
+    std::fs::write(&session_file, &session_id)
+        .map_err(|e| format!("Failed to write session ID: {}", e))?;
+
+    Ok((session_id, false)) // false = new session
+}
+
+/// Resolve additional repo paths from CLI flags, falling back to saved config.
+///
+/// If repos are provided on the CLI, they are returned directly.
+/// Otherwise, reads saved repos from the project's config.toml.
+fn resolve_repos(repos: &[PathBuf], project_name: &str) -> Vec<PathBuf> {
+    if !repos.is_empty() {
+        return repos.to_vec();
+    }
+    parse_saved_repos(project_name)
+}
+
+/// Parse saved repos from a project's config.toml.
+///
+/// Reads the `[project].repos` list and returns all entries
+/// except the primary repo (which is handled separately).
+fn parse_saved_repos(project_name: &str) -> Vec<PathBuf> {
+    let full_config = midtown::config::load_full_project_config(project_name);
+    match full_config {
+        Some(config) => {
+            let primary = config.project.primary_repo().map(|s| s.to_string());
+            config
+                .project
+                .repos()
+                .into_iter()
+                .filter(|r| Some(r.to_string()) != primary)
+                .map(PathBuf::from)
+                .collect()
+        }
+        None => vec![],
+    }
+}
+
+/// Update the project config.toml with project name, primary repo, and additional repos.
+fn update_project_config(
+    project_name: &str,
+    primary_repo: &Path,
+    additional_repos: &[PathBuf],
+) -> Result<(), String> {
+    let config_path = midtown::config::project_config_path(project_name);
+    let mut config =
+        midtown::config::FullProjectConfig::load_from(&config_path).unwrap_or_default();
+
+    // Set project name
+    config.project.name = Some(project_name.to_string());
+
+    // Set primary repo
+    let primary_str = primary_repo.to_string_lossy().to_string();
+    config.project.primary_repo = Some(primary_str.clone());
+
+    // Build full repos list: primary + additional
+    let mut all_repos = vec![primary_str];
+    for r in additional_repos {
+        let s = r.to_string_lossy().to_string();
+        if !all_repos.contains(&s) {
+            all_repos.push(s);
+        }
+    }
+    config.project.repos = all_repos;
+
+    config
+        .save_to(&config_path)
+        .map_err(|e| format!("Failed to save project config: {}", e))
+}
+
 /// Build the claude command for the Lead session.
 ///
 /// Returns the full command string to launch Claude Code with appropriate flags.
@@ -270,27 +411,36 @@ fn build_lead_claude_command(
     session_id: &str,
     is_existing: bool,
     task_list_id: &str,
+    additional_repos: &[PathBuf],
 ) -> Result<String, String> {
     let prompt_file = write_lead_prompt_file()?;
     let settings_file = write_lead_settings_file()?;
 
+    // Build --add-dir flags for additional repos
+    let add_dir_flags: String = additional_repos
+        .iter()
+        .map(|r| format!(" --add-dir {}", r.display()))
+        .collect();
+
     if is_existing {
         // Resume existing session, but still inject system prompt and settings
         Ok(format!(
-            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --resume {} --settings {} --append-system-prompt \"$(cat {})\"",
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --resume {} --settings {} --append-system-prompt \"$(cat {})\"{}",
             task_list_id,
             session_id,
             settings_file.display(),
-            prompt_file.display()
+            prompt_file.display(),
+            add_dir_flags
         ))
     } else {
         // New session: use specific session ID, settings, and inject system prompt
         Ok(format!(
-            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"",
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --session-id {} --settings {} --append-system-prompt \"$(cat {})\"{}",
             task_list_id,
             session_id,
             settings_file.display(),
-            prompt_file.display()
+            prompt_file.display(),
+            add_dir_flags
         ))
     }
 }
@@ -333,12 +483,31 @@ fn get_or_create_lead_session_id(repo: &Path) -> Result<(String, bool), String> 
 /// 1. Starts the daemon (if not running)
 /// 2. Creates tmux session for the project
 /// 3. Launches Claude Code with Lead config in that session
-pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
+pub fn handle_start(
+    daemon_only: bool,
+    project: Option<String>,
+    repos: Vec<PathBuf>,
+) -> Result<Response, String> {
+    // Validate explicit project name if provided
+    if let Some(ref name) = project {
+        validate_project_name(name)?;
+    }
+
     // Verify we're in a git repo first
-    let repo = repo_root()?;
-    let session = session_name()?;
+    let primary_repo = repo_root()?;
+    let project_name = resolve_project_name(&project).unwrap_or_else(|| {
+        primary_repo
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".to_string())
+    });
+    let additional_repos = resolve_repos(&repos, &project_name);
+    let session = session_name_for(&Some(project_name.clone()))?;
 
     let mut messages = Vec::new();
+
+    // Update project config with repo information
+    let _ = update_project_config(&project_name, &primary_repo, &additional_repos);
 
     // Step 1: Start daemon if not running
     if daemon_is_running() {
@@ -353,8 +522,11 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
 
         let mut cmd = Command::new(&exe);
         cmd.arg("daemon");
-        cmd.current_dir(&repo);
-        cmd.arg("--workdir").arg(&repo);
+        cmd.current_dir(&primary_repo);
+        cmd.arg("--workdir").arg(&primary_repo);
+        if project.is_some() {
+            cmd.arg("--project").arg(&project_name);
+        }
 
         // Spawn detached
         cmd.stdin(Stdio::null())
@@ -381,23 +553,21 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         messages.push(format!("Session '{}' already exists", session));
     } else {
         // Get or create the Lead's persistent session ID
-        let (lead_session_id, is_existing) = get_or_create_lead_session_id(&repo)?;
+        let (lead_session_id, is_existing) = get_or_create_lead_session_id_by_name(&project_name)?;
 
-        // Get the shared task list ID for this repo
-        let repo_name = repo
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "default".to_string());
-        let task_list_id = midtown::paths::task_list_id_for_repo(&repo_name);
+        // Get the shared task list ID for this project
+        let task_list_id = midtown::paths::task_list_id_for_repo(&project_name);
 
         // Build the claude command (always includes system prompt)
-        let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing, &task_list_id)?;
+        let claude_cmd = build_lead_claude_command(
+            &lead_session_id,
+            is_existing,
+            &task_list_id,
+            &additional_repos,
+        )?;
 
         // Get project name for status bar (uppercase)
-        let project_name = repo
-            .file_name()
-            .map(|s| s.to_string_lossy().to_uppercase())
-            .unwrap_or_else(|| "PROJECT".to_string());
+        let display_name = project_name.to_uppercase();
 
         // Create tmux session with claude command directly
         // -n sets the window name to "lead"
@@ -410,7 +580,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
                 "-n",
                 "lead",
                 "-c",
-                &repo.to_string_lossy(),
+                &primary_repo.to_string_lossy(),
                 "sh",
                 "-c",
                 &claude_cmd,
@@ -440,7 +610,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
                 "-t",
                 &session,
                 "status-left",
-                &format!(" {} ", project_name),
+                &format!(" {} ", display_name),
             ])
             .status();
 
@@ -454,7 +624,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
                 "-t",
                 &session,
                 "set-titles-string",
-                &format!("Midtown: {}", project_name),
+                &format!("Midtown: {}", display_name),
             ])
             .status();
 
@@ -511,7 +681,7 @@ pub fn handle_start(daemon_only: bool) -> Result<Response, String> {
         }
 
         // Write marker file indicating Lead was initialized by midtown
-        let marker_path = lead_initialized_marker(&repo);
+        let marker_path = lead_initialized_marker(&primary_repo);
         if let Some(parent) = marker_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -609,7 +779,7 @@ pub fn handle_restart() -> Result<Response, String> {
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     // Start daemon (session already exists, so it will re-discover coworkers)
-    let result = handle_start(false)?;
+    let result = handle_start(false, None, vec![])?;
 
     // Restart the chat pane to pick up code changes.
     // Use respawn-pane -k to atomically kill the old process and start a new
@@ -687,7 +857,7 @@ pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
         }
 
         // Start midtown (daemon + tmux session)
-        handle_start(false)?;
+        handle_start(false, None, vec![])?;
 
         // Wait briefly for the session to be ready
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -807,7 +977,7 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
     let task_list_id = midtown::paths::task_list_id_for_repo(&repo_name);
 
     // Build the claude command with settings
-    let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing, &task_list_id)?;
+    let claude_cmd = build_lead_claude_command(&lead_session_id, is_existing, &task_list_id, &[])?;
 
     // Kill the current Lead pane content and restart with proper settings
     let lead_pane = format!("{}:lead.0", session);
@@ -1150,7 +1320,7 @@ mod tests {
         let is_existing = true; // Resuming an existing session
         let task_list_id = "midtown-test";
 
-        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id, &[]).unwrap();
 
         // Must include system prompt even when resuming
         assert!(
@@ -1166,7 +1336,7 @@ mod tests {
         let is_existing = false; // New session
         let task_list_id = "midtown-test";
 
-        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id, &[]).unwrap();
 
         assert!(
             cmd.contains("--append-system-prompt"),
@@ -1186,7 +1356,7 @@ mod tests {
         let is_existing = true;
         let task_list_id = "midtown-test";
 
-        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id, &[]).unwrap();
 
         assert!(
             cmd.contains("--resume"),
@@ -1245,12 +1415,195 @@ mod tests {
         let is_existing = false;
         let task_list_id = "midtown-myrepo";
 
-        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id).unwrap();
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id, &[]).unwrap();
 
         assert!(
             cmd.contains("CLAUDE_CODE_TASK_LIST_ID='midtown-myrepo'"),
             "Command must set CLAUDE_CODE_TASK_LIST_ID, got: {}",
             cmd
         );
+    }
+
+    #[test]
+    fn test_resolve_project_name_explicit() {
+        let result = resolve_project_name(&Some("my-project".to_string()));
+        assert_eq!(result, Some("my-project".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_project_name_none_outside_repo() {
+        let temp = TempDir::new().unwrap();
+        // No .git directory
+
+        with_temp_cwd(temp.path(), || {
+            let result = resolve_project_name(&None);
+            // Outside a git repo, detect_project_name returns None and repo_root fails
+            // so result should be None
+            assert!(result.is_none());
+        });
+    }
+
+    #[test]
+    fn test_session_name_for_explicit_project() {
+        let result = session_name_for(&Some("myapp".to_string()));
+        assert_eq!(result.unwrap(), "midtown-myapp");
+    }
+
+    #[test]
+    fn test_session_name_for_none_outside_repo() {
+        let temp = TempDir::new().unwrap();
+
+        with_temp_cwd(temp.path(), || {
+            let result = session_name_for(&None);
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_with_additional_repos() {
+        let session_id = "test-session-multi";
+        let is_existing = false;
+        let task_list_id = "midtown-multi";
+        let additional_repos = vec![
+            PathBuf::from("/path/to/repo-a"),
+            PathBuf::from("/path/to/repo-b"),
+        ];
+
+        let cmd =
+            build_lead_claude_command(session_id, is_existing, task_list_id, &additional_repos)
+                .unwrap();
+
+        assert!(
+            cmd.contains("--add-dir /path/to/repo-a"),
+            "Command must include --add-dir for repo-a, got: {}",
+            cmd
+        );
+        assert!(
+            cmd.contains("--add-dir /path/to/repo-b"),
+            "Command must include --add-dir for repo-b, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_no_additional_repos() {
+        let session_id = "test-session-single";
+        let is_existing = false;
+        let task_list_id = "midtown-single";
+
+        let cmd = build_lead_claude_command(session_id, is_existing, task_list_id, &[]).unwrap();
+
+        assert!(
+            !cmd.contains("--add-dir"),
+            "Command should not contain --add-dir with no additional repos, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_lead_session_file_for_project_path() {
+        let session_file = lead_session_file_for_project("test-proj");
+        assert!(session_file.to_string_lossy().contains(".midtown"));
+        assert!(session_file.to_string_lossy().contains("lead"));
+        assert!(session_file.to_string_lossy().contains("test-proj"));
+        assert!(session_file.to_string_lossy().ends_with("session-id"));
+    }
+
+    #[test]
+    fn test_get_or_create_lead_session_id_by_name_creates_new() {
+        let unique_name = format!("test-byname-{}", uuid::Uuid::new_v4());
+
+        let (session_id, is_existing) =
+            get_or_create_lead_session_id_by_name(&unique_name).unwrap();
+
+        // Clean up
+        let session_file = lead_session_file_for_project(&unique_name);
+        let _ = std::fs::remove_file(&session_file);
+        if let Some(parent) = session_file.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+
+        assert!(!is_existing);
+        assert!(!session_id.is_empty());
+        assert_eq!(session_id.len(), 36); // UUID format
+    }
+
+    #[test]
+    fn test_get_or_create_lead_session_id_by_name_returns_existing() {
+        let unique_name = format!("test-byname-{}", uuid::Uuid::new_v4());
+
+        let (id1, existing1) = get_or_create_lead_session_id_by_name(&unique_name).unwrap();
+        let (id2, existing2) = get_or_create_lead_session_id_by_name(&unique_name).unwrap();
+
+        // Clean up
+        let session_file = lead_session_file_for_project(&unique_name);
+        let _ = std::fs::remove_file(&session_file);
+        if let Some(parent) = session_file.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+
+        assert!(!existing1);
+        assert!(existing2);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_resolve_repos_uses_cli_when_provided() {
+        let repos = vec![PathBuf::from("/path/a"), PathBuf::from("/path/b")];
+        let result = resolve_repos(&repos, "nonexistent-project");
+        assert_eq!(result, repos);
+    }
+
+    #[test]
+    fn test_resolve_repos_empty_cli_returns_saved() {
+        // With no CLI repos and no config, should return empty
+        let result = resolve_repos(&[], &format!("no-such-project-{}", uuid::Uuid::new_v4()));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_saved_repos_nonexistent_project() {
+        let result = parse_saved_repos(&format!("no-such-project-{}", uuid::Uuid::new_v4()));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_update_project_config_creates_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_name = format!("test-update-{}", uuid::Uuid::new_v4());
+        let primary_repo = dir.path().join("main-repo");
+        let additional = vec![dir.path().join("extra-repo")];
+
+        // This will try to write to ~/.midtown/projects/<name>/config.toml
+        // We test that it doesn't panic/error
+        let result = update_project_config(&project_name, &primary_repo, &additional);
+
+        // Clean up
+        let config_path = midtown::config::project_config_path(&project_name);
+        let _ = std::fs::remove_file(&config_path);
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_project_name_valid() {
+        assert!(validate_project_name("my-project").is_ok());
+        assert!(validate_project_name("my_project").is_ok());
+        assert!(validate_project_name("myproject123").is_ok());
+        assert!(validate_project_name("my.project").is_ok());
+        assert!(validate_project_name("A").is_ok());
+    }
+
+    #[test]
+    fn test_validate_project_name_invalid() {
+        assert!(validate_project_name("").is_err());
+        assert!(validate_project_name("my'project").is_err());
+        assert!(validate_project_name("my project").is_err());
+        assert!(validate_project_name("my/project").is_err());
+        assert!(validate_project_name("my;project").is_err());
+        assert!(validate_project_name("$(whoami)").is_err());
     }
 }

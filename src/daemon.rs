@@ -56,6 +56,8 @@ pub struct DaemonConfig {
     pub chat_monitor_enabled: bool,
     /// Maximum number of concurrent coworkers. Default: 16.
     pub max_coworkers: usize,
+    /// Explicit project name (from --project flag). Overrides auto-detection.
+    pub project_name: Option<String>,
 }
 
 /// Default interval for restarting the webhook forwarder (5 minutes)
@@ -239,6 +241,7 @@ impl Default for DaemonConfig {
             pr_poll_interval_secs,
             chat_monitor_enabled,
             max_coworkers,
+            project_name: None,
         }
     }
 }
@@ -634,10 +637,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             .unwrap_or_else(|| "default".to_string())
     });
 
-    // Derive project name from config.toml [project].name, falling back to repo name.
-    // This is used for the tmux session name (midtown-{project}).
-    let project_name = crate::config::load_full_project_config(&repo_name)
-        .and_then(|c| c.project.name().map(|s| s.to_string()))
+    // Derive project name: explicit --project flag > config.toml [project].name > repo name.
+    // This must match what the CLI uses (resolve_project_name) so the Lead session
+    // and daemon agree on the task list ID and tmux session name.
+    let project_name = config
+        .project_name
+        .clone()
+        .or_else(|| {
+            crate::config::load_full_project_config(&repo_name)
+                .and_then(|c| c.project.name().map(|s| s.to_string()))
+        })
         .unwrap_or_else(|| repo_name.clone());
 
     // Create channel for the repo
