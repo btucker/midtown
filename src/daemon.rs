@@ -149,12 +149,15 @@ impl PrIssueTracker {
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        // Load config.toml for base daemon settings
-        let global_config = crate::config::GlobalConfig::load();
-        let daemon_section = &global_config.daemon;
+        let project_name = crate::paths::detect_repo_name().unwrap_or_default();
 
-        // Config.toml values as base, then env vars can override
-        // Env var takes precedence if set, otherwise use config.toml, otherwise use default
+        // Load config.toml for base daemon settings.
+        // Merge: global daemon section < project daemon section < env vars
+        let daemon_section = if project_name.is_empty() {
+            crate::config::GlobalConfig::load().daemon
+        } else {
+            crate::config::get_project_daemon_config(&project_name)
+        };
 
         // Webhook port: env var -> config.toml -> default
         // Note: MIDTOWN_WEBHOOK_PORT=0 disables webhook entirely
@@ -201,7 +204,6 @@ impl Default for DaemonConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .or_else(|| {
-                let project_name = crate::paths::detect_repo_name().unwrap_or_default();
                 if project_name.is_empty() {
                     crate::config::GlobalConfig::load().default.max_coworkers()
                 } else {
@@ -210,12 +212,19 @@ impl Default for DaemonConfig {
             })
             .unwrap_or(DEFAULT_MAX_COWORKERS);
 
+        let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        // Ensure project config.toml exists (create minimal one if missing)
+        if !project_name.is_empty() {
+            let _ = crate::config::ensure_project_config(&project_name, &workdir);
+        }
+
         Self {
             // Use repo-specific socket path to isolate daemons per project
             socket_path: crate::paths::daemon_socket(),
             // Use repo-specific PID file for singleton enforcement
             pid_file_path: crate::paths::daemon_pid_file(),
-            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            workdir,
             verbose: false,
             webhook_port,
             webhook_secret,

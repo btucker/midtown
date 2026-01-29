@@ -24,13 +24,21 @@
 //!
 //! 2. **Project config** at `~/.midtown/projects/<project>/config.toml`:
 //!    ```toml
-//!    # All fields are optional - only override what you need
-//!    bin_command = "cargo run --release --"
-//!    chat_layout = "split"
+//!    [project]
+//!    name = "midtown"
+//!    repos = ["/path/to/repo"]
+//!    primary_repo = "/path/to/repo"
+//!
+//!    [default]
 //!    max_coworkers = 4
+//!    chat_layout = "split"
+//!
+//!    [daemon]
+//!    webhook_port = 47023
 //!    ```
 //!
 //! Project config takes precedence over global defaults.
+//! Single-repo projects work with minimal config (just name, repo inferred from workdir).
 //!
 //! Daemon settings can also be overridden via environment variables:
 //! - `MIDTOWN_WEBHOOK_PORT` (set to 0 to disable)
@@ -39,11 +47,11 @@
 //! - `MIDTOWN_PR_POLL_INTERVAL`
 //! - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
 
-use serde::Deserialize;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 /// Chat layout mode for the Lead session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatLayout {
     /// Automatically choose based on terminal width
@@ -55,10 +63,145 @@ pub enum ChatLayout {
     Window,
 }
 
+/// Project identity and repo metadata.
+///
+/// This is the `[project]` section of a per-project `config.toml`:
+/// ```toml
+/// [project]
+/// name = "midtown"
+/// repos = ["/path/to/repo"]
+/// primary_repo = "/path/to/repo"
+/// ```
+///
+/// For single-repo projects, only `name` is required.
+/// `repos` defaults to `[primary_repo]` and `primary_repo` is inferred from workdir.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ProjectMetadata {
+    /// Project name (e.g., "midtown"). Used for tmux session names, paths, etc.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// List of repository paths belonging to this project.
+    /// For single-repo projects, this contains just one entry.
+    #[serde(default)]
+    pub repos: Vec<String>,
+
+    /// Primary repository path. This is the repo used for the daemon socket,
+    /// channel, and other singleton resources.
+    #[serde(default)]
+    pub primary_repo: Option<String>,
+}
+
+impl ProjectMetadata {
+    /// Get the project name, falling back to the primary repo directory name.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Get the primary repo path. Falls back to the first entry in `repos`.
+    pub fn primary_repo(&self) -> Option<&str> {
+        self.primary_repo
+            .as_deref()
+            .or_else(|| self.repos.first().map(|s| s.as_str()))
+    }
+
+    /// Get the list of repos. If empty, returns the primary_repo as a single-element vec.
+    pub fn repos(&self) -> Vec<&str> {
+        if self.repos.is_empty() {
+            self.primary_repo.as_deref().into_iter().collect()
+        } else {
+            self.repos.iter().map(|s| s.as_str()).collect()
+        }
+    }
+}
+
+/// Full per-project configuration file.
+///
+/// This is the top-level structure for `~/.midtown/projects/<project>/config.toml`:
+/// ```toml
+/// [project]
+/// name = "midtown"
+/// repos = ["/path/to/repo"]
+///
+/// [default]
+/// max_coworkers = 4
+///
+/// [daemon]
+/// webhook_port = 47023
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct FullProjectConfig {
+    /// Project identity and repo metadata
+    #[serde(default)]
+    pub project: ProjectMetadata,
+
+    /// Project-specific overrides for default settings
+    #[serde(default)]
+    pub default: ProjectConfig,
+
+    /// Project-specific daemon configuration overrides
+    #[serde(default)]
+    pub daemon: DaemonSection,
+}
+
+impl FullProjectConfig {
+    /// Load a full project config from the given path.
+    ///
+    /// Returns None if the file doesn't exist.
+    /// Returns default if the file can't be parsed.
+    pub fn load_from(path: &Path) -> Option<Self> {
+        if !path.exists() {
+            return None;
+        }
+
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|contents| toml::from_str(&contents).ok())
+    }
+
+    /// Load the full project config for a named project.
+    ///
+    /// Looks in `~/.midtown/projects/<project_name>/config.toml`.
+    pub fn load(project_name: &str) -> Option<Self> {
+        Self::load_from(&project_config_path(project_name))
+    }
+
+    /// Create a minimal config for a single-repo project.
+    ///
+    /// This is used when auto-creating config on daemon startup.
+    pub fn minimal(name: &str, repo_path: &str) -> Self {
+        Self {
+            project: ProjectMetadata {
+                name: Some(name.to_string()),
+                repos: vec![repo_path.to_string()],
+                primary_repo: Some(repo_path.to_string()),
+            },
+            default: ProjectConfig::default(),
+            daemon: DaemonSection::default(),
+        }
+    }
+
+    /// Write this config to the given path.
+    ///
+    /// Creates parent directories if they don't exist.
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let contents = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, contents)
+    }
+
+    /// Save this config for the named project.
+    pub fn save(&self, project_name: &str) -> std::io::Result<()> {
+        self.save_to(&project_config_path(project_name))
+    }
+}
+
 /// Configuration for a single project.
 ///
 /// Used both as global defaults and project-specific overrides.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ProjectConfig {
     /// Command to invoke midtown (e.g., "midtown" or "cargo run --release --")
     #[serde(default)]
@@ -115,7 +258,7 @@ impl ProjectConfig {
 }
 
 /// Configuration for Claude Code plugins.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginsConfig {
     /// List of required plugin names (e.g., "superpowers@claude-plugins-official")
     #[serde(default)]
@@ -130,7 +273,7 @@ pub struct PluginsConfig {
 /// - `MIDTOWN_WEBHOOK_RESTART_INTERVAL`
 /// - `MIDTOWN_PR_POLL_INTERVAL`
 /// - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DaemonSection {
     /// Port for the webhook server (default: 47022, set to 0 to disable)
     #[serde(default)]
@@ -153,8 +296,26 @@ pub struct DaemonSection {
     pub chat_monitor_enabled: Option<bool>,
 }
 
+impl DaemonSection {
+    /// Merge another daemon section into this one, with `other` taking precedence.
+    pub fn merge(&self, other: &DaemonSection) -> DaemonSection {
+        DaemonSection {
+            webhook_port: other.webhook_port.or(self.webhook_port),
+            webhook_secret: other
+                .webhook_secret
+                .clone()
+                .or_else(|| self.webhook_secret.clone()),
+            webhook_restart_interval_secs: other
+                .webhook_restart_interval_secs
+                .or(self.webhook_restart_interval_secs),
+            pr_poll_interval_secs: other.pr_poll_interval_secs.or(self.pr_poll_interval_secs),
+            chat_monitor_enabled: other.chat_monitor_enabled.or(self.chat_monitor_enabled),
+        }
+    }
+}
+
 /// Global configuration from `~/.midtown/config.toml`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct GlobalConfig {
     /// Default settings for all projects
     #[serde(default)]
@@ -195,6 +356,8 @@ impl GlobalConfig {
 /// Load project-specific configuration from `~/.midtown/projects/<project>/config.toml`.
 ///
 /// Returns None if the file doesn't exist.
+/// Supports both the new structured format (with `[project]`, `[default]`, `[daemon]` sections)
+/// and the legacy flat format (top-level keys like `bin_command`, `max_coworkers`).
 fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
     let path = project_config_path(project_name);
 
@@ -202,9 +365,43 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
         return None;
     }
 
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|contents| toml::from_str(&contents).ok())
+    let contents = std::fs::read_to_string(&path).ok()?;
+
+    // Try the new structured format first (with [project], [default], [daemon] sections)
+    if let Ok(full) = toml::from_str::<FullProjectConfig>(&contents) {
+        // If the [default] section has any values, use the structured format
+        if full.default.bin_command.is_some()
+            || full.default.chat_layout.is_some()
+            || full.default.chat_min_width.is_some()
+            || full.default.max_coworkers.is_some()
+            || full.project.name.is_some()
+        {
+            return Some(full.default);
+        }
+    }
+
+    // Fall back to legacy flat format
+    toml::from_str(&contents).ok()
+}
+
+/// Load the full project config (including [project] and [daemon] sections).
+///
+/// Returns None if the file doesn't exist.
+pub fn load_full_project_config(project_name: &str) -> Option<FullProjectConfig> {
+    FullProjectConfig::load(project_name)
+}
+
+/// Get the project-specific daemon configuration, merged with global.
+///
+/// Priority: project daemon section > global daemon section.
+pub fn get_project_daemon_config(project_name: &str) -> DaemonSection {
+    let global = GlobalConfig::load();
+    let project = FullProjectConfig::load(project_name);
+
+    match project {
+        Some(proj) => global.daemon.merge(&proj.daemon),
+        None => global.daemon,
+    }
 }
 
 /// Get the effective configuration for a project.
@@ -217,6 +414,23 @@ pub fn get_project_config(project_name: &str) -> ProjectConfig {
         Some(project) => global.default.merge(&project),
         None => global.default,
     }
+}
+
+/// Ensure a project config.toml exists, creating a minimal one if needed.
+///
+/// Called on daemon startup to ensure every project has a config file.
+/// If the file already exists, it is not modified.
+/// If it doesn't exist, a minimal config is created with the project name
+/// and repo path inferred from the working directory.
+pub fn ensure_project_config(project_name: &str, workdir: &Path) -> std::io::Result<()> {
+    let path = project_config_path(project_name);
+    if path.exists() {
+        return Ok(());
+    }
+
+    let repo_path = workdir.to_string_lossy().to_string();
+    let config = FullProjectConfig::minimal(project_name, &repo_path);
+    config.save_to(&path)
 }
 
 /// Get the path to the global config file.
@@ -546,5 +760,214 @@ webhook_port = 0
 "#;
         let config: GlobalConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.daemon.webhook_port, Some(0));
+    }
+
+    #[test]
+    fn test_project_metadata_default() {
+        let meta = ProjectMetadata::default();
+        assert!(meta.name().is_none());
+        assert!(meta.primary_repo().is_none());
+        assert!(meta.repos().is_empty());
+    }
+
+    #[test]
+    fn test_project_metadata_name_only() {
+        let toml_str = r#"
+[project]
+name = "myapp"
+"#;
+        let config: FullProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.project.name(), Some("myapp"));
+        assert!(config.project.primary_repo().is_none());
+        assert!(config.project.repos().is_empty());
+    }
+
+    #[test]
+    fn test_project_metadata_single_repo() {
+        let toml_str = r#"
+[project]
+name = "midtown"
+repos = ["/home/user/midtown"]
+primary_repo = "/home/user/midtown"
+"#;
+        let config: FullProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.project.name(), Some("midtown"));
+        assert_eq!(config.project.primary_repo(), Some("/home/user/midtown"));
+        assert_eq!(config.project.repos(), vec!["/home/user/midtown"]);
+    }
+
+    #[test]
+    fn test_project_metadata_primary_repo_fallback() {
+        // When repos is set but primary_repo is not, primary_repo falls back to first repo
+        let toml_str = r#"
+[project]
+name = "multi"
+repos = ["/path/a", "/path/b"]
+"#;
+        let config: FullProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.project.primary_repo(), Some("/path/a"));
+    }
+
+    #[test]
+    fn test_project_metadata_repos_fallback() {
+        // When repos is empty but primary_repo is set, repos() returns [primary_repo]
+        let toml_str = r#"
+[project]
+name = "single"
+primary_repo = "/path/to/repo"
+"#;
+        let config: FullProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.project.repos(), vec!["/path/to/repo"]);
+    }
+
+    #[test]
+    fn test_full_project_config_parse() {
+        let toml_str = r#"
+[project]
+name = "midtown"
+repos = ["/path/to/repo"]
+primary_repo = "/path/to/repo"
+
+[default]
+max_coworkers = 4
+chat_layout = "split"
+
+[daemon]
+webhook_port = 47023
+"#;
+        let config: FullProjectConfig = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(config.project.name(), Some("midtown"));
+        assert_eq!(config.project.primary_repo(), Some("/path/to/repo"));
+        assert_eq!(config.default.max_coworkers(), Some(4));
+        assert_eq!(config.default.chat_layout(), ChatLayout::Split);
+        assert_eq!(config.daemon.webhook_port, Some(47023));
+    }
+
+    #[test]
+    fn test_full_project_config_minimal() {
+        let config = FullProjectConfig::minimal("myapp", "/home/user/myapp");
+
+        assert_eq!(config.project.name(), Some("myapp"));
+        assert_eq!(config.project.primary_repo(), Some("/home/user/myapp"));
+        assert_eq!(config.project.repos(), vec!["/home/user/myapp"]);
+        assert!(config.default.max_coworkers().is_none());
+        assert!(config.daemon.webhook_port.is_none());
+    }
+
+    #[test]
+    fn test_full_project_config_empty_sections() {
+        // An empty file should parse successfully with all defaults
+        let toml_str = "";
+        let config: FullProjectConfig = toml::from_str(toml_str).unwrap();
+
+        assert!(config.project.name().is_none());
+        assert!(config.project.repos().is_empty());
+        assert!(config.default.max_coworkers().is_none());
+        assert!(config.daemon.webhook_port.is_none());
+    }
+
+    #[test]
+    fn test_full_project_config_partial_sections() {
+        // Only [project] section, no [default] or [daemon]
+        let toml_str = r#"
+[project]
+name = "solo"
+"#;
+        let config: FullProjectConfig = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(config.project.name(), Some("solo"));
+        assert!(config.default.bin_command.is_none());
+        assert!(config.daemon.webhook_port.is_none());
+    }
+
+    #[test]
+    fn test_full_project_config_roundtrip() {
+        let config = FullProjectConfig::minimal("roundtrip", "/tmp/roundtrip");
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: FullProjectConfig = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(config.project.name(), deserialized.project.name());
+        assert_eq!(
+            config.project.primary_repo(),
+            deserialized.project.primary_repo()
+        );
+    }
+
+    #[test]
+    fn test_full_project_config_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let config = FullProjectConfig::minimal("testproj", "/tmp/testproj");
+        config.save_to(&path).unwrap();
+
+        let loaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.project.name(), Some("testproj"));
+        assert_eq!(loaded.project.primary_repo(), Some("/tmp/testproj"));
+    }
+
+    #[test]
+    fn test_daemon_section_merge() {
+        let global = DaemonSection {
+            webhook_port: Some(47022),
+            webhook_secret: Some("global-secret".to_string()),
+            webhook_restart_interval_secs: Some(300),
+            pr_poll_interval_secs: Some(60),
+            chat_monitor_enabled: Some(true),
+        };
+
+        let project = DaemonSection {
+            webhook_port: Some(47023),
+            webhook_secret: None,
+            webhook_restart_interval_secs: None,
+            pr_poll_interval_secs: Some(120),
+            chat_monitor_enabled: None,
+        };
+
+        let merged = global.merge(&project);
+        assert_eq!(merged.webhook_port, Some(47023)); // Project overrides
+        assert_eq!(merged.webhook_secret, Some("global-secret".to_string())); // Falls back to global
+        assert_eq!(merged.webhook_restart_interval_secs, Some(300)); // Falls back to global
+        assert_eq!(merged.pr_poll_interval_secs, Some(120)); // Project overrides
+        assert_eq!(merged.chat_monitor_enabled, Some(true)); // Falls back to global
+    }
+
+    #[test]
+    fn test_daemon_section_merge_empty() {
+        let global = DaemonSection {
+            webhook_port: Some(47022),
+            webhook_secret: None,
+            webhook_restart_interval_secs: None,
+            pr_poll_interval_secs: None,
+            chat_monitor_enabled: None,
+        };
+
+        let empty = DaemonSection::default();
+        let merged = global.merge(&empty);
+        assert_eq!(merged.webhook_port, Some(47022)); // Global preserved
+    }
+
+    #[test]
+    fn test_ensure_project_config_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Directly test save_to / load_from since ensure_project_config
+        // uses hardcoded paths
+        let config = FullProjectConfig::minimal("testproj", "/tmp/repo");
+        config.save_to(&config_path).unwrap();
+
+        assert!(config_path.exists());
+
+        let loaded = FullProjectConfig::load_from(&config_path).unwrap();
+        assert_eq!(loaded.project.name(), Some("testproj"));
+        assert_eq!(loaded.project.primary_repo(), Some("/tmp/repo"));
+    }
+
+    #[test]
+    fn test_full_project_config_load_nonexistent() {
+        let result = FullProjectConfig::load_from(Path::new("/nonexistent/config.toml"));
+        assert!(result.is_none());
     }
 }
