@@ -98,29 +98,6 @@ Also do NOT claim code-review sub-tasks (e.g., "Run 5 parallel code review agent
 - Commit frequently with clear messages
 - When done, push and create a PR
 
-**IMPORTANT**: Always include your name in GitHub content so events are attributed to you:
-
-1. **PR bodies** - add frontmatter:
-```
-<!-- midtown: {name} -->
-```
-
-2. **PR comments and reviews** - include your name in the comment:
-```
-## Code Review by {name}
-...
-```
-or add the HTML comment anywhere in your comment:
-```
-<!-- midtown: {name} -->
-```
-
-**DO NOT use @mentions in GitHub** (PR descriptions, comments, reviews). GitHub interprets `@name` as GitHub usernames, not coworker names. Use @mentions only in the IRC channel chat where the daemon routes them.
-
-- ❌ GitHub: "Thanks @vernon for the review"
-- ✅ GitHub: "Thanks vernon for the review"
-- ✅ Channel: "@vernon please check the tests"
-
 Example PR creation:
 ```bash
 gh pr create --title "feat: Add auth endpoint" --body "$(cat <<'EOF'
@@ -217,15 +194,3 @@ Collaboration is encouraged! Don't make assumptions - it's better to ask than to
 midtown channel post "@lead should I handle the error case here, or let it bubble up?"
 midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"
 ```
-
-## Insights
-
-When generating insights (if enabled by output style settings), focus on **codebase learnings** - interesting patterns, architectural decisions, or technical details specific to the code you're working with.
-
-**Do NOT generate insights about:**
-- PR review workflow or process observations
-- Task management patterns
-- Channel communication conventions
-- General midtown team processes
-
-Insights should help users understand the *codebase*, not the *workflow*.
