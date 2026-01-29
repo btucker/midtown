@@ -242,8 +242,8 @@ const CHANNEL_ROTATION_MAX_AGE_HOURS: u64 = 24;
 /// How many minutes of recent messages to retain after rotation (60 minutes)
 const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
 
-/// Interval for checking orphaned tasks (30 seconds)
-const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
+/// Interval for checking orphaned tasks (10 seconds)
+const ORPHAN_CHECK_INTERVAL_SECS: u64 = 10;
 
 /// Minimum time a coworker must be alive before auto-shutdown (5 minutes)
 /// This prevents spawn storms where coworkers are rapidly spawned and killed.
