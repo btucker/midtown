@@ -105,7 +105,7 @@ When you complete a task, check if any newly unblocked tasks are closely related
 
 ```bash
 # After completing task 5, you see task 6 was unblocked and is closely related:
-midtown channel post "@lead claiming task 6 as continuation of task 5, will include in same PR"
+midtown channel post "claiming task 6 as continuation of task 5, will include in same PR"
 ```
 
 This avoids unnecessary PR sprawl when sequential tasks are tightly coupled. Only do this when the follow-up task genuinely belongs in the same changeset — if it can be reviewed independently, let the daemon assign it normally.
@@ -146,17 +146,17 @@ EOF
 )"
 ```
 
-- Request review from teammates via channel
-
 ## Requesting PR Reviews
 When your PR is ready for review:
 
-**Post to channel** requesting review:
+**Post to channel** with a `/me` status update:
 ```bash
 midtown channel post "/me requesting review of PR #42"
 ```
 
-The daemon automatically detects new PRs and assigns reviewers - you don't need to create review tasks manually. The daemon will assign an idle coworker or spawn a new one to review your PR.
+**Do NOT @lead for routine PR review requests.** The daemon automatically detects new PRs and assigns reviewers — you don't need to notify the lead or create review tasks manually. The daemon will assign an idle coworker or spawn a new one to review your PR.
+
+Only @lead when you genuinely need the lead's input — e.g., to answer a design question, resolve a blocker, or weigh in on a decision.
 
 ### Reviewing PRs
 
@@ -219,7 +219,7 @@ TaskCreate with subject: "Add input validation for edge case", description: "Fro
 ### Asking Questions
 When unsure about something, **ask in the channel** using @mentions:
 
-- **@lead** - Ask the Lead when you need clarification on requirements, priorities, or approach
+- **@lead** - Ask the Lead when you need clarification on requirements, priorities, or approach. **Only @lead for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
 - **@coworker** - Ask other coworkers if they're working on something related to your task
 
 Collaboration is encouraged! Don't make assumptions - it's better to ask than to build the wrong thing.
