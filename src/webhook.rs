@@ -47,6 +47,8 @@ pub struct WebhookEvent {
     pub message: Message,
     /// Structured PR activity data (if this event relates to a PR)
     pub pr_activity: Option<PrActivity>,
+    /// PR number that needs a reviewer spawned (set on "opened" / "ready_for_review")
+    pub needs_review: Option<u64>,
 }
 
 /// Structured data about PR-related webhook activity.
@@ -280,6 +282,8 @@ struct PullRequest {
     merged: Option<bool>,
     head: Option<PullRequestHead>,
     body: Option<String>,
+    #[serde(default)]
+    draft: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,10 +530,19 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         _ => return Ok(None),
     };
 
+    // Trigger immediate reviewer spawn for non-draft PRs that are opened or
+    // marked ready for review. Draft PRs and other actions don't need review.
+    let needs_review = match event.action.as_str() {
+        "opened" if !event.pull_request.draft => Some(event.number),
+        "ready_for_review" => Some(event.number),
+        _ => None,
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
         pr_activity: None,
+        needs_review,
     }))
 }
 
@@ -570,6 +583,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
             owner_coworker: coworker.map(|s| s.to_string()),
             actor: event.review.user.login,
         }),
+        needs_review: None,
     }))
 }
 
@@ -606,6 +620,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
             owner_coworker: None,
             actor: commenter,
         }),
+        needs_review: None,
     }))
 }
 
@@ -642,6 +657,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
             owner_coworker: coworker.map(|s| s.to_string()),
             actor: commenter,
         }),
+        needs_review: None,
     }))
 }
 
@@ -681,6 +697,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
         pr_activity: None,
+        needs_review: None,
     }))
 }
 
@@ -724,6 +741,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
         pr_activity: None,
+        needs_review: None,
     }))
 }
 
@@ -808,6 +826,32 @@ mod tests {
         );
         // Sender is always "github"
         assert_eq!(event.message.from, "github");
+        // Non-draft opened PR triggers review spawn
+        assert_eq!(event.needs_review, Some(42));
+    }
+
+    #[test]
+    fn test_handle_pull_request_opened_draft_no_review() {
+        let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "WIP: Add auth endpoint",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "draft": true,
+                "head": {"ref": "lexington/add-auth"}
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.content,
+            "@lexington opened PR #42: WIP: Add auth endpoint"
+        );
+        // Draft PRs should NOT trigger review spawn
+        assert_eq!(event.needs_review, None);
     }
 
     #[test]
@@ -855,6 +899,8 @@ mod tests {
             "@lexington merged PR #42: Add auth endpoint"
         );
         assert_eq!(event.message.from, "github");
+        // Merged PRs should NOT trigger review spawn
+        assert_eq!(event.needs_review, None);
     }
 
     #[test]
@@ -876,6 +922,8 @@ mod tests {
         // No @mention when no coworker is identified
         assert_eq!(event.message.content, "opened PR #42: Add auth endpoint");
         assert_eq!(event.message.from, "github");
+        // Non-draft opened PR still triggers review even without coworker match
+        assert_eq!(event.needs_review, Some(42));
     }
 
     #[test]

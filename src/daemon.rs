@@ -64,8 +64,8 @@ pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
 /// Default port for the webhook server (obscure to avoid conflicts)
 pub const DEFAULT_WEBHOOK_PORT: u16 = 47022;
 
-/// Default interval for polling PRs (1 minute)
-pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 60;
+/// Default interval for polling PRs (30 seconds)
+pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
 
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
@@ -351,9 +351,9 @@ pub struct PrReviewTracker {
     assigned: HashMap<u64, (String, Instant)>,
 }
 
-/// How long to wait after PR is opened before auto-reviewing (2 minutes)
+/// How long to wait after PR is opened before auto-reviewing (1 minute)
 /// This gives CI time to start and allows the author to add context.
-pub const PR_REVIEW_DELAY_SECS: u64 = 120;
+pub const PR_REVIEW_DELAY_SECS: u64 = 60;
 
 /// How long a review assignment is valid before it can be reassigned (10 minutes)
 /// Re-exported from github_state for use by the in-memory tracker.
@@ -750,6 +750,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     let state = Arc::clone(&state);
                     tokio::spawn(async move {
                         handle_pr_comment_nudge(&state, activity).await;
+                    });
+                }
+
+                // Schedule immediate (after delay) reviewer spawn for new PRs
+                if let Some(pr_number) = webhook_event.needs_review {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        handle_webhook_review_spawn(&state, pr_number).await;
                     });
                 }
 
@@ -2109,6 +2117,68 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             reviews_spawned
         );
     }
+}
+
+/// Handle webhook-triggered reviewer spawning for a newly opened or ready-for-review PR.
+///
+/// Waits the review delay, then fetches the PR data and spawns a reviewer if eligible.
+/// This bypasses the polling interval so reviewers start sooner after a PR is opened.
+async fn handle_webhook_review_spawn(state: &DaemonState, pr_number: u64) {
+    info!(
+        "Webhook: PR #{} needs review, waiting {}s before spawning reviewer",
+        pr_number, PR_REVIEW_DELAY_SECS
+    );
+    tokio::time::sleep(Duration::from_secs(PR_REVIEW_DELAY_SECS)).await;
+
+    // Fetch this specific PR's data
+    let output = match tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
+        ])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!(
+                "Webhook: Failed to fetch PR #{} for review spawn: {}",
+                pr_number, e
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("Webhook: gh pr view #{} failed: {}", pr_number, stderr);
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pr: serde_json::Value = match serde_json::from_str(&stdout) {
+        Ok(pr) => pr,
+        Err(e) => {
+            warn!("Webhook: Failed to parse PR #{} JSON: {}", pr_number, e);
+            return;
+        }
+    };
+
+    // Check the PR is still open
+    let pr_state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("");
+    if pr_state != "OPEN" {
+        debug!(
+            "Webhook: PR #{} is no longer open (state={}), skipping review",
+            pr_number, pr_state
+        );
+        return;
+    }
+
+    // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
+    spawn_reviewers_for_prs(state, &[pr]).await;
 }
 
 /// Detect actionable issues for a PR.
