@@ -131,6 +131,12 @@
     const { scrollTop, scrollHeight, clientHeight } = messagesContainer
     autoScroll = scrollHeight - scrollTop - clientHeight < 50
   }
+
+  function scrollToBottom() {
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight
+    }
+  }
 </script>
 
 <div class="channel-container">
@@ -174,6 +180,12 @@
     {/if}
   </div>
 
+  {#if !autoScroll}
+    <button class="scroll-to-bottom" onclick={scrollToBottom} aria-label="Scroll to bottom">
+      ↓
+    </button>
+  {/if}
+
   <form class="input-area" onsubmit={handleSubmit}>
     <textarea
       bind:value={inputText}
@@ -190,6 +202,7 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    position: relative;
   }
 
   .messages {
@@ -279,6 +292,33 @@
   .action-text {
     flex: 1;
     min-width: 0;
+  }
+
+  /* Scroll-to-bottom button */
+  .scroll-to-bottom {
+    position: absolute;
+    bottom: 80px;
+    right: 20px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid #3a3a3a;
+    background: #262626;
+    color: #d0d0d0;
+    font-size: 1.1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.2s;
+    opacity: 0.8;
+    z-index: 10;
+  }
+
+  .scroll-to-bottom:hover {
+    opacity: 1;
+    border-color: #5fafaf;
+    color: #5fafaf;
   }
 
   /* Input area */
