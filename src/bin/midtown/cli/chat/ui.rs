@@ -730,7 +730,8 @@ fn draw_input_box(f: &mut Frame, app: &App, area: Rect) {
 
     // Show cursor when in input mode
     if app.input_mode {
-        f.set_cursor_position((inner.x + app.input_cursor as u16, inner.y));
+        let cursor_col = super::display_width_up_to(&app.input_text, app.input_cursor);
+        f.set_cursor_position((inner.x + cursor_col, inner.y));
     }
 }
 
