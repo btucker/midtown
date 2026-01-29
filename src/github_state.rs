@@ -101,6 +101,14 @@ impl GitHubState {
         self.pr_reviewers.values().map(|a| a.reviewer.as_str())
     }
 
+    /// Get the PR number assigned to a specific reviewer.
+    pub fn pr_for_reviewer(&self, reviewer: &str) -> Option<u64> {
+        self.pr_reviewers
+            .iter()
+            .find(|(_, a)| a.reviewer == reviewer)
+            .map(|(pr_number, _)| *pr_number)
+    }
+
     /// Clean up assignments for PRs that are no longer open.
     ///
     /// Takes a list of open PR numbers and removes assignments for any PRs not in the list.
@@ -186,6 +194,21 @@ mod tests {
         assert_eq!(reviewers.len(), 2);
         assert!(reviewers.contains(&"lexington"));
         assert!(reviewers.contains(&"park"));
+    }
+
+    #[test]
+    fn test_pr_for_reviewer() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(43, "park");
+
+        assert_eq!(state.pr_for_reviewer("lexington"), Some(42));
+        assert_eq!(state.pr_for_reviewer("park"), Some(43));
+        assert_eq!(state.pr_for_reviewer("york"), None);
+
+        // After removal, should return None
+        state.remove_assignment(42);
+        assert_eq!(state.pr_for_reviewer("lexington"), None);
     }
 
     #[test]
