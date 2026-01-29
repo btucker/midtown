@@ -149,14 +149,17 @@ impl PrIssueTracker {
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        // Load config.toml for base daemon settings
-        let global_config = crate::config::GlobalConfig::load();
-        let daemon_section = &global_config.daemon;
+        let project_name = crate::paths::detect_repo_name().unwrap_or_default();
 
-        // Config.toml values as base, then env vars can override
-        // Env var takes precedence if set, otherwise use config.toml, otherwise use default
+        // Load config.toml for base daemon settings.
+        // Merge: global daemon section < project daemon section < env vars
+        let daemon_section = if project_name.is_empty() {
+            crate::config::GlobalConfig::load().daemon
+        } else {
+            crate::config::get_project_daemon_config(&project_name)
+        };
 
-        // Webhook port: env var -> config.toml -> default
+        // Webhook port: env var -> config.toml -> auto-assign per project
         // Note: MIDTOWN_WEBHOOK_PORT=0 disables webhook entirely
         let webhook_port = match std::env::var("MIDTOWN_WEBHOOK_PORT").ok() {
             Some(s) => s
@@ -167,7 +170,14 @@ impl Default for DaemonConfig {
             None => match daemon_section.webhook_port {
                 Some(0) => None,
                 Some(p) => Some(p),
-                None => Some(DEFAULT_WEBHOOK_PORT),
+                None => {
+                    // Auto-assign a unique port per project, or use default if no project
+                    if project_name.is_empty() {
+                        Some(DEFAULT_WEBHOOK_PORT)
+                    } else {
+                        Some(crate::config::assign_webhook_port(&project_name))
+                    }
+                }
             },
         };
 
@@ -201,7 +211,6 @@ impl Default for DaemonConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .or_else(|| {
-                let project_name = crate::paths::detect_repo_name().unwrap_or_default();
                 if project_name.is_empty() {
                     crate::config::GlobalConfig::load().default.max_coworkers()
                 } else {
@@ -210,12 +219,19 @@ impl Default for DaemonConfig {
             })
             .unwrap_or(DEFAULT_MAX_COWORKERS);
 
+        let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        // Ensure project config.toml exists (create minimal one if missing)
+        if !project_name.is_empty() {
+            let _ = crate::config::ensure_project_config(&project_name, &workdir);
+        }
+
         Self {
             // Use repo-specific socket path to isolate daemons per project
             socket_path: crate::paths::daemon_socket(),
             // Use repo-specific PID file for singleton enforcement
             pid_file_path: crate::paths::daemon_pid_file(),
-            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            workdir,
             verbose: false,
             webhook_port,
             webhook_secret,
@@ -618,6 +634,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             .unwrap_or_else(|| "default".to_string())
     });
 
+    // Derive project name from config.toml [project].name, falling back to repo name.
+    // This is used for the tmux session name (midtown-{project}).
+    let project_name = crate::config::load_full_project_config(&repo_name)
+        .and_then(|c| c.project.name().map(|s| s.to_string()))
+        .unwrap_or_else(|| repo_name.clone());
+
     // Create channel for the repo
     let channel = Channel::for_repo(&repo_name)?;
     info!("Channel: {}", channel.base_dir().display());
@@ -633,7 +655,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Create worktree manager and coworker manager early so they can be
     // shared with the web server (for the /api/status endpoint)
-    let session_name = format!("midtown-{}", repo_name);
+    let session_name = format!("midtown-{}", project_name);
     let worktree_manager =
         WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
             code: -32603,

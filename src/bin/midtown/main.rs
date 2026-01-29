@@ -73,7 +73,15 @@ enum Commands {
     /// Restart midtown (stop + start)
     Restart,
     /// Attach to the project's tmux session
-    Attach,
+    Attach {
+        /// Project name to attach to (default: inferred from cwd)
+        project: Option<String>,
+    },
+    /// Project management commands
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Channel messaging commands
     Channel {
         #[command(subcommand)]
@@ -114,6 +122,12 @@ enum Commands {
 enum LeadCommand {
     /// Register this session for task sharing with coworkers
     RegisterSession,
+}
+
+#[derive(Subcommand, Clone)]
+enum ProjectCommand {
+    /// List all known projects and their status
+    List,
 }
 
 fn main() {
@@ -285,8 +299,17 @@ fn main() {
     }
 
     // Attach command (just tmux, doesn't need daemon)
-    if let Commands::Attach = &command {
-        let result = cli::handle_attach();
+    if let Commands::Attach { project } = &command {
+        let result = cli::handle_attach(project.as_deref());
+        handle_result(format, result);
+        return;
+    }
+
+    // Project commands (no daemon required)
+    if let Commands::Project { command: proj_cmd } = &command {
+        let result = match proj_cmd {
+            ProjectCommand::List => cli::handle_project_list(),
+        };
         handle_result(format, result);
         return;
     }
@@ -337,8 +360,9 @@ fn main() {
         | Commands::Start { .. }
         | Commands::Stop { .. }
         | Commands::Restart
-        | Commands::Attach
+        | Commands::Attach { .. }
         | Commands::Lead { .. }
+        | Commands::Project { .. }
         | Commands::Chat
         | Commands::Hook { .. } => unreachable!(),
     };

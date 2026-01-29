@@ -9,19 +9,22 @@ use std::process::{Command, Stdio};
 
 use crate::cli::Response;
 
-/// Get the tmux session name based on the repo name.
-/// Format: midtown-{repo_name}
+/// Get the tmux session name based on the project name.
+/// Format: midtown-{project_name}
+///
+/// The project name is resolved from config.toml `[project].name`,
+/// falling back to the git repo directory name.
 ///
 /// Returns an error if not in a git repository, since a tmux session
 /// requires a valid project context.
 fn session_name() -> Result<String, String> {
-    let repo_name = midtown::paths::detect_repo_name().or_else(|| {
+    let project_name = midtown::paths::detect_project_name().or_else(|| {
         repo_root()
             .ok()
             .and_then(|r| r.file_name().map(|s| s.to_string_lossy().to_string()))
     });
 
-    match repo_name {
+    match project_name {
         Some(name) => Ok(format!("midtown-{}", name)),
         None => Err(
             "Not in a git repository. Run midtown from within a git repo or use --repo."
@@ -651,25 +654,46 @@ fn clear_stale_lead_session(repo: &Path) {
 /// Attaches to the project's tmux session.
 /// If the session doesn't exist, it is automatically created first.
 /// If the session exists but Lead wasn't started with midtown settings, reinitialize it.
-pub fn handle_attach() -> Result<Response, String> {
-    let session = session_name()?;
-    let repo = repo_root()?;
+pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
+    let session = match project {
+        // Explicit project name: construct session name directly
+        Some(name) => format!("midtown-{}", name),
+        // No project: infer from cwd
+        None => session_name()?,
+    };
+
+    // For cwd-based attach, we can get the repo root for stale session cleanup
+    let repo = if project.is_none() {
+        repo_root().ok()
+    } else {
+        None
+    };
 
     // Auto-create session if it doesn't exist
     if !session_exists(&session) {
+        if project.is_some() {
+            // Named project: don't auto-create, just error
+            return Err(format!(
+                "No tmux session '{}' found. Start the project first with 'midtown start'.",
+                session
+            ));
+        }
+
         // No active tmux session means Lead is not running.
         // Clear any stale session-id file so we start a fresh
         // Claude Code session instead of resuming the old one.
-        clear_stale_lead_session(&repo);
+        if let Some(ref repo) = repo {
+            clear_stale_lead_session(repo);
+        }
 
         // Start midtown (daemon + tmux session)
         handle_start(false)?;
 
         // Wait briefly for the session to be ready
         std::thread::sleep(std::time::Duration::from_millis(200));
-    } else {
+    } else if let Some(ref repo) = repo {
         // Session exists - ensure Lead has proper settings
-        ensure_lead_has_settings(&session, &repo)?;
+        ensure_lead_has_settings(&session, repo)?;
     }
 
     // Execute tmux attach - this replaces the current process
@@ -677,6 +701,82 @@ pub fn handle_attach() -> Result<Response, String> {
 
     // If we get here, exec failed
     Err(format!("Failed to attach to session: {}", err))
+}
+
+/// List all known projects and their running status.
+pub fn handle_project_list() -> Result<Response, String> {
+    let projects_dir = midtown::paths::midtown_base_dir().join("projects");
+
+    if !projects_dir.exists() {
+        return Ok(Response::message("No projects found."));
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(&projects_dir)
+        .map_err(|e| format!("Failed to read projects directory: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    if entries.is_empty() {
+        return Ok(Response::message("No projects found."));
+    }
+
+    let mut lines = Vec::new();
+    for entry in &entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let pid_file = entry.path().join("daemon.pid");
+
+        // Check if daemon is running by testing PID file lock
+        let status = if pid_file.exists() {
+            match is_daemon_running(&pid_file) {
+                true => "running",
+                false => "stopped",
+            }
+        } else {
+            "stopped"
+        };
+
+        // Check tmux session
+        let session = format!("midtown-{}", name);
+        let has_session = session_exists(&session);
+
+        let status_display = if status == "running" && has_session {
+            "running"
+        } else if status == "running" {
+            "daemon only"
+        } else {
+            "stopped"
+        };
+
+        lines.push(format!("{:<20} {}", name, status_display));
+    }
+
+    Ok(Response::message(lines.join("\n")))
+}
+
+/// Check if the daemon is running by testing the PID file lock.
+fn is_daemon_running(pid_file: &Path) -> bool {
+    use std::fs::OpenOptions;
+
+    let file = match OpenOptions::new().read(true).open(pid_file) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    // Try to get an exclusive lock. If we can't, the daemon holds it.
+    use fs2::FileExt;
+    match file.try_lock_exclusive() {
+        Ok(_) => {
+            // We got the lock => daemon is NOT running
+            let _ = file.unlock();
+            false
+        }
+        Err(_) => {
+            // Lock held => daemon IS running
+            true
+        }
+    }
 }
 
 /// Ensure the Lead pane has proper midtown settings.
