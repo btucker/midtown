@@ -4255,8 +4255,8 @@ mod tests {
         tracker.assign(44, "lexington"); // duplicate reviewer
 
         let reviewers = tracker.active_reviewers();
-        assert!(reviewers.contains(&"lexington".to_string()));
-        assert!(reviewers.contains(&"park".to_string()));
+        assert!(reviewers.contains("lexington"));
+        assert!(reviewers.contains("park"));
         // Should deduplicate
         assert_eq!(reviewers.len(), 2);
     }
@@ -4271,8 +4271,8 @@ mod tests {
         tracker.mark_reviewed(42);
 
         let reviewers = tracker.active_reviewers();
-        assert!(!reviewers.contains(&"lexington".to_string()));
-        assert!(reviewers.contains(&"park".to_string()));
+        assert!(!reviewers.contains("lexington"));
+        assert!(reviewers.contains("park"));
         assert_eq!(reviewers.len(), 1);
     }
 
