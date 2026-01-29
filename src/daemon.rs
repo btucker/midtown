@@ -1574,7 +1574,7 @@ async fn pr_poll_task(
 // ============================================================================
 
 /// Senders to skip when routing mentions (loop protection).
-const SKIP_SENDERS: &[&str] = &["midtown", "system", "github"];
+const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user"];
 
 /// Background task that monitors the channel for @mentions and routes them.
 ///
@@ -4940,10 +4940,13 @@ mod tests {
 
     #[test]
     fn test_skip_senders() {
-        // Verify SKIP_SENDERS contains expected values
+        // Verify SKIP_SENDERS contains expected values.
+        // "user" is skipped because handle_channel_post routes user @mentions
+        // directly, similar to how the webhook handler routes "github" mentions.
         assert!(SKIP_SENDERS.contains(&"midtown"));
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
+        assert!(SKIP_SENDERS.contains(&"user"));
     }
 
     #[test]
