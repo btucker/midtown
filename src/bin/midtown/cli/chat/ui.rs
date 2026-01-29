@@ -2164,4 +2164,35 @@ mod tests {
         assert_eq!(count_visual_lines("abcde", 5), 1);
         assert_eq!(cursor_position_in_wrapped("abcde", 5, 5), (0, 5));
     }
+
+    #[test]
+    fn test_kanban_height_review_cards_use_3_lines() {
+        // Review cards now show 3 lines: title, author+time, reviewer+time
+        // With 2 review PRs, we need 6 content lines + 2 border = 8
+        let height = calculate_kanban_height(0, 2);
+        assert_eq!(
+            height, 8,
+            "2 review PRs at 3 lines each = 6 content lines + 2 border = 8"
+        );
+    }
+
+    #[test]
+    fn test_kanban_height_in_progress_still_2_lines() {
+        // In Progress cards remain 2 lines (title + owner/duration)
+        let height = calculate_kanban_height(2, 0);
+        assert_eq!(
+            height, 6,
+            "2 in-progress tasks at 2 lines each = 4 content lines + 2 border = 6"
+        );
+    }
+
+    #[test]
+    fn test_kanban_height_review_dominates_in_progress() {
+        // 2 review cards (6 lines) should be taller than 2 in-progress (4 lines)
+        let height = calculate_kanban_height(2, 2);
+        assert_eq!(
+            height, 8,
+            "2 review PRs at 3 lines = 6 > 2 in-progress at 2 lines = 4, so 6 + 2 border = 8"
+        );
+    }
 }
