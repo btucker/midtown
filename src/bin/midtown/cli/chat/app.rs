@@ -67,6 +67,10 @@ pub struct KanbanPr {
     pub author: String,
     pub created_at: DateTime<Utc>,
     pub ci_status: CiStatus,
+    /// Reviewer name (extracted from review comment frontmatter)
+    pub reviewer: Option<String>,
+    /// When the review comment was posted
+    pub reviewed_at: Option<DateTime<Utc>>,
 }
 
 /// A merged PR item for the Done column
@@ -279,13 +283,13 @@ impl App {
         // Tasks are local file reads - fast, can stay synchronous
         self.tasks = fetch_tasks();
 
-        // PRs require gh CLI calls - run in background thread to avoid blocking UI
+        // PRs: try daemon RPC first, fall back to direct gh CLI
         let (tx, rx) = mpsc::channel();
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let prs = fetch_prs();
-            let merged_prs = fetch_merged_prs();
+            let (prs, merged_prs) =
+                fetch_kanban_data_via_rpc().unwrap_or_else(|| (fetch_prs(), fetch_merged_prs()));
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData { prs, merged_prs });
         });
@@ -600,7 +604,7 @@ fn fetch_prs() -> Vec<KanbanPr> {
             "pr",
             "list",
             "--json",
-            "number,title,author,createdAt,body,statusCheckRollup",
+            "number,title,author,createdAt,body,statusCheckRollup,comments",
         ])
         .output()
         && output.status.success()
@@ -638,6 +642,14 @@ fn fetch_prs() -> Vec<KanbanPr> {
                         .unwrap_or(&[]),
                 );
 
+                // Extract reviewer from comments (look for review comment frontmatter)
+                let (reviewer, reviewed_at) = extract_reviewer_from_comments(
+                    pr.get("comments")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.as_slice())
+                        .unwrap_or(&[]),
+                );
+
                 if number > 0 {
                     prs.push(KanbanPr {
                         number,
@@ -645,6 +657,8 @@ fn fetch_prs() -> Vec<KanbanPr> {
                         author,
                         created_at,
                         ci_status,
+                        reviewer,
+                        reviewed_at,
                     });
                 }
             }
@@ -652,6 +666,58 @@ fn fetch_prs() -> Vec<KanbanPr> {
     }
 
     prs
+}
+
+/// Extract reviewer name and timestamp from PR comments.
+///
+/// Looks for code review comments containing `<!-- midtown: name -->` frontmatter
+/// or "Code Review by {name}" headers. Returns the first reviewer found and the
+/// comment's creation timestamp.
+fn extract_reviewer_from_comments(
+    comments: &[serde_json::Value],
+) -> (Option<String>, Option<DateTime<Utc>>) {
+    for comment in comments {
+        let body = comment.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Check if this looks like a review comment
+        let is_review = body.contains("Code Review") || body.contains("Code review");
+        if !is_review {
+            continue;
+        }
+
+        // Try to extract reviewer name from frontmatter
+        let reviewer_name = extract_coworker_from_body(body);
+
+        // Fall back to "Code Review by {name}" pattern
+        let reviewer_name = reviewer_name.or_else(|| extract_reviewer_from_header(body));
+
+        if let Some(name) = reviewer_name {
+            let created_at = comment
+                .get("createdAt")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            return (Some(name), created_at);
+        }
+    }
+    (None, None)
+}
+
+/// Extract reviewer name from "Code Review by {name}" or "## Code Review by {name}" header.
+fn extract_reviewer_from_header(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let trimmed = line.trim().trim_start_matches('#').trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("Code Review by ")
+            .or_else(|| trimmed.strip_prefix("Code review by "))
+        {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Parse CI status from GitHub statusCheckRollup array
@@ -755,6 +821,96 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
     // Sort by merged_at descending (most recent first)
     prs.sort_by(|a, b| b.merged_at.cmp(&a.merged_at));
     prs
+}
+
+/// Fetch kanban PR data from the daemon via RPC.
+///
+/// Returns None if the daemon is not available, allowing fallback to direct gh CLI.
+fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>)> {
+    use crate::client::DaemonClient;
+
+    let client = DaemonClient::connect().ok()?;
+    let data = client.kanban_data().ok()?;
+
+    let prs_json = data.get("prs").and_then(|v| v.as_array())?;
+    let merged_json = data.get("merged_prs").and_then(|v| v.as_array())?;
+
+    let prs: Vec<KanbanPr> = prs_json
+        .iter()
+        .filter_map(|pr| {
+            let number = pr.get("number").and_then(|v| v.as_u64())?;
+            let title = pr
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let author = pr
+                .get("author")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let created_at = pr
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
+            let ci_status = match pr
+                .get("ci_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+            {
+                "passed" => CiStatus::Passed,
+                "failed" => CiStatus::Failed,
+                "running" => CiStatus::Running,
+                _ => CiStatus::Unknown,
+            };
+            let reviewer = pr
+                .get("reviewer")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let reviewed_at = pr
+                .get("reviewed_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+
+            Some(KanbanPr {
+                number,
+                title,
+                author,
+                created_at,
+                ci_status,
+                reviewer,
+                reviewed_at,
+            })
+        })
+        .collect();
+
+    let merged_prs: Vec<MergedPr> = merged_json
+        .iter()
+        .filter_map(|pr| {
+            let number = pr.get("number").and_then(|v| v.as_u64())?;
+            let title = pr
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let merged_at = pr
+                .get("merged_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
+            Some(MergedPr {
+                number,
+                title,
+                merged_at,
+            })
+        })
+        .collect();
+
+    Some((prs, merged_prs))
 }
 
 /// Fetch repository status (commit, CI status, release) from GitHub using gh CLI
@@ -1034,5 +1190,57 @@ mod tests {
         // Malformed frontmatter (no closing)
         let body = "<!-- midtown: york\n## Summary";
         assert_eq!(extract_coworker_from_body(body), None);
+    }
+
+    #[test]
+    fn test_extract_reviewer_from_header() {
+        assert_eq!(
+            extract_reviewer_from_header("## Code Review by york\nNo issues found."),
+            Some("york".to_string())
+        );
+        assert_eq!(
+            extract_reviewer_from_header("### Code review by madison\nLooks good."),
+            Some("madison".to_string())
+        );
+        assert_eq!(
+            extract_reviewer_from_header("Code Review by park"),
+            Some("park".to_string())
+        );
+        // No reviewer header
+        assert_eq!(extract_reviewer_from_header("Just a regular comment"), None);
+        assert_eq!(extract_reviewer_from_header(""), None);
+    }
+
+    #[test]
+    fn test_extract_reviewer_from_comments() {
+        // Comment with midtown frontmatter
+        let comments = vec![serde_json::json!({
+            "body": "<!-- midtown: lexington -->\n\n### Code review\n\nNo issues found.",
+            "createdAt": "2026-01-29T10:00:00Z"
+        })];
+        let (reviewer, at) = extract_reviewer_from_comments(&comments);
+        assert_eq!(reviewer, Some("lexington".to_string()));
+        assert!(at.is_some());
+
+        // Comment with "Code Review by" header
+        let comments = vec![serde_json::json!({
+            "body": "## Code Review by vernon\nLGTM",
+            "createdAt": "2026-01-29T11:00:00Z"
+        })];
+        let (reviewer, at) = extract_reviewer_from_comments(&comments);
+        assert_eq!(reviewer, Some("vernon".to_string()));
+        assert!(at.is_some());
+
+        // No review comment
+        let comments = vec![serde_json::json!({
+            "body": "This is a regular comment",
+            "createdAt": "2026-01-29T12:00:00Z"
+        })];
+        let (reviewer, _) = extract_reviewer_from_comments(&comments);
+        assert_eq!(reviewer, None);
+
+        // Empty comments
+        let (reviewer, _) = extract_reviewer_from_comments(&[]);
+        assert_eq!(reviewer, None);
     }
 }

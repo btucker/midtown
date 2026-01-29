@@ -2219,6 +2219,8 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "status" => handle_status(request.id, state),
 
+        "kanban.data" => handle_kanban_data(request.id, state),
+
         "channel.post" => {
             let params = request.params.as_ref();
             let message = params
@@ -2706,10 +2708,288 @@ fn get_all_tasks() -> Vec<serde_json::Value> {
                 "id": task.id,
                 "subject": task.subject,
                 "status": status,
-                "owner": task.owner,
+                "assignee": task.owner,
             })
         })
         .collect()
+}
+
+/// Handle kanban.data RPC method - returns PR data for the kanban board.
+///
+/// Returns open PRs with author, reviewer, CI status, and timestamps,
+/// plus recently merged PRs for the Done column.
+fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
+    // Get reviewer assignments from PrReviewTracker (best-effort via try_lock)
+    let reviewer_assignments: HashMap<u64, (String, Instant)> = state
+        .pr_review_tracker
+        .try_lock()
+        .map(|tracker| {
+            tracker
+                .assigned
+                .iter()
+                .filter(|(_, (_, t))| {
+                    t.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
+                })
+                .map(|(pr, (name, instant))| (*pr, (name.clone(), *instant)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let prs = fetch_kanban_prs(&reviewer_assignments);
+    let merged_prs = fetch_kanban_merged_prs();
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "prs": prs,
+            "merged_prs": merged_prs,
+        }),
+    )
+}
+
+/// Fetch open PRs with rich data for the kanban board.
+fn fetch_kanban_prs(
+    reviewer_assignments: &HashMap<u64, (String, Instant)>,
+) -> Vec<serde_json::Value> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,title,author,createdAt,body,statusCheckRollup,comments",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                prs.iter()
+                    .filter_map(|pr| {
+                        let number = pr.get("number").and_then(|v| v.as_u64())?;
+
+                        let title = pr
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let github_author = pr
+                            .get("author")
+                            .and_then(|v| v.get("login"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                        let author = extract_coworker_from_pr_body(body).unwrap_or(github_author);
+
+                        let created_at = pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
+
+                        // Parse CI status
+                        let ci_status = kanban_ci_status(
+                            pr.get("statusCheckRollup")
+                                .and_then(|v| v.as_array())
+                                .map(|a| a.as_slice())
+                                .unwrap_or(&[]),
+                        );
+
+                        // Extract reviewer from comments
+                        let (comment_reviewer, reviewed_at) = extract_reviewer_from_pr_comments(
+                            pr.get("comments")
+                                .and_then(|v| v.as_array())
+                                .map(|a| a.as_slice())
+                                .unwrap_or(&[]),
+                        );
+
+                        // Use comment reviewer, or fall back to assigned reviewer
+                        let (reviewer, reviewer_assigned_at) = if let Some(reviewer) =
+                            comment_reviewer
+                        {
+                            (Some(reviewer), reviewed_at)
+                        } else if let Some((name, instant)) = reviewer_assignments.get(&number) {
+                            // Convert Instant to approximate DateTime
+                            let elapsed = instant.elapsed();
+                            let assigned_at = chrono::Utc::now()
+                                - chrono::Duration::seconds(elapsed.as_secs() as i64);
+                            (Some(name.clone()), Some(assigned_at.to_rfc3339()))
+                        } else {
+                            (None, None)
+                        };
+
+                        Some(serde_json::json!({
+                            "number": number,
+                            "title": title,
+                            "author": author,
+                            "created_at": created_at,
+                            "ci_status": ci_status,
+                            "reviewer": reviewer,
+                            "reviewed_at": reviewer_assigned_at,
+                        }))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => {
+            debug!("Failed to fetch kanban PRs from gh CLI");
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch recently merged PRs for the kanban Done column.
+fn fetch_kanban_merged_prs() -> Vec<serde_json::Value> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--json",
+            "number,title,mergedAt",
+            "--limit",
+            "10",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            serde_json::from_str::<Vec<serde_json::Value>>(&stdout)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|pr| {
+                    let number = pr.get("number").and_then(|v| v.as_u64())?;
+                    let title = pr
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let merged_at = pr
+                        .get("mergedAt")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(serde_json::json!({
+                        "number": number,
+                        "title": title,
+                        "merged_at": merged_at,
+                    }))
+                })
+                .collect()
+        }
+        _ => {
+            debug!("Failed to fetch merged PRs from gh CLI");
+            Vec::new()
+        }
+    }
+}
+
+/// Extract coworker name from PR body frontmatter (<!-- midtown: name -->).
+fn extract_coworker_from_pr_body(body: &str) -> Option<String> {
+    let marker = "midtown:";
+    let marker_pos = body.find(marker)?;
+    let before = &body[..marker_pos];
+    if !before.contains("<!--") {
+        return None;
+    }
+    let after_marker = &body[marker_pos + marker.len()..];
+    let end = after_marker.find("-->")?;
+    let name = after_marker[..end].trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Extract reviewer name and timestamp from PR comments.
+fn extract_reviewer_from_pr_comments(
+    comments: &[serde_json::Value],
+) -> (Option<String>, Option<String>) {
+    for comment in comments {
+        let body = comment.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        if !body.contains("Code Review") && !body.contains("Code review") {
+            continue;
+        }
+
+        // Try frontmatter first
+        let reviewer = extract_coworker_from_pr_body(body).or_else(|| {
+            // Fall back to "Code Review by {name}" header
+            for line in body.lines() {
+                let trimmed = line.trim().trim_start_matches('#').trim();
+                if let Some(rest) = trimmed
+                    .strip_prefix("Code Review by ")
+                    .or_else(|| trimmed.strip_prefix("Code review by "))
+                {
+                    let name = rest.trim();
+                    if !name.is_empty() {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+            None
+        });
+
+        if let Some(name) = reviewer {
+            let created_at = comment
+                .get("createdAt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            return (Some(name), created_at);
+        }
+    }
+    (None, None)
+}
+
+/// Compute CI status string from statusCheckRollup array.
+fn kanban_ci_status(checks: &[serde_json::Value]) -> &'static str {
+    if checks.is_empty() {
+        return "unknown";
+    }
+
+    let mut has_running = false;
+    let mut has_failed = false;
+    let mut has_passed = false;
+
+    for check in checks {
+        let status = check.get("status").and_then(|v| v.as_str());
+        let conclusion = check.get("conclusion").and_then(|v| v.as_str());
+        let state = check.get("state").and_then(|v| v.as_str());
+
+        if let Some(status) = status {
+            match status {
+                "IN_PROGRESS" | "QUEUED" | "WAITING" | "PENDING" => has_running = true,
+                "COMPLETED" => match conclusion {
+                    Some("SUCCESS") => has_passed = true,
+                    Some("FAILURE") | Some("CANCELLED") | Some("TIMED_OUT") => has_failed = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        if let Some(state) = state {
+            match state {
+                "PENDING" => has_running = true,
+                "SUCCESS" => has_passed = true,
+                "FAILURE" | "ERROR" => has_failed = true,
+                _ => {}
+            }
+        }
+    }
+
+    if has_failed {
+        "failed"
+    } else if has_running {
+        "running"
+    } else if has_passed {
+        "passed"
+    } else {
+        "unknown"
+    }
 }
 
 /// Get recently merged PRs from GitHub using gh CLI.
@@ -4012,5 +4292,61 @@ mod tests {
         // Partial matches shouldn't count
         assert!(!text_contains_review_signature("midtown"));
         assert!(!text_contains_review_signature("Code Review"));
+    }
+
+    #[test]
+    fn test_extract_coworker_from_pr_body() {
+        assert_eq!(
+            extract_coworker_from_pr_body("<!-- midtown: york -->\n## Summary"),
+            Some("york".to_string())
+        );
+        assert_eq!(
+            extract_coworker_from_pr_body("<!--midtown:  park  -->\nDesc"),
+            Some("park".to_string())
+        );
+        assert_eq!(extract_coworker_from_pr_body("no frontmatter here"), None);
+        assert_eq!(extract_coworker_from_pr_body(""), None);
+    }
+
+    #[test]
+    fn test_extract_reviewer_from_pr_comments() {
+        let comments = vec![serde_json::json!({
+            "body": "<!-- midtown: lexington -->\n\n### Code review\nNo issues.",
+            "createdAt": "2026-01-29T10:00:00Z"
+        })];
+        let (reviewer, at) = extract_reviewer_from_pr_comments(&comments);
+        assert_eq!(reviewer, Some("lexington".to_string()));
+        assert_eq!(at, Some("2026-01-29T10:00:00Z".to_string()));
+
+        let comments = vec![serde_json::json!({
+            "body": "## Code Review by vernon\nLGTM",
+            "createdAt": "2026-01-29T11:00:00Z"
+        })];
+        let (reviewer, _) = extract_reviewer_from_pr_comments(&comments);
+        assert_eq!(reviewer, Some("vernon".to_string()));
+
+        let (reviewer, _) = extract_reviewer_from_pr_comments(&[]);
+        assert_eq!(reviewer, None);
+    }
+
+    #[test]
+    fn test_kanban_ci_status() {
+        assert_eq!(kanban_ci_status(&[]), "unknown");
+        assert_eq!(
+            kanban_ci_status(&[
+                serde_json::json!({"status": "COMPLETED", "conclusion": "SUCCESS"})
+            ]),
+            "passed"
+        );
+        assert_eq!(
+            kanban_ci_status(&[
+                serde_json::json!({"status": "COMPLETED", "conclusion": "FAILURE"})
+            ]),
+            "failed"
+        );
+        assert_eq!(
+            kanban_ci_status(&[serde_json::json!({"status": "IN_PROGRESS"})]),
+            "running"
+        );
     }
 }

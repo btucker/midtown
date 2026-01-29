@@ -82,8 +82,14 @@ impl DaemonClient {
         midtown::paths::daemon_socket()
     }
 
-    /// Send a JSON-RPC request to the daemon and get a response.
+    /// Send a JSON-RPC request to the daemon and get a typed response.
     fn send(&self, method: &str, params: Option<Value>) -> Result<Response, String> {
+        let result = self.send_raw(method, params)?;
+        serde_json::from_value(result).map_err(|e| format!("Response parse error: {}", e))
+    }
+
+    /// Send a JSON-RPC request and get the raw JSON result value.
+    fn send_raw(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .map_err(|e| format!("Connection failed: {}", e))?;
 
@@ -112,10 +118,9 @@ impl DaemonClient {
         }
 
         // Extract result
-        let result = rpc_response.result.ok_or("No result in response")?;
-
-        // Parse the result into a Response
-        serde_json::from_value(result).map_err(|e| format!("Response parse error: {}", e))
+        rpc_response
+            .result
+            .ok_or("No result in response".to_string())
     }
 
     // Channel commands
@@ -235,5 +240,11 @@ impl DaemonClient {
 
     pub fn pr_list(&self) -> Result<Response, String> {
         self.send("pr.list", None)
+    }
+
+    // Kanban commands
+
+    pub fn kanban_data(&self) -> Result<Value, String> {
+        self.send_raw("kanban.data", None)
     }
 }
