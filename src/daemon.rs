@@ -533,6 +533,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Start webhook server and gh forwarder watchdog if configured
     let mut webhook_rx = None;
     let mut web_updates_tx = None;
+    let mut mobile_rx: Option<tokio::sync::mpsc::Receiver<crate::web::MobileChannelPost>> = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
     if let Some(port) = config.webhook_port {
@@ -543,10 +544,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             web_static_dir: None, // Use default location
         };
         match start_webhook_server(webhook_config, Some(coworker_manager.clone())).await {
-            Ok((rx, updates_tx)) => {
+            Ok((rx, updates_tx, mob_rx)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
                 web_updates_tx = Some(updates_tx);
+                mobile_rx = Some(mob_rx);
 
                 // Spawn webhook forwarder watchdog task
                 let restart_interval = config.webhook_restart_interval_secs;
@@ -657,6 +659,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // Route @mentions in webhook messages directly (chat monitor skips
                 // "github" sender for loop protection, so we handle it here)
                 route_mentions(&state, &webhook_event.message);
+            }
+
+            // Process user channel posts through the daemon (handles nudge, etc.)
+            Some(mobile_post) = async {
+                match mobile_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let content = &mobile_post.content;
+                handle_channel_post(
+                    RequestId::Null,
+                    "user",
+                    content,
+                    &state,
+                );
+
+                // Route @mentions in user messages to coworkers
+                let msg = Message::text("user", content);
+                route_mentions(&state, &msg);
             }
 
             // Periodically check for idle coworkers and shut them down

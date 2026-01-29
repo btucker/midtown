@@ -17,7 +17,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{debug, error, info, warn};
 
@@ -50,6 +50,11 @@ impl Default for WebConfig {
     }
 }
 
+/// A mobile channel post to be forwarded to the daemon for processing.
+pub struct MobileChannelPost {
+    pub content: String,
+}
+
 /// Shared state for WebSocket connections
 pub struct WebState {
     pub config: WebConfig,
@@ -57,6 +62,8 @@ pub struct WebState {
     pub updates_tx: broadcast::Sender<WebUpdate>,
     /// Coworker manager for querying live coworker state
     pub coworkers: Option<CoworkerManager>,
+    /// Sender for channel posts to be processed by the daemon
+    pub channel_post_tx: mpsc::Sender<MobileChannelPost>,
 }
 
 /// Types of real-time updates sent to clients
@@ -429,26 +436,17 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
 
     match msg {
         ClientMessage::SendMessage { content } => {
-            // Post message to channel as "user"
-            let channel = Channel::for_repo(&state.config.repo)
-                .map_err(|e| format!("Failed to open channel: {}", e))?;
-
-            let message = Message::text("user", &content);
-            channel
-                .send(&message)
-                .map_err(|e| format!("Failed to send message: {}", e))?;
+            // Forward to the daemon for processing (handles channel write,
+            // WebSocket broadcast, and side-effects like nudging the Lead)
+            state
+                .channel_post_tx
+                .send(MobileChannelPost {
+                    content: content.clone(),
+                })
+                .await
+                .map_err(|e| format!("Failed to forward message to daemon: {}", e))?;
 
             info!("User sent: {}", content);
-
-            // Broadcast the message to all connected clients
-            let update = WebUpdate::ChannelMessage(ChannelMessageData {
-                from: "user".to_string(),
-                content,
-                timestamp: message.timestamp.to_rfc3339(),
-                msg_type: "text".to_string(),
-            });
-
-            let _ = state.updates_tx.send(update);
         }
         ClientMessage::GetHistory => {
             // Client should use the REST endpoint for history
@@ -510,6 +508,30 @@ mod tests {
             }
             _ => panic!("Expected SendMessage"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_mobile_send_message_forwards_to_daemon() {
+        // Verify that handle_client_message forwards mobile messages through
+        // channel_post_tx instead of writing directly to the channel file.
+        let (updates_tx, _) = broadcast::channel(10);
+        let (channel_post_tx, mut channel_post_rx) = mpsc::channel(10);
+
+        let state = Arc::new(WebState {
+            config: WebConfig::default(),
+            updates_tx,
+            coworkers: None,
+            channel_post_tx,
+        });
+
+        let json = r#"{"type": "send_message", "content": "hello from mobile"}"#;
+        handle_client_message(json, &state).await.unwrap();
+
+        // The message should be forwarded to the daemon via channel_post_tx
+        let post = channel_post_rx
+            .try_recv()
+            .expect("expected a mobile channel post");
+        assert_eq!(post.content, "hello from mobile");
     }
 
     #[test]
