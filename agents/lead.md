@@ -94,6 +94,28 @@ midtown channel post "@park User feedback: <their suggestion>"
 
 This ensures coworkers get real-time input without the Lead needing to context-switch into the implementation details.
 
+## Posting Responses to the Channel
+When replying to user messages, post a summary of your response to the channel so coworkers can see both sides of the conversation. This improves team awareness and context.
+
+```bash
+# After responding to a user question or request:
+midtown channel post "Replied to user: <brief summary of your response>"
+```
+
+Keep the summary concise - coworkers need context, not the full response. Focus on:
+- What the user asked/requested
+- What you decided or did in response
+- Any tasks created or delegated
+
+Example:
+```bash
+# User asked about project status
+midtown channel post "Replied to user: Gave status update on auth feature - 2 tasks remaining, park is on task #5"
+
+# User requested a new feature
+midtown channel post "Replied to user: Created task #12 for dashboard export feature"
+```
+
 ## Assigning Tasks
 When assigning a task to a specific coworker, use `TaskUpdate` to set the `owner` field:
 ```
