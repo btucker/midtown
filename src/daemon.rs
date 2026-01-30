@@ -21,7 +21,9 @@ use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
+use crate::config;
 use crate::coworker::CoworkerManager;
+use crate::daemon_messages;
 use crate::message::{Message, MessageType};
 use crate::rpc::{Request, RequestId, Response, RpcError};
 use crate::web::{self, WebUpdate};
@@ -1324,9 +1326,10 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                         );
                         (
                             true,
-                            format!(
-                                "☕ Letting {} take a break (review complete for PR #{})",
-                                name, pr
+                            daemon_messages::break_review_complete(
+                                &name,
+                                pr,
+                                config::get_personality(),
                             ),
                         )
                     } else {
@@ -1357,7 +1360,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                     );
                     (
                         true,
-                        format!("☕ Letting {} take a break (no PR assignment found)", name),
+                        daemon_messages::break_no_pr(&name, config::get_personality()),
                     )
                 }
             }
@@ -1366,7 +1369,10 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                 "Sending idle coworker {} on a break (idle for 30+ seconds)",
                 name
             );
-            (true, format!("☕ Letting {} take a break", name))
+            (
+                true,
+                daemon_messages::break_idle(&name, config::get_personality()),
+            )
         };
 
         if !should_shutdown {
@@ -2411,9 +2417,11 @@ async fn poll_prs_for_issues(
                             state.broadcast_coworker_update(owner, "running", None);
                             let msg = Message::text(
                                 "midtown",
-                                format!(
-                                    "🚀 Called in {} to address {} on PR #{}",
-                                    owner, issue_type, pr_number
+                                daemon_messages::called_in_pr_issue(
+                                    owner,
+                                    &issue_type.to_string(),
+                                    pr_number,
+                                    config::get_personality(),
                                 ),
                             );
                             if let Err(e) = state.send_and_broadcast(&msg) {
@@ -2642,9 +2650,10 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                 state.broadcast_coworker_update(owner, "running", None);
                                 let msg = Message::text(
                                     "midtown",
-                                    format!(
-                                        "🚀 Called in {} to address review feedback on PR #{}",
-                                        owner, pr_number
+                                    daemon_messages::called_in_review_feedback(
+                                        owner,
+                                        pr_number,
+                                        config::get_personality(),
                                     ),
                                 );
                                 if let Err(e) = state.send_and_broadcast(&msg) {
@@ -2751,7 +2760,11 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                 // Post to channel
                 let channel_msg = Message::new(
                     "midtown",
-                    format!("🔍 Called in {} to review PR #{}", new_coworker, pr_number),
+                    daemon_messages::called_in_reviewer(
+                        &new_coworker,
+                        pr_number,
+                        config::get_personality(),
+                    ),
                     MessageType::Text,
                 );
                 if let Err(e) = state.send_and_broadcast(&channel_msg) {
@@ -4799,9 +4812,10 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 // Post to channel
                 let msg = Message::text(
                     "midtown",
-                    format!(
-                        "🚀 Called in coworker {} for pending task #{}",
-                        owner, task_id
+                    daemon_messages::called_in_pending_task(
+                        &owner,
+                        &task_id.to_string(),
+                        config::get_personality(),
                     ),
                 );
                 if let Err(e) = state.send_and_broadcast(&msg) {
@@ -4941,9 +4955,11 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 // Post to channel
                 let msg = Message::text(
                     "midtown",
-                    format!(
-                        "🚀 Called in coworker {} for assigned task #{}: {}",
-                        coworker_name, task.id, task.subject
+                    daemon_messages::called_in_assigned_task(
+                        &coworker_name,
+                        &task.id.to_string(),
+                        &task.subject,
+                        config::get_personality(),
                     ),
                 );
                 if let Err(e) = state.send_and_broadcast(&msg) {

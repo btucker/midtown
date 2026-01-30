@@ -90,6 +90,9 @@ pub mod github_state;
 // Web Push notification support
 pub mod push;
 
+// Randomized daemon event messages
+pub mod daemon_messages;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
