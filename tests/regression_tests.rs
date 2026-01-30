@@ -136,12 +136,11 @@ fn newest_file_mtime(dir: &std::path::Path) -> Option<std::time::SystemTime> {
                         continue;
                     }
                     walk(&path, newest);
-                } else if let Ok(meta) = path.metadata() {
-                    if let Ok(mtime) = meta.modified() {
-                        if newest.is_none() || Some(mtime) > *newest {
-                            *newest = Some(mtime);
-                        }
-                    }
+                } else if let Ok(meta) = path.metadata()
+                    && let Ok(mtime) = meta.modified()
+                    && (newest.is_none() || Some(mtime) > *newest)
+                {
+                    *newest = Some(mtime);
                 }
             }
         }
