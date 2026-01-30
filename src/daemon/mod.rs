@@ -799,6 +799,20 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     route_mentions(&state, &nudge_msg);
                 }
 
+                // Nudge lead when a CI check fails on the default branch
+                if let Some(nudge_msg) = webhook_event.ci_failed_on_default_branch {
+                    if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
+                        warn!("Failed to nudge lead for CI failure on default branch: {}", e);
+                    } else {
+                        info!("Nudged lead about CI failure on default branch");
+                    }
+                    state.send_push_notification(
+                        "CI failed on default branch",
+                        &nudge_msg,
+                        "ci_failure",
+                    );
+                }
+
                 // Route @mentions in webhook messages directly (chat monitor skips
                 // "github" sender for loop protection, so we handle it here)
                 route_mentions(&state, &webhook_event.message);

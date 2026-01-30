@@ -50,6 +50,8 @@ pub struct WebhookEvent {
     pub needs_review: Option<u64>,
     /// PR number that was just merged (set on "closed" with merged=true)
     pub merged_pr: Option<u64>,
+    /// If set, a CI check failed on the default branch — nudge the lead with this message
+    pub ci_failed_on_default_branch: Option<String>,
 }
 
 /// Structured data about PR-related webhook activity.
@@ -410,6 +412,7 @@ struct User {
 struct Repository {
     #[allow(dead_code)]
     full_name: String,
+    default_branch: Option<String>,
 }
 
 // ============================================================================
@@ -560,6 +563,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         pr_activity: None,
         needs_review,
         merged_pr,
+        ci_failed_on_default_branch: None,
     }))
 }
 
@@ -602,6 +606,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         }),
         needs_review: None,
         merged_pr: None,
+        ci_failed_on_default_branch: None,
     }))
 }
 
@@ -640,6 +645,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
         }),
         needs_review: None,
         merged_pr: None,
+        ci_failed_on_default_branch: None,
     }))
 }
 
@@ -678,6 +684,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         }),
         needs_review: None,
         merged_pr: None,
+        ci_failed_on_default_branch: None,
     }))
 }
 
@@ -719,6 +726,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
         pr_activity: None,
         needs_review: None,
         merged_pr: None,
+        ci_failed_on_default_branch: None,
     }))
 }
 
@@ -750,6 +758,11 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
             branch.map(|b| format!(" on {}", b)).unwrap_or_default()
         });
 
+    let is_failure = matches!(
+        event.check_run.conclusion.as_deref(),
+        Some("failure") | Some("timed_out")
+    );
+
     let action_text = match event.check_run.conclusion.as_deref() {
         Some("success") => format!("Check '{}' passed{}", event.check_run.name, pr_info),
         Some("failure") => format!("Check '{}' failed{}", event.check_run.name, pr_info),
@@ -758,12 +771,33 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         _ => return Ok(None),
     };
 
+    // Check if this failure is on the default branch (not a PR branch)
+    let is_on_default_branch = branch.is_some()
+        && event.repository.default_branch.as_deref() == branch
+        && event
+            .check_run
+            .check_suite
+            .as_ref()
+            .and_then(|cs| cs.pull_requests.first())
+            .is_none();
+
+    let ci_failed_on_default_branch = if is_failure && is_on_default_branch {
+        let default_branch = branch.unwrap_or("main");
+        Some(format!(
+            "@lead CI check '{}' failed on {} — investigate ASAP",
+            event.check_run.name, default_branch,
+        ))
+    } else {
+        None
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
         pr_activity: None,
         needs_review: None,
         merged_pr: None,
+        ci_failed_on_default_branch,
     }))
 }
 
@@ -1144,6 +1178,132 @@ mod tests {
         // No PR, so shows branch name instead
         assert_eq!(event.message.content, "Check 'build' passed on main");
         assert_eq!(event.message.from, "github");
+    }
+
+    #[test]
+    fn test_handle_check_run_failure_on_default_branch_nudges_lead() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "failure",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "main",
+                    "pull_requests": []
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "main"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(event.message.content, "Check 'build' failed on main");
+        assert_eq!(
+            event.ci_failed_on_default_branch.as_deref(),
+            Some("@lead CI check 'build' failed on main — investigate ASAP")
+        );
+    }
+
+    #[test]
+    fn test_handle_check_run_failure_on_pr_branch_no_nudge() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "failure",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "park/implement-thing",
+                    "pull_requests": [{"number": 99}]
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "main"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.content,
+            "@park Check 'build' failed on PR #99"
+        );
+        assert!(event.ci_failed_on_default_branch.is_none());
+    }
+
+    #[test]
+    fn test_handle_check_run_success_on_default_branch_no_nudge() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "success",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "main",
+                    "pull_requests": []
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "main"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(event.message.content, "Check 'build' passed on main");
+        assert!(event.ci_failed_on_default_branch.is_none());
+    }
+
+    #[test]
+    fn test_handle_check_run_timed_out_on_default_branch_nudges_lead() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "E2E Tests",
+                "status": "completed",
+                "conclusion": "timed_out",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "master",
+                    "pull_requests": []
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "master"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.content,
+            "Check 'E2E Tests' timed out on master"
+        );
+        assert_eq!(
+            event.ci_failed_on_default_branch.as_deref(),
+            Some("@lead CI check 'E2E Tests' failed on master — investigate ASAP")
+        );
+    }
+
+    #[test]
+    fn test_handle_check_run_failure_on_non_default_branch_no_pr_no_nudge() {
+        // A branch that's not the default and has no PR — no nudge
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "build",
+                "status": "completed",
+                "conclusion": "failure",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "feature/experiment",
+                    "pull_requests": []
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "main"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.content,
+            "Check 'build' failed on feature/experiment"
+        );
+        assert!(event.ci_failed_on_default_branch.is_none());
     }
 
     #[test]
