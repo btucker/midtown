@@ -78,6 +78,28 @@ impl CooldownTracker {
 }
 
 // ---------------------------------------------------------------------------
+// CoworkerPhase — the per-coworker state machine
+// ---------------------------------------------------------------------------
+
+/// The current phase of a coworker in the daemon's lifecycle.
+///
+/// Replaces three separate HashMaps (`idle_since`, `interrupted_since`,
+/// `prompted_nudged`) with a single enum per coworker. A coworker can only
+/// be in one phase at a time — the enum enforces mutual exclusivity.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CoworkerPhase {
+    /// Coworker has no tasks and is waiting for the idle timeout to expire.
+    Idle { since: Instant },
+    /// Coworker's session shows an interruption marker; waiting for the
+    /// nudge timeout to fire.
+    Interrupted { since: Instant },
+    /// Coworker's session is blocked on an interactive prompt (plan approval,
+    /// permission dialog, etc.). The fingerprint deduplicates nudges for the
+    /// same prompt.
+    Prompted { fingerprint: String },
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle decision types
 // ---------------------------------------------------------------------------
 
@@ -116,7 +138,7 @@ pub(crate) fn decide_idle_shutdowns(
     coworkers_with_open_prs: &HashSet<String>,
     active_reviewers: &HashSet<String>,
     coworkers_with_unblocked_deps: &HashSet<String>,
-    idle_since: &mut HashMap<String, Instant>,
+    phases: &mut HashMap<String, CoworkerPhase>,
     now: Instant,
     now_utc: DateTime<Utc>,
     idle_break_duration: Duration,
@@ -130,7 +152,9 @@ pub(crate) fn decide_idle_shutdowns(
         // Check minimum lifetime
         let lifetime = now_utc.signed_duration_since(cw.started_at);
         if lifetime < chrono::Duration::from_std(minimum_lifetime).unwrap_or_default() {
-            idle_since.remove(coworker);
+            if matches!(phases.get(coworker), Some(CoworkerPhase::Idle { .. })) {
+                phases.remove(coworker);
+            }
             continue;
         }
 
@@ -148,7 +172,9 @@ pub(crate) fn decide_idle_shutdowns(
             .any(|d| d.eq_ignore_ascii_case(coworker));
 
         if is_busy || has_open_pr || is_reviewing || has_unblocked_deps {
-            idle_since.remove(coworker);
+            if matches!(phases.get(coworker), Some(CoworkerPhase::Idle { .. })) {
+                phases.remove(coworker);
+            }
         } else if cw.isolated_tasks {
             // Isolated coworkers (reviewers) go on break immediately when idle
             to_shutdown.push(ShutdownDecision {
@@ -156,8 +182,8 @@ pub(crate) fn decide_idle_shutdowns(
                 is_isolated: true,
             });
         } else {
-            match idle_since.get(coworker) {
-                Some(since) => {
+            match phases.get(coworker) {
+                Some(CoworkerPhase::Idle { since }) => {
                     if now.duration_since(*since) >= idle_break_duration {
                         to_shutdown.push(ShutdownDecision {
                             name: coworker.clone(),
@@ -165,8 +191,10 @@ pub(crate) fn decide_idle_shutdowns(
                         });
                     }
                 }
+                // Don't overwrite Interrupted or Prompted — those take priority
+                Some(CoworkerPhase::Interrupted { .. } | CoworkerPhase::Prompted { .. }) => {}
                 None => {
-                    idle_since.insert(coworker.clone(), now);
+                    phases.insert(coworker.clone(), CoworkerPhase::Idle { since: now });
                 }
             }
         }
@@ -174,7 +202,7 @@ pub(crate) fn decide_idle_shutdowns(
 
     // Remove shutdown coworkers from tracking
     for decision in &to_shutdown {
-        idle_since.remove(&decision.name);
+        phases.remove(&decision.name);
     }
 
     to_shutdown
@@ -187,7 +215,7 @@ pub(crate) fn decide_idle_shutdowns(
 pub(crate) fn decide_interrupt_nudges(
     coworkers: &[CoworkerSnapshot],
     pane_contents: &HashMap<String, String>,
-    interrupted_since: &mut HashMap<String, Instant>,
+    phases: &mut HashMap<String, CoworkerPhase>,
     now: Instant,
     nudge_duration: Duration,
 ) -> Vec<InterruptNudge> {
@@ -199,7 +227,12 @@ pub(crate) fn decide_interrupt_nudges(
         let pane_content = match pane_contents.get(coworker) {
             Some(content) => content,
             None => {
-                interrupted_since.remove(coworker);
+                if matches!(
+                    phases.get(coworker),
+                    Some(CoworkerPhase::Interrupted { .. })
+                ) {
+                    phases.remove(coworker);
+                }
                 continue;
             }
         };
@@ -208,21 +241,26 @@ pub(crate) fn decide_interrupt_nudges(
             || pane_content.contains("What should Claude do instead?");
 
         if is_interrupted {
-            match interrupted_since.get(coworker) {
-                Some(since) => {
+            match phases.get(coworker) {
+                Some(CoworkerPhase::Interrupted { since }) => {
                     if now.duration_since(*since) >= nudge_duration {
                         to_nudge.push(InterruptNudge {
                             name: coworker.clone(),
                         });
-                        interrupted_since.remove(coworker);
+                        phases.remove(coworker);
                     }
                 }
-                None => {
-                    interrupted_since.insert(coworker.clone(), now);
+                _ => {
+                    // Transition to Interrupted (overwriting Idle or absent)
+                    phases.insert(coworker.clone(), CoworkerPhase::Interrupted { since: now });
                 }
             }
-        } else if interrupted_since.remove(coworker).is_some() {
-            // No longer interrupted — cleared
+        } else if matches!(
+            phases.get(coworker),
+            Some(CoworkerPhase::Interrupted { .. })
+        ) {
+            // No longer interrupted — clear the phase
+            phases.remove(coworker);
         }
     }
 
@@ -236,7 +274,7 @@ pub(crate) fn decide_interrupt_nudges(
 pub(crate) fn decide_prompt_nudges(
     coworkers: &[CoworkerSnapshot],
     pane_contents: &HashMap<String, String>,
-    prompted_nudged: &mut HashMap<String, String>,
+    phases: &mut HashMap<String, CoworkerPhase>,
 ) -> Vec<PromptNudge> {
     let mut to_nudge = Vec::new();
 
@@ -251,7 +289,9 @@ pub(crate) fn decide_prompt_nudges(
         let pane_content = match pane_contents.get(coworker) {
             Some(content) => content,
             None => {
-                prompted_nudged.remove(coworker);
+                if matches!(phases.get(coworker), Some(CoworkerPhase::Prompted { .. })) {
+                    phases.remove(coworker);
+                }
                 continue;
             }
         };
@@ -259,21 +299,22 @@ pub(crate) fn decide_prompt_nudges(
         match detect_interactive_prompt(pane_content) {
             Some(label) => {
                 let fingerprint = label.to_string();
-                match prompted_nudged.get(coworker) {
-                    Some(prev) if prev == &fingerprint => {
-                        // Already nudged for this exact prompt
-                    }
-                    _ => {
-                        prompted_nudged.insert(coworker.clone(), fingerprint);
-                        to_nudge.push(PromptNudge {
-                            name: coworker.clone(),
-                            label: label.to_string(),
-                        });
-                    }
+                let already_nudged = matches!(
+                    phases.get(coworker),
+                    Some(CoworkerPhase::Prompted { fingerprint: prev }) if prev == &fingerprint
+                );
+                if !already_nudged {
+                    phases.insert(coworker.clone(), CoworkerPhase::Prompted { fingerprint });
+                    to_nudge.push(PromptNudge {
+                        name: coworker.clone(),
+                        label: label.to_string(),
+                    });
                 }
             }
             None => {
-                prompted_nudged.remove(coworker);
+                if matches!(phases.get(coworker), Some(CoworkerPhase::Prompted { .. })) {
+                    phases.remove(coworker);
+                }
             }
         }
     }
@@ -877,9 +918,14 @@ mod tests {
     #[test]
     fn idle_shutdown_after_timeout() {
         let coworkers = vec![cw("york", 10)];
-        let mut idle_since = HashMap::new();
+        let mut phases = HashMap::new();
         // york has been idle for 60s already
-        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -887,7 +933,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -897,14 +943,19 @@ mod tests {
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "york");
         assert!(!decisions[0].is_isolated);
-        assert!(!idle_since.contains_key("york"));
+        assert!(!phases.contains_key("york"));
     }
 
     #[test]
     fn idle_shutdown_skips_busy_coworker() {
         let coworkers = vec![cw("york", 10)];
-        let mut idle_since = HashMap::new();
-        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -912,7 +963,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -921,14 +972,19 @@ mod tests {
 
         assert!(decisions.is_empty());
         // Busy coworker removed from idle tracking
-        assert!(!idle_since.contains_key("york"));
+        assert!(!phases.contains_key("york"));
     }
 
     #[test]
     fn idle_shutdown_skips_coworker_with_open_pr() {
         let coworkers = vec![cw("york", 10)];
-        let mut idle_since = HashMap::new();
-        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -936,7 +992,7 @@ mod tests {
             &set(&["york"]),
             &set(&[]),
             &set(&[]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -949,8 +1005,13 @@ mod tests {
     #[test]
     fn idle_shutdown_skips_active_reviewer() {
         let coworkers = vec![cw("york", 10)];
-        let mut idle_since = HashMap::new();
-        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -958,7 +1019,7 @@ mod tests {
             &set(&[]),
             &set(&["york"]),
             &set(&[]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -971,8 +1032,13 @@ mod tests {
     #[test]
     fn idle_shutdown_skips_coworker_with_unblocked_deps() {
         let coworkers = vec![cw("york", 10)];
-        let mut idle_since = HashMap::new();
-        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -980,7 +1046,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&["york"]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -989,14 +1055,19 @@ mod tests {
 
         assert!(decisions.is_empty());
         // Coworker with unblocked deps removed from idle tracking
-        assert!(!idle_since.contains_key("york"));
+        assert!(!phases.contains_key("york"));
     }
 
     #[test]
     fn idle_shutdown_skips_young_coworker() {
         let coworkers = vec![cw("york", 2)]; // Only 2 minutes old
-        let mut idle_since = HashMap::new();
-        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -1004,7 +1075,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -1013,13 +1084,13 @@ mod tests {
 
         assert!(decisions.is_empty());
         // Young coworker also removed from idle tracking
-        assert!(!idle_since.contains_key("york"));
+        assert!(!phases.contains_key("york"));
     }
 
     #[test]
     fn idle_shutdown_isolated_coworker_immediate() {
         let coworkers = vec![cw_isolated("reviewer", 10)];
-        let mut idle_since = HashMap::new();
+        let mut phases = HashMap::new();
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -1027,7 +1098,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -1042,7 +1113,7 @@ mod tests {
     #[test]
     fn idle_shutdown_starts_tracking_newly_idle() {
         let coworkers = vec![cw("york", 10)];
-        let mut idle_since = HashMap::new();
+        let mut phases = HashMap::new();
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
@@ -1050,7 +1121,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &mut idle_since,
+            &mut phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
@@ -1059,7 +1130,7 @@ mod tests {
 
         // No shutdown yet — just started tracking
         assert!(decisions.is_empty());
-        assert!(idle_since.contains_key("york"));
+        assert!(phases.contains_key("york"));
     }
 
     // -----------------------------------------------------------------------
@@ -1071,13 +1142,18 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut pane_contents = HashMap::new();
         pane_contents.insert("york".to_string(), "Some output\nInterrupted\n".to_string());
-        let mut interrupted_since = HashMap::new();
-        interrupted_since.insert("york".to_string(), Instant::now() - Duration::from_secs(90));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Interrupted {
+                since: Instant::now() - Duration::from_secs(90),
+            },
+        );
 
         let nudges = decide_interrupt_nudges(
             &coworkers,
             &pane_contents,
-            &mut interrupted_since,
+            &mut phases,
             Instant::now(),
             Duration::from_secs(60),
         );
@@ -1085,7 +1161,7 @@ mod tests {
         assert_eq!(nudges.len(), 1);
         assert_eq!(nudges[0].name, "york");
         // Tracking reset after nudge
-        assert!(!interrupted_since.contains_key("york"));
+        assert!(!phases.contains_key("york"));
     }
 
     #[test]
@@ -1093,20 +1169,25 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut pane_contents = HashMap::new();
         pane_contents.insert("york".to_string(), "Interrupted".to_string());
-        let mut interrupted_since = HashMap::new();
-        interrupted_since.insert("york".to_string(), Instant::now() - Duration::from_secs(10));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Interrupted {
+                since: Instant::now() - Duration::from_secs(10),
+            },
+        );
 
         let nudges = decide_interrupt_nudges(
             &coworkers,
             &pane_contents,
-            &mut interrupted_since,
+            &mut phases,
             Instant::now(),
             Duration::from_secs(60),
         );
 
         assert!(nudges.is_empty());
         // Still tracking
-        assert!(interrupted_since.contains_key("york"));
+        assert!(phases.contains_key("york"));
     }
 
     #[test]
@@ -1114,20 +1195,25 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut pane_contents = HashMap::new();
         pane_contents.insert("york".to_string(), "All good, working fine".to_string());
-        let mut interrupted_since = HashMap::new();
-        interrupted_since.insert("york".to_string(), Instant::now() - Duration::from_secs(90));
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Interrupted {
+                since: Instant::now() - Duration::from_secs(90),
+            },
+        );
 
         let nudges = decide_interrupt_nudges(
             &coworkers,
             &pane_contents,
-            &mut interrupted_since,
+            &mut phases,
             Instant::now(),
             Duration::from_secs(60),
         );
 
         assert!(nudges.is_empty());
         // Tracking cleared
-        assert!(!interrupted_since.contains_key("york"));
+        assert!(!phases.contains_key("york"));
     }
 
     #[test]
@@ -1138,18 +1224,18 @@ mod tests {
             "york".to_string(),
             "What should Claude do instead?".to_string(),
         );
-        let mut interrupted_since = HashMap::new();
+        let mut phases = HashMap::new();
 
         let nudges = decide_interrupt_nudges(
             &coworkers,
             &pane_contents,
-            &mut interrupted_since,
+            &mut phases,
             Instant::now(),
             Duration::from_secs(60),
         );
 
         assert!(nudges.is_empty());
-        assert!(interrupted_since.contains_key("york"));
+        assert!(phases.contains_key("york"));
     }
 
     // -----------------------------------------------------------------------
@@ -1164,14 +1250,16 @@ mod tests {
             "york".to_string(),
             "Some output\nAllow once\nAllow always".to_string(),
         );
-        let mut prompted_nudged = HashMap::new();
+        let mut phases = HashMap::new();
 
-        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut phases);
 
         assert_eq!(nudges.len(), 1);
         assert_eq!(nudges[0].name, "york");
         assert_eq!(nudges[0].label, "permission request");
-        assert_eq!(prompted_nudged.get("york").unwrap(), "permission request");
+        assert!(
+            matches!(phases.get("york"), Some(CoworkerPhase::Prompted { fingerprint }) if fingerprint == "permission request")
+        );
     }
 
     #[test]
@@ -1179,10 +1267,15 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut pane_contents = HashMap::new();
         pane_contents.insert("york".to_string(), "Allow once\nAllow always".to_string());
-        let mut prompted_nudged = HashMap::new();
-        prompted_nudged.insert("york".to_string(), "permission request".to_string());
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Prompted {
+                fingerprint: "permission request".to_string(),
+            },
+        );
 
-        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut phases);
 
         assert!(nudges.is_empty());
     }
@@ -1195,10 +1288,15 @@ mod tests {
             "york".to_string(),
             "Yes, and don't ask again for this project".to_string(),
         );
-        let mut prompted_nudged = HashMap::new();
-        prompted_nudged.insert("york".to_string(), "permission request".to_string());
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Prompted {
+                fingerprint: "permission request".to_string(),
+            },
+        );
 
-        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut phases);
 
         assert_eq!(nudges.len(), 1);
         assert_eq!(nudges[0].label, "plan approval");
@@ -1209,13 +1307,18 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut pane_contents = HashMap::new();
         pane_contents.insert("york".to_string(), "Working normally".to_string());
-        let mut prompted_nudged = HashMap::new();
-        prompted_nudged.insert("york".to_string(), "permission request".to_string());
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerPhase::Prompted {
+                fingerprint: "permission request".to_string(),
+            },
+        );
 
-        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut phases);
 
         assert!(nudges.is_empty());
-        assert!(!prompted_nudged.contains_key("york"));
+        assert!(!phases.contains_key("york"));
     }
 
     #[test]
@@ -1227,9 +1330,9 @@ mod tests {
         }];
         let mut pane_contents = HashMap::new();
         pane_contents.insert("lead".to_string(), "Allow once\nAllow always".to_string());
-        let mut prompted_nudged = HashMap::new();
+        let mut phases = HashMap::new();
 
-        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut phases);
 
         assert!(nudges.is_empty());
     }

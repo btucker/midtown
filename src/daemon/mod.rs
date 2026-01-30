@@ -277,13 +277,9 @@ pub(crate) struct DaemonState {
     socket_path: PathBuf,
     /// Tracks message IDs that have already triggered a nudge to Lead (to avoid duplicates)
     nudged_messages: std::sync::RwLock<HashSet<String>>,
-    /// Tracks when each coworker became idle (no in_progress tasks)
-    idle_since: RwLock<HashMap<String, Instant>>,
-    /// Tracks when each coworker was first detected as interrupted
-    interrupted_since: RwLock<HashMap<String, Instant>>,
-    /// Tracks prompts we've already nudged the lead about (coworker_name -> prompt_fingerprint)
-    /// to avoid spamming the same prompt repeatedly
-    prompted_nudged: RwLock<HashMap<String, String>>,
+    /// Per-coworker lifecycle phase (idle, interrupted, prompted).
+    /// Replaces separate `idle_since`, `interrupted_since`, `prompted_nudged` maps.
+    coworker_phases: RwLock<HashMap<String, crate::rules::CoworkerPhase>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Tracker for PRs assigned for review
@@ -386,9 +382,7 @@ impl DaemonState {
             channel,
             socket_path,
             nudged_messages: std::sync::RwLock::new(HashSet::new()),
-            idle_since: RwLock::new(HashMap::new()),
-            interrupted_since: RwLock::new(HashMap::new()),
-            prompted_nudged: RwLock::new(HashMap::new()),
+            coworker_phases: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
@@ -1143,16 +1137,15 @@ async fn check_and_shutdown_idle_coworkers(
     );
 
     // Pure decision: who should be shut down?
-    // (idle_since is mutable tracker state — stays on DaemonState until Phase 6)
     let to_shutdown = {
-        let mut idle_since = state.idle_since.write().await;
+        let mut phases = state.coworker_phases.write().await;
         crate::rules::decide_idle_shutdowns(
             &snap.coworker_snapshots,
             &snap.busy_coworkers,
             &snap.coworkers_with_open_prs,
             &snap.active_reviewers,
             &snap.coworkers_with_unblocked_deps,
-            &mut idle_since,
+            &mut phases,
             snap.now,
             snap.now_utc,
             IDLE_BREAK_DURATION,
@@ -1295,13 +1288,12 @@ async fn check_and_nudge_interrupted_coworkers(
     }
 
     // Pure decision: who should be nudged?
-    // (interrupted_since is mutable tracker state — stays on DaemonState until Phase 6)
     let to_nudge = {
-        let mut interrupted_since = state.interrupted_since.write().await;
+        let mut phases = state.coworker_phases.write().await;
         crate::rules::decide_interrupt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
-            &mut interrupted_since,
+            &mut phases,
             snap.now,
             INTERRUPTED_NUDGE_DURATION,
         )
@@ -1346,13 +1338,12 @@ async fn check_and_nudge_prompted_coworkers(
     }
 
     // Pure decision: which coworkers need lead attention?
-    // (prompted_nudged is mutable tracker state — stays on DaemonState until Phase 6)
     let to_nudge = {
-        let mut prompted_nudged = state.prompted_nudged.write().await;
+        let mut phases = state.coworker_phases.write().await;
         crate::rules::decide_prompt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
-            &mut prompted_nudged,
+            &mut phases,
         )
     };
 
