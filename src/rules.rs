@@ -647,6 +647,165 @@ pub(crate) fn decide_review_complete_action(
 }
 
 // ---------------------------------------------------------------------------
+// Task assignment decision types and functions
+// ---------------------------------------------------------------------------
+
+/// Action to take for a pending task with an assigned owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingTaskAction {
+    /// Owner is active — nudge them about the pending task.
+    NudgeOwner {
+        owner: String,
+        task_id: String,
+        task_subject: String,
+    },
+    /// Owner is inactive — spawn them for the pending task.
+    SpawnOwner {
+        owner: String,
+        task_id: String,
+        task_subject: String,
+    },
+    /// Skip — owner is lead/empty, at dev limit, or nudge on cooldown.
+    Skip { reason: String },
+}
+
+/// Decide what action to take for a pending task with an assigned owner.
+///
+/// Pure function: determines whether to nudge an active owner, spawn an
+/// inactive one, or skip.
+pub(crate) fn decide_pending_task_action(
+    task_id: &str,
+    task_subject: &str,
+    owner: &str,
+    active_names: &HashSet<String>,
+    at_dev_limit: bool,
+    on_nudge_cooldown: bool,
+) -> PendingTaskAction {
+    // Skip empty or lead-owned tasks
+    if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+        return PendingTaskAction::Skip {
+            reason: format!("task #{} owner is lead or empty", task_id),
+        };
+    }
+
+    // Owner is active → nudge (unless on cooldown)
+    if active_names.contains(&owner.to_lowercase()) {
+        if on_nudge_cooldown {
+            return PendingTaskAction::Skip {
+                reason: format!("task #{} nudge on cooldown for {}", task_id, owner),
+            };
+        }
+        return PendingTaskAction::NudgeOwner {
+            owner: owner.to_string(),
+            task_id: task_id.to_string(),
+            task_subject: task_subject.to_string(),
+        };
+    }
+
+    // Owner is inactive → check dev limit
+    if at_dev_limit {
+        return PendingTaskAction::Skip {
+            reason: format!(
+                "dev limit reached, deferring spawn for task #{} owned by {}",
+                task_id, owner
+            ),
+        };
+    }
+
+    PendingTaskAction::SpawnOwner {
+        owner: owner.to_string(),
+        task_id: task_id.to_string(),
+        task_subject: task_subject.to_string(),
+    }
+}
+
+/// Result of orphan recovery decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrphanRecovery {
+    pub task_id: String,
+    pub task_subject: String,
+    pub owner: String,
+}
+
+/// Decide which orphaned task (if any) to recover.
+///
+/// An orphaned task is `in_progress` but its owner is not active.
+/// Returns at most ONE recovery action (rate-limited to one per tick).
+pub(crate) fn decide_orphan_recovery(
+    in_progress: &[(String, String, String)], // (task_id, task_subject, owner)
+    active_names: &HashSet<String>,
+    at_dev_limit: bool,
+) -> Option<OrphanRecovery> {
+    if at_dev_limit {
+        return None;
+    }
+
+    for (task_id, task_subject, owner) in in_progress {
+        let owner_clean = owner.trim().trim_matches('"').to_string();
+        if owner_clean.is_empty() || owner_clean.eq_ignore_ascii_case("lead") {
+            continue;
+        }
+        if active_names.contains(&owner_clean.to_lowercase()) {
+            continue;
+        }
+        // Found an orphan — return the first one (rate-limited)
+        return Some(OrphanRecovery {
+            task_id: task_id.clone(),
+            task_subject: task_subject.clone(),
+            owner: owner_clean,
+        });
+    }
+
+    None
+}
+
+/// Action to take for an @mention of a coworker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MentionAction {
+    /// Coworker is active — nudge them.
+    Nudge { name: String, message: String },
+    /// Coworker is inactive — spawn them.
+    Spawn { name: String, message: String },
+    /// Skip — self-mention or at dev limit.
+    Skip { reason: String },
+}
+
+/// Decide what action to take for an @mention of a coworker.
+pub(crate) fn decide_mention_action(
+    mentioned_name: &str,
+    sender: &str,
+    is_running: bool,
+    at_dev_limit: bool,
+    nudge_text: &str,
+) -> MentionAction {
+    // Skip self-mentions
+    if mentioned_name.eq_ignore_ascii_case(sender) {
+        return MentionAction::Skip {
+            reason: format!("{} mentioned themselves, skipping", mentioned_name),
+        };
+    }
+
+    if is_running {
+        MentionAction::Nudge {
+            name: mentioned_name.to_string(),
+            message: nudge_text.to_string(),
+        }
+    } else if at_dev_limit {
+        MentionAction::Skip {
+            reason: format!(
+                "dev limit reached, cannot spawn {} for @mention",
+                mentioned_name
+            ),
+        }
+    } else {
+        MentionAction::Spawn {
+            name: mentioned_name.to_string(),
+            message: nudge_text.to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1239,5 +1398,156 @@ mod tests {
         let action =
             decide_review_complete_action("york", &active(&["amsterdam"]), true, "review complete");
         assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_pending_task_action tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pending_task_nudges_active_owner() {
+        let names = set(&["york"]);
+        let action = decide_pending_task_action("42", "Fix bug", "york", &names, false, false);
+        assert!(matches!(action, PendingTaskAction::NudgeOwner { .. }));
+    }
+
+    #[test]
+    fn pending_task_skips_nudge_on_cooldown() {
+        let names = set(&["york"]);
+        let action = decide_pending_task_action("42", "Fix bug", "york", &names, false, true);
+        assert!(matches!(action, PendingTaskAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pending_task_spawns_inactive_owner() {
+        let names = set(&["amsterdam"]);
+        let action = decide_pending_task_action("42", "Fix bug", "york", &names, false, false);
+        assert_eq!(
+            action,
+            PendingTaskAction::SpawnOwner {
+                owner: "york".to_string(),
+                task_id: "42".to_string(),
+                task_subject: "Fix bug".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pending_task_skips_at_dev_limit() {
+        let names = set(&["amsterdam"]);
+        let action = decide_pending_task_action("42", "Fix bug", "york", &names, true, false);
+        assert!(matches!(action, PendingTaskAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pending_task_skips_lead_owner() {
+        let names = set(&["york"]);
+        let action = decide_pending_task_action("42", "Fix bug", "lead", &names, false, false);
+        assert!(matches!(action, PendingTaskAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pending_task_skips_empty_owner() {
+        let names = set(&["york"]);
+        let action = decide_pending_task_action("42", "Fix bug", "", &names, false, false);
+        assert!(matches!(action, PendingTaskAction::Skip { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_orphan_recovery tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn orphan_recovery_finds_orphan() {
+        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
+        let active = set(&["amsterdam"]);
+        let result = decide_orphan_recovery(&tasks, &active, false);
+        assert_eq!(
+            result,
+            Some(OrphanRecovery {
+                task_id: "1".to_string(),
+                task_subject: "Fix bug".to_string(),
+                owner: "york".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_skips_active_owner() {
+        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
+        let active = set(&["york"]);
+        let result = decide_orphan_recovery(&tasks, &active, false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn orphan_recovery_skips_at_dev_limit() {
+        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
+        let active = set(&["amsterdam"]);
+        let result = decide_orphan_recovery(&tasks, &active, true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn orphan_recovery_skips_lead_owner() {
+        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "lead".to_string())];
+        let active = set(&["amsterdam"]);
+        let result = decide_orphan_recovery(&tasks, &active, false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn orphan_recovery_returns_first_only() {
+        let tasks = vec![
+            ("1".to_string(), "Fix bug".to_string(), "york".to_string()),
+            (
+                "2".to_string(),
+                "Add test".to_string(),
+                "broadway".to_string(),
+            ),
+        ];
+        let active = set(&["amsterdam"]);
+        let result = decide_orphan_recovery(&tasks, &active, false);
+        assert_eq!(result.unwrap().task_id, "1");
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_mention_action tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mention_nudges_running_coworker() {
+        let action = decide_mention_action("york", "amsterdam", true, false, "hey york");
+        assert_eq!(
+            action,
+            MentionAction::Nudge {
+                name: "york".to_string(),
+                message: "hey york".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn mention_spawns_inactive_coworker() {
+        let action = decide_mention_action("york", "amsterdam", false, false, "hey york");
+        assert_eq!(
+            action,
+            MentionAction::Spawn {
+                name: "york".to_string(),
+                message: "hey york".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn mention_skips_self_mention() {
+        let action = decide_mention_action("york", "york", true, false, "hey @york");
+        assert!(matches!(action, MentionAction::Skip { .. }));
+    }
+
+    #[test]
+    fn mention_skips_at_dev_limit() {
+        let action = decide_mention_action("york", "amsterdam", false, true, "hey york");
+        assert!(matches!(action, MentionAction::Skip { .. }));
     }
 }
