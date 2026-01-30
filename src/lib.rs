@@ -45,7 +45,7 @@
 // Daemon server
 pub mod daemon;
 
-// Rules engine types for the daemon tick loop
+// Pure decision functions and shared types for the daemon tick loop
 pub(crate) mod rules;
 
 // RPC subsystem (furiosa)
