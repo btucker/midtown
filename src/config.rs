@@ -371,11 +371,18 @@ pub struct GlobalConfig {
 impl GlobalConfig {
     /// Load global configuration from `~/.midtown/config.toml`.
     ///
+    /// If the file doesn't exist, generates a template with all options
+    /// commented out so users can discover and enable them.
     /// Returns default config if file doesn't exist or can't be parsed.
     pub fn load() -> Self {
         let path = global_config_path();
 
         if !path.exists() {
+            // Generate template config so users can discover available options
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&path, Self::default_template());
             return Self::default();
         }
 
@@ -383,6 +390,54 @@ impl GlobalConfig {
             Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
             Err(_) => Self::default(),
         }
+    }
+
+    /// Generate a commented-out template with all available global config options.
+    ///
+    /// NOTE: Update this template when adding new fields to GlobalConfig,
+    /// ProjectConfig, PluginsConfig, or DaemonSection.
+    pub fn default_template() -> String {
+        r#"# Midtown global configuration
+# Options here apply to all projects unless overridden by project config.
+# Uncomment and modify options as needed.
+
+[default]
+# Command to run the midtown binary (useful if not on PATH)
+# bin_command = "midtown"
+
+# Chat pane layout: "auto", "right", or "bottom"
+# chat_layout = "auto"
+
+# Minimum terminal width (columns) before auto layout switches to bottom
+# chat_min_width = 160
+
+# Maximum concurrent coworkers
+# max_coworkers = 8
+
+# Personality for coworker messages: "normal", "fun", or "wild"
+# personality = "normal"
+
+[plugins]
+# Required plugins to install for all projects
+# required = ["superpowers@claude-plugins-official"]
+
+[daemon]
+# Port for the webhook server (set to 0 to disable)
+# webhook_port = 47023
+
+# GitHub webhook secret for signature verification
+# webhook_secret = ""
+
+# Interval in seconds to restart webhook forwarder
+# webhook_restart_interval_secs = 300
+
+# Interval in seconds to poll PRs for actionable issues
+# pr_poll_interval_secs = 30
+
+# Enable chat monitor for @mention routing
+# chat_monitor_enabled = true
+"#
+        .to_string()
     }
 
     /// Get the list of required plugins.
@@ -1283,5 +1338,30 @@ name = "solo"
         // Verify it was persisted
         let reloaded = FullProjectConfig::load_from(&config_path).unwrap();
         assert_eq!(reloaded.daemon.webhook_port, Some(47023));
+    }
+
+    #[test]
+    fn test_default_template_is_valid_toml() {
+        // The template should parse as valid TOML (all options are commented out)
+        let template = GlobalConfig::default_template();
+        let config: GlobalConfig = toml::from_str(&template).unwrap();
+        // All values should be defaults since everything is commented out
+        assert!(config.default.bin_command.is_none());
+        assert!(config.default.max_coworkers.is_none());
+        assert!(config.default.personality.is_none());
+        assert!(config.plugins.required.is_empty());
+        assert!(config.daemon.webhook_port.is_none());
+    }
+
+    #[test]
+    fn test_default_template_contains_all_sections() {
+        let template = GlobalConfig::default_template();
+        assert!(template.contains("[default]"));
+        assert!(template.contains("[plugins]"));
+        assert!(template.contains("[daemon]"));
+        assert!(template.contains("max_coworkers"));
+        assert!(template.contains("personality"));
+        assert!(template.contains("webhook_port"));
+        assert!(template.contains("chat_layout"));
     }
 }
