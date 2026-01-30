@@ -9,6 +9,8 @@
 //! - `GET /api/projects` - List all known projects with status
 //! - `GET /api/projects/:name/status` - Proxy to per-project daemon status
 //! - `GET /api/projects/:name/channel` - Proxy to per-project channel data
+//! - `GET /api/projects/:name/tmux-windows` - Proxy to per-project tmux window list
+//! - `GET /api/projects/:name/tmux-pane` - Proxy to per-project tmux pane content
 //! - `GET /api/health` - Health check
 //! - `GET /` - Serve static web UI (SPA)
 
@@ -20,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use axum::routing::get;
@@ -280,6 +282,84 @@ async fn project_channel(
     Ok(Json(serde_json::Value::Array(data)))
 }
 
+/// Query params for the tmux-pane proxy.
+#[derive(Deserialize)]
+struct TmuxPaneQuery {
+    window: String,
+}
+
+/// Proxy tmux-windows request to per-project daemon.
+async fn project_tmux_windows(
+    State(state): State<WebserverState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let port = get_webhook_port(&state, &name).await?;
+    let url = format!("http://127.0.0.1:{}/api/tmux-windows", port);
+
+    let resp = reqwest::get(&url).await.map_err(|e| {
+        warn!("Failed to proxy tmux-windows for project {}: {}", name, e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        warn!(
+            "Failed to parse tmux-windows response for project {}: {}",
+            name, e
+        );
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    Ok(Json(body))
+}
+
+/// Proxy tmux-pane request to per-project daemon.
+async fn project_tmux_pane(
+    State(state): State<WebserverState>,
+    Path(name): Path<String>,
+    Query(params): Query<TmuxPaneQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let port = get_webhook_port(&state, &name).await?;
+    let url = format!(
+        "http://127.0.0.1:{}/api/tmux-pane?window={}",
+        port, params.window
+    );
+
+    let resp = reqwest::get(&url).await.map_err(|e| {
+        warn!("Failed to proxy tmux-pane for project {}: {}", name, e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        warn!(
+            "Failed to parse tmux-pane response for project {}: {}",
+            name, e
+        );
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    Ok(Json(body))
+}
+
+/// Helper to resolve the webhook port for a project.
+async fn get_webhook_port(state: &WebserverState, name: &str) -> Result<u16, StatusCode> {
+    state.refresh_projects().await;
+    let project = state.get_project(name).await.ok_or(StatusCode::NOT_FOUND)?;
+    project.webhook_port.ok_or_else(|| {
+        warn!("No webhook port for project {}", name);
+        StatusCode::SERVICE_UNAVAILABLE
+    })
+}
+
 /// Run the standalone webserver.
 pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let state = WebserverState::new();
@@ -304,7 +384,9 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
         .route("/health", get(health))
         .route("/projects", get(list_projects))
         .route("/projects/{name}/status", get(project_status))
-        .route("/projects/{name}/channel", get(project_channel));
+        .route("/projects/{name}/channel", get(project_channel))
+        .route("/projects/{name}/tmux-windows", get(project_tmux_windows))
+        .route("/projects/{name}/tmux-pane", get(project_tmux_pane));
 
     let mut app = Router::new().nest("/api", api).layer(cors);
 
