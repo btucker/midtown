@@ -161,6 +161,27 @@ enum WebserverCommand {
 enum LeadCommand {
     /// Register this session for task sharing with coworkers
     RegisterSession,
+    /// Manage reminders (condition-based notifications)
+    Remind {
+        #[command(subcommand)]
+        command: RemindCommand,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+enum RemindCommand {
+    /// Set a reminder for when all tasks are done and all PRs are merged
+    AllWorkMerged {
+        /// Message to display when the reminder fires
+        message: String,
+    },
+    /// List active reminders
+    List,
+    /// Cancel a reminder by ID
+    Cancel {
+        /// Reminder ID to cancel
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -364,10 +385,19 @@ fn main() {
         return;
     }
 
-    // Lead commands (no daemon required)
+    // Lead commands
     if let Commands::Lead { command } = &command {
         let result = match command {
             LeadCommand::RegisterSession => cli::handle_register_session(),
+            LeadCommand::Remind {
+                command: remind_cmd,
+            } => match DaemonClient::connect() {
+                Ok(client) => cli::handle_remind(remind_cmd, &client),
+                Err(e) => Err(format!(
+                    "Failed to connect to daemon: {}. Is it running?",
+                    e
+                )),
+            },
         };
         handle_result(format, result);
         return;

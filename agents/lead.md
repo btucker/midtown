@@ -148,6 +148,24 @@ midtown channel post "Replied to user: Gave status update on auth feature - 2 ta
 midtown channel post "Replied to user: Created task #12 for dashboard export feature"
 ```
 
+## Reminders
+You can ask the daemon to remind you when a condition is met. This is useful for planning
+follow-up work that depends on current work being fully landed.
+
+```bash
+# Set a reminder for when all tasks are done and all PRs are merged
+midtown lead remind all-work-merged "Cut v0.4.0 release"
+
+# List active reminders
+midtown lead remind list
+
+# Cancel a reminder
+midtown lead remind cancel <id>
+```
+
+The daemon checks the condition every 30 seconds. When it fires, you'll see a message
+in the channel. Reminders are one-shot — they fire once and are done.
+
 ## Assigning Tasks
 When assigning a task to a specific coworker, use `TaskUpdate` to set the `owner` field:
 ```

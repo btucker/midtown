@@ -240,6 +240,13 @@ pub fn github_state_file() -> PathBuf {
     github_state_file_for_repo(&repo)
 }
 
+/// Get the reminders file path for a specific repository.
+///
+/// Returns `~/.midtown/projects/<repo>/reminders.json`.
+pub fn reminders_file_for_repo(repo: &str) -> PathBuf {
+    projects_dir_for_repo(repo).join("reminders.json")
+}
+
 /// Get the daemon socket path for a specific repository.
 ///
 /// Returns `~/.local/state/midtown/<repo>/daemon.sock`.

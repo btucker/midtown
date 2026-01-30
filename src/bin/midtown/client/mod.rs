@@ -145,6 +145,23 @@ impl DaemonClient {
         self.send("channel.read", Some(serde_json::json!({ "all": all })))
     }
 
+    // Reminder commands
+
+    pub fn reminder_create(&self, trigger: &str, message: &str) -> Result<Response, String> {
+        self.send(
+            "reminder.create",
+            Some(serde_json::json!({ "trigger": trigger, "message": message })),
+        )
+    }
+
+    pub fn reminder_list(&self) -> Result<Response, String> {
+        self.send("reminder.list", None)
+    }
+
+    pub fn reminder_cancel(&self, id: &str) -> Result<Response, String> {
+        self.send("reminder.cancel", Some(serde_json::json!({ "id": id })))
+    }
+
     // Coworker commands
 
     pub fn coworker_spawn(&self, resume: bool, prompt: Option<&str>) -> Result<Response, String> {
