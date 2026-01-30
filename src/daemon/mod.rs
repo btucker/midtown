@@ -4045,6 +4045,48 @@ fn get_recent_channel_activity() -> Vec<serde_json::Value> {
 // Auto-nudge helpers for PR activity
 // ============================================================================
 
+/// Add an eyes reaction to a GitHub comment to indicate it was received.
+///
+/// Uses the GitHub Reactions API via `gh api` to add a 👀 reaction to the
+/// comment that triggered a coworker nudge or spawn.
+async fn add_eyes_reaction(repo_full_name: &str, comment_node: &crate::webhook::CommentNode) {
+    let endpoint = match comment_node {
+        crate::webhook::CommentNode::IssueComment(id) => {
+            format!("/repos/{}/issues/comments/{}/reactions", repo_full_name, id)
+        }
+        crate::webhook::CommentNode::ReviewComment(id) => {
+            format!("/repos/{}/pulls/comments/{}/reactions", repo_full_name, id)
+        }
+        crate::webhook::CommentNode::Review { .. } => {
+            // GitHub API does not support reactions on pull request reviews
+            // (only on issue comments and review comments).
+            debug!("Skipping eyes reaction: GitHub API does not support reactions on reviews");
+            return;
+        }
+    };
+
+    let result = tokio::process::Command::new("gh")
+        .args(["api", &endpoint, "-f", "content=eyes", "--silent"])
+        .output()
+        .await;
+
+    match result {
+        Ok(output) if output.status.success() => {
+            debug!("Added eyes reaction to {}", endpoint);
+        }
+        Ok(output) => {
+            debug!(
+                "Failed to add eyes reaction to {}: {}",
+                endpoint,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            debug!("Failed to run gh api for eyes reaction: {}", e);
+        }
+    }
+}
+
 /// Async version of `get_pr_owner_coworker` that doesn't block the Tokio runtime.
 async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
     let output = tokio::process::Command::new("gh")
@@ -4187,6 +4229,13 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
     if success {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
+    }
+
+    // Add eyes reaction to the comment to provide visual feedback that it was received
+    if success
+        && let (Some(ref node), Some(ref repo)) = (activity.comment_node, activity.repo_full_name)
+    {
+        add_eyes_reaction(repo, node).await;
     }
 }
 
