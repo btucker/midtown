@@ -425,6 +425,29 @@ impl PrReviewTracker {
         self.assigned.retain(|_, (_, t)| t.elapsed() < timeout);
     }
 
+    /// Clean up stale assignments, but preserve assignments for active coworkers.
+    ///
+    /// This prevents reviewers from losing their PR assignment tracking while
+    /// they are still actively running (e.g., a review taking longer than the
+    /// timeout). Assignments for inactive coworkers are cleaned up normally.
+    /// Active coworkers' assignments are refreshed so timeout-based lookups
+    /// (active_reviewers, pr_for_coworker) continue to work.
+    pub fn cleanup_preserving(&mut self, active_coworkers: &HashSet<String>) {
+        let timeout = Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS);
+        let now = Instant::now();
+        self.assigned.retain(|_, (name, t)| {
+            if t.elapsed() < timeout {
+                return true;
+            }
+            // Expired, but coworker is still active — refresh the timestamp
+            if active_coworkers.contains(name) {
+                *t = now;
+                return true;
+            }
+            false
+        });
+    }
+
     /// Mark a PR as reviewed (remove from tracking)
     pub fn mark_reviewed(&mut self, pr_number: u64) {
         self.assigned.remove(&pr_number);
@@ -1152,10 +1175,18 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     // Get coworkers with open PRs - they should NEVER be sent on a break
     let coworkers_with_open_prs = get_coworkers_with_open_prs();
 
-    // Get coworkers actively assigned to review PRs - they should not be considered idle
+    // Get coworkers actively assigned to review PRs - they should not be considered idle.
+    // Check BOTH in-memory and persistent state. The in-memory tracker can be empty after
+    // a daemon restart, and the persistent state survives restarts.
     let active_reviewers = {
         let tracker = state.pr_review_tracker.lock().await;
-        tracker.active_reviewers()
+        let mut reviewers = tracker.active_reviewers();
+        // Also include reviewers from persistent state (survives daemon restarts)
+        let github_state = state.github_state.lock().await;
+        for reviewer_name in github_state.assigned_reviewers() {
+            reviewers.insert(reviewer_name.to_string());
+        }
+        reviewers
     };
 
     let now = Instant::now();
@@ -2262,14 +2293,21 @@ async fn poll_prs_for_issues(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
 
-    // Cleanup old tracking entries
+    // Cleanup old tracking entries, but preserve assignments for active coworkers
+    // so reviewers don't lose their PR tracking while still running
+    let active_coworker_names: HashSet<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|cw| cw.name.clone())
+        .collect();
     {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.cleanup();
     }
     {
         let mut review_tracker = state.pr_review_tracker.lock().await;
-        review_tracker.cleanup();
+        review_tracker.cleanup_preserving(&active_coworker_names);
     }
 
     // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
@@ -2290,7 +2328,7 @@ async fn poll_prs_for_issues(
             .collect();
         let mut github_state = state.github_state.lock().await;
         github_state.cleanup_closed_prs(&open_pr_numbers);
-        github_state.cleanup_expired_assignments();
+        github_state.cleanup_expired_preserving(&active_coworker_names);
         if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
             warn!("Failed to save github-state.json after cleanup: {}", e);
         }
@@ -5266,6 +5304,57 @@ mod tests {
         assert!(!reviewers.contains("lexington"));
         assert!(reviewers.contains("park"));
         assert_eq!(reviewers.len(), 1);
+    }
+
+    #[test]
+    fn test_cleanup_preserves_active_coworkers() {
+        let mut tracker = PrReviewTracker::new();
+
+        // Simulate an expired assignment (> 10 minutes old) for an active coworker
+        tracker.assigned.insert(
+            42,
+            (
+                "broadway".to_string(),
+                Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
+            ),
+        );
+        // And a fresh assignment for another coworker
+        tracker.assign(43, "park");
+
+        // broadway is still active (running as a coworker)
+        let active: HashSet<String> = ["broadway".to_string()].into_iter().collect();
+
+        // cleanup_preserving should keep broadway's assignment alive
+        tracker.cleanup_preserving(&active);
+
+        // broadway's assignment should be preserved because they're still active
+        assert_eq!(tracker.pr_for_coworker("broadway"), Some(42));
+        assert!(tracker.active_reviewers().contains("broadway"));
+
+        // park's fresh assignment should also still be there
+        assert_eq!(tracker.pr_for_coworker("park"), Some(43));
+    }
+
+    #[test]
+    fn test_cleanup_removes_expired_inactive_coworkers() {
+        let mut tracker = PrReviewTracker::new();
+
+        // Simulate an expired assignment for an inactive coworker
+        tracker.assigned.insert(
+            42,
+            (
+                "broadway".to_string(),
+                Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
+            ),
+        );
+
+        // broadway is NOT active
+        let active: HashSet<String> = HashSet::new();
+
+        tracker.cleanup_preserving(&active);
+
+        // broadway's assignment should be removed
+        assert_eq!(tracker.pr_for_coworker("broadway"), None);
     }
 
     // Chat monitor @mention tests
