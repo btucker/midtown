@@ -123,7 +123,7 @@ enum Commands {
     },
     /// Open IRC-style chat TUI
     Chat,
-    /// Hook handlers (insight, idle) - called by Claude Code hooks
+    /// Hook handlers (insight, idle, task, ask) - called by Claude Code hooks
     Hook {
         #[command(subcommand)]
         command: HookCommand,
@@ -191,16 +191,6 @@ fn main() {
         project: None,
         repos: vec![],
     });
-
-    // Handle commands that don't require daemon connection
-    if let Commands::Task {
-        command: TaskCommand::Hook { event },
-    } = &command
-    {
-        let result = cli::handle_task_hook(event);
-        handle_result(format, result);
-        return;
-    }
 
     // Daemon command (runs the daemon server - internal use)
     if let Commands::Daemon {
