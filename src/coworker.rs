@@ -529,8 +529,9 @@ impl CoworkerManager {
             }
         }
 
-        // Kill the tmux window
-        tmux::kill_window(&self.session_name, name)?;
+        // Kill the tmux window — if this fails, we still clean up tracking
+        // to avoid leaving the coworker permanently stuck in Stopping state.
+        let kill_result = tmux::kill_window(&self.session_name, name);
 
         // Clean up additional repo worktrees (multi-repo projects)
         self.cleanup_additional_worktrees(name);
@@ -541,7 +542,7 @@ impl CoworkerManager {
             coworkers.remove(name);
         }
 
-        Ok(())
+        kill_result
     }
 
     /// Send all coworkers on a break.
@@ -601,6 +602,20 @@ impl CoworkerManager {
     pub fn list(&self) -> Vec<Coworker> {
         let coworkers = self.coworkers.read().unwrap();
         coworkers.values().cloned().collect()
+    }
+
+    /// List only coworkers with `Running` status.
+    ///
+    /// Use this instead of `list()` when building active-name sets for task
+    /// assignment, so that coworkers stuck in `Stopping` or other non-running
+    /// states are excluded.
+    pub fn list_running(&self) -> Vec<Coworker> {
+        let coworkers = self.coworkers.read().unwrap();
+        coworkers
+            .values()
+            .filter(|cw| cw.status == CoworkerStatus::Running)
+            .cloned()
+            .collect()
     }
 
     /// Get a coworker by name.
@@ -1487,5 +1502,92 @@ mod tests {
         // Cleanup
         manager.cleanup_additional_worktrees("testworker");
         assert!(!extra_wt_path.exists());
+    }
+
+    #[test]
+    fn test_list_running_excludes_stopping_coworkers() {
+        let (manager, _temp_dir) = test_manager();
+
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "lexington".to_string(),
+                Coworker {
+                    name: "lexington".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None,
+                    isolated_tasks: false,
+                },
+            );
+            coworkers.insert(
+                "park".to_string(),
+                Coworker {
+                    name: "park".to_string(),
+                    status: CoworkerStatus::Stopping,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None,
+                    isolated_tasks: false,
+                },
+            );
+            coworkers.insert(
+                "madison".to_string(),
+                Coworker {
+                    name: "madison".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None,
+                    isolated_tasks: false,
+                },
+            );
+        }
+
+        // list() returns all 3 coworkers
+        assert_eq!(manager.list().len(), 3);
+
+        // list_running() should only return the 2 Running coworkers
+        let running = manager.list_running();
+        assert_eq!(running.len(), 2);
+        let names: Vec<&str> = running.iter().map(|cw| cw.name.as_str()).collect();
+        assert!(names.contains(&"lexington"));
+        assert!(names.contains(&"madison"));
+        assert!(!names.contains(&"park"));
+    }
+
+    #[test]
+    fn test_shutdown_cleans_up_even_on_tmux_failure() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Insert a coworker into the HashMap
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "lexington".to_string(),
+                Coworker {
+                    name: "lexington".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None,
+                    isolated_tasks: false,
+                },
+            );
+        }
+
+        assert_eq!(manager.count(), 1);
+
+        // shutdown() will fail because there's no real tmux session,
+        // but it should still remove the coworker from the HashMap
+        let _ = manager.shutdown("lexington");
+
+        // The coworker should be removed from tracking regardless of tmux failure
+        assert_eq!(manager.count(), 0);
     }
 }
