@@ -3118,6 +3118,12 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "daemon.check-pending" => {
+            info!("Check-pending triggered via RPC");
+            spawn_for_pending_tasks(state);
+            Response::success(request.id, serde_json::json!({"status": "ok"}))
+        }
+
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
