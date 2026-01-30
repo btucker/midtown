@@ -34,6 +34,10 @@ pub enum Effect {
     },
     /// Record a cooldown entry (category + key).
     RecordCooldown { category: String, key: String },
+    /// Schedule a usage-limit nudge at a specific time.
+    SetUsageLimitNudge { at: tokio::time::Instant },
+    /// Clear the scheduled usage-limit nudge (after it fires).
+    ClearUsageLimitNudge,
     /// Reset a task back to pending (e.g. when a coworker can't be respawned).
     ResetTaskToPending { task_id: String, repo_name: String },
 }
@@ -99,6 +103,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::RecordCooldown { category, key } => {
                 let mut cooldowns = state.cooldowns.lock().unwrap();
                 cooldowns.record(&category, &key);
+            }
+            Effect::SetUsageLimitNudge { at } => {
+                let mut nudge_at = state.usage_limit_nudge_at.lock().await;
+                *nudge_at = Some(at);
+            }
+            Effect::ClearUsageLimitNudge => {
+                let mut nudge_at = state.usage_limit_nudge_at.lock().await;
+                *nudge_at = None;
             }
             Effect::ResetTaskToPending { task_id, repo_name } => {
                 if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {

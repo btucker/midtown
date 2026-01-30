@@ -911,8 +911,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 effects::execute_effects(interrupt_effects, &state).await;
                 let prompt_effects = check_and_nudge_prompted_coworkers(&state).await;
                 effects::execute_effects(prompt_effects, &state).await;
-                check_for_usage_limits(&state).await;
-                maybe_nudge_usage_limit_expiry(&state).await;
+                let usage_effects = check_for_usage_limits(&state).await;
+                effects::execute_effects(usage_effects, &state).await;
+                let expiry_effects = maybe_nudge_usage_limit_expiry(&state).await;
+                effects::execute_effects(expiry_effects, &state).await;
             }
 
             // Check lead pane activity for typing indicator
@@ -1435,7 +1437,9 @@ async fn check_and_nudge_prompted_coworkers(state: &DaemonState) -> Vec<effects:
 /// Usage limits are account-wide, so when one coworker hits it, all of them
 /// will be stuck. We detect it from any coworker, parse the expiry, and
 /// schedule a single nudge time for everyone.
-async fn check_for_usage_limits(state: &DaemonState) {
+async fn check_for_usage_limits(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     // If we already have a nudge scheduled, don't re-detect
     let nudge_already_scheduled = {
         let nudge_at = state.usage_limit_nudge_at.lock().await;
@@ -1443,12 +1447,12 @@ async fn check_for_usage_limits(state: &DaemonState) {
     };
 
     if nudge_already_scheduled {
-        return;
+        return vec![];
     }
 
     let active_coworkers = state.coworkers.list();
     if active_coworkers.is_empty() {
-        return;
+        return vec![];
     }
 
     let session_name = state.coworkers.session_name();
@@ -1468,7 +1472,7 @@ async fn check_for_usage_limits(state: &DaemonState) {
 
     let detected_coworker = match decision {
         crate::rules::UsageLimitDecision::Detected { coworker } => coworker,
-        _ => return,
+        _ => return vec![],
     };
 
     // Find the pane content for the detected coworker to parse duration
@@ -1480,12 +1484,6 @@ async fn check_for_usage_limits(state: &DaemonState) {
 
     let wait_duration = crate::rules::parse_usage_limit_duration(pane_content);
     let nudge_time = tokio::time::Instant::now() + wait_duration + USAGE_LIMIT_NUDGE_BUFFER;
-
-    // Store the scheduled nudge time
-    {
-        let mut nudge_at = state.usage_limit_nudge_at.lock().await;
-        *nudge_at = Some(nudge_time);
-    }
 
     let human_duration = if wait_duration.as_secs() >= 3600 {
         format!(
@@ -1502,20 +1500,22 @@ async fn check_for_usage_limits(state: &DaemonState) {
         detected_coworker, human_duration
     );
 
-    let msg = Message::text(
-        "system",
-        format!(
-            "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~{} when it resets.",
-            detected_coworker, human_duration
-        ),
-    );
-    if let Err(e) = state.send_and_broadcast(&msg) {
-        warn!("Failed to post usage limit message to channel: {}", e);
-    }
+    vec![
+        Effect::SetUsageLimitNudge { at: nudge_time },
+        Effect::PostToChannel {
+            sender: "system".to_string(),
+            message: format!(
+                "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~{} when it resets.",
+                detected_coworker, human_duration
+            ),
+        },
+    ]
 }
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all active coworkers.
-async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) {
+async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     // Pure decision: should we nudge?
     let nudge_at_value = {
         let nudge_at = state.usage_limit_nudge_at.lock().await;
@@ -1525,18 +1525,12 @@ async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) {
         crate::rules::decide_usage_limit_expiry(nudge_at_value, tokio::time::Instant::now());
 
     if decision != crate::rules::UsageLimitExpiryDecision::NudgeNow {
-        return;
-    }
-
-    // Clear the scheduled nudge
-    {
-        let mut nudge_at = state.usage_limit_nudge_at.lock().await;
-        *nudge_at = None;
+        return vec![];
     }
 
     let active_coworkers = state.coworkers.list();
     if active_coworkers.is_empty() {
-        return;
+        return vec![];
     }
 
     info!(
@@ -1544,28 +1538,25 @@ async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) {
         active_coworkers.len()
     );
 
-    let msg = Message::text(
-        "system",
-        format!(
-            "🔔 Usage limit expired — nudging {} coworkers to resume work",
-            active_coworkers.len()
-        ),
-    );
-    if let Err(e) = state.send_and_broadcast(&msg) {
-        warn!(
-            "Failed to post usage limit expiry message to channel: {}",
-            e
-        );
-    }
+    let mut effects = vec![
+        Effect::ClearUsageLimitNudge,
+        Effect::PostToChannel {
+            sender: "system".to_string(),
+            message: format!(
+                "🔔 Usage limit expired — nudging {} coworkers to resume work",
+                active_coworkers.len()
+            ),
+        },
+    ];
 
     for cw in &active_coworkers {
-        if let Err(e) = state.coworkers.nudge(&cw.name, "continue") {
-            warn!(
-                "Failed to nudge coworker {} after usage limit expiry: {}",
-                cw.name, e
-            );
-        }
+        effects.push(Effect::NudgeCoworker {
+            name: cw.name.clone(),
+            message: "continue".to_string(),
+        });
     }
+
+    effects
 }
 
 /// Get list of coworker names who have in_progress tasks.
