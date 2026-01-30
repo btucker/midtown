@@ -405,7 +405,7 @@ impl GlobalConfig {
 # Command to run the midtown binary (useful if not on PATH)
 # bin_command = "midtown"
 
-# Chat pane layout: "auto", "right", or "bottom"
+# Chat pane layout: "auto", "split", or "window"
 # chat_layout = "auto"
 
 # Minimum terminal width (columns) before auto layout switches to bottom
