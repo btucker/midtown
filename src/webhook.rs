@@ -25,7 +25,6 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tower_http::cors::{Any, CorsLayer};
@@ -71,8 +70,6 @@ pub struct WebhookConfig {
     pub secret: Option<String>,
     /// Repository name for channel routing
     pub repo: String,
-    /// Path to static files for web app (optional)
-    pub web_static_dir: Option<PathBuf>,
 }
 
 impl Default for WebhookConfig {
@@ -81,7 +78,6 @@ impl Default for WebhookConfig {
             port: 8080,
             secret: None,
             repo: "default".to_string(),
-            web_static_dir: None,
         }
     }
 }
@@ -123,10 +119,6 @@ pub async fn start_webhook_server(
 
     // Create web state for mobile app
     let web_config = WebConfig {
-        static_dir: config.web_static_dir.clone().unwrap_or_else(|| {
-            // Default: look for web/ directory relative to working directory
-            PathBuf::from("web")
-        }),
         repo: config.repo.clone(),
     };
 
@@ -168,7 +160,6 @@ pub async fn start_webhook_server(
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Starting webhook server on {}", addr);
-    info!("Web app available at http://localhost:{}", config.port);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 

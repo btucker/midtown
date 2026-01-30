@@ -40,5 +40,5 @@ export const projects = writable([])
 // Currently selected project name (null = single-project mode)
 export const activeProject = writable(null)
 
-// Whether the app is running in multi-project mode (served from shared webserver)
-export const multiProjectMode = writable(false)
+// Whether the app is running in multi-project mode (always true — served from shared webserver)
+export const multiProjectMode = writable(true)
