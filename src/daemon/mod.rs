@@ -2007,24 +2007,12 @@ async fn poll_prs_for_issues(
                     "PR #{} ({}) is approved with all checks passing — auto-merging",
                     pr_number, title
                 );
-                let action = PrAction::AutoMerge {
-                    pr_number,
-                    title: title.to_string(),
-                };
-                let merged = match action {
-                    PrAction::AutoMerge {
-                        pr_number: num,
-                        title: ref t,
-                    } => match auto_merge_pr(state, num, t).await {
-                        Ok(()) => true,
-                        Err(e) => {
-                            warn!("Auto-merge failed for PR #{}: {}", num, e);
-                            false
-                        }
-                    },
-                    _ => unreachable!(),
-                };
-                if merged {
+                if let Err(e) = auto_merge_pr(state, pr_number, title).await {
+                    warn!("Auto-merge failed for PR #{}: {}", pr_number, e);
+                }
+                // Always record the cooldown, even on failure, to prevent
+                // retrying every poll interval (30s) for persistent failures.
+                {
                     let mut tracker = state.pr_issue_tracker.lock().await;
                     tracker.record_nudge(pr_number, issue_type);
                 }
@@ -2125,10 +2113,6 @@ async fn poll_prs_for_issues(
                 }
                 PrAction::Skip { ref reason } => {
                     debug!("{}", reason);
-                    false
-                }
-                PrAction::AutoMerge { .. } => {
-                    // AutoMerge is handled above before the nudge path
                     false
                 }
             };
@@ -2377,9 +2361,6 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                             if let Err(e) = state.send_and_broadcast(&channel_msg) {
                                 warn!("Failed to post review complete to channel: {}", e);
                             }
-                        }
-                        crate::rules::PrAction::AutoMerge { .. } => {
-                            // AutoMerge is only used in the PR polling loop, not here
                         }
                     }
 
@@ -3997,10 +3978,6 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
         }
         crate::rules::PrAction::Skip { ref reason } => {
             debug!("{}", reason);
-            false
-        }
-        crate::rules::PrAction::AutoMerge { .. } => {
-            // AutoMerge is only used in the PR polling loop, not here
             false
         }
     };
