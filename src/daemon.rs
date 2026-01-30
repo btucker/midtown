@@ -2376,10 +2376,16 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             continue;
         }
 
-        // Spawn with isolated task list - review coworkers get their own task list
-        // so their sub-tasks don't pollute the shared task list. They'll be
-        // auto-killed when they go idle (no 5-minute wait).
-        match state.coworkers.spawn(false, None, true) {
+        // Spawn with isolated task list and the review prompt included at launch.
+        // Passing the prompt directly to spawn() is more reliable than the old
+        // approach of spawning without a prompt and nudging via tmux send-keys,
+        // which could fail if the Enter key didn't register.
+        let review_prompt = format!(
+            "First, post a /me status update: `midtown channel post \"/me reviewing PR #{}\"` — then run: /code-review:code-review {}",
+            pr_number, pr_number
+        );
+
+        match state.coworkers.spawn(false, Some(&review_prompt), true) {
             Ok(new_coworker) => {
                 state.broadcast_coworker_update(&new_coworker, "running", None);
 
@@ -2400,65 +2406,33 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                     }
                 }
 
-                // Give the new coworker time to start (async sleep)
-                tokio::time::sleep(Duration::from_secs(3)).await;
-
-                // Nudge the new reviewer to run /code-review:code-review
-                let nudge_msg = format!(
-                    "First, post a /me status update: `midtown channel post \"/me reviewing PR #{}\"` — then run: /code-review:code-review {}",
-                    pr_number, pr_number
+                info!(
+                    "Spawned {} to review PR #{}: {}",
+                    new_coworker,
+                    pr_number,
+                    truncate_str(title, 40)
                 );
 
-                match state.coworkers.nudge(&new_coworker, &nudge_msg) {
-                    Ok(()) => {
-                        info!(
-                            "Spawned {} to review PR #{}: {}",
-                            new_coworker,
-                            pr_number,
-                            truncate_str(title, 40)
-                        );
-
-                        // Set tmux tab to show review status immediately
-                        let review_status = format!("reviewing PR #{}", pr_number);
-                        if let Err(e) = state
-                            .coworkers
-                            .update_status_display(&new_coworker, Some(&review_status))
-                        {
-                            warn!("Failed to set review status for {}: {}", new_coworker, e);
-                        }
-
-                        // Post to channel about the spawn
-                        let channel_msg = Message::new(
-                            "midtown",
-                            format!("🔍 Spawned {} to review PR #{}", new_coworker, pr_number),
-                            MessageType::Text,
-                        );
-                        if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                            warn!("Failed to post spawn message to channel: {}", e);
-                        }
-
-                        reviews_spawned += 1;
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to nudge newly spawned {} to review PR #{}: {}",
-                            new_coworker, pr_number, e
-                        );
-                        // Remove the assignment since we couldn't nudge (in-memory)
-                        let mut tracker = state.pr_review_tracker.lock().await;
-                        tracker.mark_reviewed(pr_number);
-                        // Also remove from persistent state
-                        drop(tracker);
-                        let mut github_state = state.github_state.lock().await;
-                        github_state.remove_assignment(pr_number);
-                        if let Err(e) = crate::github_state::save_state_for_repo(
-                            &state.repo_name,
-                            &github_state,
-                        ) {
-                            warn!("Failed to save github-state.json: {}", e);
-                        }
-                    }
+                // Set tmux tab to show review status immediately
+                let review_status = format!("reviewing PR #{}", pr_number);
+                if let Err(e) = state
+                    .coworkers
+                    .update_status_display(&new_coworker, Some(&review_status))
+                {
+                    warn!("Failed to set review status for {}: {}", new_coworker, e);
                 }
+
+                // Post to channel about the spawn
+                let channel_msg = Message::new(
+                    "midtown",
+                    format!("🔍 Spawned {} to review PR #{}", new_coworker, pr_number),
+                    MessageType::Text,
+                );
+                if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                    warn!("Failed to post spawn message to channel: {}", e);
+                }
+
+                reviews_spawned += 1;
             }
             Err(e) => {
                 debug!("Could not spawn new reviewer for PR #{}: {}", pr_number, e);
