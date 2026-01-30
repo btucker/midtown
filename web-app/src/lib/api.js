@@ -2,6 +2,7 @@ import {
   messages,
   connected,
   coworkers,
+  leadTyping,
   daemonStatus,
   kanbanData,
   repoStatus,
@@ -13,6 +14,7 @@ import {
 let ws = null
 let reconnectTimeout = null
 let statusPollInterval = null
+let leadTypingTimeout = null
 
 // Base URL for the current project's daemon API.
 // Always connects via the project's webhook port.
@@ -54,6 +56,7 @@ export function switchProject(projectName, webhookPort) {
   // Clear current state
   messages.set([])
   coworkers.set([])
+  leadTyping.set(false)
   daemonStatus.set(null)
   kanbanData.set({ backlog: [], inProgress: [], review: [], done: [] })
   repoStatus.set({
@@ -216,6 +219,11 @@ function handleUpdate(update) {
   switch (update.type) {
     case 'channel_message':
       messages.update((msgs) => [...msgs, update.data])
+      // Dismiss typing indicator when lead posts a message
+      if (update.data.from?.toLowerCase() === 'lead') {
+        leadTyping.set(false)
+        if (leadTypingTimeout) clearTimeout(leadTypingTimeout)
+      }
       break
     case 'coworker_status':
       coworkers.update((list) => {
@@ -226,6 +234,14 @@ function handleUpdate(update) {
         }
         return [...list, update.data]
       })
+      break
+    case 'lead_typing':
+      leadTyping.set(update.data.working)
+      // Auto-dismiss after 10s if no further updates (safety net)
+      if (leadTypingTimeout) clearTimeout(leadTypingTimeout)
+      if (update.data.working) {
+        leadTypingTimeout = setTimeout(() => leadTyping.set(false), 10000)
+      }
       break
     default:
       console.log('Unknown update type:', update.type)

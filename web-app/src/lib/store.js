@@ -9,6 +9,9 @@ export const connected = writable(false)
 // Coworker status
 export const coworkers = writable([])
 
+// Lead typing/working indicator
+export const leadTyping = writable(false)
+
 // Daemon status
 export const daemonStatus = writable(null)
 

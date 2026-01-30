@@ -254,6 +254,9 @@ const IDLE_BREAK_DURATION: Duration = Duration::from_secs(30);
 /// How often to check for idle coworkers (30 seconds)
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How often to check lead pane activity for typing indicator (3 seconds)
+const LEAD_TYPING_CHECK_INTERVAL: Duration = Duration::from_secs(3);
+
 /// How often to check if channel rotation is needed (1 hour)
 const CHANNEL_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 
@@ -482,6 +485,10 @@ struct DaemonState {
     github_state: Mutex<crate::github_state::GitHubState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
+    /// Hash of last captured lead pane content (for typing indicator change detection)
+    last_lead_pane_hash: std::sync::Mutex<u64>,
+    /// Whether the lead is currently working (for typing indicator dedup)
+    lead_working: std::sync::Mutex<bool>,
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
     /// Web Push notification manager for sending notifications to PWA clients
@@ -548,6 +555,8 @@ impl DaemonState {
             max_coworkers,
             push_manager,
             usage_limit_nudge_at: Mutex::new(None),
+            last_lead_pane_hash: std::sync::Mutex::new(0),
+            lead_working: std::sync::Mutex::new(false),
         })
     }
 
@@ -856,6 +865,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Set up idle check interval
     let mut idle_check_interval = interval(IDLE_CHECK_INTERVAL);
 
+    // Set up lead typing indicator check interval
+    let mut lead_typing_interval = interval(LEAD_TYPING_CHECK_INTERVAL);
+
     // Start PR polling background task
     let (pr_poll_shutdown_tx, pr_poll_shutdown_rx) = watch::channel(false);
     {
@@ -984,6 +996,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 maybe_nudge_usage_limit_expiry(&state).await;
             }
 
+            // Check lead pane activity for typing indicator
+            _ = lead_typing_interval.tick() => {
+                check_lead_typing(&state).await;
+            }
+
             // Periodic orphan check, duplicate detection, and worktree cleanup
             _ = orphan_check_interval.tick() => {
                 check_for_duplicate_task_workers(&state).await;
@@ -1057,6 +1074,55 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     info!("Daemon stopped");
     Ok(())
+}
+
+/// Check if the lead's tmux pane has changed and broadcast typing status.
+///
+/// Captures the lead's Claude Code pane (`lead.0`), hashes the content, and
+/// compares against the previous hash. If content changed, the lead is working.
+/// Only broadcasts when the working state actually transitions to avoid spam.
+async fn check_lead_typing(state: &DaemonState) {
+    let tx = match state.web_updates_tx {
+        Some(ref tx) => tx,
+        None => return,
+    };
+
+    let session = format!("{}{}", crate::tmux::SESSION_PREFIX, state.repo_name);
+    let target = format!("{}:lead.0", session);
+
+    let content =
+        match tokio::task::spawn_blocking(move || crate::tmux::capture_pane(&target)).await {
+            Ok(Some(text)) => text,
+            _ => return,
+        };
+
+    // Hash the pane content for cheap comparison
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    let new_hash = hasher.finish();
+
+    let prev_hash = {
+        let mut h = state.last_lead_pane_hash.lock().unwrap();
+        let prev = *h;
+        *h = new_hash;
+        prev
+    };
+
+    // Determine if the lead is working (pane content changed since last check)
+    let is_working = prev_hash != 0 && new_hash != prev_hash;
+
+    // Only broadcast on state transitions
+    let prev_working = {
+        let mut w = state.lead_working.lock().unwrap();
+        let prev = *w;
+        *w = is_working;
+        prev
+    };
+
+    if is_working != prev_working {
+        web::broadcast_lead_typing(tx, is_working);
+    }
 }
 
 /// Check for idle coworkers and send them on a break after the idle timeout.
