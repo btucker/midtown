@@ -1019,6 +1019,26 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         reviewers
     };
 
+    debug!(
+        "Idle shutdown check: active={}, busy=[{}], open_prs=[{}], reviewers=[{}]",
+        active_coworkers.len(),
+        busy_coworkers
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        coworkers_with_open_prs
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        active_reviewers
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
     // Build coworker snapshots for the pure decision function
     let snapshots: Vec<crate::rules::CoworkerSnapshot> = active_coworkers
         .iter()
@@ -4331,6 +4351,17 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         .map(|cw| cw.name.clone())
         .collect();
 
+    debug!(
+        "Task assignment state: active={}, busy=[{}], idle=[{}]",
+        active_coworkers.len(),
+        busy_coworkers
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        idle_coworkers.join(", "),
+    );
+
     // Case 1: Pending tasks with owners assigned but coworker not running
     let pending_with_owners = crate::tasks::get_pending_tasks_with_owners();
     for (task_id, task_subject, owner) in pending_with_owners {
@@ -4491,6 +4522,17 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             })
             .cloned()
         {
+            debug!(
+                "Task #{}: selected idle coworker {} (idle=[{}], already_assigned=[{}])",
+                task.id,
+                idle_name,
+                idle_coworkers.join(", "),
+                task_coworker_map
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
             idle_name
         } else {
             // No idle coworkers available - allocate a new coworker name
@@ -4498,6 +4540,10 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 debug!("No available coworker slots for unowned task #{}", task.id);
                 break;
             };
+            debug!(
+                "Task #{}: no idle coworkers available, allocated new name {}",
+                task.id, name,
+            );
             name
         };
 

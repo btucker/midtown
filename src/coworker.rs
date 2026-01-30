@@ -442,6 +442,13 @@ impl CoworkerManager {
             coworkers.insert(name.clone(), coworker);
         }
 
+        tracing::info!(
+            "Spawned coworker {} (isolated={}, resume={})",
+            name,
+            isolated_tasks,
+            resume,
+        );
+
         // If a prompt was provided, wait for initialization and send it
         if let Some(prompt_text) = prompt {
             self.send_initial_prompt(&name, prompt_text);
@@ -521,6 +528,7 @@ impl CoworkerManager {
             let mut coworkers = self.coworkers.write().unwrap();
             if let Some(cw) = coworkers.get_mut(name) {
                 cw.status = CoworkerStatus::Stopping;
+                tracing::debug!("Coworker {} status: Running -> Stopping", name);
             } else {
                 return Err(crate::Error::Rpc {
                     code: -32602,
@@ -540,6 +548,10 @@ impl CoworkerManager {
         {
             let mut coworkers = self.coworkers.write().unwrap();
             coworkers.remove(name);
+        }
+
+        if kill_result.is_ok() {
+            tracing::info!("Shut down coworker {}", name);
         }
 
         kill_result
@@ -881,7 +893,12 @@ impl CoworkerManager {
             coworkers.insert(name.to_string(), coworker);
         }
 
-        tracing::info!("Spawned coworker {} with resume={}", name, resume);
+        tracing::info!(
+            "Spawned coworker {} (isolated={}, resume={})",
+            name,
+            isolated_tasks,
+            resume,
+        );
 
         // If a prompt was provided, wait for initialization and send it
         if let Some(prompt_text) = prompt {
