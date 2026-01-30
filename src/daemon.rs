@@ -4962,8 +4962,154 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
     }
 }
 
+// ─── Pure Decision Functions ───────────────────────────────────────────────
+//
+// These functions extract the decision logic from the async check-and-act
+// functions so it can be tested without mocking tmux, `gh`, or async state.
+// Phase 3 (PRs 5-8) will refactor the async functions to call these,
+// at which point the #[cfg(test)] gates can be removed.
+#[cfg(test)]
+mod decisions {
+    use std::time::{Duration, Instant};
+
+    use super::{
+        IDLE_BREAK_DURATION, INTERRUPTED_NUDGE_DURATION, MINIMUM_COWORKER_LIFETIME,
+        detect_interactive_prompt,
+    };
+
+    /// Snapshot of a coworker's state for decision-making (no async, no side effects).
+    #[derive(Debug, Clone)]
+    pub struct CoworkerSnapshot {
+        pub name: String,
+        pub started_at: chrono::DateTime<chrono::Utc>,
+        pub isolated_tasks: bool,
+    }
+
+    /// Decision output for idle shutdown checks.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum IdleDecision {
+        /// Coworker should be shut down (idle too long or isolated+idle).
+        Shutdown,
+        /// Coworker is protected (busy, has open PR, reviewing, too young).
+        Protected,
+        /// Coworker just became idle — start tracking.
+        StartedIdleTracking,
+        /// Coworker is idle but hasn't hit the timeout yet.
+        StillWaiting,
+    }
+
+    /// Decide whether a single coworker should be shut down for idleness.
+    ///
+    /// Pure function: takes only data, returns a decision with no side effects.
+    pub fn decide_idle_shutdown(
+        coworker: &CoworkerSnapshot,
+        is_busy: bool,
+        has_open_pr: bool,
+        is_reviewing: bool,
+        idle_since: Option<Instant>,
+        now: Instant,
+        now_utc: chrono::DateTime<chrono::Utc>,
+    ) -> IdleDecision {
+        // Check minimum lifetime
+        let lifetime = now_utc.signed_duration_since(coworker.started_at);
+        if lifetime < chrono::Duration::from_std(MINIMUM_COWORKER_LIFETIME).unwrap_or_default() {
+            return IdleDecision::Protected;
+        }
+
+        // Busy / open PR / reviewing → protected
+        if is_busy || has_open_pr || is_reviewing {
+            return IdleDecision::Protected;
+        }
+
+        // Isolated coworkers (reviewers) get shut down immediately when idle
+        if coworker.isolated_tasks {
+            return IdleDecision::Shutdown;
+        }
+
+        // Normal idle timeout
+        match idle_since {
+            Some(since) if now.duration_since(since) >= IDLE_BREAK_DURATION => {
+                IdleDecision::Shutdown
+            }
+            Some(_) => IdleDecision::StillWaiting,
+            None => IdleDecision::StartedIdleTracking,
+        }
+    }
+
+    /// Decision output for interrupt nudge checks.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum InterruptDecision {
+        /// Coworker has been interrupted long enough — nudge them.
+        Nudge,
+        /// Coworker just became interrupted — start tracking.
+        StartedTracking,
+        /// Coworker is interrupted but hasn't hit the timeout yet.
+        StillWaiting,
+        /// Coworker is not interrupted — clear any tracking.
+        NotInterrupted,
+    }
+
+    /// Decide whether a coworker should be nudged for being interrupted.
+    pub fn decide_interrupt_nudge(
+        pane_content: &str,
+        interrupted_since: Option<Instant>,
+        now: Instant,
+    ) -> InterruptDecision {
+        let is_interrupted = pane_content.contains("Interrupted")
+            || pane_content.contains("What should Claude do instead?");
+
+        if !is_interrupted {
+            return InterruptDecision::NotInterrupted;
+        }
+
+        match interrupted_since {
+            Some(since) if now.duration_since(since) >= INTERRUPTED_NUDGE_DURATION => {
+                InterruptDecision::Nudge
+            }
+            Some(_) => InterruptDecision::StillWaiting,
+            None => InterruptDecision::StartedTracking,
+        }
+    }
+
+    /// Decision output for prompt detection checks.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum PromptDecision {
+        /// New prompt detected — nudge the lead.
+        NudgeLead { label: String },
+        /// Same prompt as before — already nudged, skip.
+        AlreadyNudged,
+        /// No prompt detected — clear tracking.
+        NoPrompt,
+    }
+
+    /// Decide whether a coworker's prompt should trigger a lead nudge.
+    pub fn decide_prompt_nudge(
+        coworker_name: &str,
+        pane_content: &str,
+        previous_fingerprint: Option<&str>,
+    ) -> PromptDecision {
+        // Skip the lead
+        if coworker_name == "lead" {
+            return PromptDecision::NoPrompt;
+        }
+
+        match detect_interactive_prompt(pane_content) {
+            Some(label) => {
+                let fingerprint = label.to_string();
+                if previous_fingerprint == Some(label) {
+                    PromptDecision::AlreadyNudged
+                } else {
+                    PromptDecision::NudgeLead { label: fingerprint }
+                }
+            }
+            None => PromptDecision::NoPrompt,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::decisions::*;
     use super::*;
 
     // Auto-nudge helper tests
@@ -5891,5 +6037,238 @@ mod tests {
                 .any(|p| lower.contains(&p.to_lowercase()));
             assert!(!detected, "False positive in: {}", msg);
         }
+    }
+
+    // ─── Test Helpers ──────────────────────────────────────────────────────
+
+    use chrono::Utc;
+
+    /// Build a CoworkerSnapshot with sensible defaults for testing.
+    fn test_coworker(name: &str) -> CoworkerSnapshot {
+        CoworkerSnapshot {
+            name: name.to_string(),
+            started_at: Utc::now() - chrono::Duration::hours(1), // 1 hour old by default
+            isolated_tasks: false,
+        }
+    }
+
+    /// Build an isolated (reviewer) CoworkerSnapshot.
+    fn test_isolated_coworker(name: &str) -> CoworkerSnapshot {
+        CoworkerSnapshot {
+            name: name.to_string(),
+            started_at: Utc::now() - chrono::Duration::hours(1),
+            isolated_tasks: true,
+        }
+    }
+
+    /// Build a young coworker (started 30 seconds ago — under MINIMUM_COWORKER_LIFETIME).
+    fn test_young_coworker(name: &str) -> CoworkerSnapshot {
+        CoworkerSnapshot {
+            name: name.to_string(),
+            started_at: Utc::now() - chrono::Duration::seconds(30),
+            isolated_tasks: false,
+        }
+    }
+
+    // ─── Idle Shutdown Decision Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_idle_shutdown_idle_past_timeout() {
+        let cw = test_coworker("park");
+        let now = Instant::now();
+        // Was idle since 31 seconds ago (past IDLE_BREAK_DURATION of 30s)
+        let idle_since = Some(now - Duration::from_secs(31));
+
+        let decision = decide_idle_shutdown(&cw, false, false, false, idle_since, now, Utc::now());
+        assert_eq!(decision, IdleDecision::Shutdown);
+    }
+
+    #[test]
+    fn test_idle_shutdown_busy_coworker_protected() {
+        let cw = test_coworker("park");
+        let now = Instant::now();
+
+        let decision = decide_idle_shutdown(&cw, true, false, false, None, now, Utc::now());
+        assert_eq!(decision, IdleDecision::Protected);
+    }
+
+    #[test]
+    fn test_idle_shutdown_open_pr_protected() {
+        let cw = test_coworker("park");
+        let now = Instant::now();
+        // Even with long idle time, open PR protects from shutdown
+        let idle_since = Some(now - Duration::from_secs(120));
+
+        let decision = decide_idle_shutdown(&cw, false, true, false, idle_since, now, Utc::now());
+        assert_eq!(decision, IdleDecision::Protected);
+    }
+
+    #[test]
+    fn test_idle_shutdown_active_reviewer_protected() {
+        let cw = test_coworker("broadway");
+        let now = Instant::now();
+        let idle_since = Some(now - Duration::from_secs(120));
+
+        let decision = decide_idle_shutdown(&cw, false, false, true, idle_since, now, Utc::now());
+        assert_eq!(decision, IdleDecision::Protected);
+    }
+
+    #[test]
+    fn test_idle_shutdown_young_coworker_protected() {
+        let cw = test_young_coworker("park");
+        let now = Instant::now();
+        // Idle for a long time, but too young (30s < 300s minimum)
+        let idle_since = Some(now - Duration::from_secs(60));
+
+        let decision = decide_idle_shutdown(&cw, false, false, false, idle_since, now, Utc::now());
+        assert_eq!(decision, IdleDecision::Protected);
+    }
+
+    #[test]
+    fn test_idle_shutdown_isolated_coworker_immediate() {
+        let cw = test_isolated_coworker("broadway");
+        let now = Instant::now();
+        // Isolated coworkers are shut down immediately when idle — no timer needed
+        let decision = decide_idle_shutdown(&cw, false, false, false, None, now, Utc::now());
+        assert_eq!(decision, IdleDecision::Shutdown);
+    }
+
+    #[test]
+    fn test_idle_shutdown_starts_tracking_new_idle() {
+        let cw = test_coworker("park");
+        let now = Instant::now();
+        // No idle_since entry yet → should start tracking
+        let decision = decide_idle_shutdown(&cw, false, false, false, None, now, Utc::now());
+        assert_eq!(decision, IdleDecision::StartedIdleTracking);
+    }
+
+    #[test]
+    fn test_idle_shutdown_still_waiting() {
+        let cw = test_coworker("park");
+        let now = Instant::now();
+        // Idle for 10 seconds — not yet past 30s threshold
+        let idle_since = Some(now - Duration::from_secs(10));
+
+        let decision = decide_idle_shutdown(&cw, false, false, false, idle_since, now, Utc::now());
+        assert_eq!(decision, IdleDecision::StillWaiting);
+    }
+
+    // ─── Interrupt Nudge Decision Tests ────────────────────────────────────
+
+    #[test]
+    fn test_interrupt_nudge_past_timeout() {
+        let now = Instant::now();
+        let since = Some(now - Duration::from_secs(61));
+        let pane = "some output\nInterrupted\nmore output";
+
+        let decision = decide_interrupt_nudge(pane, since, now);
+        assert_eq!(decision, InterruptDecision::Nudge);
+    }
+
+    #[test]
+    fn test_interrupt_nudge_before_timeout() {
+        let now = Instant::now();
+        let since = Some(now - Duration::from_secs(30));
+        let pane = "some output\nInterrupted\n";
+
+        let decision = decide_interrupt_nudge(pane, since, now);
+        assert_eq!(decision, InterruptDecision::StillWaiting);
+    }
+
+    #[test]
+    fn test_interrupt_nudge_not_interrupted() {
+        let now = Instant::now();
+        let pane = "Running tests... all good\n$";
+
+        let decision = decide_interrupt_nudge(pane, None, now);
+        assert_eq!(decision, InterruptDecision::NotInterrupted);
+    }
+
+    #[test]
+    fn test_interrupt_nudge_just_became_interrupted() {
+        let now = Instant::now();
+        let pane = "Working on something\nWhat should Claude do instead?\n";
+
+        let decision = decide_interrupt_nudge(pane, None, now);
+        assert_eq!(decision, InterruptDecision::StartedTracking);
+    }
+
+    #[test]
+    fn test_interrupt_nudge_clears_tracking_when_no_longer_interrupted() {
+        let now = Instant::now();
+        // Was previously tracked as interrupted, but pane no longer shows it
+        let since = Some(now - Duration::from_secs(45));
+        let pane = "Back to normal work\n$";
+
+        let decision = decide_interrupt_nudge(pane, since, now);
+        assert_eq!(decision, InterruptDecision::NotInterrupted);
+    }
+
+    // ─── Prompt Detection Decision Tests ───────────────────────────────────
+
+    #[test]
+    fn test_prompt_nudge_new_prompt_detected() {
+        let pane = "Some output\nYes, and don't ask again for this project\nMore text";
+
+        let decision = decide_prompt_nudge("park", pane, None);
+        assert_eq!(
+            decision,
+            PromptDecision::NudgeLead {
+                label: "plan approval".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_prompt_nudge_same_fingerprint_skipped() {
+        let pane = "Some output\nAllow once\nMore text";
+
+        // Already nudged for "permission request"
+        let decision = decide_prompt_nudge("park", pane, Some("permission request"));
+        assert_eq!(decision, PromptDecision::AlreadyNudged);
+    }
+
+    #[test]
+    fn test_prompt_nudge_different_prompt_type_triggers() {
+        let pane = "Some output\nDo you want to proceed?\nMore text";
+
+        // Previously nudged for a different prompt type
+        let decision = decide_prompt_nudge("park", pane, Some("plan approval"));
+        assert_eq!(
+            decision,
+            PromptDecision::NudgeLead {
+                label: "confirmation prompt".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_prompt_nudge_no_prompt_clears() {
+        let pane = "Normal work output, no prompts here\n$";
+
+        let decision = decide_prompt_nudge("park", pane, Some("plan approval"));
+        assert_eq!(decision, PromptDecision::NoPrompt);
+    }
+
+    #[test]
+    fn test_prompt_nudge_lead_always_skipped() {
+        let pane = "Yes, and don't ask again for this project";
+
+        // Lead should never trigger a prompt nudge
+        let decision = decide_prompt_nudge("lead", pane, None);
+        assert_eq!(decision, PromptDecision::NoPrompt);
+    }
+
+    #[test]
+    fn test_prompt_nudge_select_option_detected() {
+        let pane = "Choose your path:\nSelect an option\n> Option A\n> Option B";
+
+        let decision = decide_prompt_nudge("broadway", pane, None);
+        assert_eq!(
+            decision,
+            PromptDecision::NudgeLead {
+                label: "question prompt".to_string()
+            }
+        );
     }
 }
