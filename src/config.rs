@@ -201,7 +201,10 @@ impl FullProjectConfig {
                 repos: vec![repo_path.to_string()],
                 primary_repo: Some(repo_path.to_string()),
             },
-            default: ProjectConfig::default(),
+            default: ProjectConfig {
+                max_coworkers: Some(8),
+                ..ProjectConfig::default()
+            },
             daemon: DaemonSection::default(),
         }
     }
@@ -240,7 +243,7 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub chat_min_width: Option<u16>,
 
-    /// Maximum number of concurrent coworkers (default: 16)
+    /// Maximum number of concurrent coworkers (default: 8)
     #[serde(default)]
     pub max_coworkers: Option<usize>,
 
@@ -693,7 +696,7 @@ bin_command = "custom-command"
             bin_command: Some("midtown".to_string()),
             chat_layout: None,
             chat_min_width: None,
-            max_coworkers: Some(16),
+            max_coworkers: Some(8),
             personality: None,
         };
 
@@ -1036,7 +1039,7 @@ webhook_port = 47023
         assert_eq!(config.project.name(), Some("myapp"));
         assert_eq!(config.project.primary_repo(), Some("/home/user/myapp"));
         assert_eq!(config.project.repos(), vec!["/home/user/myapp"]);
-        assert!(config.default.max_coworkers().is_none());
+        assert_eq!(config.default.max_coworkers(), Some(8));
         assert!(config.daemon.webhook_port.is_none());
     }
 

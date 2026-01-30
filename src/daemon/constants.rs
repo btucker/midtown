@@ -7,9 +7,7 @@ use std::time::Duration;
 // ---------------------------------------------------------------------------
 
 /// Default maximum number of concurrent coworkers.
-///
-/// This matches the total number of available name slots (10 avenues + 6 overflow).
-pub const DEFAULT_MAX_COWORKERS: usize = 16;
+pub const DEFAULT_MAX_COWORKERS: usize = 8;
 
 /// Default interval for restarting the webhook forwarder (5 minutes)
 pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
