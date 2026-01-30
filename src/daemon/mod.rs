@@ -1781,18 +1781,21 @@ async fn chat_monitor_loop(
                         // Parse the line as a Message
                         match serde_json::from_str::<Message>(&line) {
                             Ok(msg) => {
-                                // Trigger immediate spawn check when a task creation
-                                // message is detected, regardless of sender. This runs
-                                // before the SKIP_SENDERS check so daemon/system task
-                                // creation messages also trigger spawning.
-                                if contains_task_creation(&msg.content) {
-                                    info!("Chat monitor: task creation detected from {} — triggering immediate spawn check", msg.from);
-                                    spawn_for_pending_tasks(&state);
-                                }
-
                                 // Skip messages from protected senders (loop protection),
-                                // but first check for @lead mentions that need nudging.
+                                // but first check for task creation and @lead mentions.
                                 if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from)) {
+                                    // Trigger immediate spawn check for task creation
+                                    // messages from daemon/system senders. Non-skip
+                                    // senders (lead, coworkers) already go through
+                                    // handle_channel_post which has its own detection,
+                                    // so we only check here to avoid duplicate calls.
+                                    if contains_task_creation(&msg.content) {
+                                        info!(
+                                            "Chat monitor: task creation detected from {} — triggering immediate spawn check",
+                                            msg.from
+                                        );
+                                        spawn_for_pending_tasks(&state);
+                                    }
                                     // System/daemon messages may contain @lead that still
                                     // needs to trigger a nudge (e.g., orphaned worktree
                                     // warnings). Route @lead before skipping.
