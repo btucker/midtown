@@ -7,6 +7,7 @@
 
 mod constants;
 pub(crate) mod effects;
+pub(crate) mod events;
 mod helpers;
 pub(crate) mod snapshot;
 mod trackers;
@@ -914,18 +915,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 if let Err(e) = state.coworkers.sync_with_tmux() {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }
-                // Collect all data once for this tick group
+                // event → snapshot → evaluate → execute
                 let snap = snapshot::collect_world_snapshot(&state).await;
-                let idle_effects = check_and_shutdown_idle_coworkers(&snap, &state).await;
-                effects::execute_effects(idle_effects, &state).await;
-                let interrupt_effects = check_and_nudge_interrupted_coworkers(&snap, &state).await;
-                effects::execute_effects(interrupt_effects, &state).await;
-                let prompt_effects = check_and_nudge_prompted_coworkers(&snap, &state).await;
-                effects::execute_effects(prompt_effects, &state).await;
-                let usage_effects = check_for_usage_limits(&snap);
-                effects::execute_effects(usage_effects, &state).await;
-                let expiry_effects = maybe_nudge_usage_limit_expiry(&snap);
-                effects::execute_effects(expiry_effects, &state).await;
+                let tick_effects = events::evaluate_tick(
+                    &events::DaemonEvent::IdleCheckTick,
+                    &snap,
+                    &state,
+                ).await;
+                effects::execute_effects(tick_effects, &state).await;
             }
 
             // Check lead pane activity for typing indicator
@@ -935,17 +932,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodic orphan check, duplicate detection, and worktree cleanup
             _ = orphan_check_interval.tick() => {
-                // Collect all data once for this tick group
+                // event → snapshot → evaluate → execute
                 let snap = snapshot::collect_world_snapshot(&state).await;
-                let dup_effects = check_for_duplicate_task_workers(&snap);
-                effects::execute_effects(dup_effects, &state).await;
-                let orphan_effects = check_and_recover_orphans(&snap, &state);
-                effects::execute_effects(orphan_effects, &state).await;
-                let spawn_effects = spawn_for_pending_tasks(&snap, &state);
-                effects::execute_effects(spawn_effects, &state).await;
+                let tick_effects = events::evaluate_tick(
+                    &events::DaemonEvent::OrphanCheckTick,
+                    &snap,
+                    &state,
+                ).await;
+                effects::execute_effects(tick_effects, &state).await;
+                // cleanup_orphaned_worktrees is not yet effect-based
                 cleanup_orphaned_worktrees(&state);
-                let reminder_effects = check_and_fire_reminders(&snap, &state);
-                effects::execute_effects(reminder_effects, &state).await;
             }
 
             // Periodic channel log rotation
@@ -3098,7 +3094,7 @@ async fn handle_connection(
                         break;
                     }
                     Ok(_) => {
-                        let response = handle_request(&line, &state);
+                        let response = handle_request(&line, &state).await;
                         let response_json = match serde_json::to_string(&response) {
                             Ok(json) => json,
                             Err(e) => {
@@ -3133,7 +3129,7 @@ async fn handle_connection(
 }
 
 /// Process a JSON-RPC request and return a response.
-fn handle_request(line: &str, state: &DaemonState) -> Response {
+async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // Parse the request
     let request: Request = match serde_json::from_str(line) {
         Ok(req) => req,
@@ -3288,7 +3284,9 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "daemon.check-pending" => {
             info!("Check-pending triggered via RPC");
-            spawn_for_pending_tasks(state);
+            let snap = snapshot::collect_world_snapshot(state).await;
+            let pending_effects = spawn_for_pending_tasks(&snap, state);
+            effects::execute_effects(pending_effects, state).await;
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
 
