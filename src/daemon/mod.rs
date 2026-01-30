@@ -2329,8 +2329,11 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // which could fail if the Enter key didn't register.
         // Isolated review coworkers are sent on a break when they go idle (no 5-minute wait).
         let review_prompt = format!(
-            "First, post a /me status update: `midtown channel post \"/me reviewing PR #{}\"` — then run: /code-review:code-review {}",
-            pr_number, pr_number
+            "First, post a /me status update: `midtown channel post \"/me reviewing PR #{}\"` — then run: /code-review:code-review {}\n\n\
+             IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. \
+             If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), \
+             post a comment yourself using `gh pr comment {} --body` with the \"no issues found\" format from the skill.",
+            pr_number, pr_number, pr_number
         );
 
         match state.coworkers.spawn(false, Some(&review_prompt), true) {
@@ -4094,8 +4097,11 @@ async fn nudge_discovered_coworkers(state: &DaemonState) {
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
             // Coworker was assigned to review a PR
             let prompt = format!(
-                "Resume reviewing PR #{}. The daemon was restarted and discovered you still running. Continue your code review where you left off.",
-                pr_number
+                "Resume reviewing PR #{}. The daemon was restarted and discovered you still running. Continue your code review where you left off.\n\n\
+                 IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. \
+                 If the code-review skill finishes without posting a comment, \
+                 post a comment yourself using `gh pr comment {} --body` with the \"no issues found\" format from the skill.",
+                pr_number, pr_number
             );
 
             info!(

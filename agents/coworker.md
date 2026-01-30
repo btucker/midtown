@@ -209,7 +209,7 @@ midtown channel post "Posted review on PR #42: https://github.com/org/repo/pull/
 ```
 
 A code review is **not complete** until you have:
-- Posted actionable feedback as a GitHub PR comment
+- Posted a GitHub PR comment (either with issues found or a "no issues found" message)
 - Shared the comment URL in the channel
 
 ### Responding to PR Review Feedback
