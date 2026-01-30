@@ -39,7 +39,10 @@ fn cleanup_orphaned_test_daemons() {
     // Give processes a moment to die
     thread::sleep(Duration::from_millis(50));
 
-    // Clean up stale project directories from crashed previous runs
+    // Clean up stale project directories from crashed previous runs.
+    // Skip directories from the current process to avoid interfering with
+    // concurrently running tests in the same process.
+    let current_pid = format!("daemon-e2e-test-{}-", std::process::id());
     let projects_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
@@ -48,13 +51,14 @@ fn cleanup_orphaned_test_daemons() {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str()
                 && name.starts_with("daemon-e2e-test-")
+                && !name.starts_with(&current_pid)
             {
                 let _ = fs::remove_dir_all(entry.path());
             }
         }
     }
 
-    // Also clean up stale socket directories
+    // Also clean up stale socket directories (same PID filter)
     let state_dir = std::env::var("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -68,6 +72,7 @@ fn cleanup_orphaned_test_daemons() {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str()
                 && name.starts_with("daemon-e2e-test-")
+                && !name.starts_with(&current_pid)
             {
                 let _ = fs::remove_dir_all(entry.path());
             }
