@@ -307,6 +307,18 @@ pub(crate) struct DaemonState {
     /// This doesn't reduce API calls, but avoids redundant lock acquisition and issue detection
     /// when the PR state hasn't changed between poll cycles.
     last_pr_poll_hash: Mutex<u64>,
+    /// In-memory cache of PR numbers with confirmed Claude reviews.
+    /// Mirrors `GitHubState.reviewed_prs` for fast lookup without locking github_state.
+    /// Review status is monotonic — once cached, never removed (except for closed PRs).
+    reviewed_prs_cache: std::sync::RwLock<HashSet<u64>>,
+    /// Cached result from the latest `poll_prs_for_issues` call.
+    /// Contains `headRefName` from each open PR, allowing `get_coworkers_with_open_prs`
+    /// to reuse poll data instead of making a separate `gh pr list` call.
+    cached_open_pr_branches: std::sync::RwLock<Vec<String>>,
+    /// When merged PRs were last fetched (for reducing poll frequency).
+    last_merged_prs_fetch: std::sync::Mutex<Option<Instant>>,
+    /// Cached coworker names from recently merged PRs.
+    cached_merged_pr_coworkers: std::sync::RwLock<HashSet<String>>,
 }
 
 impl DaemonState {
@@ -340,6 +352,9 @@ impl DaemonState {
                 crate::github_state::GitHubState::default()
             });
 
+        // Seed the in-memory review cache from persistent state
+        let reviewed_prs_cache = github_state.reviewed_prs.clone();
+
         // Load persistent reminder state
         let reminder_path = crate::paths::reminders_file_for_repo(&repo_name);
         let reminder_state =
@@ -372,6 +387,10 @@ impl DaemonState {
             last_lead_activity: std::sync::Mutex::new(None),
             reminder_state: std::sync::Mutex::new(reminder_state),
             last_pr_poll_hash: Mutex::new(0),
+            reviewed_prs_cache: std::sync::RwLock::new(reviewed_prs_cache),
+            cached_open_pr_branches: std::sync::RwLock::new(Vec::new()),
+            last_merged_prs_fetch: std::sync::Mutex::new(None),
+            cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
         })
     }
 
@@ -813,6 +832,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     );
                 }
 
+                // Cache review status immediately from webhook data (avoids API calls)
+                if let Some(pr_number) = webhook_event.reviewed_pr {
+                    debug!(
+                        "Webhook: caching review status for PR #{} (review comment detected)",
+                        pr_number
+                    );
+                    let mut cache = state.reviewed_prs_cache.write().unwrap();
+                    cache.insert(pr_number);
+                }
+
                 // Route @mentions in webhook messages directly (chat monitor skips
                 // "github" sender for loop protection, so we handle it here)
                 route_mentions(&state, &webhook_event.message);
@@ -1038,10 +1067,10 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
 
     // Get coworkers with open PRs - they should NEVER be sent on a break
     let coworkers_with_open_prs: HashSet<String> =
-        get_coworkers_with_open_prs().into_iter().collect();
+        get_coworkers_with_open_prs(state).into_iter().collect();
 
     // Get coworkers with recently merged PRs - used for better shutdown messages
-    let coworkers_with_merged_prs: HashSet<String> = get_coworkers_with_merged_prs();
+    let coworkers_with_merged_prs: HashSet<String> = get_coworkers_with_merged_prs(state);
 
     // Get coworkers actively assigned to review PRs - they should not be considered idle.
     // Check BOTH in-memory and persistent state. The in-memory tracker can be empty after
@@ -1138,7 +1167,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             match pr_number {
                 Some(pr) => {
                     // Check if review was actually posted
-                    if pr_has_claude_review(pr) {
+                    if pr_has_claude_review(pr, state) {
                         info!(
                             "Sending reviewer {} on a break (review verified for PR #{})",
                             name, pr
@@ -1509,7 +1538,21 @@ fn get_busy_coworkers(repo_name: &str) -> Vec<String> {
 /// A coworker is considered to have an open PR if the PR's branch name
 /// starts with the coworker's name (e.g., "lexington/fix-auth").
 /// Coworkers with open PRs should NEVER be sent on a break.
-fn get_coworkers_with_open_prs() -> Vec<String> {
+/// Get coworker names that have open PRs (branch name starts with coworker name).
+///
+/// Uses cached data from the latest `poll_prs_for_issues` call when available,
+/// avoiding a separate `gh pr list` API call.
+fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
+    let cached = state.cached_open_pr_branches.read().unwrap();
+    if !cached.is_empty() {
+        return cached
+            .iter()
+            .filter_map(|branch| coworker_from_branch(branch))
+            .collect();
+    }
+    drop(cached);
+
+    // Fallback to API call if cache is empty (e.g., first tick before poll runs)
     let output = std::process::Command::new("gh")
         .args(["pr", "list", "--json", "headRefName"])
         .output();
@@ -1536,8 +1579,30 @@ fn get_coworkers_with_open_prs() -> Vec<String> {
     }
 }
 
+/// How often to re-fetch merged PRs (5 minutes). Merges aren't urgent so
+/// polling less frequently saves significant API calls.
+const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
+
 /// Get coworker names that have recently merged PRs (branch name starts with coworker name).
-fn get_coworkers_with_merged_prs() -> HashSet<String> {
+///
+/// Uses a time-based cache to reduce API calls. Merged PR status is only refreshed
+/// every 5 minutes since merge events aren't time-critical.
+fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
+    // Check if we need to refresh
+    let needs_refresh = {
+        let last_fetch = state.last_merged_prs_fetch.lock().unwrap();
+        match *last_fetch {
+            Some(t) => t.elapsed() >= Duration::from_secs(MERGED_PRS_FETCH_INTERVAL_SECS),
+            None => true,
+        }
+    };
+
+    if !needs_refresh {
+        let cached = state.cached_merged_pr_coworkers.read().unwrap();
+        return cached.clone();
+    }
+
+    // Fetch from API
     let output = std::process::Command::new("gh")
         .args([
             "pr",
@@ -1551,26 +1616,38 @@ fn get_coworkers_with_merged_prs() -> HashSet<String> {
         ])
         .output();
 
-    match output {
+    let result = match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                return prs
-                    .iter()
+                prs.iter()
                     .filter_map(|pr| {
                         pr.get("headRefName")
                             .and_then(|r| r.as_str())
                             .and_then(coworker_from_branch)
                     })
-                    .collect();
+                    .collect()
+            } else {
+                HashSet::new()
             }
-            HashSet::new()
         }
         _ => {
             debug!("Failed to get merged PRs from gh CLI for idle check");
             HashSet::new()
         }
+    };
+
+    // Update cache
+    {
+        let mut cached = state.cached_merged_pr_coworkers.write().unwrap();
+        *cached = result.clone();
     }
+    {
+        let mut last_fetch = state.last_merged_prs_fetch.lock().unwrap();
+        *last_fetch = Some(Instant::now());
+    }
+
+    result
 }
 
 /// Watchdog task that manages the gh webhook forward process with periodic restarts.
@@ -2105,6 +2182,20 @@ async fn poll_prs_for_issues(
         })
         .collect();
 
+    // Cache open PR branch names for reuse by get_coworkers_with_open_prs
+    {
+        let branches: Vec<String> = prs
+            .iter()
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        let mut cached = state.cached_open_pr_branches.write().unwrap();
+        *cached = branches;
+    }
+
     // Clean up persistent reviewer assignments for PRs that are no longer open
     {
         let open_pr_numbers: Vec<u64> = prs
@@ -2114,8 +2205,19 @@ async fn poll_prs_for_issues(
         let mut github_state = state.github_state.lock().await;
         github_state.cleanup_closed_prs(&open_pr_numbers);
         github_state.cleanup_expired_preserving(&active_coworker_names);
+        // Sync in-memory review cache to persistent state before saving
+        {
+            let cache = state.reviewed_prs_cache.read().unwrap();
+            github_state.reviewed_prs = cache.clone();
+        }
         if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
             warn!("Failed to save github-state.json after cleanup: {}", e);
+        }
+        // Also clean up the in-memory cache for closed PRs
+        {
+            let mut cache = state.reviewed_prs_cache.write().unwrap();
+            let open_set: HashSet<u64> = open_pr_numbers.iter().copied().collect();
+            cache.retain(|pr| open_set.contains(pr));
         }
     }
 
@@ -2334,7 +2436,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // are detected even when a reviewer is still tracked as assigned
         // (e.g., after a daemon restart or when the reviewer posted a comment
         // instead of a formal GitHub review).
-        if pr_has_claude_review(pr_number) {
+        if pr_has_claude_review(pr_number, state) {
             debug!("PR #{} already has a Claude review", pr_number);
 
             // Before cleaning up the assignment, check if the reviewer is still running.
@@ -2695,10 +2797,40 @@ async fn handle_webhook_review_spawn(state: &DaemonState, pr_number: u64) {
 
 /// Check if a PR has a review comment from a Claude coworker.
 ///
+/// First checks the in-memory cache (populated from persistent state on startup).
+/// If not cached, makes API calls to check formal reviews and comments, then
+/// caches positive results permanently (review status is monotonic).
+///
 /// Checks both formal reviews (`.reviews[].body`) and comments (`.comments[].body`)
 /// since coworkers use comments for reviews (they share one GitHub user and can't
 /// approve their own PRs).
-fn pr_has_claude_review(pr_number: u64) -> bool {
+fn pr_has_claude_review(pr_number: u64, state: &DaemonState) -> bool {
+    // Fast path: check in-memory cache
+    {
+        let cache = state.reviewed_prs_cache.read().unwrap();
+        if cache.contains(&pr_number) {
+            debug!(
+                "PR #{} has cached Claude review (skipping API call)",
+                pr_number
+            );
+            return true;
+        }
+    }
+
+    // Slow path: check via API calls
+    let has_review = pr_has_claude_review_uncached(pr_number);
+
+    // Cache positive results (review status is monotonic)
+    if has_review {
+        let mut cache = state.reviewed_prs_cache.write().unwrap();
+        cache.insert(pr_number);
+    }
+
+    has_review
+}
+
+/// Uncached check for Claude review on a PR (makes GitHub API calls).
+fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
     // Check formal reviews first
     let reviews_output = std::process::Command::new("gh")
         .args([
@@ -3394,7 +3526,7 @@ fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &DaemonState)
 
 /// Check all active reminders and fire any whose conditions are met.
 fn check_and_fire_reminders(state: &DaemonState) {
-    let open_pr_coworkers = get_coworkers_with_open_prs();
+    let open_pr_coworkers = get_coworkers_with_open_prs(state);
 
     let mut reminder_state = state.reminder_state.lock().unwrap();
     let mut fired_any = false;
