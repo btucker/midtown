@@ -339,6 +339,47 @@ pub fn get_pending_tasks_without_owners_with_grace(grace_secs: u64) -> Vec<Task>
         .collect()
 }
 
+/// Get coworkers that have newly-unblocked dependent tasks.
+///
+/// A coworker has unblocked dependents when:
+/// 1. They own a completed task
+/// 2. A pending task's `blockedBy` includes that completed task
+/// 3. The pending task is now fully unblocked (all its blockers are completed)
+/// 4. The pending task has no owner yet (hasn't been assigned)
+///
+/// This is used to protect coworkers from idle shutdown when their follow-up
+/// tasks are about to become assignable.
+pub fn get_coworkers_with_unblocked_dependents() -> std::collections::HashSet<String> {
+    let all_tasks = read_tasks();
+    let mut result = std::collections::HashSet::new();
+
+    // Find pending, unowned tasks that are fully unblocked
+    let unblocked_pending: Vec<&Task> = all_tasks
+        .iter()
+        .filter(|t| {
+            t.status == TaskStatus::Pending
+                && t.owner.is_none()
+                && !t.blocked_by.is_empty()
+                && !has_unresolved_blockers(t, &all_tasks)
+        })
+        .collect();
+
+    // For each unblocked pending task, find the owner of its blocking tasks
+    for task in &unblocked_pending {
+        for blocker_id in &task.blocked_by {
+            if let Some(blocker) = all_tasks.iter().find(|t| t.id == *blocker_id)
+                && blocker.status == TaskStatus::Completed
+                && let Some(ref owner) = blocker.owner
+                && !owner.is_empty()
+            {
+                result.insert(owner.to_lowercase());
+            }
+        }
+    }
+
+    result
+}
+
 /// Check whether a task has unresolved `blockedBy` dependencies.
 ///
 /// Returns `true` if any task ID in `blocked_by` refers to a task that is not

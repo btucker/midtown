@@ -1057,8 +1057,13 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         reviewers
     };
 
+    // Get coworkers that completed tasks which unblocked pending follow-ups.
+    // These coworkers should be kept alive so the daemon can assign the
+    // follow-up to them (preserving context for tightly coupled task chains).
+    let coworkers_with_unblocked_deps = crate::tasks::get_coworkers_with_unblocked_dependents();
+
     debug!(
-        "Idle shutdown check: active={}, busy=[{}], open_prs=[{}], reviewers=[{}]",
+        "Idle shutdown check: active={}, busy=[{}], open_prs=[{}], reviewers=[{}], unblocked_deps=[{}]",
         active_coworkers.len(),
         busy_coworkers
             .iter()
@@ -1071,6 +1076,11 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             .collect::<Vec<_>>()
             .join(", "),
         active_reviewers
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        coworkers_with_unblocked_deps
             .iter()
             .cloned()
             .collect::<Vec<_>>()
@@ -1095,6 +1105,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             &busy_coworkers,
             &coworkers_with_open_prs,
             &active_reviewers,
+            &coworkers_with_unblocked_deps,
             &mut idle_since,
             Instant::now(),
             chrono::Utc::now(),
