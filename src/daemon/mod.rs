@@ -924,12 +924,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodic orphan check, duplicate detection, and worktree cleanup
             _ = orphan_check_interval.tick() => {
-                check_for_duplicate_task_workers(&state).await;
+                let dup_effects = check_for_duplicate_task_workers(&state);
+                effects::execute_effects(dup_effects, &state).await;
                 let orphan_effects = check_and_recover_orphans(&state);
                 effects::execute_effects(orphan_effects, &state).await;
-                spawn_for_pending_tasks(&state);
+                let spawn_effects = spawn_for_pending_tasks(&state);
+                effects::execute_effects(spawn_effects, &state).await;
                 cleanup_orphaned_worktrees(&state);
-                check_and_fire_reminders(&state);
+                let reminder_effects = check_and_fire_reminders(&state);
+                effects::execute_effects(reminder_effects, &state).await;
             }
 
             // Periodic channel log rotation
@@ -3553,11 +3556,14 @@ fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &DaemonState)
 }
 
 /// Check all active reminders and fire any whose conditions are met.
-fn check_and_fire_reminders(state: &DaemonState) {
+fn check_and_fire_reminders(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     let open_pr_coworkers = get_coworkers_with_open_prs(state);
 
     let mut reminder_state = state.reminder_state.lock().unwrap();
     let mut fired_any = false;
+    let mut effects = Vec::new();
 
     for reminder in &mut reminder_state.reminders {
         if reminder.fired {
@@ -3568,13 +3574,13 @@ fn check_and_fire_reminders(state: &DaemonState) {
                 "Reminder {} fired (trigger: {}): {}",
                 reminder.id, reminder.trigger, reminder.message
             );
-            let msg = Message::system(format!(
-                "\u{23f0} Reminder ({}): {}",
-                reminder.trigger, reminder.message
-            ));
-            if let Err(e) = state.send_and_broadcast(&msg) {
-                error!("Failed to post reminder to channel: {}", e);
-            }
+            effects.push(Effect::PostToChannel {
+                sender: "system".to_string(),
+                message: format!(
+                    "\u{23f0} Reminder ({}): {}",
+                    reminder.trigger, reminder.message
+                ),
+            });
             reminder.fired = true;
             fired_any = true;
         }
@@ -3586,6 +3592,8 @@ fn check_and_fire_reminders(state: &DaemonState) {
             error!("Failed to save reminders after firing: {}", e);
         }
     }
+
+    effects
 }
 
 /// Handle status RPC method.
@@ -4636,12 +4644,14 @@ async fn nudge_discovered_coworkers(state: &DaemonState) {
 /// 2. Groups tasks by task ID to find duplicates
 /// 3. For tasks with multiple workers, keeps the one that started earliest
 /// 4. Shuts down the duplicate workers with an explanatory message
-async fn check_for_duplicate_task_workers(state: &DaemonState) {
+fn check_for_duplicate_task_workers(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     // Get in_progress tasks with their owners
     let in_progress = get_in_progress_tasks_with_owners();
 
     if in_progress.is_empty() {
-        return;
+        return vec![];
     }
 
     // Build a map of task_id -> list of owners
@@ -4663,6 +4673,8 @@ async fn check_for_duplicate_task_workers(state: &DaemonState) {
         .iter()
         .map(|cw| (cw.name.to_lowercase(), cw.started_at))
         .collect();
+
+    let mut effects = Vec::new();
 
     // Find tasks with multiple workers and determine who to kill
     for (task_id, workers) in task_workers {
@@ -4717,29 +4729,26 @@ async fn check_for_duplicate_task_workers(state: &DaemonState) {
                 duplicate, dup_time, task_id, keeper
             );
 
-            // Send the duplicate on a break
-            state.broadcast_coworker_update(&duplicate, "stopped", None);
-            if let Err(e) = state.coworkers.shutdown(&duplicate) {
-                warn!(
-                    "Failed to send duplicate worker {} on a break: {}",
-                    duplicate, e
-                );
-                continue;
-            }
-
-            // Post to channel about the kill
-            let msg = Message::text(
-                "midtown",
-                format!(
+            effects.push(Effect::BroadcastCoworkerUpdate {
+                name: duplicate.clone(),
+                status: "stopped".to_string(),
+                current_task: None,
+            });
+            effects.push(Effect::ShutdownCoworker {
+                name: duplicate.clone(),
+                message: String::new(),
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
                     "🔪 Killed duplicate worker {} on task #{} ({}) - {} started earlier",
                     duplicate, task_id, task_subject, keeper
                 ),
-            );
-            if let Err(e) = state.send_and_broadcast(&msg) {
-                warn!("Failed to post duplicate kill message: {}", e);
-            }
+            });
         }
     }
+
+    effects
 }
 
 /// Get list of in_progress tasks with their owners and subjects.
@@ -4804,7 +4813,9 @@ fn cleanup_orphaned_worktrees(state: &DaemonState) {
 /// Handles two cases:
 /// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
 /// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
-fn spawn_for_pending_tasks(state: &DaemonState) {
+fn spawn_for_pending_tasks(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     // Get list of currently running coworkers (excludes Stopping/Stopped)
     let active_coworkers = state.coworkers.list_running();
     let active_names: std::collections::HashSet<String> = active_coworkers
@@ -4813,6 +4824,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         .collect();
 
     debug!("Task assignment state: active={}", active_coworkers.len(),);
+
+    let mut effects = Vec::new();
 
     // Case 1: Pending tasks with owners assigned but coworker not running
     let pending_with_owners = crate::tasks::get_pending_tasks_with_owners();
@@ -4840,6 +4853,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 task_id: ref tid,
                 task_subject: ref subj,
             } => {
+                // Nudge inline — cooldown recording depends on nudge success
                 let nudge_msg = format!("You have pending task #{}: {}. Get started!", tid, subj);
                 if let Err(e) = state.coworkers.nudge(o, &nudge_msg) {
                     debug!("Failed to nudge {} about pending task #{}: {}", o, tid, e);
@@ -4858,6 +4872,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                     "Pending task #{} is assigned to {} but coworker not running - spawning",
                     tid, o
                 );
+                // Spawn inline — post-spawn effects depend on spawn result
                 let prompt = format!("You've been assigned task #{}: {}. Get started!", tid, subj);
                 match state
                     .coworkers
@@ -4865,18 +4880,19 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 {
                     Ok(_) => {
                         info!("Spawned coworker {} for pending task #{}", o, tid);
-                        state.broadcast_coworker_update(o, "running", None);
-                        let msg = Message::text(
-                            "midtown",
-                            daemon_messages::called_in_pending_task(
+                        effects.push(Effect::BroadcastCoworkerUpdate {
+                            name: o.clone(),
+                            status: "running".to_string(),
+                            current_task: None,
+                        });
+                        effects.push(Effect::PostToChannel {
+                            sender: "midtown".to_string(),
+                            message: daemon_messages::called_in_pending_task(
                                 o,
                                 &tid.to_string(),
                                 config::get_personality(),
                             ),
-                        );
-                        if let Err(e) = state.send_and_broadcast(&msg) {
-                            warn!("Failed to post call-in message: {}", e);
-                        }
+                        });
                     }
                     Err(e) => {
                         debug!("Could not spawn {} for pending task #{}: {}", o, tid, e);
@@ -5006,24 +5022,22 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
 
         if already_running {
             // Step 3a: Coworker is already running (grouped task) — nudge about new assignment
+            // Nudge inline — channel post depends on nudge success
             match state.coworkers.nudge(&coworker_name, &prompt) {
                 Ok(()) => {
                     info!(
                         "Nudged running coworker {} with grouped task #{}",
                         coworker_name, task.id
                     );
-                    let msg = Message::text(
-                        "midtown",
-                        daemon_messages::called_in_assigned_task(
+                    effects.push(Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: daemon_messages::called_in_assigned_task(
                             &coworker_name,
                             &task.id.to_string(),
                             &task.subject,
                             config::get_personality(),
                         ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&msg) {
-                        warn!("Failed to post assignment message: {}", e);
-                    }
+                    });
                 }
                 Err(e) => {
                     warn!(
@@ -5034,8 +5048,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             }
         } else {
             // Step 3b: Spawn a new coworker with the pre-assigned name and prompt
-            // spawn_with_name handles waiting and sending the prompt internally
-            // Use shared task list (not isolated) for pre-assigned task spawns
+            // Spawn inline — post-spawn effects depend on spawn result
             match state
                 .coworkers
                 .spawn_with_name(&coworker_name, false, Some(&prompt), false)
@@ -5045,21 +5058,20 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                         "Spawned coworker {} for pre-assigned task #{}",
                         coworker_name, task.id
                     );
-                    state.broadcast_coworker_update(&coworker_name, "running", None);
-
-                    // Post to channel
-                    let msg = Message::text(
-                        "midtown",
-                        daemon_messages::called_in_assigned_task(
+                    effects.push(Effect::BroadcastCoworkerUpdate {
+                        name: coworker_name.clone(),
+                        status: "running".to_string(),
+                        current_task: None,
+                    });
+                    effects.push(Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: daemon_messages::called_in_assigned_task(
                             &coworker_name,
                             &task.id.to_string(),
                             &task.subject,
                             config::get_personality(),
                         ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&msg) {
-                        warn!("Failed to post assignment message: {}", e);
-                    }
+                    });
                 }
                 Err(e) => {
                     // Spawn failed but task is already assigned - that's okay,
@@ -5072,6 +5084,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             }
         }
     }
+
+    effects
 }
 
 // ─── Pure Decision Functions ───────────────────────────────────────────────
