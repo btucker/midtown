@@ -4970,7 +4970,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
 // at which point the #[cfg(test)] gates can be removed.
 #[cfg(test)]
 mod decisions {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use super::{
         IDLE_BREAK_DURATION, INTERRUPTED_NUDGE_DURATION, MINIMUM_COWORKER_LIFETIME,
@@ -4979,6 +4979,7 @@ mod decisions {
 
     /// Snapshot of a coworker's state for decision-making (no async, no side effects).
     #[derive(Debug, Clone)]
+    #[allow(dead_code)] // name used in tests and will be used by async callers in Phase 3
     pub struct CoworkerSnapshot {
         pub name: String,
         pub started_at: chrono::DateTime<chrono::Utc>,
@@ -5104,6 +5105,204 @@ mod decisions {
             }
             None => PromptDecision::NoPrompt,
         }
+    }
+
+    // ─── Usage Limit Decision ──────────────────────────────────────────
+
+    /// Decision output for usage limit detection.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum UsageLimitDecision {
+        /// Usage limit detected in pane — schedule a nudge.
+        Detected { coworker: String },
+        /// Nudge is already scheduled — skip re-detection.
+        AlreadyScheduled,
+        /// No usage limit found in any pane.
+        NoneDetected,
+    }
+
+    /// Decide whether pane contents indicate a usage limit.
+    ///
+    /// Scans pane contents for known usage/rate limit patterns. If a nudge is
+    /// already scheduled (`nudge_already_scheduled`), skips re-detection.
+    pub fn decide_usage_limit_detection(
+        pane_contents: &[(String, String)], // (coworker_name, pane_content)
+        nudge_already_scheduled: bool,
+    ) -> UsageLimitDecision {
+        if nudge_already_scheduled {
+            return UsageLimitDecision::AlreadyScheduled;
+        }
+
+        for (name, content) in pane_contents {
+            let has_limit = super::USAGE_LIMIT_PATTERNS
+                .iter()
+                .any(|p| content.to_lowercase().contains(&p.to_lowercase()));
+
+            if has_limit {
+                return UsageLimitDecision::Detected {
+                    coworker: name.clone(),
+                };
+            }
+        }
+
+        UsageLimitDecision::NoneDetected
+    }
+
+    /// Decision output for usage limit expiry check.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum UsageLimitExpiryDecision {
+        /// Nudge time has arrived — nudge all coworkers.
+        NudgeNow,
+        /// Nudge is scheduled but not yet due.
+        NotYet,
+        /// No nudge is scheduled.
+        NoNudge,
+    }
+
+    /// Decide whether a scheduled usage limit nudge should fire.
+    pub fn decide_usage_limit_expiry(
+        nudge_at: Option<tokio::time::Instant>,
+        now: tokio::time::Instant,
+    ) -> UsageLimitExpiryDecision {
+        match nudge_at {
+            Some(at) if now >= at => UsageLimitExpiryDecision::NudgeNow,
+            Some(_) => UsageLimitExpiryDecision::NotYet,
+            None => UsageLimitExpiryDecision::NoNudge,
+        }
+    }
+
+    // ─── Orphan Recovery Decision ──────────────────────────────────────
+
+    /// Decision output for orphan recovery.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum OrphanDecision {
+        /// Found an orphaned task — should spawn coworker to recover it.
+        Recover {
+            task_id: String,
+            task_subject: String,
+            owner: String,
+        },
+        /// Cooldown is active — skip this tick.
+        CooldownActive,
+        /// At dev limit — can't spawn more coworkers.
+        AtDevLimit,
+        /// No orphaned tasks found.
+        NoOrphans,
+    }
+
+    /// Decide whether any in_progress task needs orphan recovery.
+    ///
+    /// An orphaned task is one whose owner is not in the active coworker list.
+    /// Rate-limited: only one recovery per tick.
+    pub fn decide_orphan_recovery(
+        in_progress_tasks: &[(String, String, String)], // (task_id, subject, owner)
+        active_coworker_names: &std::collections::HashSet<String>,
+        last_orphan_spawn: Option<Instant>,
+        now: Instant,
+        at_dev_limit: bool,
+    ) -> OrphanDecision {
+        // Check cooldown
+        if let Some(last) = last_orphan_spawn
+            && now.duration_since(last) < super::ORPHAN_SPAWN_COOLDOWN
+        {
+            return OrphanDecision::CooldownActive;
+        }
+
+        if in_progress_tasks.is_empty() {
+            return OrphanDecision::NoOrphans;
+        }
+
+        if at_dev_limit {
+            return OrphanDecision::AtDevLimit;
+        }
+
+        // Find first orphaned task
+        for (task_id, subject, owner) in in_progress_tasks {
+            let owner = owner.trim().trim_matches('"');
+            if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+                continue;
+            }
+            if !active_coworker_names.contains(&owner.to_lowercase()) {
+                return OrphanDecision::Recover {
+                    task_id: task_id.clone(),
+                    task_subject: subject.clone(),
+                    owner: owner.to_string(),
+                };
+            }
+        }
+
+        OrphanDecision::NoOrphans
+    }
+
+    // ─── Duplicate Worker Decision ─────────────────────────────────────
+
+    /// Decision output for duplicate task worker detection.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct DuplicateWorkerAction {
+        pub task_id: String,
+        pub keeper: String,
+        pub duplicates: Vec<String>,
+    }
+
+    /// Decide which workers to kill when multiple workers are on the same task.
+    ///
+    /// Keeps the earliest-started worker and marks the rest as duplicates.
+    pub fn decide_duplicate_workers(
+        in_progress_tasks: &[(String, String, String)], // (task_id, subject, owner)
+        coworker_start_times: &std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<DuplicateWorkerAction> {
+        use std::collections::HashMap;
+
+        // Build task_id -> list of owners
+        let mut task_workers: HashMap<String, Vec<String>> = HashMap::new();
+        for (task_id, _subject, owner) in in_progress_tasks {
+            if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+                continue;
+            }
+            task_workers
+                .entry(task_id.clone())
+                .or_default()
+                .push(owner.clone());
+        }
+
+        let mut actions = Vec::new();
+
+        for (task_id, workers) in task_workers {
+            if workers.len() <= 1 {
+                continue;
+            }
+
+            // Sort by start time (earliest first), unknown times go last
+            let mut workers_with_times: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> =
+                workers
+                    .into_iter()
+                    .map(|name| {
+                        let start_time = coworker_start_times.get(&name.to_lowercase()).copied();
+                        (name, start_time)
+                    })
+                    .collect();
+
+            workers_with_times.sort_by(|a, b| match (&a.1, &b.1) {
+                (Some(t1), Some(t2)) => t1.cmp(t2),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
+
+            let keeper = workers_with_times[0].0.clone();
+            let duplicates: Vec<String> = workers_with_times
+                .into_iter()
+                .skip(1)
+                .map(|(name, _)| name)
+                .collect();
+
+            actions.push(DuplicateWorkerAction {
+                task_id,
+                keeper,
+                duplicates,
+            });
+        }
+
+        actions
     }
 }
 
@@ -6270,5 +6469,246 @@ mod tests {
                 label: "question prompt".to_string()
             }
         );
+    }
+
+    // ─── Usage Limit Detection Tests ───────────────────────────────────
+
+    #[test]
+    fn test_usage_limit_detected_in_pane() {
+        let panes = vec![
+            ("park".to_string(), "Working on task...\n".to_string()),
+            (
+                "broadway".to_string(),
+                "Usage limit reached. Try again in 15 minutes.\n".to_string(),
+            ),
+        ];
+
+        let decision = decide_usage_limit_detection(&panes, false);
+        assert_eq!(
+            decision,
+            UsageLimitDecision::Detected {
+                coworker: "broadway".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_usage_limit_already_scheduled() {
+        let panes = vec![("park".to_string(), "Usage limit reached.\n".to_string())];
+
+        let decision = decide_usage_limit_detection(&panes, true);
+        assert_eq!(decision, UsageLimitDecision::AlreadyScheduled);
+    }
+
+    #[test]
+    fn test_usage_limit_none_detected() {
+        let panes = vec![
+            (
+                "park".to_string(),
+                "Running tests... all pass\n".to_string(),
+            ),
+            ("broadway".to_string(), "Editing src/main.rs\n".to_string()),
+        ];
+
+        let decision = decide_usage_limit_detection(&panes, false);
+        assert_eq!(decision, UsageLimitDecision::NoneDetected);
+    }
+
+    // ─── Usage Limit Expiry Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_usage_limit_expiry_nudge_now() {
+        let now = tokio::time::Instant::now();
+        // Nudge was scheduled 1 second ago
+        let nudge_at = Some(now - std::time::Duration::from_secs(1));
+
+        let decision = decide_usage_limit_expiry(nudge_at, now);
+        assert_eq!(decision, UsageLimitExpiryDecision::NudgeNow);
+    }
+
+    #[test]
+    fn test_usage_limit_expiry_not_yet() {
+        let now = tokio::time::Instant::now();
+        // Nudge is 10 minutes in the future
+        let nudge_at = Some(now + std::time::Duration::from_secs(600));
+
+        let decision = decide_usage_limit_expiry(nudge_at, now);
+        assert_eq!(decision, UsageLimitExpiryDecision::NotYet);
+    }
+
+    #[test]
+    fn test_usage_limit_expiry_no_nudge() {
+        let now = tokio::time::Instant::now();
+
+        let decision = decide_usage_limit_expiry(None, now);
+        assert_eq!(decision, UsageLimitExpiryDecision::NoNudge);
+    }
+
+    // ─── Orphan Recovery Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_orphan_recovery_inactive_owner() {
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "park".to_string(),
+        )];
+        let active: std::collections::HashSet<String> =
+            ["broadway".to_string()].into_iter().collect();
+        let now = Instant::now();
+
+        let decision = decide_orphan_recovery(&tasks, &active, None, now, false);
+        assert_eq!(
+            decision,
+            OrphanDecision::Recover {
+                task_id: "42".to_string(),
+                task_subject: "Fix auth bug".to_string(),
+                owner: "park".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_orphan_recovery_cooldown_active() {
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "park".to_string(),
+        )];
+        let active: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let now = Instant::now();
+        // Last spawn was 2 seconds ago (under 5s cooldown)
+        let last_spawn = Some(now - Duration::from_secs(2));
+
+        let decision = decide_orphan_recovery(&tasks, &active, last_spawn, now, false);
+        assert_eq!(decision, OrphanDecision::CooldownActive);
+    }
+
+    #[test]
+    fn test_orphan_recovery_active_owner_no_orphan() {
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "park".to_string(),
+        )];
+        // park IS active, so the task is not orphaned
+        let active: std::collections::HashSet<String> = ["park".to_string()].into_iter().collect();
+        let now = Instant::now();
+
+        let decision = decide_orphan_recovery(&tasks, &active, None, now, false);
+        assert_eq!(decision, OrphanDecision::NoOrphans);
+    }
+
+    #[test]
+    fn test_orphan_recovery_at_dev_limit() {
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "park".to_string(),
+        )];
+        let active: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let now = Instant::now();
+
+        let decision = decide_orphan_recovery(&tasks, &active, None, now, true);
+        assert_eq!(decision, OrphanDecision::AtDevLimit);
+    }
+
+    #[test]
+    fn test_orphan_recovery_skips_lead_owner() {
+        let tasks = vec![(
+            "42".to_string(),
+            "Lead's task".to_string(),
+            "lead".to_string(),
+        )];
+        let active: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let now = Instant::now();
+
+        let decision = decide_orphan_recovery(&tasks, &active, None, now, false);
+        assert_eq!(decision, OrphanDecision::NoOrphans);
+    }
+
+    // ─── Duplicate Worker Tests ────────────────────────────────────────
+
+    #[test]
+    fn test_duplicate_workers_two_on_same_task() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+        let earlier = now - chrono::Duration::minutes(5);
+
+        let tasks = vec![
+            ("42".to_string(), "Fix auth".to_string(), "park".to_string()),
+            (
+                "42".to_string(),
+                "Fix auth".to_string(),
+                "broadway".to_string(),
+            ),
+        ];
+
+        let mut start_times = std::collections::HashMap::new();
+        start_times.insert("park".to_string(), earlier);
+        start_times.insert("broadway".to_string(), now);
+
+        let actions = decide_duplicate_workers(&tasks, &start_times);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].task_id, "42");
+        assert_eq!(actions[0].keeper, "park"); // started earlier
+        assert_eq!(actions[0].duplicates, vec!["broadway".to_string()]);
+    }
+
+    #[test]
+    fn test_duplicate_workers_single_worker_no_action() {
+        let tasks = vec![("42".to_string(), "Fix auth".to_string(), "park".to_string())];
+
+        let start_times = std::collections::HashMap::new();
+
+        let actions = decide_duplicate_workers(&tasks, &start_times);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_duplicate_workers_unknown_start_times_sorted_last() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+
+        let tasks = vec![
+            ("42".to_string(), "Fix auth".to_string(), "park".to_string()),
+            (
+                "42".to_string(),
+                "Fix auth".to_string(),
+                "broadway".to_string(),
+            ),
+        ];
+
+        // Only park has a known start time; broadway is unknown
+        let mut start_times = std::collections::HashMap::new();
+        start_times.insert("park".to_string(), now);
+
+        let actions = decide_duplicate_workers(&tasks, &start_times);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].keeper, "park"); // known time beats unknown
+        assert_eq!(actions[0].duplicates, vec!["broadway".to_string()]);
+    }
+
+    #[test]
+    fn test_duplicate_workers_different_tasks_no_conflict() {
+        use chrono::Utc;
+
+        let tasks = vec![
+            ("42".to_string(), "Fix auth".to_string(), "park".to_string()),
+            (
+                "43".to_string(),
+                "Add tests".to_string(),
+                "broadway".to_string(),
+            ),
+        ];
+
+        let mut start_times = std::collections::HashMap::new();
+        start_times.insert("park".to_string(), Utc::now());
+        start_times.insert("broadway".to_string(), Utc::now());
+
+        let actions = decide_duplicate_workers(&tasks, &start_times);
+        assert!(actions.is_empty());
     }
 }
