@@ -108,6 +108,24 @@ pub fn called_in_assigned_task(
 }
 
 // ---------------------------------------------------------------------------
+// Idle / waiting messages (used by coworker hooks)
+// ---------------------------------------------------------------------------
+
+/// Personality-flavored idle message for a coworker waiting for input.
+/// The message must contain the keyword `waiting` for daemon status parsing.
+/// Returns only the action content — the coworker name is set via `Message::action()`.
+pub fn idle_waiting(personality: Personality) -> String {
+    let templates: &[&str] = &[
+        "waiting for input",
+        "waiting for input — all is calm",
+        "waiting for the next task to drift in",
+        "waiting patiently, the river keeps flowing",
+        "waiting for input — idle and at peace",
+    ];
+    pick(templates, personality).to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Break / shutdown messages
 // ---------------------------------------------------------------------------
 
@@ -173,6 +191,7 @@ mod tests {
                 called_in_assigned_task("eve", "5", "Fix bug", Personality::Normal),
                 "🚀 Called in coworker eve for assigned task #5: Fix bug"
             );
+            assert_eq!(idle_waiting(Personality::Normal), "waiting for input");
         }
     }
 
@@ -206,6 +225,12 @@ mod tests {
 
         let msg = break_idle(name, Personality::Fun);
         assert!(msg.contains(name), "{msg}");
+
+        let msg = idle_waiting(Personality::Fun);
+        assert!(
+            msg.contains("waiting"),
+            "idle message must contain 'waiting' keyword: {msg}"
+        );
     }
 
     #[test]
@@ -216,6 +241,27 @@ mod tests {
             assert!(msg.contains(name) && msg.contains("7"), "{msg}");
             let msg = break_idle(name, Personality::Wild);
             assert!(msg.contains(name), "{msg}");
+            let msg = idle_waiting(Personality::Wild);
+            assert!(
+                msg.contains("waiting"),
+                "idle message must contain 'waiting' keyword: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_waiting_always_contains_waiting_keyword() {
+        // All personality variants must include "waiting" for daemon status parsing
+        for personality in &[Personality::Normal, Personality::Fun, Personality::Wild] {
+            for _ in 0..50 {
+                let msg = idle_waiting(*personality);
+                assert!(
+                    msg.contains("waiting"),
+                    "idle_waiting with {:?} must contain 'waiting': {}",
+                    personality,
+                    msg
+                );
+            }
         }
     }
 }
