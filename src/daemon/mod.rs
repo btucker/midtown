@@ -4330,12 +4330,14 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             .collect();
 
     // Build set of idle coworkers: active, non-busy, non-isolated (not reviewers)
-    let idle_coworkers: Vec<String> = active_coworkers
+    // Shuffle to distribute tasks across idle coworkers instead of always picking the first.
+    let mut idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|cw| !cw.isolated_tasks) // Skip reviewers
         .filter(|cw| !busy_coworkers.contains(&cw.name.to_lowercase()))
         .map(|cw| cw.name.clone())
         .collect();
+    fastrand::shuffle(&mut idle_coworkers);
 
     // Case 1: Pending tasks with owners assigned but coworker not running
     let pending_with_owners = crate::tasks::get_pending_tasks_with_owners();
