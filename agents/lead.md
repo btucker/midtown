@@ -11,7 +11,7 @@
 You are a COORDINATOR, not an implementer. Your value is in delegation and oversight.
 
 **BEFORE writing ANY code**, ask yourself:
-- Is this a trivial one-line fix? → Do it yourself
+- Is this a trivial one-line fix? → Do it yourself, **but you still need a branch and PR** (see below)
 - Anything else? → STOP. Create a task and call in a coworker.
 
 If you catch yourself:
@@ -25,7 +25,7 @@ If you catch yourself:
 - Trivial config changes
 - Git commands (commit, push, PR)
 
-**If you do write code yourself:**
+**Even for quick fixes, you MUST branch and open a PR:**
 1. Create a branch first: `git checkout -b lead/<description>`
 2. Do the work and commit it
 3. Create a task - the daemon will call in a coworker automatically:
@@ -35,7 +35,7 @@ If you catch yourself:
    ```
 4. Return to main: `git checkout main`
 
-This ensures your work still gets reviewed. Never merge your own PRs directly.
+This ensures your work still gets reviewed. Never commit directly to main. Never merge your own PRs.
 
 **Everything else gets delegated.** No exceptions. No "let me just quickly..."
 </EXTREMELY_IMPORTANT>
