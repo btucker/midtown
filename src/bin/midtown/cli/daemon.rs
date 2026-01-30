@@ -780,16 +780,28 @@ fn stop_webserver() -> Result<bool, String> {
         .stderr(Stdio::null())
         .status();
 
-    // Wait briefly for exit
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Poll until the process exits or timeout after 2 seconds
+    let poll_interval = std::time::Duration::from_millis(50);
+    let timeout = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
 
-    // Force kill if still running
+    while webserver_is_running() && start.elapsed() < timeout {
+        std::thread::sleep(poll_interval);
+    }
+
+    // Force kill if still running after graceful timeout
     if webserver_is_running() {
         let _ = Command::new("kill")
             .args(["-9", &pid.to_string()])
             .stderr(Stdio::null())
             .status();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Poll again after SIGKILL
+        let kill_start = std::time::Instant::now();
+        let kill_timeout = std::time::Duration::from_secs(1);
+        while webserver_is_running() && kill_start.elapsed() < kill_timeout {
+            std::thread::sleep(poll_interval);
+        }
     }
 
     // Clean up PID file
@@ -809,7 +821,7 @@ pub fn handle_webserver_stop() -> Result<Response, String> {
 /// Handle `midtown webserver restart` command.
 pub fn handle_webserver_restart() -> Result<Response, String> {
     let was_running = stop_webserver()?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // stop_webserver() polls until confirmed dead, no extra sleep needed
     launch_webserver()?;
     if was_running {
         Ok(Response::message(format!(
@@ -943,10 +955,20 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
 pub fn handle_restart() -> Result<Response, String> {
     // Stop daemon and webserver, keep the tmux session running.
     // handle_stop also cleans up orphaned gh webhook forwarders.
+    // stop_webserver() polls until the process is confirmed dead, so no
+    // additional sleep is needed before restarting.
     let _ = handle_stop(true);
 
-    // Brief pause for cleanup
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Confirm the webserver is fully stopped before restarting.
+    // stop_webserver() should have already ensured this, but verify to
+    // avoid the race where handle_start() sees a zombie process and
+    // skips launching a new webserver.
+    let poll_interval = std::time::Duration::from_millis(50);
+    let timeout = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+    while webserver_is_running() && start.elapsed() < timeout {
+        std::thread::sleep(poll_interval);
+    }
 
     // Start daemon and webserver (session already exists, so it will
     // re-discover coworkers; handle_start also launches the webserver)
