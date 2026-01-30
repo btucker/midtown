@@ -73,7 +73,7 @@ enum Commands {
         project: Option<String>,
 
         /// Additional repository paths to include
-        #[arg(long = "repo")]
+        #[arg(long = "add-repo")]
         repos: Vec<std::path::PathBuf>,
     },
     /// Stop midtown (daemon + tmux session)
