@@ -1,6 +1,5 @@
 import { writable } from 'svelte/store'
-
-const API_BASE = '/api'
+import { getApiBase } from './api.js'
 
 // Push notification state
 export const pushSupported = writable(false)
@@ -22,7 +21,7 @@ export function checkPushSupport() {
 
 // Fetch the VAPID public key from the server
 async function getVapidPublicKey() {
-  const res = await fetch(`${API_BASE}/push/vapid-key`)
+  const res = await fetch(`${getApiBase()}/push/vapid-key`)
   if (!res.ok) throw new Error('Failed to fetch VAPID key')
   const data = await res.json()
   return data.publicKey
@@ -74,7 +73,7 @@ export async function subscribePush() {
       .replace(/\//g, '_')
       .replace(/=+$/, '')
 
-    const res = await fetch(`${API_BASE}/push/subscribe`, {
+    const res = await fetch(`${getApiBase()}/push/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -104,7 +103,7 @@ export async function unsubscribePush() {
     if (subscription) {
       await subscription.unsubscribe()
 
-      await fetch(`${API_BASE}/push/unsubscribe`, {
+      await fetch(`${getApiBase()}/push/unsubscribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ endpoint: subscription.endpoint }),
