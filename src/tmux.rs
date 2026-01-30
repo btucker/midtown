@@ -857,6 +857,27 @@ fn write_coworker_settings_file(bin_command: &str) -> crate::Result<PathBuf> {
 ///
 /// Returns the generated session UUID for use in task symlink management.
 ///
+/// Build the shell command string for launching a claude coworker.
+///
+/// Returns the full command including env vars, claude flags, and file references.
+/// Extracted for testability — the actual tmux interaction happens in `spawn_claude`.
+fn build_claude_command(
+    env_vars: &str,
+    session_flag: &str,
+    add_dir_flags: &str,
+    settings_file: &std::path::Path,
+    prompt_file: &std::path::Path,
+) -> String {
+    format!(
+        "{}; claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        env_vars,
+        session_flag,
+        add_dir_flags,
+        settings_file.display(),
+        prompt_file.display()
+    )
+}
+
 /// If `resume` is true, passes `--continue` to claude to resume the previous
 /// session from this worktree, preserving context from the last session.
 pub fn spawn_claude(
@@ -915,13 +936,12 @@ pub fn spawn_claude(
         .map(|d| format!(" --add-dir {}", d))
         .collect();
 
-    let command = format!(
-        "{}; claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
-        env_vars,
-        session_flag,
-        add_dir_flags,
-        settings_file.display(),
-        prompt_file.display()
+    let command = build_claude_command(
+        &env_vars,
+        &session_flag,
+        &add_dir_flags,
+        &settings_file,
+        &prompt_file,
     );
 
     // Create window with claude command running directly
@@ -937,6 +957,41 @@ pub fn spawn_claude(
 
     // Verify the window actually exists (it may have died if the command failed)
     if !window_exists(session, name)? {
+        if resume {
+            // --continue failed (likely no conversation to resume) — retry with fresh session
+            tracing::warn!(
+                "Tmux window {}:{} died with --continue, retrying with fresh session",
+                session,
+                name
+            );
+
+            let fresh_session_id = uuid::Uuid::new_v4().to_string();
+            let fresh_session_flag = format!(" --session-id {}", fresh_session_id);
+            let fresh_command = build_claude_command(
+                &env_vars,
+                &fresh_session_flag,
+                &add_dir_flags,
+                &settings_file,
+                &prompt_file,
+            );
+
+            create_window(session, name, working_dir, Some(&fresh_command))?;
+            set_window_color(session, name)?;
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            if !window_exists(session, name)? {
+                return Err(Error::Rpc {
+                    code: -32603,
+                    message: format!(
+                        "Tmux window {}:{} was created but immediately closed (retry without --continue also failed)",
+                        session, name
+                    ),
+                });
+            }
+
+            return Ok(fresh_session_id);
+        }
+
         return Err(Error::Rpc {
             code: -32603,
             message: format!(
@@ -1425,5 +1480,80 @@ Claude is now processing the request
     fn test_has_input_text_only_whitespace_after_prompt() {
         let pane = "Output\n❯    ";
         assert!(!has_input_text(pane));
+    }
+
+    #[test]
+    fn test_build_claude_command_with_session_id() {
+        let cmd = build_claude_command(
+            "export MIDTOWN_AGENT='lex'",
+            " --session-id abc-123",
+            "",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+        );
+        assert!(cmd.contains("--session-id abc-123"));
+        assert!(!cmd.contains("--continue"));
+        assert!(cmd.contains("--dangerously-skip-permissions"));
+        assert!(cmd.contains("--settings /tmp/settings.json"));
+        assert!(cmd.contains("--append-system-prompt \"$(cat /tmp/prompt.txt)\""));
+        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; claude"));
+    }
+
+    #[test]
+    fn test_build_claude_command_with_continue() {
+        let cmd = build_claude_command(
+            "export MIDTOWN_AGENT='park'",
+            " --continue",
+            "",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+        );
+        assert!(cmd.contains("--continue"));
+        assert!(!cmd.contains("--session-id"));
+    }
+
+    #[test]
+    fn test_build_claude_command_with_add_dir_flags() {
+        let cmd = build_claude_command(
+            "export MIDTOWN_AGENT='lex'",
+            " --session-id abc",
+            " --add-dir /other/repo --add-dir /another/repo",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+        );
+        assert!(cmd.contains("--add-dir /other/repo"));
+        assert!(cmd.contains("--add-dir /another/repo"));
+    }
+
+    #[test]
+    fn test_build_claude_command_fresh_session_differs_from_continue() {
+        // Simulates the fallback: original command uses --continue,
+        // retry uses --session-id with a fresh UUID
+        let continue_cmd = build_claude_command(
+            "export MIDTOWN_AGENT='lex'",
+            " --continue",
+            "",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+        );
+        let fresh_cmd = build_claude_command(
+            "export MIDTOWN_AGENT='lex'",
+            " --session-id fresh-uuid-here",
+            "",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+        );
+
+        // The continue command should have --continue, not --session-id
+        assert!(continue_cmd.contains("--continue"));
+        assert!(!continue_cmd.contains("--session-id"));
+
+        // The fresh command should have --session-id, not --continue
+        assert!(fresh_cmd.contains("--session-id fresh-uuid-here"));
+        assert!(!fresh_cmd.contains("--continue"));
+
+        // Both should share the same structure otherwise
+        assert!(continue_cmd.contains("--setting-sources project,local"));
+        assert!(fresh_cmd.contains("--setting-sources project,local"));
     }
 }
