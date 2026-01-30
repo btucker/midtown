@@ -31,6 +31,10 @@ pub const PR_REVIEW_DELAY_SECS: u64 = 60;
 /// Maximum number of concurrent PR reviews the daemon will run.
 pub const MAX_CONCURRENT_REVIEWS: usize = 4;
 
+/// How long a review assignment is valid before it can be reassigned (10 minutes).
+/// Re-exported from github_state for use by the in-memory tracker.
+pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
+
 // ---------------------------------------------------------------------------
 // Internal timing constants
 // ---------------------------------------------------------------------------
