@@ -46,10 +46,10 @@ fn cleanup_orphaned_test_daemons() {
         .join("projects");
     if let Ok(entries) = fs::read_dir(&projects_dir) {
         for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name.starts_with("daemon-e2e-test-") {
-                    let _ = fs::remove_dir_all(entry.path());
-                }
+            if let Some(name) = entry.file_name().to_str()
+                && name.starts_with("daemon-e2e-test-")
+            {
+                let _ = fs::remove_dir_all(entry.path());
             }
         }
     }
@@ -66,10 +66,10 @@ fn cleanup_orphaned_test_daemons() {
     let sockets_dir = state_dir.join("midtown");
     if let Ok(entries) = fs::read_dir(&sockets_dir) {
         for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name.starts_with("daemon-e2e-test-") {
-                    let _ = fs::remove_dir_all(entry.path());
-                }
+            if let Some(name) = entry.file_name().to_str()
+                && name.starts_with("daemon-e2e-test-")
+            {
+                let _ = fs::remove_dir_all(entry.path());
             }
         }
     }
