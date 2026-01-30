@@ -1,5 +1,5 @@
 <script>
-  import { messages, coworkers } from './store.js'
+  import { messages, coworkers, leadTyping } from './store.js'
   import { sendMessage } from './api.js'
   import { tick } from 'svelte'
 
@@ -178,6 +178,17 @@
         {/if}
       {/each}
     {/if}
+
+    {#if $leadTyping}
+      <div class="typing-indicator">
+        <span class="typing-name" style="color: {AVENUE_COLORS.lead}">lead</span>
+        <span class="typing-dots">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </span>
+      </div>
+    {/if}
   </div>
 
   {#if !autoScroll}
@@ -292,6 +303,58 @@
   .action-text {
     flex: 1;
     min-width: 0;
+  }
+
+  /* Typing indicator */
+  .typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    margin-top: 4px;
+    opacity: 0.7;
+  }
+
+  .typing-name {
+    font-weight: 700;
+    font-size: 0.8rem;
+  }
+
+  .typing-dots {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+  }
+
+  .typing-dots .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #d7d787;
+    animation: typing-bounce 1.4s infinite ease-in-out both;
+  }
+
+  .typing-dots .dot:nth-child(1) {
+    animation-delay: 0s;
+  }
+
+  .typing-dots .dot:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .typing-dots .dot:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  @keyframes typing-bounce {
+    0%, 80%, 100% {
+      opacity: 0.3;
+      transform: scale(0.8);
+    }
+    40% {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   /* Scroll-to-bottom button */
