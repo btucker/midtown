@@ -19,7 +19,7 @@ test.describe('Navigation', () => {
     await expect(buttons).toHaveCount(3)
     await expect(buttons.nth(0)).toHaveText('Channel')
     await expect(buttons.nth(1)).toHaveText('Status')
-    await expect(buttons.nth(2)).toHaveText('Lead')
+    await expect(buttons.nth(2)).toHaveText('Tmux')
   })
 
   test('Channel tab is active by default', async ({ page }) => {
@@ -30,7 +30,7 @@ test.describe('Navigation', () => {
     await expect(page.locator('.channel-container')).toBeVisible()
     // Other content not visible
     await expect(page.locator('.status-container')).toHaveCount(0)
-    await expect(page.locator('.lead-container')).toHaveCount(0)
+    await expect(page.locator('.tmux-container')).toHaveCount(0)
   })
 
   test('switches to Status tab', async ({ page }) => {
@@ -46,21 +46,21 @@ test.describe('Navigation', () => {
 
   test('switches to Lead tab', async ({ page }) => {
     const nav = page.locator('nav')
-    await nav.getByRole('button', { name: 'Lead' }).click()
+    await nav.getByRole('button', { name: 'Tmux' }).click()
 
-    await expect(nav.getByRole('button', { name: 'Lead' })).toHaveClass(/active/)
-    await expect(page.locator('.lead-container')).toBeVisible()
+    await expect(nav.getByRole('button', { name: 'Tmux' })).toHaveClass(/active/)
+    await expect(page.locator('.tmux-container')).toBeVisible()
     await expect(page.locator('.channel-container')).toHaveCount(0)
   })
 
   test('switches back to Channel from Lead', async ({ page }) => {
     const nav = page.locator('nav')
-    await nav.getByRole('button', { name: 'Lead' }).click()
-    await expect(page.locator('.lead-container')).toBeVisible()
+    await nav.getByRole('button', { name: 'Tmux' }).click()
+    await expect(page.locator('.tmux-container')).toBeVisible()
 
     await nav.getByRole('button', { name: 'Channel' }).click()
     await expect(page.locator('.channel-container')).toBeVisible()
-    await expect(page.locator('.lead-container')).toHaveCount(0)
+    await expect(page.locator('.tmux-container')).toHaveCount(0)
   })
 
   test('kanban board is always visible below nav regardless of active tab', async ({ page }) => {
@@ -75,7 +75,7 @@ test.describe('Navigation', () => {
     await expect(kanban).toBeVisible()
 
     // Lead tab
-    await nav.getByRole('button', { name: 'Lead' }).click()
+    await nav.getByRole('button', { name: 'Tmux' }).click()
     await expect(kanban).toBeVisible()
   })
 

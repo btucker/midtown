@@ -12,6 +12,7 @@ import {
 
 let ws = null
 let reconnectTimeout = null
+let statusPollInterval = null
 
 // Base URL for the current project's daemon API.
 // Always connects via the project's webhook port.
@@ -45,6 +46,10 @@ export function switchProject(projectName, webhookPort) {
     clearTimeout(reconnectTimeout)
     reconnectTimeout = null
   }
+  if (statusPollInterval) {
+    clearInterval(statusPollInterval)
+    statusPollInterval = null
+  }
 
   // Clear current state
   messages.set([])
@@ -77,6 +82,8 @@ export function switchProject(projectName, webhookPort) {
     fetchHistory()
     fetchStatus()
     connectWebSocket()
+    // Poll status every 10s to keep kanban board current
+    statusPollInterval = setInterval(fetchStatus, 10000)
   }
 }
 
