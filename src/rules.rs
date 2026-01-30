@@ -1,92 +1,19 @@
-//! Rules engine types for the daemon tick loop.
+//! Pure decision functions and shared types for the daemon tick loop.
 //!
-//! This module defines the core abstractions for a rules-based daemon:
-//! [`Rule`], [`Condition`], [`Action`], [`RuleContext`], and [`CooldownTracker`].
+//! Each `decide_*` function takes pre-collected state snapshots and returns
+//! a decision enum or struct — no side effects, no async, fully testable.
 //!
-//! **Phase 2 — types only, no behavior changes.**
-
-// These types are defined now but wired up in later phases (3–6).
-#![allow(dead_code)]
+//! The [`CooldownTracker`] provides a unified cooldown mechanism that will
+//! replace the six separate cooldown fields in `DaemonState` (Phase 6).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 
-use crate::daemon::DaemonState;
-
 // ---------------------------------------------------------------------------
-// Rule
+// Shared types
 // ---------------------------------------------------------------------------
-
-/// A named rule that pairs a condition with an action and optional cooldown.
-pub(crate) struct Rule {
-    /// Human-readable identifier, e.g. `"idle_shutdown"`.
-    pub name: &'static str,
-    /// Logical grouping used for ordering and diagnostics.
-    pub category: RuleCategory,
-    /// Returns `true` when the rule should fire.
-    pub condition: Box<dyn Condition>,
-    /// Side-effect to execute when the condition is met.
-    pub action: Box<dyn Action>,
-    /// Optional cooldown to avoid firing too frequently.
-    pub cooldown: Option<CooldownConfig>,
-}
-
-// ---------------------------------------------------------------------------
-// Condition / Action traits
-// ---------------------------------------------------------------------------
-
-/// Evaluated once per tick to decide whether a [`Rule`] should fire.
-pub(crate) trait Condition: Send + Sync {
-    fn evaluate(&self, ctx: &RuleContext) -> bool;
-}
-
-/// Executed when a [`Rule`]'s condition is met.
-pub(crate) trait Action: Send + Sync {
-    fn execute(&self, ctx: &mut RuleContext) -> ActionResult;
-}
-
-/// Outcome of an [`Action::execute`] call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ActionResult {
-    /// The action completed successfully.
-    Done(String),
-    /// The action determined it had nothing to do.
-    Skipped(String),
-    /// The action encountered an error.
-    Failed(String),
-}
-
-// ---------------------------------------------------------------------------
-// RuleCategory
-// ---------------------------------------------------------------------------
-
-/// Logical grouping for rules — used for ordering and diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum RuleCategory {
-    Lifecycle,
-    PrReview,
-    TaskAssignment,
-    Spawning,
-    Detection,
-    RateLimiting,
-}
-
-// ---------------------------------------------------------------------------
-// RuleContext
-// ---------------------------------------------------------------------------
-
-/// Snapshot of daemon state built once per tick so rules don't re-query.
-pub(crate) struct RuleContext {
-    pub active_coworkers: Vec<CoworkerSnapshot>,
-    pub busy_coworkers: HashSet<String>,
-    pub coworkers_with_open_prs: HashSet<String>,
-    pub active_reviewers: HashSet<String>,
-    pub pane_contents: HashMap<String, String>,
-    pub state: Arc<DaemonState>,
-}
 
 /// Lightweight snapshot of a coworker at a point in time.
 #[derive(Debug, Clone)]
@@ -97,29 +24,23 @@ pub(crate) struct CoworkerSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// Cooldown types
+// CooldownTracker
 // ---------------------------------------------------------------------------
-
-/// Configuration for a rule's cooldown behaviour.
-#[derive(Debug, Clone)]
-pub(crate) struct CooldownConfig {
-    /// Minimum time between firings for the same key.
-    pub duration: Duration,
-    /// Produces the cache key from the rule name and current context.
-    /// If `None`, the rule name alone is used as the key.
-    pub key_fn: Option<fn(&str, &RuleContext) -> String>,
-}
 
 /// Unified cooldown tracker that replaces six separate mechanisms in DaemonState.
 ///
 /// Keys are `(rule_name, context_key)` pairs mapped to the [`Instant`] they
 /// were last recorded. Call [`check`](CooldownTracker::check) before firing
 /// and [`record`](CooldownTracker::record) after a successful fire.
+///
+/// Currently used only in tests; will be wired into DaemonState in Phase 6.
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct CooldownTracker {
     entries: HashMap<(String, String), Instant>,
 }
 
+#[allow(dead_code)]
 impl CooldownTracker {
     pub fn new() -> Self {
         Self::default()
@@ -515,6 +436,9 @@ pub(crate) fn parse_usage_limit_duration(pane_content: &str) -> Duration {
 }
 
 /// Check if pane content contains any usage/rate limit patterns.
+///
+/// Used directly in tests and indirectly via `decide_usage_limit_detection`.
+#[allow(dead_code)]
 pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
     let lower = pane_content.to_lowercase();
     USAGE_LIMIT_PATTERNS
