@@ -479,7 +479,7 @@ impl PrReviewTracker {
 }
 
 /// Shared daemon state.
-struct DaemonState {
+pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
