@@ -277,10 +277,8 @@ pub(crate) struct DaemonState {
     repo_name: String,
     /// Paths to all repos in the project (primary + additional)
     all_repo_paths: Vec<PathBuf>,
-    /// Last time a coworker was spawned for orphan recovery (rate limiting)
-    last_orphan_spawn: Mutex<Option<Instant>>,
-    /// Tracks when each pending task was last nudged (task_id -> last nudge time)
-    pending_task_nudge_cooldowns: std::sync::Mutex<HashMap<String, Instant>>,
+    /// Unified cooldown tracker for orphan spawning and task nudge rate limiting.
+    cooldowns: std::sync::Mutex<crate::rules::CooldownTracker>,
     /// Tracks orphaned worktrees that have already been warned about (dedup across poll cycles)
     warned_orphans: std::sync::RwLock<HashSet<String>>,
     /// Persistent GitHub state (PR reviewer assignments, etc.)
@@ -345,8 +343,7 @@ impl DaemonState {
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
             all_repo_paths,
-            last_orphan_spawn: Mutex::new(None),
-            pending_task_nudge_cooldowns: std::sync::Mutex::new(HashMap::new()),
+            cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),
             warned_orphans: std::sync::RwLock::new(HashSet::new()),
             github_state: Mutex::new(github_state),
             web_updates_tx,
@@ -3689,14 +3686,9 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
 async fn check_and_recover_orphans(state: &DaemonState) {
     // Check cooldown - skip if we spawned too recently
     {
-        let last_spawn = state.last_orphan_spawn.lock().await;
-        if let Some(last) = *last_spawn
-            && last.elapsed() < ORPHAN_SPAWN_COOLDOWN
-        {
-            debug!(
-                "Orphan recovery cooldown active ({:?} remaining)",
-                ORPHAN_SPAWN_COOLDOWN - last.elapsed()
-            );
+        let cooldowns = state.cooldowns.lock().unwrap();
+        if !cooldowns.check("orphan_spawn", "global", ORPHAN_SPAWN_COOLDOWN) {
+            debug!("Orphan recovery cooldown active");
             return;
         }
     }
@@ -3742,10 +3734,10 @@ async fn check_and_recover_orphans(state: &DaemonState) {
             info!("Respawned coworker {} successfully", recovery.owner);
             state.broadcast_coworker_update(&recovery.owner, "running", None);
 
-            // Update last spawn time for rate limiting
+            // Update cooldown for rate limiting
             {
-                let mut last_spawn = state.last_orphan_spawn.lock().await;
-                *last_spawn = Some(Instant::now());
+                let mut cooldowns = state.cooldowns.lock().unwrap();
+                cooldowns.record("orphan_spawn", "global");
             }
 
             let recovery_msg = Message::text(
@@ -4102,11 +4094,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         // Check nudge cooldown for this task
         let task_key = format!("pending-{}", task_id);
         let on_nudge_cooldown = {
-            let cooldowns = state.pending_task_nudge_cooldowns.lock().unwrap();
-            match cooldowns.get(&task_key) {
-                Some(last_nudge) => last_nudge.elapsed() < Duration::from_secs(300),
-                None => false,
-            }
+            let cooldowns = state.cooldowns.lock().unwrap();
+            !cooldowns.check("task_nudge", &task_key, Duration::from_secs(300))
         };
 
         // Decide action using pure decision function
@@ -4130,8 +4119,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                     debug!("Failed to nudge {} about pending task #{}: {}", o, tid, e);
                 } else {
                     info!("Nudged {} about pending task #{}", o, tid);
-                    let mut cooldowns = state.pending_task_nudge_cooldowns.lock().unwrap();
-                    cooldowns.insert(task_key, Instant::now());
+                    let mut cooldowns = state.cooldowns.lock().unwrap();
+                    cooldowns.record("task_nudge", &task_key);
                 }
             }
             crate::rules::PendingTaskAction::SpawnOwner {
