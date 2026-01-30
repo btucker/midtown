@@ -90,6 +90,9 @@ pub mod paths;
 // Persistent GitHub state (PR reviewer assignments)
 pub mod github_state;
 
+// Reminder system (one-shot condition-based reminders)
+pub mod reminders;
+
 // Web Push notification support
 pub mod push;
 

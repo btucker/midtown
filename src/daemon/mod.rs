@@ -300,6 +300,8 @@ pub(crate) struct DaemonState {
     /// When a coworker hits an API usage/rate limit, we parse the expiry and store it here.
     /// The main loop checks this and nudges everyone when the time arrives.
     usage_limit_nudge_at: Mutex<Option<tokio::time::Instant>>,
+    /// Persistent reminder state (one-shot condition-based notifications)
+    reminder_state: std::sync::Mutex<crate::reminders::ReminderState>,
 }
 
 impl DaemonState {
@@ -333,6 +335,14 @@ impl DaemonState {
                 crate::github_state::GitHubState::default()
             });
 
+        // Load persistent reminder state
+        let reminder_path = crate::paths::reminders_file_for_repo(&repo_name);
+        let reminder_state =
+            crate::reminders::ReminderState::load(&reminder_path).unwrap_or_else(|e| {
+                warn!("Failed to load reminders.json: {}, using defaults", e);
+                crate::reminders::ReminderState::default()
+            });
+
         Ok(Self {
             coworkers,
             channel,
@@ -355,6 +365,7 @@ impl DaemonState {
             last_lead_pane_hash: std::sync::Mutex::new(0),
             lead_working: std::sync::Mutex::new(false),
             last_lead_activity: std::sync::Mutex::new(None),
+            reminder_state: std::sync::Mutex::new(reminder_state),
         })
     }
 
@@ -812,6 +823,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 check_and_recover_orphans(&state).await;
                 spawn_for_pending_tasks(&state);
                 cleanup_orphaned_worktrees(&state);
+                check_and_fire_reminders(&state);
             }
 
             // Periodic channel log rotation
@@ -2650,6 +2662,38 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             handle_channel_read(request.id, all, state)
         }
 
+        "reminder.create" => {
+            let params = request.params.as_ref();
+            let trigger = params
+                .and_then(|p| p.get("trigger"))
+                .and_then(|v| v.as_str());
+            let message = params
+                .and_then(|p| p.get("message"))
+                .and_then(|v| v.as_str());
+
+            match (trigger, message) {
+                (Some("all-work-merged"), Some(msg)) => {
+                    handle_reminder_create(request.id, msg, state)
+                }
+                _ => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
+        "reminder.list" => handle_reminder_list(request.id, state),
+
+        "reminder.cancel" => {
+            let id = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("id"))
+                .and_then(|v| v.as_str());
+
+            match id {
+                Some(id) => handle_reminder_cancel(request.id, id, state),
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
@@ -3017,6 +3061,108 @@ fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Respons
             "messages": messages_json,
         }),
     )
+}
+
+/// Handle reminder.create RPC method.
+fn handle_reminder_create(id: RequestId, message: &str, state: &DaemonState) -> Response {
+    let mut reminder_state = state.reminder_state.lock().unwrap();
+    let reminder_id = reminder_state.add(
+        crate::reminders::ReminderTrigger::AllWorkMerged,
+        message.to_string(),
+    );
+
+    let path = crate::paths::reminders_file_for_repo(&state.repo_name);
+    if let Err(e) = reminder_state.save(&path) {
+        error!("Failed to save reminders: {}", e);
+    }
+
+    let confirmation = format!(
+        "Reminder set (id: {}): I'll notify you when all tasks are completed and all PRs are merged. Message: \"{}\"",
+        reminder_id, message
+    );
+    info!("{}", confirmation);
+    Response::success(id, serde_json::json!({ "message": confirmation }))
+}
+
+/// Handle reminder.list RPC method.
+fn handle_reminder_list(id: RequestId, state: &DaemonState) -> Response {
+    let reminder_state = state.reminder_state.lock().unwrap();
+    let active = reminder_state.active();
+
+    if active.is_empty() {
+        return Response::success(id, serde_json::json!({ "message": "No active reminders." }));
+    }
+
+    let lines: Vec<String> = active
+        .iter()
+        .map(|r| {
+            format!(
+                "  {} [{}] \"{}\" (created {})",
+                r.id,
+                r.trigger,
+                r.message,
+                r.created_at.format("%Y-%m-%d %H:%M UTC")
+            )
+        })
+        .collect();
+
+    let output = format!("Active reminders:\n{}", lines.join("\n"));
+    Response::success(id, serde_json::json!({ "message": output }))
+}
+
+/// Handle reminder.cancel RPC method.
+fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &DaemonState) -> Response {
+    let mut reminder_state = state.reminder_state.lock().unwrap();
+    if reminder_state.cancel(reminder_id) {
+        let path = crate::paths::reminders_file_for_repo(&state.repo_name);
+        if let Err(e) = reminder_state.save(&path) {
+            error!("Failed to save reminders: {}", e);
+        }
+        let msg = format!("Reminder {} cancelled.", reminder_id);
+        info!("{}", msg);
+        Response::success(id, serde_json::json!({ "message": msg }))
+    } else {
+        Response::error(
+            id,
+            RpcError::new(-32602, format!("Reminder '{}' not found", reminder_id)),
+        )
+    }
+}
+
+/// Check all active reminders and fire any whose conditions are met.
+fn check_and_fire_reminders(state: &DaemonState) {
+    let open_pr_coworkers = get_coworkers_with_open_prs();
+
+    let mut reminder_state = state.reminder_state.lock().unwrap();
+    let mut fired_any = false;
+
+    for reminder in &mut reminder_state.reminders {
+        if reminder.fired {
+            continue;
+        }
+        if crate::reminders::evaluate_trigger(&reminder.trigger, &open_pr_coworkers) {
+            info!(
+                "Reminder {} fired (trigger: {}): {}",
+                reminder.id, reminder.trigger, reminder.message
+            );
+            let msg = Message::system(format!(
+                "\u{23f0} Reminder ({}): {}",
+                reminder.trigger, reminder.message
+            ));
+            if let Err(e) = state.send_and_broadcast(&msg) {
+                error!("Failed to post reminder to channel: {}", e);
+            }
+            reminder.fired = true;
+            fired_any = true;
+        }
+    }
+
+    if fired_any {
+        let path = crate::paths::reminders_file_for_repo(&state.repo_name);
+        if let Err(e) = reminder_state.save(&path) {
+            error!("Failed to save reminders after firing: {}", e);
+        }
+    }
 }
 
 /// Handle status RPC method.

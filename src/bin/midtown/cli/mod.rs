@@ -3,6 +3,7 @@ mod chat;
 mod coworker;
 mod daemon;
 mod hooks;
+mod lead;
 mod pr;
 mod response;
 mod task;
@@ -84,6 +85,14 @@ pub fn handle_chat() -> Result<(), String> {
 /// Handle hook commands (insight, idle) - no daemon required
 pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
     hooks::handle(cmd)
+}
+
+/// Handle `midtown lead remind` subcommands
+pub fn handle_remind(
+    cmd: &crate::RemindCommand,
+    client: &DaemonClient,
+) -> Result<Response, String> {
+    lead::handle_remind(cmd, client)
 }
 
 /// Handle `midtown webserver stop` command
