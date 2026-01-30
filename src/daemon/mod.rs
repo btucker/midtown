@@ -1689,8 +1689,29 @@ async fn chat_monitor_loop(
                         // Parse the line as a Message
                         match serde_json::from_str::<Message>(&line) {
                             Ok(msg) => {
-                                // Skip messages from protected senders (loop protection)
+                                // Skip messages from protected senders (loop protection),
+                                // but first check for @lead mentions that need nudging.
                                 if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from)) {
+                                    // System/daemon messages may contain @lead that still
+                                    // needs to trigger a nudge (e.g., orphaned worktree
+                                    // warnings). Route @lead before skipping.
+                                    // Exclude "user" — user messages with @lead are already
+                                    // handled in handle_channel_post to avoid double-nudging.
+                                    if !msg.from.eq_ignore_ascii_case("user")
+                                        && msg.content.to_lowercase().contains("@lead")
+                                    {
+                                        let nudge_text = format!("{}: {}", msg.from, msg.content);
+                                        if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
+                                            warn!("Failed to nudge lead for @lead in {} message: {}", msg.from, e);
+                                        } else {
+                                            info!("Nudged lead about @lead mention in {} message", msg.from);
+                                        }
+                                        state.send_push_notification(
+                                            &format!("@lead from {}", msg.from),
+                                            &msg.content,
+                                            "mention",
+                                        );
+                                    }
                                     continue;
                                 }
                                 // Route any @mentions in the message
@@ -5244,6 +5265,45 @@ mod tests {
         // Should NOT trigger: coworker-to-coworker messages
         assert!(!triggers("@lexington can you help with this?"));
         assert!(!triggers("@pleasant any progress on task 304?"));
+    }
+
+    #[test]
+    fn test_system_message_with_at_lead_should_trigger_nudge() {
+        // System messages containing @lead should be detected as needing a lead
+        // nudge. The chat_monitor_loop checks for @lead in SKIP_SENDERS messages
+        // before skipping them. This test validates the detection logic.
+        // Mirrors the chat_monitor_loop logic: skip-sender messages nudge lead
+        // for @lead, EXCEPT "user" messages (already handled in handle_channel_post).
+        let should_nudge = |from: &str, content: &str| -> bool {
+            let is_skip_sender = SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(from));
+            is_skip_sender
+                && !from.eq_ignore_ascii_case("user")
+                && content.to_lowercase().contains("@lead")
+        };
+
+        // System messages with @lead should trigger nudge
+        assert!(should_nudge(
+            "system",
+            "⚠️ @lead Orphaned worktrees with unmerged commits: amsterdam, park"
+        ));
+
+        // Midtown daemon messages with @lead should also trigger
+        assert!(should_nudge(
+            "midtown",
+            "⚠️ @lead something needs attention"
+        ));
+
+        // System messages WITHOUT @lead should NOT trigger
+        assert!(!should_nudge(
+            "system",
+            "Channel log rotated: 50 old messages archived"
+        ));
+
+        // User messages with @lead should NOT trigger here (handled in handle_channel_post)
+        assert!(!should_nudge("user", "@lead what do you think?"));
+
+        // Coworker messages should NOT be in SKIP_SENDERS at all
+        assert!(!should_nudge("lexington", "@lead can you review this?"));
     }
 
     #[test]
