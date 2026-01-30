@@ -248,8 +248,8 @@ impl Default for DaemonConfig {
     }
 }
 
-/// How long a coworker must be idle before being sent on a break (5 minutes)
-const IDLE_BREAK_DURATION: Duration = Duration::from_secs(300);
+/// How long a coworker must be idle before being sent on a break (30 seconds)
+const IDLE_BREAK_DURATION: Duration = Duration::from_secs(30);
 
 /// How often to check for idle coworkers (30 seconds)
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
@@ -1051,7 +1051,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 /// Check for idle coworkers and send them on a break after the idle timeout.
 ///
 /// A coworker is considered idle if they have no tasks in "in_progress" status
-/// with their name as owner. After 5 minutes of continuous idle, they are
+/// with their name as owner. After 30 seconds of continuous idle, they are
 /// automatically sent on a break.
 ///
 /// IMPORTANT: Coworkers with open PRs or active review assignments are NEVER
@@ -1248,7 +1248,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             }
         } else {
             info!(
-                "Sending idle coworker {} on a break (idle for 5+ minutes)",
+                "Sending idle coworker {} on a break (idle for 30+ seconds)",
                 name
             );
             (true, format!("☕ Letting {} take a break", name))
