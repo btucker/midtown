@@ -3103,6 +3103,16 @@ fn handle_coworker_asking(
         error!("Failed to post question to channel: {}", e);
     }
 
+    // Mark the coworker as waiting for feedback in tmux tab.
+    // This is a direct call since the question is posted as a text message,
+    // not a /me action, so the channel handler won't pick it up.
+    if let Err(e) = state
+        .coworkers
+        .update_status_display(name, Some("waiting for feedback"))
+    {
+        debug!("Failed to update tmux tab for {}: {}", name, e);
+    }
+
     // Nudge the Lead with the question
     let nudge_message = format!("{} is asking: {}", name, question);
     if let Err(e) = state.coworkers.nudge("Lead", &nudge_message) {
