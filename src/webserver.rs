@@ -121,6 +121,14 @@ fn discover_projects() -> Vec<ProjectInfo> {
         }
 
         let name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip entries that are coworker names, not real projects.
+        // These get created when a coworker process in a worktree incorrectly
+        // registers itself as a project using the worktree directory name.
+        if crate::coworker::is_coworker_name(&name) {
+            continue;
+        }
+
         let pid_file = entry.path().join("daemon.pid");
         let socket_path = crate::paths::daemon_socket_for_repo(&name);
 
@@ -375,6 +383,32 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"status\":\"running\""));
         assert!(json.contains("\"name\":\"test\""));
+    }
+
+    #[test]
+    fn test_discover_projects_filters_coworker_names() {
+        // Create a temp dir to act as ~/.midtown/projects/
+        let temp_dir = tempfile::tempdir().unwrap();
+        let projects_dir = temp_dir.path();
+
+        // Create directories: some real projects, some coworker names
+        std::fs::create_dir(projects_dir.join("midtown")).unwrap();
+        std::fs::create_dir(projects_dir.join("broadway")).unwrap();
+        std::fs::create_dir(projects_dir.join("amsterdam")).unwrap();
+        std::fs::create_dir(projects_dir.join("my-app")).unwrap();
+        std::fs::create_dir(projects_dir.join("bleecker")).unwrap();
+
+        // Read entries and filter like discover_projects does
+        let entries = std::fs::read_dir(projects_dir).unwrap();
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| !crate::coworker::is_coworker_name(name))
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["midtown", "my-app"]);
     }
 
     #[test]

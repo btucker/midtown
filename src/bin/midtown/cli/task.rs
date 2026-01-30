@@ -182,23 +182,11 @@ fn post_to_channel(repo: &str, from: &str, content: &str) -> Result<(), String> 
     Ok(())
 }
 
-/// Try to detect the current git repository name
+/// Try to detect the current git repository name.
+/// Uses the worktree-aware detect_repo_name() to avoid returning coworker
+/// worktree names instead of the actual repository name.
 fn detect_git_repo() -> Option<String> {
-    // Try to get repo name from git remote or directory name
-    std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout);
-                std::path::Path::new(path.trim())
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        })
+    midtown::paths::detect_repo_name()
 }
 
 #[cfg(test)]

@@ -459,6 +459,18 @@ pub fn get_project_config(project_name: &str) -> ProjectConfig {
 /// If it doesn't exist, a minimal config is created with the project name
 /// and repo path inferred from the working directory.
 pub fn ensure_project_config(project_name: &str, workdir: &Path) -> std::io::Result<()> {
+    // Reject coworker names to prevent worktree directories from being
+    // registered as projects (e.g., "broadway" instead of "midtown").
+    if crate::coworker::is_coworker_name(project_name) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Refusing to create project config for '{}': this is a coworker name, not a project",
+                project_name
+            ),
+        ));
+    }
+
     let path = project_config_path(project_name);
     if path.exists() {
         return Ok(());
@@ -1136,6 +1148,23 @@ name = "solo"
         let loaded = FullProjectConfig::load_from(&config_path).unwrap();
         assert_eq!(loaded.project.name(), Some("testproj"));
         assert_eq!(loaded.project.primary_repo(), Some("/tmp/repo"));
+    }
+
+    #[test]
+    fn test_ensure_project_config_rejects_coworker_names() {
+        let workdir = Path::new("/tmp/fake-repo");
+
+        // Coworker avenue names should be rejected
+        let result = ensure_project_config("broadway", workdir);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+
+        let result = ensure_project_config("amsterdam", workdir);
+        assert!(result.is_err());
+
+        // Overflow names should also be rejected
+        let result = ensure_project_config("bleecker", workdir);
+        assert!(result.is_err());
     }
 
     #[test]
