@@ -289,6 +289,8 @@ pub(crate) struct DaemonState {
     last_lead_pane_hash: std::sync::Mutex<u64>,
     /// Whether the lead is currently working (for typing indicator dedup)
     lead_working: std::sync::Mutex<bool>,
+    /// When the lead's pane last showed activity (for typing grace period)
+    last_lead_activity: std::sync::Mutex<Option<Instant>>,
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
     /// Web Push notification manager for sending notifications to PWA clients
@@ -352,6 +354,7 @@ impl DaemonState {
             usage_limit_nudge_at: Mutex::new(None),
             last_lead_pane_hash: std::sync::Mutex::new(0),
             lead_working: std::sync::Mutex::new(false),
+            last_lead_activity: std::sync::Mutex::new(None),
         })
     }
 
@@ -882,7 +885,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 ///
 /// Captures the lead's Claude Code pane (`lead.0`), hashes the content, and
 /// compares against the previous hash. If content changed, the lead is working.
-/// Only broadcasts when the working state actually transitions to avoid spam.
+/// Uses a grace period so brief pauses (reading, thinking) don't prematurely
+/// clear the indicator. Only broadcasts when the working state transitions.
 async fn check_lead_typing(state: &DaemonState) {
     let tx = match state.web_updates_tx {
         Some(ref tx) => tx,
@@ -911,8 +915,22 @@ async fn check_lead_typing(state: &DaemonState) {
         prev
     };
 
-    // Determine if the lead is working (pane content changed since last check)
-    let is_working = prev_hash != 0 && new_hash != prev_hash;
+    let pane_changed = prev_hash != 0 && new_hash != prev_hash;
+    let now = Instant::now();
+
+    // Update last-activity timestamp when pane content changes
+    if pane_changed {
+        *state.last_lead_activity.lock().unwrap() = Some(now);
+    }
+
+    // Determine working state using grace period: stay "working" until
+    // no pane changes have occurred for LEAD_TYPING_GRACE_PERIOD.
+    let is_working = determine_lead_working(
+        pane_changed,
+        *state.last_lead_activity.lock().unwrap(),
+        now,
+        LEAD_TYPING_GRACE_PERIOD,
+    );
 
     // Only broadcast on state transitions
     let prev_working = {
@@ -924,6 +942,25 @@ async fn check_lead_typing(state: &DaemonState) {
 
     if is_working != prev_working {
         web::broadcast_lead_typing(tx, is_working);
+    }
+}
+
+/// Pure decision function: is the lead still working?
+///
+/// Returns `true` if the pane just changed, or if the last activity was within
+/// the grace period. Returns `false` only after sustained inactivity.
+fn determine_lead_working(
+    pane_changed: bool,
+    last_activity: Option<Instant>,
+    now: Instant,
+    grace_period: Duration,
+) -> bool {
+    if pane_changed {
+        return true;
+    }
+    match last_activity {
+        Some(last) => now.duration_since(last) < grace_period,
+        None => false,
     }
 }
 
@@ -6446,5 +6483,66 @@ mod tests {
             unescape_shell_artifacts("path\\to\\file and \\!"),
             "path\\to\\file and !"
         );
+    }
+
+    // ---- Lead typing indicator grace period tests ----
+
+    #[test]
+    fn test_determine_lead_working_pane_changed() {
+        // When the pane just changed, always working regardless of last_activity
+        let now = Instant::now();
+        let grace = Duration::from_secs(30);
+        assert!(determine_lead_working(true, None, now, grace));
+        assert!(determine_lead_working(true, Some(now), now, grace));
+    }
+
+    #[test]
+    fn test_determine_lead_working_within_grace_period() {
+        // Pane hasn't changed, but last activity was recent — still working
+        let now = Instant::now();
+        let grace = Duration::from_secs(30);
+        let last_activity = now - Duration::from_secs(10);
+        assert!(determine_lead_working(
+            false,
+            Some(last_activity),
+            now,
+            grace
+        ));
+    }
+
+    #[test]
+    fn test_determine_lead_working_grace_period_expired() {
+        // Pane hasn't changed and grace period has elapsed — not working
+        let now = Instant::now();
+        let grace = Duration::from_secs(30);
+        let last_activity = now - Duration::from_secs(31);
+        assert!(!determine_lead_working(
+            false,
+            Some(last_activity),
+            now,
+            grace
+        ));
+    }
+
+    #[test]
+    fn test_determine_lead_working_no_activity_ever() {
+        // No pane change and no prior activity — not working
+        let now = Instant::now();
+        let grace = Duration::from_secs(30);
+        assert!(!determine_lead_working(false, None, now, grace));
+    }
+
+    #[test]
+    fn test_determine_lead_working_exactly_at_grace_boundary() {
+        // At exactly the grace period boundary — not working (uses < not <=)
+        let now = Instant::now();
+        let grace = Duration::from_secs(30);
+        let last_activity = now - Duration::from_secs(30);
+        assert!(!determine_lead_working(
+            false,
+            Some(last_activity),
+            now,
+            grace
+        ));
     }
 }
