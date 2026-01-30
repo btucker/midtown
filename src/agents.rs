@@ -394,8 +394,8 @@ mod tests {
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(
-            text.contains("Professional"),
-            "york normal should be professional"
+            text.contains("Traditional"),
+            "york normal should be traditional"
         );
     }
 
@@ -405,8 +405,8 @@ mod tests {
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(
-            text.contains("New Yorker"),
-            "york fun should mention New Yorker"
+            text.contains("Upper East Side"),
+            "york fun should reference Upper East Side"
         );
     }
 
@@ -416,8 +416,8 @@ mod tests {
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(
-            text.contains("vendor"),
-            "york wild should mention vendor energy"
+            text.contains("Yorkville"),
+            "york wild should reference Yorkville neighborhood"
         );
     }
 
@@ -449,7 +449,7 @@ mod tests {
         let section = personality_section("broadway", Personality::Fun);
         assert!(section.contains("## Personality"));
         assert!(section.contains("**fun**"));
-        assert!(section.contains("premiere"));
+        assert!(section.contains("opening night"));
     }
 
     #[test]
