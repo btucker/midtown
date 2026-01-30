@@ -8,6 +8,7 @@
 mod constants;
 pub(crate) mod effects;
 mod helpers;
+pub(crate) mod snapshot;
 mod trackers;
 
 use constants::*;
@@ -905,15 +906,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 if let Err(e) = state.coworkers.sync_with_tmux() {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }
-                let idle_effects = check_and_shutdown_idle_coworkers(&state).await;
+                // Collect all data once for this tick group
+                let snap = snapshot::collect_world_snapshot(&state).await;
+                let idle_effects = check_and_shutdown_idle_coworkers(&snap, &state).await;
                 effects::execute_effects(idle_effects, &state).await;
-                let interrupt_effects = check_and_nudge_interrupted_coworkers(&state).await;
+                let interrupt_effects = check_and_nudge_interrupted_coworkers(&snap, &state).await;
                 effects::execute_effects(interrupt_effects, &state).await;
-                let prompt_effects = check_and_nudge_prompted_coworkers(&state).await;
+                let prompt_effects = check_and_nudge_prompted_coworkers(&snap, &state).await;
                 effects::execute_effects(prompt_effects, &state).await;
-                let usage_effects = check_for_usage_limits(&state).await;
+                let usage_effects = check_for_usage_limits(&snap);
                 effects::execute_effects(usage_effects, &state).await;
-                let expiry_effects = maybe_nudge_usage_limit_expiry(&state).await;
+                let expiry_effects = maybe_nudge_usage_limit_expiry(&snap);
                 effects::execute_effects(expiry_effects, &state).await;
             }
 
@@ -924,14 +927,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodic orphan check, duplicate detection, and worktree cleanup
             _ = orphan_check_interval.tick() => {
-                let dup_effects = check_for_duplicate_task_workers(&state);
+                // Collect all data once for this tick group
+                let snap = snapshot::collect_world_snapshot(&state).await;
+                let dup_effects = check_for_duplicate_task_workers(&snap);
                 effects::execute_effects(dup_effects, &state).await;
-                let orphan_effects = check_and_recover_orphans(&state);
+                let orphan_effects = check_and_recover_orphans(&snap, &state);
                 effects::execute_effects(orphan_effects, &state).await;
-                let spawn_effects = spawn_for_pending_tasks(&state);
+                let spawn_effects = spawn_for_pending_tasks(&snap, &state);
                 effects::execute_effects(spawn_effects, &state).await;
                 cleanup_orphaned_worktrees(&state);
-                let reminder_effects = check_and_fire_reminders(&state);
+                let reminder_effects = check_and_fire_reminders(&snap, &state);
                 effects::execute_effects(reminder_effects, &state).await;
             }
 
@@ -1098,93 +1103,54 @@ fn determine_lead_working(
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be sent on a break. This prevents spawn storms where
 /// coworkers are rapidly sent on breaks.
-async fn check_and_shutdown_idle_coworkers(state: &DaemonState) -> Vec<effects::Effect> {
+async fn check_and_shutdown_idle_coworkers(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
     use effects::Effect;
 
-    // Get list of active coworkers with their data (need started_at for lifetime check)
-    let active_coworkers = state.coworkers.list();
-
-    if active_coworkers.is_empty() {
+    if snap.active_coworkers.is_empty() {
         return vec![];
     }
 
-    // Get in_progress tasks to determine who is busy
-    let busy_coworkers: HashSet<String> =
-        get_busy_coworkers(&state.repo_name).into_iter().collect();
-
-    // Get coworkers with open PRs - they should NEVER be sent on a break
-    let coworkers_with_open_prs: HashSet<String> =
-        get_coworkers_with_open_prs(state).into_iter().collect();
-
-    // Get coworkers with recently merged PRs - used for better shutdown messages
-    let coworkers_with_merged_prs: HashSet<String> = get_coworkers_with_merged_prs(state);
-
-    // Get coworkers actively assigned to review PRs - they should not be considered idle.
-    // Check BOTH in-memory and persistent state. The in-memory tracker can be empty after
-    // a daemon restart, and the persistent state survives restarts.
-    let active_reviewers = {
-        let tracker = state.pr_review_tracker.lock().await;
-        let mut reviewers = tracker.active_reviewers();
-        // Also include reviewers from persistent state (survives daemon restarts)
-        let github_state = state.github_state.lock().await;
-        for reviewer_name in github_state.assigned_reviewers() {
-            reviewers.insert(reviewer_name.to_string());
-        }
-        reviewers
-    };
-
-    // Get coworkers that completed tasks which unblocked pending follow-ups.
-    // These coworkers should be kept alive so the daemon can assign the
-    // follow-up to them (preserving context for tightly coupled task chains).
-    let coworkers_with_unblocked_deps = crate::tasks::get_coworkers_with_unblocked_dependents();
-
     debug!(
         "Idle shutdown check: active={}, busy=[{}], open_prs=[{}], reviewers=[{}], unblocked_deps=[{}]",
-        active_coworkers.len(),
-        busy_coworkers
+        snap.active_coworkers.len(),
+        snap.busy_coworkers
             .iter()
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
-        coworkers_with_open_prs
+        snap.coworkers_with_open_prs
             .iter()
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
-        active_reviewers
+        snap.active_reviewers
             .iter()
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
-        coworkers_with_unblocked_deps
+        snap.coworkers_with_unblocked_deps
             .iter()
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
     );
 
-    // Build coworker snapshots for the pure decision function
-    let snapshots: Vec<crate::rules::CoworkerSnapshot> = active_coworkers
-        .iter()
-        .map(|cw| crate::rules::CoworkerSnapshot {
-            name: cw.name.clone(),
-            started_at: cw.started_at,
-            isolated_tasks: cw.isolated_tasks,
-        })
-        .collect();
-
     // Pure decision: who should be shut down?
+    // (idle_since is mutable tracker state — stays on DaemonState until Phase 6)
     let to_shutdown = {
         let mut idle_since = state.idle_since.write().await;
         crate::rules::decide_idle_shutdowns(
-            &snapshots,
-            &busy_coworkers,
-            &coworkers_with_open_prs,
-            &active_reviewers,
-            &coworkers_with_unblocked_deps,
+            &snap.coworker_snapshots,
+            &snap.busy_coworkers,
+            &snap.coworkers_with_open_prs,
+            &snap.active_reviewers,
+            &snap.coworkers_with_unblocked_deps,
             &mut idle_since,
-            Instant::now(),
-            chrono::Utc::now(),
+            snap.now,
+            snap.now_utc,
             IDLE_BREAK_DURATION,
             MINIMUM_COWORKER_LIFETIME,
         )
@@ -1197,6 +1163,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) -> Vec<effects::
         let name = &decision.name;
 
         // For isolated coworkers (reviewers), verify the review was actually posted
+        // (pr_review_tracker and github_state are mutable async state — kept on DaemonState)
         let (should_shutdown, shutdown_msg) = if decision.is_isolated {
             // Look up the PR this reviewer was assigned to
             // Try in-memory tracker first
@@ -1247,7 +1214,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) -> Vec<effects::
                 }
                 None => {
                     // Can't find PR assignment — check if their work already merged
-                    if coworkers_with_merged_prs.contains(name) {
+                    if snap.coworkers_with_merged_prs.contains(name) {
                         info!(
                             "Isolated coworker {} has no PR assignment but has merged PR, sending on a break",
                             name
@@ -1268,7 +1235,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) -> Vec<effects::
                     }
                 }
             }
-        } else if coworkers_with_merged_prs.contains(name) {
+        } else if snap.coworkers_with_merged_prs.contains(name) {
             info!("Sending idle coworker {} on a break (PR merged)", name);
             (
                 true,
@@ -1313,39 +1280,25 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) -> Vec<effects::
 /// Captures each active coworker's tmux pane content and checks for interruption
 /// indicators ("Interrupted" or "What should Claude do instead?"). If the interrupted
 /// state persists for 60 seconds, sends a "continue" nudge to unstick them.
-async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) -> Vec<effects::Effect> {
+async fn check_and_nudge_interrupted_coworkers(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
     use effects::Effect;
 
-    let active_coworkers = state.coworkers.list();
-    if active_coworkers.is_empty() {
+    if snap.active_coworkers.is_empty() {
         return vec![];
     }
 
-    let session_name = state.coworkers.session_name();
-
-    // Build coworker snapshots and capture pane contents
-    let mut snapshots = Vec::new();
-    let mut pane_contents = HashMap::new();
-    for cw in &active_coworkers {
-        snapshots.push(crate::rules::CoworkerSnapshot {
-            name: cw.name.clone(),
-            started_at: cw.started_at,
-            isolated_tasks: cw.isolated_tasks,
-        });
-        let target = format!("{}:{}", session_name, &cw.name);
-        if let Some(content) = crate::tmux::capture_pane(&target) {
-            pane_contents.insert(cw.name.clone(), content);
-        }
-    }
-
     // Pure decision: who should be nudged?
+    // (interrupted_since is mutable tracker state — stays on DaemonState until Phase 6)
     let to_nudge = {
         let mut interrupted_since = state.interrupted_since.write().await;
         crate::rules::decide_interrupt_nudges(
-            &snapshots,
-            &pane_contents,
+            &snap.coworker_snapshots,
+            &snap.pane_contents,
             &mut interrupted_since,
-            Instant::now(),
+            snap.now,
             INTERRUPTED_NUDGE_DURATION,
         )
     };
@@ -1378,35 +1331,25 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) -> Vec<effec
 ///
 /// Unlike interrupted coworkers (who just need a "continue"), prompted coworkers need a
 /// *human decision* — so we alert the lead with context about what's being asked.
-async fn check_and_nudge_prompted_coworkers(state: &DaemonState) -> Vec<effects::Effect> {
+async fn check_and_nudge_prompted_coworkers(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
     use effects::Effect;
 
-    let active_coworkers = state.coworkers.list();
-    if active_coworkers.is_empty() {
+    if snap.active_coworkers.is_empty() {
         return vec![];
     }
 
-    let session_name = state.coworkers.session_name();
-
-    // Build coworker snapshots and capture pane contents
-    let mut snapshots = Vec::new();
-    let mut pane_contents = HashMap::new();
-    for cw in &active_coworkers {
-        snapshots.push(crate::rules::CoworkerSnapshot {
-            name: cw.name.clone(),
-            started_at: cw.started_at,
-            isolated_tasks: cw.isolated_tasks,
-        });
-        let target = format!("{}:{}", session_name, &cw.name);
-        if let Some(content) = crate::tmux::capture_pane(&target) {
-            pane_contents.insert(cw.name.clone(), content);
-        }
-    }
-
     // Pure decision: which coworkers need lead attention?
+    // (prompted_nudged is mutable tracker state — stays on DaemonState until Phase 6)
     let to_nudge = {
         let mut prompted_nudged = state.prompted_nudged.write().await;
-        crate::rules::decide_prompt_nudges(&snapshots, &pane_contents, &mut prompted_nudged)
+        crate::rules::decide_prompt_nudges(
+            &snap.coworker_snapshots,
+            &snap.pane_contents,
+            &mut prompted_nudged,
+        )
     };
 
     let mut effects = Vec::new();
@@ -1424,7 +1367,7 @@ async fn check_and_nudge_prompted_coworkers(state: &DaemonState) -> Vec<effects:
         effects.push(Effect::NudgeLead {
             message: format!(
                 "{} is waiting on a {} — run: tmux select-window -t {}:{}",
-                name, label, session_name, name
+                name, label, snap.session_name, name
             ),
         });
     }
@@ -1440,38 +1383,30 @@ async fn check_and_nudge_prompted_coworkers(state: &DaemonState) -> Vec<effects:
 /// Usage limits are account-wide, so when one coworker hits it, all of them
 /// will be stuck. We detect it from any coworker, parse the expiry, and
 /// schedule a single nudge time for everyone.
-async fn check_for_usage_limits(state: &DaemonState) -> Vec<effects::Effect> {
+fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
     use effects::Effect;
 
     // If we already have a nudge scheduled, don't re-detect
-    let nudge_already_scheduled = {
-        let nudge_at = state.usage_limit_nudge_at.lock().await;
-        nudge_at.is_some()
-    };
-
-    if nudge_already_scheduled {
+    if snap.usage_limit_nudge_scheduled {
         return vec![];
     }
 
-    let active_coworkers = state.coworkers.list();
-    if active_coworkers.is_empty() {
+    if snap.active_coworkers.is_empty() {
         return vec![];
     }
 
-    let session_name = state.coworkers.session_name();
-
-    // Gather pane contents
-    let mut pane_contents: Vec<(String, String)> = Vec::new();
-    for cw in &active_coworkers {
-        let target = format!("{}:{}", session_name, cw.name);
-        if let Some(content) = crate::tmux::capture_pane(&target) {
-            pane_contents.push((cw.name.clone(), content));
-        }
-    }
+    // Convert snapshot pane contents to the Vec<(String, String)> format expected by rules
+    let pane_contents: Vec<(String, String)> = snap
+        .pane_contents
+        .iter()
+        .map(|(name, content)| (name.clone(), content.clone()))
+        .collect();
 
     // Pure decision: detect usage limit
-    let decision =
-        crate::rules::decide_usage_limit_detection(&pane_contents, nudge_already_scheduled);
+    let decision = crate::rules::decide_usage_limit_detection(
+        &pane_contents,
+        snap.usage_limit_nudge_scheduled,
+    );
 
     let detected_coworker = match decision {
         crate::rules::UsageLimitDecision::Detected { coworker } => coworker,
@@ -1479,10 +1414,10 @@ async fn check_for_usage_limits(state: &DaemonState) -> Vec<effects::Effect> {
     };
 
     // Find the pane content for the detected coworker to parse duration
-    let pane_content = pane_contents
-        .iter()
-        .find(|(name, _)| *name == detected_coworker)
-        .map(|(_, content)| content.as_str())
+    let pane_content = snap
+        .pane_contents
+        .get(&detected_coworker)
+        .map(|s| s.as_str())
         .unwrap_or("");
 
     let wait_duration = crate::rules::parse_usage_limit_duration(pane_content);
@@ -1516,29 +1451,26 @@ async fn check_for_usage_limits(state: &DaemonState) -> Vec<effects::Effect> {
 }
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all active coworkers.
-async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) -> Vec<effects::Effect> {
+fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
     use effects::Effect;
 
     // Pure decision: should we nudge?
-    let nudge_at_value = {
-        let nudge_at = state.usage_limit_nudge_at.lock().await;
-        *nudge_at
-    };
-    let decision =
-        crate::rules::decide_usage_limit_expiry(nudge_at_value, tokio::time::Instant::now());
+    let decision = crate::rules::decide_usage_limit_expiry(
+        snap.usage_limit_nudge_at,
+        tokio::time::Instant::now(),
+    );
 
     if decision != crate::rules::UsageLimitExpiryDecision::NudgeNow {
         return vec![];
     }
 
-    let active_coworkers = state.coworkers.list();
-    if active_coworkers.is_empty() {
+    if snap.active_coworkers.is_empty() {
         return vec![];
     }
 
     info!(
         "Usage limit expired — nudging {} active coworkers",
-        active_coworkers.len()
+        snap.active_coworkers.len()
     );
 
     let mut effects = vec![
@@ -1547,12 +1479,12 @@ async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) -> Vec<effects::Eff
             sender: "system".to_string(),
             message: format!(
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
-                active_coworkers.len()
+                snap.active_coworkers.len()
             ),
         },
     ];
 
-    for cw in &active_coworkers {
+    for cw in &snap.active_coworkers {
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
             message: "continue".to_string(),
@@ -3556,11 +3488,16 @@ fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &DaemonState)
 }
 
 /// Check all active reminders and fire any whose conditions are met.
-fn check_and_fire_reminders(state: &DaemonState) -> Vec<effects::Effect> {
+fn check_and_fire_reminders(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
     use effects::Effect;
 
-    let open_pr_coworkers = get_coworkers_with_open_prs(state);
+    // Convert snapshot HashSet to Vec for evaluate_trigger compatibility
+    let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
 
+    // reminder_state is mutable tracker state — stays on DaemonState until Phase 6
     let mut reminder_state = state.reminder_state.lock().unwrap();
     let mut fired_any = false;
     let mut effects = Vec::new();
@@ -3587,7 +3524,7 @@ fn check_and_fire_reminders(state: &DaemonState) -> Vec<effects::Effect> {
     }
 
     if fired_any {
-        let path = crate::paths::reminders_file_for_repo(&state.repo_name);
+        let path = crate::paths::reminders_file_for_repo(&snap.repo_name);
         if let Err(e) = reminder_state.save(&path) {
             error!("Failed to save reminders after firing: {}", e);
         }
@@ -4419,10 +4356,14 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-fn check_and_recover_orphans(state: &DaemonState) -> Vec<effects::Effect> {
+fn check_and_recover_orphans(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
     use effects::Effect;
 
     // Check cooldown - skip if we spawned too recently
+    // (cooldowns is mutable tracker state — stays on DaemonState until Phase 6)
     {
         let cooldowns = state.cooldowns.lock().unwrap();
         if !cooldowns.check("orphan_spawn", "global", ORPHAN_SPAWN_COOLDOWN) {
@@ -4431,24 +4372,16 @@ fn check_and_recover_orphans(state: &DaemonState) -> Vec<effects::Effect> {
         }
     }
 
-    // Get in_progress tasks with their owners
-    let in_progress = get_in_progress_tasks_with_owners();
-
-    if in_progress.is_empty() {
+    if snap.in_progress_tasks.is_empty() {
         return vec![];
     }
 
-    // Get list of currently running coworkers (excludes Stopping/Stopped)
-    let active_names: std::collections::HashSet<String> = state
-        .coworkers
-        .list_running()
-        .iter()
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
-
     // Decide which orphan (if any) to recover using pure decision function
-    let recovery =
-        crate::rules::decide_orphan_recovery(&in_progress, &active_names, state.is_at_dev_limit());
+    let recovery = crate::rules::decide_orphan_recovery(
+        &snap.in_progress_tasks,
+        &snap.active_names,
+        snap.is_at_dev_limit,
+    );
 
     let Some(recovery) = recovery else {
         return vec![];
@@ -4500,7 +4433,7 @@ fn check_and_recover_orphans(state: &DaemonState) -> Vec<effects::Effect> {
             vec![
                 Effect::ResetTaskToPending {
                     task_id: recovery.task_id.clone(),
-                    repo_name: state.repo_name.clone(),
+                    repo_name: snap.repo_name.clone(),
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
@@ -4644,19 +4577,16 @@ async fn nudge_discovered_coworkers(state: &DaemonState) {
 /// 2. Groups tasks by task ID to find duplicates
 /// 3. For tasks with multiple workers, keeps the one that started earliest
 /// 4. Shuts down the duplicate workers with an explanatory message
-fn check_for_duplicate_task_workers(state: &DaemonState) -> Vec<effects::Effect> {
+fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
     use effects::Effect;
 
-    // Get in_progress tasks with their owners
-    let in_progress = get_in_progress_tasks_with_owners();
-
-    if in_progress.is_empty() {
+    if snap.in_progress_tasks.is_empty() {
         return vec![];
     }
 
     // Build a map of task_id -> list of owners
     let mut task_workers: HashMap<String, Vec<String>> = HashMap::new();
-    for (task_id, _subject, owner) in &in_progress {
+    for (task_id, _subject, owner) in &snap.in_progress_tasks {
         // Skip empty owners or Lead
         if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
             continue;
@@ -4667,13 +4597,6 @@ fn check_for_duplicate_task_workers(state: &DaemonState) -> Vec<effects::Effect>
             .push(owner.clone());
     }
 
-    // Get all active coworkers with their start times
-    let active_coworkers = state.coworkers.list();
-    let coworker_start_times: HashMap<String, chrono::DateTime<chrono::Utc>> = active_coworkers
-        .iter()
-        .map(|cw| (cw.name.to_lowercase(), cw.started_at))
-        .collect();
-
     let mut effects = Vec::new();
 
     // Find tasks with multiple workers and determine who to kill
@@ -4683,7 +4606,8 @@ fn check_for_duplicate_task_workers(state: &DaemonState) -> Vec<effects::Effect>
         }
 
         // Get the task subject for logging
-        let task_subject = in_progress
+        let task_subject = snap
+            .in_progress_tasks
             .iter()
             .find(|(id, _, _)| id == &task_id)
             .map(|(_, s, _)| s.as_str())
@@ -4702,7 +4626,7 @@ fn check_for_duplicate_task_workers(state: &DaemonState) -> Vec<effects::Effect>
         let mut workers_with_times: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = workers
             .into_iter()
             .map(|name| {
-                let start_time = coworker_start_times.get(&name.to_lowercase()).copied();
+                let start_time = snap.coworker_start_times.get(&name.to_lowercase()).copied();
                 (name, start_time)
             })
             .collect();
@@ -4813,17 +4737,16 @@ fn cleanup_orphaned_worktrees(state: &DaemonState) {
 /// Handles two cases:
 /// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
 /// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
-fn spawn_for_pending_tasks(state: &DaemonState) -> Vec<effects::Effect> {
+fn spawn_for_pending_tasks(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
     use effects::Effect;
 
-    // Get list of currently running coworkers (excludes Stopping/Stopped)
-    let active_coworkers = state.coworkers.list_running();
-    let active_names: std::collections::HashSet<String> = active_coworkers
-        .iter()
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
-
-    debug!("Task assignment state: active={}", active_coworkers.len(),);
+    debug!(
+        "Task assignment state: active={}",
+        snap.running_coworkers.len()
+    );
 
     let mut effects = Vec::new();
 
@@ -4842,8 +4765,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) -> Vec<effects::Effect> {
             &task_id.to_string(),
             &task_subject,
             &owner,
-            &active_names,
-            state.is_at_dev_limit(),
+            &snap.active_names,
+            snap.is_at_dev_limit,
             on_nudge_cooldown,
         );
 
@@ -4918,7 +4841,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) -> Vec<effects::Effect> {
         std::collections::HashMap::new();
     for task in pending_unowned {
         // Check dev coworkers limit before spawning (reserve slots for reviewers)
-        if state.is_at_dev_limit() {
+        if snap.is_at_dev_limit {
             debug!(
                 "Dev coworkers limit reached, deferring unowned task #{}",
                 task.id
@@ -4991,7 +4914,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) -> Vec<effects::Effect> {
         };
 
         // Check if this coworker is already running (grouped to an active coworker)
-        let already_running = active_names.contains(&coworker_name.to_lowercase());
+        let already_running = snap.active_names.contains(&coworker_name.to_lowercase());
 
         // Step 2: Atomically assign task ownership BEFORE spawning
         // This prevents race conditions where multiple coworkers could claim the same task
