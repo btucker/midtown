@@ -19,6 +19,10 @@ pub enum HookCommand {
     Idle,
     /// Handle Lead stop hook - read channel messages for the Lead
     LeadStop,
+    /// Handle PostToolUse hook for TaskUpdate/TaskCreate - posts task activity to channel
+    Task,
+    /// Handle PostToolUse hook for AskUserQuestion - notifies daemon to nudge Lead
+    Ask,
 }
 
 /// Input structure for hooks (from Claude Code via stdin)
@@ -40,6 +44,8 @@ pub fn handle(cmd: &HookCommand) -> Result<Response, String> {
         HookCommand::Insight => handle_insight_hook(),
         HookCommand::Idle => handle_idle_hook(),
         HookCommand::LeadStop => handle_lead_stop_hook(),
+        HookCommand::Task => handle_task_hook(),
+        HookCommand::Ask => handle_ask_hook(),
     }
 }
 
@@ -385,6 +391,155 @@ fn hash_insight(insight: &str) -> String {
     let mut hasher = DefaultHasher::new();
     normalized.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// Handle the PostToolUse hook for task operations (TaskUpdate/TaskCreate).
+///
+/// Reads tool use context from stdin (JSON), parses the task operation,
+/// and posts appropriate action message to channel.
+fn handle_task_hook() -> Result<Response, String> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| format!("Failed to read stdin: {}", e))?;
+
+    let context: serde_json::Value =
+        serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
+
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+    let channel =
+        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    let tool_name = context["tool_name"]
+        .as_str()
+        .or_else(|| context["toolName"].as_str())
+        .unwrap_or("");
+    let tool_input = &context["tool_input"];
+
+    let action_message = match tool_name {
+        "TaskCreate" => {
+            let subject = tool_input["subject"].as_str().unwrap_or("new task");
+            format!("created task: {}", subject)
+        }
+        "TaskUpdate" => {
+            let task_id = tool_input["taskId"]
+                .as_str()
+                .unwrap_or(tool_input["task_id"].as_str().unwrap_or("?"));
+
+            if let Some(new_status) = tool_input["status"].as_str() {
+                match new_status {
+                    "in_progress" => {
+                        if tool_input.get("owner").is_some() {
+                            format!("claimed task {}", task_id)
+                        } else {
+                            format!("started task {}", task_id)
+                        }
+                    }
+                    "completed" => format!("completed task {}", task_id),
+                    _ => format!("updated task {} to {}", task_id, new_status),
+                }
+            } else if tool_input.get("owner").is_some() {
+                format!("claimed task {}", task_id)
+            } else {
+                format!("updated task {}", task_id)
+            }
+        }
+        _ => {
+            return Ok(Response::Message {
+                message: "OK".to_string(),
+            });
+        }
+    };
+
+    let message = midtown::Message::action(&agent, &action_message);
+    channel
+        .send(&message)
+        .map_err(|e| format!("Failed to post to channel: {}", e))?;
+
+    Ok(Response::Message {
+        message: format!("Posted: * {} {}", agent, action_message),
+    })
+}
+
+/// Handle the PostToolUse hook for AskUserQuestion.
+///
+/// Reads tool use context from stdin (JSON), extracts the question(s),
+/// and notifies the daemon to nudge the Lead with the question.
+fn handle_ask_hook() -> Result<Response, String> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| format!("Failed to read stdin: {}", e))?;
+
+    let context: serde_json::Value =
+        serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
+
+    let tool_input = &context["tool_input"];
+    let questions = extract_ask_questions(tool_input);
+
+    if questions.is_empty() {
+        return Ok(Response::Message {
+            message: "No questions found in tool input".to_string(),
+        });
+    }
+
+    let question_text = if questions.len() == 1 {
+        questions[0].clone()
+    } else {
+        questions.join("; ")
+    };
+
+    // Try to notify daemon via RPC
+    match crate::client::DaemonClient::connect() {
+        Ok(client) => match client.coworker_asking(&agent, &question_text) {
+            Ok(_) => Ok(Response::Message {
+                message: format!("Notified Lead: {} is asking: {}", agent, question_text),
+            }),
+            Err(e) => {
+                post_question_to_channel(&agent, &question_text)?;
+                Ok(Response::Message {
+                    message: format!("Posted question to channel (daemon error: {})", e),
+                })
+            }
+        },
+        Err(_) => {
+            post_question_to_channel(&agent, &question_text)?;
+            Ok(Response::Message {
+                message: "Posted question to channel (daemon not running)".to_string(),
+            })
+        }
+    }
+}
+
+/// Extract questions from AskUserQuestion tool input.
+fn extract_ask_questions(tool_input: &serde_json::Value) -> Vec<String> {
+    let mut questions = Vec::new();
+    if let Some(qs) = tool_input.get("questions").and_then(|q| q.as_array()) {
+        for q in qs {
+            if let Some(text) = q.get("question").and_then(|t| t.as_str()) {
+                questions.push(text.to_string());
+            }
+        }
+    }
+    questions
+}
+
+/// Post a question to the channel as a fallback when daemon is unavailable.
+fn post_question_to_channel(agent: &str, question: &str) -> Result<(), String> {
+    let repo = detect_git_repo().ok_or("Not in a git repository")?;
+    let channel =
+        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
+
+    let message = midtown::Message::text(agent, format!("Question for Lead: {}", question));
+    channel
+        .send(&message)
+        .map_err(|e| format!("Failed to post to channel: {}", e))?;
+
+    Ok(())
 }
 
 /// Try to detect the current git repository name.

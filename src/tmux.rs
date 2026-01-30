@@ -799,19 +799,19 @@ fn coworker_settings_json(bin_command: &str) -> serde_json::Value {
                 "matcher": "TaskUpdate",
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{} coworker task-hook", bin_command)
+                    "command": format!("{} hook task", bin_command)
                 }]
             }, {
                 "matcher": "TaskCreate",
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{} coworker task-hook", bin_command)
+                    "command": format!("{} hook task", bin_command)
                 }]
             }, {
                 "matcher": "AskUserQuestion",
                 "hooks": [{
                     "type": "command",
-                    "command": format!("{} coworker ask-hook", bin_command)
+                    "command": format!("{} hook ask", bin_command)
                 }]
             }, {
                 // No matcher = runs on every tool use
@@ -1150,21 +1150,21 @@ mod tests {
         assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
         assert_eq!(
             post_tool_hooks[0]["hooks"][0]["command"],
-            "midtown coworker task-hook"
+            "midtown hook task"
         );
 
         // TaskCreate hook
         assert_eq!(post_tool_hooks[1]["matcher"], "TaskCreate");
         assert_eq!(
             post_tool_hooks[1]["hooks"][0]["command"],
-            "midtown coworker task-hook"
+            "midtown hook task"
         );
 
         // AskUserQuestion hook
         assert_eq!(post_tool_hooks[2]["matcher"], "AskUserQuestion");
         assert_eq!(
             post_tool_hooks[2]["hooks"][0]["command"],
-            "midtown coworker ask-hook"
+            "midtown hook ask"
         );
 
         // Insight hook (no matcher)

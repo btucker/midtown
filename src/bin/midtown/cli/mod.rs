@@ -14,7 +14,7 @@ pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
 pub use pr::PrCommand;
 pub use response::Response;
-pub use task::{HookEvent, TaskCommand};
+pub use task::TaskCommand;
 
 use crate::client::DaemonClient;
 
@@ -28,11 +28,6 @@ pub fn handle_coworker(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<R
 
 pub fn handle_task(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, String> {
     task::handle(cmd, client)
-}
-
-/// Handle task hook events directly (no daemon required)
-pub fn handle_task_hook(event: &HookEvent) -> Result<Response, String> {
-    task::handle_hook_standalone(event)
 }
 
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
@@ -82,7 +77,7 @@ pub fn handle_chat() -> Result<(), String> {
     chat::run()
 }
 
-/// Handle hook commands (insight, idle) - no daemon required
+/// Handle hook commands (insight, idle, task, ask) - no daemon required
 pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
     hooks::handle(cmd)
 }
