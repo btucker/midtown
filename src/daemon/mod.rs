@@ -2101,23 +2101,11 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             continue;
         }
 
-        // Check if already assigned for review (check both in-memory and persistent state)
-        {
-            let tracker = state.pr_review_tracker.lock().await;
-            if tracker.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review (in-memory)", pr_number);
-                continue;
-            }
-        }
-        {
-            let github_state = state.github_state.lock().await;
-            if github_state.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review (persistent)", pr_number);
-                continue;
-            }
-        }
-
-        // Check if PR already has a Claude review (expensive, do last)
+        // Check if PR already has a Claude review.
+        // This runs BEFORE the is_assigned check so that completed reviews
+        // are detected even when a reviewer is still tracked as assigned
+        // (e.g., after a daemon restart or when the reviewer posted a comment
+        // instead of a formal GitHub review).
         if pr_has_claude_review(pr_number) {
             debug!("PR #{} already has a Claude review", pr_number);
 
@@ -2296,6 +2284,24 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             }
 
             continue;
+        }
+
+        // Check if already assigned for review (check both in-memory and persistent state).
+        // This runs AFTER review detection so completed reviews are always detected,
+        // but prevents spawning duplicate reviewers for PRs already under review.
+        {
+            let tracker = state.pr_review_tracker.lock().await;
+            if tracker.is_assigned(pr_number) {
+                debug!("PR #{} already assigned for review (in-memory)", pr_number);
+                continue;
+            }
+        }
+        {
+            let github_state = state.github_state.lock().await;
+            if github_state.is_assigned(pr_number) {
+                debug!("PR #{} already assigned for review (persistent)", pr_number);
+                continue;
+            }
         }
 
         // Always spawn a fresh coworker for reviews with an isolated task list.
@@ -5816,6 +5822,41 @@ mod tests {
         assert!(text_contains_review_signature(
             "<!-- midtown: madison -->\n\n## Code Review by madison\n\nNice work!"
         ));
+    }
+
+    #[test]
+    fn test_text_contains_review_signature_code_review_skill_output() {
+        // The code-review skill posts comments in this exact format.
+        // The <!-- midtown: name --> frontmatter is the primary signature.
+        let skill_output_clean = r#"<!-- midtown: pleasant -->
+
+### Code review
+
+No issues found. Checked for bugs and CLAUDE.md compliance.
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+<sub>- If this code review was useful, please react with 👍. Otherwise, react with 👎.</sub>"#;
+        assert!(text_contains_review_signature(skill_output_clean));
+
+        let skill_output_issues = r#"<!-- midtown: vernon -->
+
+### Code review
+
+Found 2 issues:
+
+1. Missing null check (bug due to `unwrap()`)
+
+https://github.com/org/repo/blob/abc123/src/main.rs#L10-L12
+
+2. Config not validated (CLAUDE.md says "validate all config")
+
+https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+<sub>- If this code review was useful, please react with 👍. Otherwise, react with 👎.</sub>"#;
+        assert!(text_contains_review_signature(skill_output_issues));
     }
 
     #[test]
