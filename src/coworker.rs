@@ -4,13 +4,18 @@
 //! within the project session.
 
 use std::collections::HashMap;
+use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::tmux;
 use crate::worktree::{WorktreeError, WorktreeManager};
+
+/// Timeout for waiting for the lead's input to be empty before nudging.
+const LEAD_INPUT_WAIT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Primary Manhattan avenue names used for coworker naming.
 const AVENUE_NAMES: &[&str] = &[
@@ -96,6 +101,9 @@ pub struct CoworkerManager {
     /// Names of coworkers discovered from tmux on startup (before daemon was managing them).
     /// Used to nudge them to continue their tasks after daemon restart.
     discovered_on_startup: Arc<RwLock<Vec<String>>>,
+    /// Queue for lead nudges. A background thread waits for the lead's input to
+    /// be empty before delivering each nudge, so the daemon loop is never blocked.
+    lead_nudge_tx: mpsc::Sender<String>,
 }
 
 impl CoworkerManager {
@@ -120,6 +128,19 @@ impl CoworkerManager {
         additional_worktree_managers: Vec<WorktreeManager>,
     ) -> Self {
         let session = session_name.into();
+
+        // Spawn a background thread to process lead nudges with input-empty waiting.
+        // The thread waits for the lead's input to be clear before delivering each nudge,
+        // ensuring the daemon loop is never blocked and nudges arrive in FIFO order.
+        let (lead_nudge_tx, lead_nudge_rx) = mpsc::channel::<String>();
+        let nudge_session = session.clone();
+        std::thread::Builder::new()
+            .name("lead-nudge-queue".into())
+            .spawn(move || {
+                Self::lead_nudge_worker(&nudge_session, lead_nudge_rx);
+            })
+            .expect("Failed to spawn lead nudge worker thread");
+
         let manager = Self {
             coworkers: Arc::new(RwLock::new(HashMap::new())),
             worktree_manager: Arc::new(worktree_manager),
@@ -129,6 +150,7 @@ impl CoworkerManager {
                 .collect(),
             session_name: session,
             discovered_on_startup: Arc::new(RwLock::new(Vec::new())),
+            lead_nudge_tx,
         };
 
         // Discover existing coworkers from tmux on startup
@@ -644,9 +666,14 @@ impl CoworkerManager {
 
     /// Send a nudge (input) to the Lead session.
     ///
-    /// This is used to notify the Lead about coworker feedback requests.
+    /// The nudge is queued and delivered by a background thread that waits for
+    /// the lead's input prompt to be empty before sending. This prevents nudges
+    /// from corrupting text the human is currently typing. If the input isn't
+    /// empty after 90 seconds, the nudge is sent anyway.
+    ///
+    /// Returns immediately — the actual delivery happens asynchronously.
     pub fn nudge_lead(&self, message: &str) -> crate::Result<()> {
-        // Check if lead window exists
+        // Check if lead window exists before queuing
         if !tmux::window_exists(&self.session_name, "lead")? {
             return Err(crate::Error::Rpc {
                 code: -32602,
@@ -654,11 +681,38 @@ impl CoworkerManager {
             });
         }
 
-        // Send keys to the lead's Claude Code pane (pane .0), NOT the chat pane (.1).
-        // Without the pane qualifier, tmux targets the active pane which is often
-        // the chat TUI — causing nudge text to be sent as a user message, which
-        // triggers more @lead nudges in an infinite feedback loop.
-        tmux::send_keys(&self.session_name, "lead.0", message)
+        self.lead_nudge_tx
+            .send(message.to_string())
+            .map_err(|e| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Lead nudge queue closed: {}", e),
+            })
+    }
+
+    /// Background worker that processes queued lead nudges.
+    ///
+    /// For each nudge, waits until the lead's input prompt is empty (or 90s
+    /// timeout expires), then delivers the nudge via tmux send-keys.
+    fn lead_nudge_worker(session: &str, rx: mpsc::Receiver<String>) {
+        let target = format!("{}:lead.0", session);
+
+        for message in rx {
+            // Wait for the lead's input to be empty before sending
+            let cleared = tmux::wait_for_empty_input(&target, LEAD_INPUT_WAIT_TIMEOUT);
+            if !cleared {
+                tracing::info!(
+                    "Lead input still has text after {}s timeout, nudging anyway",
+                    LEAD_INPUT_WAIT_TIMEOUT.as_secs()
+                );
+            }
+
+            // Send keys to the lead's Claude Code pane (pane .0), NOT the chat pane (.1).
+            if let Err(e) = tmux::send_keys(session, "lead.0", &message) {
+                tracing::error!("Failed to deliver lead nudge: {}", e);
+            }
+        }
+
+        tracing::debug!("Lead nudge worker shutting down (channel closed)");
     }
 
     /// Send a bell notification to the human's terminal.

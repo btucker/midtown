@@ -376,12 +376,13 @@ fn test_nudge_reaches_lead() {
     let session = test_session_name();
     let _cleanup = Cleanup(&session);
 
-    // Setup: Create session with a "Lead" window (matching the real layout)
+    // Setup: Create session with a "lead" window (matching the real layout).
+    // The daemon targets lowercase "lead" for nudge delivery.
     assert!(
         create_test_session(&session),
         "Failed to create test session"
     );
-    create_test_window(&session, "Lead");
+    create_test_window(&session, "lead");
 
     // Also create a coworker window to simulate the real session layout
     create_test_window(&session, "lexington");
@@ -418,8 +419,11 @@ fn test_nudge_reaches_lead() {
         result.err()
     );
 
-    // Verify the message appears in the Lead pane
-    let content = capture_pane(&session, "Lead");
+    // Wait for the background nudge worker to deliver the message
+    thread::sleep(Duration::from_millis(2000));
+
+    // Verify the message appears in the lead pane
+    let content = capture_pane(&session, "lead");
     assert!(
         content
             .as_ref()
@@ -533,6 +537,277 @@ fn test_send_keys_vs_send_nudge() {
         "send_nudge message not found. Content: {}",
         content2
     );
+}
+
+/// Test that nudge goes through immediately when the lead's input is empty.
+///
+/// Verifies the happy path: no text in the input prompt → no waiting.
+#[test]
+#[ignore] // Requires tmux to be running
+fn test_lead_nudge_immediate_when_input_empty() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    let session = test_session_name();
+    let _cleanup = Cleanup(&session);
+
+    assert!(
+        create_test_session(&session),
+        "Failed to create test session"
+    );
+    create_test_window(&session, "lead");
+    thread::sleep(Duration::from_millis(500));
+
+    // Input is empty — wait_for_empty_input should return true immediately
+    let target = format!("{}:lead", session);
+    let start = std::time::Instant::now();
+    let result = midtown::tmux::wait_for_empty_input(&target, Duration::from_secs(10));
+    let elapsed = start.elapsed();
+
+    assert!(result, "Should return true when input is empty");
+    // Should complete well under the poll interval (3s)
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "Should return immediately, took {:?}",
+        elapsed
+    );
+}
+
+/// Test that nudge is delayed when the lead's input has text.
+///
+/// Puts text in the input, then clears it from a background thread.
+/// The wait function should block until the text is cleared.
+#[test]
+#[ignore] // Requires tmux to be running
+fn test_lead_nudge_delayed_when_input_has_text() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    let session = test_session_name();
+    let _cleanup = Cleanup(&session);
+
+    assert!(
+        create_test_session(&session),
+        "Failed to create test session"
+    );
+
+    // Run a shell that shows a prompt with ❯
+    let target = format!("{}:", session);
+    let status = Command::new("tmux")
+        .args([
+            "new-window",
+            "-t",
+            &target,
+            "-n",
+            "lead",
+            "bash",
+            "-c",
+            // Show prompt, read input (simulates Claude Code prompt)
+            r#"printf '❯ '; read line; printf '❯ '; cat"#,
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(status, "Failed to create lead window with prompt");
+    thread::sleep(Duration::from_millis(500));
+
+    // Type some text (without Enter) to simulate user typing
+    let tmux_target = format!("{}:lead", session);
+    let _ = Command::new("tmux")
+        .args([
+            "send-keys",
+            "-t",
+            &tmux_target,
+            "-l",
+            "I am typing something",
+        ])
+        .status();
+    thread::sleep(Duration::from_millis(200));
+
+    // Verify text is there
+    let content = capture_pane(&session, "lead").unwrap_or_default();
+    assert!(
+        midtown::tmux::has_input_text(&content),
+        "Should detect text in input. Content: {:?}",
+        content
+    );
+
+    // Clear the text after 4 seconds from a background thread
+    let session_clone = session.clone();
+    std::thread::spawn(move || {
+        thread::sleep(Duration::from_secs(4));
+        let target = format!("{}:lead", session_clone);
+        // Send Enter to submit the text (clears the input line)
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .status();
+    });
+
+    // Wait for empty input — should block until the text is cleared
+    let start = std::time::Instant::now();
+    let result = midtown::tmux::wait_for_empty_input(&tmux_target, Duration::from_secs(30));
+    let elapsed = start.elapsed();
+
+    assert!(result, "Should return true after input clears");
+    // Should take roughly 4-7 seconds (4s for clear + poll interval)
+    assert!(
+        elapsed >= Duration::from_secs(3),
+        "Should have waited for text to clear, only waited {:?}",
+        elapsed
+    );
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "Should not wait too long, waited {:?}",
+        elapsed
+    );
+}
+
+/// Test that nudge goes through after timeout even if input still has text.
+///
+/// Uses a short timeout (5s) and never clears the input.
+#[test]
+#[ignore] // Requires tmux to be running
+fn test_lead_nudge_timeout_with_text() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    let session = test_session_name();
+    let _cleanup = Cleanup(&session);
+
+    assert!(
+        create_test_session(&session),
+        "Failed to create test session"
+    );
+
+    // Run a shell that shows ❯ prompt
+    let target = format!("{}:", session);
+    let status = Command::new("tmux")
+        .args([
+            "new-window",
+            "-t",
+            &target,
+            "-n",
+            "lead",
+            "bash",
+            "-c",
+            r#"printf '❯ '; read line"#,
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(status, "Failed to create lead window with prompt");
+    thread::sleep(Duration::from_millis(500));
+
+    // Type some text that we never clear
+    let tmux_target = format!("{}:lead", session);
+    let _ = Command::new("tmux")
+        .args([
+            "send-keys",
+            "-t",
+            &tmux_target,
+            "-l",
+            "still typing forever",
+        ])
+        .status();
+    thread::sleep(Duration::from_millis(200));
+
+    // Wait with a short timeout (5s)
+    let start = std::time::Instant::now();
+    let result = midtown::tmux::wait_for_empty_input(&tmux_target, Duration::from_secs(5));
+    let elapsed = start.elapsed();
+
+    assert!(!result, "Should return false on timeout");
+    // Should take roughly 5 seconds
+    assert!(
+        elapsed >= Duration::from_secs(4),
+        "Should wait until timeout, only waited {:?}",
+        elapsed
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "Should not wait much longer than timeout, waited {:?}",
+        elapsed
+    );
+}
+
+/// Test that queued nudges arrive in FIFO order after input clears.
+///
+/// Sends multiple nudges while input has text, clears the input,
+/// and verifies all nudges were delivered in order.
+#[test]
+#[ignore] // Requires tmux to be running
+fn test_lead_nudge_queue_ordering() {
+    if !tmux_available() {
+        eprintln!("Skipping test: tmux not available");
+        return;
+    }
+
+    let session = test_session_name();
+    let _cleanup = Cleanup(&session);
+
+    assert!(
+        create_test_session(&session),
+        "Failed to create test session"
+    );
+    create_test_window(&session, "lead");
+    thread::sleep(Duration::from_millis(500));
+
+    // Create a CoworkerManager pointing at this test session
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to init git repo");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "Initial commit"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to create initial commit");
+
+    let worktree_manager = midtown::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+        .expect("Failed to create worktree manager");
+    let manager = midtown::coworker::CoworkerManager::new(session.clone(), worktree_manager);
+
+    // Queue several nudges to the lead (input is empty so they go through immediately)
+    let messages: Vec<String> = (0..3)
+        .map(|i| format!("queued-nudge-{}-{}", std::process::id(), i))
+        .collect();
+
+    for msg in &messages {
+        let result = manager.nudge_lead(msg);
+        assert!(
+            result.is_ok(),
+            "nudge_lead should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    // Wait for delivery — nudges are queued and delivered sequentially by
+    // the background worker. Each send_keys call takes ~600ms, so 3 nudges
+    // need roughly 2s. Give extra margin.
+    thread::sleep(Duration::from_millis(5000));
+
+    // Verify all messages appeared in order
+    let content = capture_pane(&session, "lead").unwrap_or_default();
+    let mut last_pos = 0;
+    for msg in &messages {
+        let pos = content[last_pos..].find(msg.as_str()).map(|p| p + last_pos);
+        assert!(
+            pos.is_some(),
+            "Message '{}' should appear in pane after position {}. Content: {}",
+            msg,
+            last_pos,
+            content
+        );
+        last_pos = pos.unwrap();
+    }
 }
 
 #[cfg(test)]

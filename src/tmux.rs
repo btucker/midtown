@@ -357,6 +357,67 @@ pub fn capture_pane(target: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Check whether the human has typed text into the Claude Code input prompt.
+///
+/// Inspects the last few lines of pane content for the `❯` prompt symbol.
+/// Returns `true` if there is non-whitespace text after the prompt, meaning
+/// the human is currently typing. Returns `false` if the prompt is empty
+/// or no prompt is visible (e.g., Claude is processing).
+///
+/// Used by the daemon to avoid nudging the lead while they're mid-sentence.
+pub fn has_input_text(pane_content: &str) -> bool {
+    // Skip trailing blank lines (tmux pads the pane with empty lines),
+    // then find the MOST RECENT line containing the ❯ prompt.
+    // Only check that line — older prompt lines in scrollback are irrelevant.
+    let prompt_line = pane_content
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .find(|l| l.contains('❯'));
+
+    if let Some(line) = prompt_line
+        && let Some(pos) = line.find('❯')
+    {
+        let after_prompt = &line[pos + '❯'.len_utf8()..];
+        return !after_prompt.trim().is_empty();
+    }
+
+    false
+}
+
+/// Wait until the lead's input prompt is empty, polling periodically.
+///
+/// Returns `true` if the input cleared within the timeout, `false` if
+/// the timeout expired with text still present. Either way, the caller
+/// should proceed with the nudge — this is a courtesy delay, not a gate.
+pub fn wait_for_empty_input(target: &str, timeout: std::time::Duration) -> bool {
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let poll_interval = Duration::from_secs(3);
+
+    loop {
+        if let Some(content) = capture_pane(target) {
+            if !has_input_text(&content) {
+                return true;
+            }
+        } else {
+            // Can't read pane — don't block, just proceed
+            return true;
+        }
+
+        if start.elapsed() >= timeout {
+            tracing::info!(
+                "Lead input not empty after {}s, nudging anyway",
+                timeout.as_secs()
+            );
+            return false;
+        }
+
+        std::thread::sleep(poll_interval);
+    }
+}
+
 /// Check if the nudge text is still sitting in the input line (not submitted).
 ///
 /// Returns true if the nudge appears to be stuck (Enter didn't work).
@@ -1305,5 +1366,64 @@ Claude is now processing the request
         let pane_content = "❯ You've been assigned";
         let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
         assert!(is_nudge_stuck(pane_content, nudge_text));
+    }
+
+    #[test]
+    fn test_has_input_text_empty_prompt() {
+        // Just a prompt with nothing after it — input is empty
+        let pane = "Some previous output\n❯ ";
+        assert!(!has_input_text(pane));
+    }
+
+    #[test]
+    fn test_has_input_text_prompt_no_space() {
+        // Prompt with no trailing space — still empty
+        let pane = "Some output\n❯";
+        assert!(!has_input_text(pane));
+    }
+
+    #[test]
+    fn test_has_input_text_with_typed_text() {
+        // User has typed something after the prompt
+        let pane = "Some output\n❯ please add a feature that";
+        assert!(has_input_text(pane));
+    }
+
+    #[test]
+    fn test_has_input_text_no_prompt_at_all() {
+        // No prompt visible — treat as not having input text (safe to nudge)
+        let pane = "Claude is working on your request...\nProcessing...";
+        assert!(!has_input_text(pane));
+    }
+
+    #[test]
+    fn test_has_input_text_prompt_on_earlier_line() {
+        // Most recent non-blank line without ❯ means the prompt with text
+        // is from a PREVIOUS interaction. Only the most recent prompt matters.
+        // Here "Output line 2" is the most recent non-blank line (no prompt),
+        // so we look for the nearest prompt line — it has text.
+        let pane = "Output line 1\n❯ some typed text\nOutput line 2";
+        assert!(has_input_text(pane));
+    }
+
+    #[test]
+    fn test_has_input_text_old_prompt_text_new_prompt_empty() {
+        // Old prompt had text, new prompt is empty — should be false
+        // (the human already submitted, now on a fresh prompt)
+        let pane = "❯ old command that was submitted\nSome output\n❯ ";
+        assert!(!has_input_text(pane));
+    }
+
+    #[test]
+    fn test_has_input_text_blank_lines_after_prompt() {
+        // Prompt followed by blank lines — still empty input
+        let pane = "Output\n❯ \n\n";
+        assert!(!has_input_text(pane));
+    }
+
+    #[test]
+    fn test_has_input_text_only_whitespace_after_prompt() {
+        let pane = "Output\n❯    ";
+        assert!(!has_input_text(pane));
     }
 }
