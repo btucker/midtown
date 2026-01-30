@@ -907,8 +907,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
                 let idle_effects = check_and_shutdown_idle_coworkers(&state).await;
                 effects::execute_effects(idle_effects, &state).await;
-                check_and_nudge_interrupted_coworkers(&state).await;
-                check_and_nudge_prompted_coworkers(&state).await;
+                let interrupt_effects = check_and_nudge_interrupted_coworkers(&state).await;
+                effects::execute_effects(interrupt_effects, &state).await;
+                let prompt_effects = check_and_nudge_prompted_coworkers(&state).await;
+                effects::execute_effects(prompt_effects, &state).await;
                 check_for_usage_limits(&state).await;
                 maybe_nudge_usage_limit_expiry(&state).await;
             }
@@ -1306,10 +1308,12 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) -> Vec<effects::
 /// Captures each active coworker's tmux pane content and checks for interruption
 /// indicators ("Interrupted" or "What should Claude do instead?"). If the interrupted
 /// state persists for 60 seconds, sends a "continue" nudge to unstick them.
-async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
+async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     let active_coworkers = state.coworkers.list();
     if active_coworkers.is_empty() {
-        return;
+        return vec![];
     }
 
     let session_name = state.coworkers.session_name();
@@ -1341,6 +1345,7 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
         )
     };
 
+    let mut effects = Vec::new();
     for nudge in to_nudge {
         let name = &nudge.name;
         info!(
@@ -1348,18 +1353,17 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
             name
         );
 
-        let msg = Message::text(
-            "system",
-            format!("🔄 Nudging interrupted coworker: {}", name),
-        );
-        if let Err(e) = state.send_and_broadcast(&msg) {
-            warn!("Failed to post interrupted nudge message to channel: {}", e);
-        }
-
-        if let Err(e) = state.coworkers.nudge(name, "continue") {
-            warn!("Failed to nudge interrupted coworker {}: {}", name, e);
-        }
+        effects.push(Effect::PostToChannel {
+            sender: "system".to_string(),
+            message: format!("🔄 Nudging interrupted coworker: {}", name),
+        });
+        effects.push(Effect::NudgeCoworker {
+            name: name.clone(),
+            message: "continue".to_string(),
+        });
     }
+
+    effects
 }
 
 // Interactive prompt detection moved to crate::rules::detect_interactive_prompt
@@ -1369,10 +1373,12 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
 ///
 /// Unlike interrupted coworkers (who just need a "continue"), prompted coworkers need a
 /// *human decision* — so we alert the lead with context about what's being asked.
-async fn check_and_nudge_prompted_coworkers(state: &DaemonState) {
+async fn check_and_nudge_prompted_coworkers(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     let active_coworkers = state.coworkers.list();
     if active_coworkers.is_empty() {
-        return;
+        return vec![];
     }
 
     let session_name = state.coworkers.session_name();
@@ -1398,33 +1404,27 @@ async fn check_and_nudge_prompted_coworkers(state: &DaemonState) {
         crate::rules::decide_prompt_nudges(&snapshots, &pane_contents, &mut prompted_nudged)
     };
 
+    let mut effects = Vec::new();
     for nudge in to_nudge {
         let (name, label) = (&nudge.name, &nudge.label);
         info!("Coworker {} is waiting on a {}, nudging lead", name, label);
 
-        let msg = Message::text(
-            "system",
-            format!(
+        effects.push(Effect::PostToChannel {
+            sender: "system".to_string(),
+            message: format!(
                 "⚠️ @lead {} is waiting on a {} — check their tmux pane and respond",
                 name, label
             ),
-        );
-        if let Err(e) = state.send_and_broadcast(&msg) {
-            warn!("Failed to post prompt nudge to channel: {}", e);
-        }
-
-        // Also nudge lead directly via tmux
-        let nudge_text = format!(
-            "{} is waiting on a {} — run: tmux select-window -t {}:{}",
-            name, label, session_name, name
-        );
-        if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
-            warn!(
-                "Failed to nudge lead about prompted coworker {}: {}",
-                name, e
-            );
-        }
+        });
+        effects.push(Effect::NudgeLead {
+            message: format!(
+                "{} is waiting on a {} — run: tmux select-window -t {}:{}",
+                name, label, session_name, name
+            ),
+        });
     }
+
+    effects
 }
 
 // Usage limit patterns and parse_usage_limit_duration moved to crate::rules
