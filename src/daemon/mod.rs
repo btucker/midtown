@@ -18,7 +18,9 @@ pub use constants::{
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
 use helpers::*;
-pub use trackers::{PrIssueTracker, PrIssueType, PrReviewTracker};
+pub use trackers::{
+    PrIssueTracker, PrIssueType, PrReviewTracker, StuckConditionTracker, StuckConditionType,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -330,6 +332,10 @@ pub(crate) struct DaemonState {
     last_merged_prs_fetch: std::sync::Mutex<Option<Instant>>,
     /// Cached coworker names from recently merged PRs.
     cached_merged_pr_coworkers: std::sync::RwLock<HashSet<String>>,
+    /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
+    stuck_tracker: Mutex<StuckConditionTracker>,
+    /// Tracks when each coworker last posted to the channel (for silent coworker detection)
+    last_coworker_activity: std::sync::RwLock<HashMap<String, Instant>>,
 }
 
 impl DaemonState {
@@ -402,6 +408,8 @@ impl DaemonState {
             cached_open_pr_branches: std::sync::RwLock::new(Vec::new()),
             last_merged_prs_fetch: std::sync::Mutex::new(None),
             cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
+            stuck_tracker: Mutex::new(StuckConditionTracker::new()),
+            last_coworker_activity: std::sync::RwLock::new(HashMap::new()),
         })
     }
 
@@ -2340,7 +2348,235 @@ async fn poll_prs_for_issues(
     // Auto-spawn reviewers for PRs that need review
     spawn_reviewers_for_prs(state, &prs).await;
 
+    // Check for stuck conditions and nudge lead if self-healing has failed
+    check_for_stuck_conditions(state, &prs).await;
+
     Ok(())
+}
+
+/// Check for stuck conditions and nudge the lead when the daemon can't self-heal.
+///
+/// This function runs during each PR poll cycle and checks for:
+/// 1. PRs open with no review for too long
+/// 2. PRs with unresolved feedback for too long
+/// 3. PRs that are approved + CI green but not merging
+/// 4. Coworkers who are silent (no channel activity) for too long
+/// 5. Review backlog (more PRs need review than slots available)
+///
+/// Each condition has a cooldown to avoid spamming the lead.
+async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Value]) {
+    let mut tracker = state.stuck_tracker.lock().await;
+    tracker.cleanup();
+
+    let now = Instant::now();
+
+    // Track how many nudges we send this cycle (for logging)
+    let mut nudge_count = 0;
+
+    // --- Scenario 1: PR open with no review for N minutes ---
+    for pr in prs {
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        if pr_number == 0 {
+            continue;
+        }
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+        if is_draft {
+            continue;
+        }
+
+        let review_decision = pr
+            .get("reviewDecision")
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+
+        let age_secs = get_pr_age_secs(pr).unwrap_or(0);
+        let pr_id = pr_number.to_string();
+
+        // No review decision at all and PR is old enough
+        if review_decision.is_empty() && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs() {
+            // Check if a reviewer is assigned (daemon tried to self-heal)
+            let is_assigned = {
+                let review_tracker = state.pr_review_tracker.lock().await;
+                review_tracker.is_assigned(pr_number)
+            };
+
+            tracker.track(&pr_id, StuckConditionType::NoReview);
+            if tracker.should_nudge(&pr_id, StuckConditionType::NoReview) {
+                let context = if is_assigned {
+                    "I assigned a reviewer but no review has been posted yet"
+                } else {
+                    "I couldn't assign a reviewer"
+                };
+                let nudge = format!(
+                    "@lead PR #{} ({}) has been open for {} minutes with no review — {}",
+                    pr_number,
+                    truncate_str(title, 40),
+                    age_secs / 60,
+                    context,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge(&pr_id, StuckConditionType::NoReview);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear(&pr_id, StuckConditionType::NoReview);
+        }
+
+        // --- Scenario 2: Unresolved feedback (changes requested) for N minutes ---
+        if review_decision == "CHANGES_REQUESTED" {
+            let first_detected = tracker.track(&pr_id, StuckConditionType::UnresolvedFeedback);
+            let stuck_duration = now.duration_since(first_detected);
+
+            if stuck_duration >= STUCK_UNRESOLVED_FEEDBACK_DURATION
+                && tracker.should_nudge(&pr_id, StuckConditionType::UnresolvedFeedback)
+            {
+                let nudge = format!(
+                    "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
+                    pr_number,
+                    truncate_str(title, 40),
+                    stuck_duration.as_secs() / 60,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge(&pr_id, StuckConditionType::UnresolvedFeedback);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear(&pr_id, StuckConditionType::UnresolvedFeedback);
+        }
+
+        // --- Scenario 3: Approved + CI green but not merging ---
+        if is_auto_mergeable(pr) {
+            let first_detected = tracker.track(&pr_id, StuckConditionType::MergeReady);
+            let stuck_duration = now.duration_since(first_detected);
+
+            if stuck_duration >= STUCK_MERGE_READY_DURATION
+                && tracker.should_nudge(&pr_id, StuckConditionType::MergeReady)
+            {
+                let nudge = format!(
+                    "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — auto-merge may have failed",
+                    pr_number,
+                    truncate_str(title, 40),
+                    stuck_duration.as_secs() / 60,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge(&pr_id, StuckConditionType::MergeReady);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear(&pr_id, StuckConditionType::MergeReady);
+        }
+    }
+
+    // --- Scenario 4: Silent coworker (claimed task, no channel activity) ---
+    {
+        let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+        let activity = state.last_coworker_activity.read().unwrap();
+
+        for name in &busy_coworkers {
+            let last_activity = activity.get(name.as_str());
+            let is_silent = match last_activity {
+                Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
+                None => {
+                    // No activity recorded — coworker may have just started.
+                    // Check if they're past the minimum lifetime.
+                    if let Some(cw) = state.coworkers.get(name) {
+                        let age = chrono::Utc::now()
+                            .signed_duration_since(cw.started_at)
+                            .num_seconds()
+                            .max(0) as u64;
+                        age >= STUCK_SILENT_COWORKER_DURATION.as_secs()
+                    } else {
+                        false
+                    }
+                }
+            };
+
+            if is_silent {
+                tracker.track(name, StuckConditionType::SilentCoworker);
+                if tracker.should_nudge(name, StuckConditionType::SilentCoworker) {
+                    let task_info = crate::tasks::get_in_progress_tasks_with_subjects()
+                        .into_iter()
+                        .find(|(_, _, owner)| owner.eq_ignore_ascii_case(name))
+                        .map(|(id, subject, _)| {
+                            format!("task #{} ({})", id, truncate_str(&subject, 30))
+                        })
+                        .unwrap_or_else(|| "their task".to_string());
+
+                    let nudge = format!(
+                        "@lead {} has been silent on {} for over {} minutes",
+                        name,
+                        task_info,
+                        STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                    );
+                    nudge_lead_stuck(state, &nudge);
+                    tracker.record_nudge(name, StuckConditionType::SilentCoworker);
+                    nudge_count += 1;
+                }
+            } else {
+                tracker.clear(name, StuckConditionType::SilentCoworker);
+            }
+        }
+    }
+
+    // --- Scenario 5: Review backlog ---
+    {
+        let prs_needing_review: usize = prs
+            .iter()
+            .filter(|pr| {
+                let review_decision = pr
+                    .get("reviewDecision")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+                !is_draft && review_decision.is_empty()
+            })
+            .count();
+
+        let current_review_count = {
+            let review_tracker = state.pr_review_tracker.lock().await;
+            review_tracker.active_count()
+        };
+
+        // Backlog exists when more PRs need review than we can handle
+        if prs_needing_review > MAX_CONCURRENT_REVIEWS
+            && current_review_count >= MAX_CONCURRENT_REVIEWS
+        {
+            tracker.track("backlog", StuckConditionType::ReviewBacklog);
+            if tracker.should_nudge("backlog", StuckConditionType::ReviewBacklog) {
+                let nudge = format!(
+                    "@lead {} PRs need review but I'm at the max concurrent review limit ({}/{}) — some PRs may wait longer than usual",
+                    prs_needing_review, current_review_count, MAX_CONCURRENT_REVIEWS,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge("backlog", StuckConditionType::ReviewBacklog);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear("backlog", StuckConditionType::ReviewBacklog);
+        }
+    }
+
+    if nudge_count > 0 {
+        info!(
+            "Stuck condition check: nudged lead about {} issue(s)",
+            nudge_count
+        );
+    }
+}
+
+/// Helper to nudge the lead about a stuck condition and post to channel.
+fn nudge_lead_stuck(state: &DaemonState, message: &str) {
+    // Post to channel so it's visible in the log
+    let msg = Message::system(format!("⚠️ {}", message));
+    if let Err(e) = state.send_and_broadcast(&msg) {
+        warn!("Failed to post stuck condition to channel: {}", e);
+    }
+
+    // Nudge the lead directly
+    if let Err(e) = state.coworkers.nudge_lead(message) {
+        warn!("Failed to nudge lead about stuck condition: {}", e);
+    }
 }
 
 /// Spawn reviewers for PRs that need code review.
@@ -3281,6 +3517,12 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
     match state.send_and_broadcast(&msg) {
         Ok(()) => {
             info!("Channel post from {}: {}", from, message);
+
+            // Track last activity time for coworker (used for silent coworker detection)
+            if is_coworker_sender(from) {
+                let mut activity = state.last_coworker_activity.write().unwrap();
+                activity.insert(from.to_string(), Instant::now());
+            }
 
             // Update tmux tab for coworkers when they post /me actions
             if msg_type == MessageType::Action {
@@ -6063,6 +6305,90 @@ mod tests {
 
         // broadway's assignment should be removed
         assert_eq!(tracker.pr_for_coworker("broadway"), None);
+    }
+
+    // Stuck condition tracker tests
+    #[test]
+    fn test_stuck_tracker_track_and_should_nudge() {
+        let mut tracker = StuckConditionTracker::new();
+
+        // Not tracked yet — should_nudge returns false
+        assert!(!tracker.should_nudge("42", StuckConditionType::NoReview));
+
+        // Track it — now should_nudge returns true (never nudged before)
+        tracker.track("42", StuckConditionType::NoReview);
+        assert!(tracker.should_nudge("42", StuckConditionType::NoReview));
+    }
+
+    #[test]
+    fn test_stuck_tracker_record_nudge_cooldown() {
+        let mut tracker = StuckConditionTracker::new();
+        tracker.track("42", StuckConditionType::NoReview);
+
+        // Before recording nudge — should_nudge is true
+        assert!(tracker.should_nudge("42", StuckConditionType::NoReview));
+
+        // After recording nudge — should_nudge is false (within cooldown)
+        tracker.record_nudge("42", StuckConditionType::NoReview);
+        assert!(!tracker.should_nudge("42", StuckConditionType::NoReview));
+    }
+
+    #[test]
+    fn test_stuck_tracker_independent_conditions() {
+        let mut tracker = StuckConditionTracker::new();
+
+        // Track two different conditions for the same PR
+        tracker.track("42", StuckConditionType::NoReview);
+        tracker.track("42", StuckConditionType::MergeReady);
+
+        // Nudging one doesn't affect the other
+        tracker.record_nudge("42", StuckConditionType::NoReview);
+        assert!(!tracker.should_nudge("42", StuckConditionType::NoReview));
+        assert!(tracker.should_nudge("42", StuckConditionType::MergeReady));
+    }
+
+    #[test]
+    fn test_stuck_tracker_clear() {
+        let mut tracker = StuckConditionTracker::new();
+        tracker.track("42", StuckConditionType::NoReview);
+        assert!(tracker.should_nudge("42", StuckConditionType::NoReview));
+
+        // Clear the condition
+        tracker.clear("42", StuckConditionType::NoReview);
+        assert!(!tracker.should_nudge("42", StuckConditionType::NoReview));
+    }
+
+    #[test]
+    fn test_stuck_tracker_different_prs() {
+        let mut tracker = StuckConditionTracker::new();
+        tracker.track("42", StuckConditionType::NoReview);
+        tracker.track("43", StuckConditionType::NoReview);
+
+        // Nudging one PR doesn't affect the other
+        tracker.record_nudge("42", StuckConditionType::NoReview);
+        assert!(!tracker.should_nudge("42", StuckConditionType::NoReview));
+        assert!(tracker.should_nudge("43", StuckConditionType::NoReview));
+    }
+
+    #[test]
+    fn test_stuck_condition_type_display() {
+        assert_eq!(StuckConditionType::NoReview.to_string(), "no review");
+        assert_eq!(
+            StuckConditionType::UnresolvedFeedback.to_string(),
+            "unresolved feedback"
+        );
+        assert_eq!(
+            StuckConditionType::MergeReady.to_string(),
+            "merge-ready but not merged"
+        );
+        assert_eq!(
+            StuckConditionType::SilentCoworker.to_string(),
+            "silent coworker"
+        );
+        assert_eq!(
+            StuckConditionType::ReviewBacklog.to_string(),
+            "review backlog"
+        );
     }
 
     // Chat monitor @mention tests

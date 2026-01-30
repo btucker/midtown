@@ -6,7 +6,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use super::constants::{PR_NUDGE_COOLDOWN_SECS, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
+use super::constants::{
+    PR_NUDGE_COOLDOWN_SECS, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, STUCK_NUDGE_COOLDOWN_SECS,
+};
 
 // ---------------------------------------------------------------------------
 // PrIssueType
@@ -209,5 +211,94 @@ impl PrReviewTracker {
             .filter(|(_, t)| t.elapsed() < timeout)
             .map(|(name, _)| name.clone())
             .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StuckConditionType
+// ---------------------------------------------------------------------------
+
+/// Types of "stuck" conditions that warrant nudging the lead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StuckConditionType {
+    /// PR open with no review assigned or posted
+    NoReview,
+    /// PR has unresolved review feedback (changes requested, no new commits)
+    UnresolvedFeedback,
+    /// PR is approved + CI green but hasn't merged
+    MergeReady,
+    /// Coworker claimed a task but no channel activity
+    SilentCoworker,
+    /// More PRs need review than the daemon can assign reviewers to
+    ReviewBacklog,
+}
+
+impl std::fmt::Display for StuckConditionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StuckConditionType::NoReview => write!(f, "no review"),
+            StuckConditionType::UnresolvedFeedback => write!(f, "unresolved feedback"),
+            StuckConditionType::MergeReady => write!(f, "merge-ready but not merged"),
+            StuckConditionType::SilentCoworker => write!(f, "silent coworker"),
+            StuckConditionType::ReviewBacklog => write!(f, "review backlog"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StuckConditionTracker
+// ---------------------------------------------------------------------------
+
+/// Tracks when stuck conditions were first detected and when lead was last nudged.
+/// Uses a cooldown to avoid spamming the lead with the same stuck condition.
+#[derive(Debug, Default)]
+pub struct StuckConditionTracker {
+    /// Map of (identifier, condition_type) -> (first_detected, last_nudged)
+    /// identifier is PR number (as string) or coworker name
+    conditions: HashMap<(String, StuckConditionType), (Instant, Option<Instant>)>,
+}
+
+impl StuckConditionTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that a stuck condition was detected. Returns the first-detected time.
+    pub fn track(&mut self, id: &str, condition: StuckConditionType) -> Instant {
+        let now = Instant::now();
+        self.conditions
+            .entry((id.to_string(), condition))
+            .or_insert((now, None))
+            .0
+    }
+
+    /// Check if we should nudge the lead about this condition (past cooldown).
+    pub fn should_nudge(&self, id: &str, condition: StuckConditionType) -> bool {
+        match self.conditions.get(&(id.to_string(), condition)) {
+            Some((_, Some(last_nudged))) => {
+                last_nudged.elapsed() >= Duration::from_secs(STUCK_NUDGE_COOLDOWN_SECS)
+            }
+            Some((_, None)) => true, // Never nudged
+            None => false,           // Not tracked yet
+        }
+    }
+
+    /// Record that we nudged the lead about this condition.
+    pub fn record_nudge(&mut self, id: &str, condition: StuckConditionType) {
+        if let Some(entry) = self.conditions.get_mut(&(id.to_string(), condition)) {
+            entry.1 = Some(Instant::now());
+        }
+    }
+
+    /// Remove a condition that is no longer stuck.
+    pub fn clear(&mut self, id: &str, condition: StuckConditionType) {
+        self.conditions.remove(&(id.to_string(), condition));
+    }
+
+    /// Clean up old entries where last_nudged is older than 2x cooldown.
+    pub fn cleanup(&mut self) {
+        let cutoff = Duration::from_secs(STUCK_NUDGE_COOLDOWN_SECS * 2);
+        self.conditions
+            .retain(|_, (first_detected, _)| first_detected.elapsed() < cutoff);
     }
 }
