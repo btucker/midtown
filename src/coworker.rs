@@ -29,6 +29,13 @@ const AVENUE_NAMES: &[&str] = &[
 /// Overflow street names for when primary avenues are exhausted.
 const OVERFLOW_NAMES: &[&str] = &["bleecker", "houston", "canal", "spring", "prince", "mercer"];
 
+/// Check if a name is a known coworker name (avenue or overflow).
+///
+/// Used to prevent coworker worktree names from being registered as projects.
+pub fn is_coworker_name(name: &str) -> bool {
+    AVENUE_NAMES.contains(&name) || OVERFLOW_NAMES.contains(&name)
+}
+
 /// Status of a coworker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1098,6 +1105,27 @@ mod tests {
 
         // Should return None when all names exhausted
         assert_eq!(manager.next_available_name(), None);
+    }
+
+    #[test]
+    fn test_is_coworker_name() {
+        // Avenue names should be recognized
+        assert!(is_coworker_name("broadway"));
+        assert!(is_coworker_name("amsterdam"));
+        assert!(is_coworker_name("columbus"));
+        assert!(is_coworker_name("vernon"));
+        assert!(is_coworker_name("park"));
+
+        // Overflow names should be recognized
+        assert!(is_coworker_name("bleecker"));
+        assert!(is_coworker_name("houston"));
+        assert!(is_coworker_name("canal"));
+
+        // Real project names should not match
+        assert!(!is_coworker_name("midtown"));
+        assert!(!is_coworker_name("my-project"));
+        assert!(!is_coworker_name("distiller"));
+        assert!(!is_coworker_name("default"));
     }
 
     #[test]

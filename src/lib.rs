@@ -91,7 +91,7 @@ pub mod github_state;
 pub mod push;
 
 pub use channel::Channel;
-pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
+pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};
 pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};

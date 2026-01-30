@@ -273,21 +273,10 @@ fn post_question_to_channel(agent: &str, question: &str) -> Result<(), String> {
 }
 
 /// Try to detect the current git repository name.
+/// Uses the worktree-aware detect_repo_name() to avoid returning coworker
+/// worktree names instead of the actual repository name.
 fn detect_git_repo() -> Option<String> {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout);
-                std::path::Path::new(path.trim())
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        })
+    midtown::paths::detect_repo_name()
 }
 
 fn handle_nudge_config(
