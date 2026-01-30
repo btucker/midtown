@@ -54,6 +54,17 @@ pub struct WebhookEvent {
     pub ci_failed_on_default_branch: Option<String>,
 }
 
+/// Identifies a GitHub comment for the reactions API.
+#[derive(Debug, Clone)]
+pub enum CommentNode {
+    /// Issue comment: `/repos/{owner}/{repo}/issues/comments/{id}/reactions`
+    IssueComment(u64),
+    /// Pull request review comment: `/repos/{owner}/{repo}/pulls/comments/{id}/reactions`
+    ReviewComment(u64),
+    /// Pull request review: `/repos/{owner}/{repo}/pulls/{pull}/reviews/{id}/reactions`
+    Review { pull: u64, review_id: u64 },
+}
+
 /// Structured data about PR-related webhook activity.
 #[derive(Debug, Clone)]
 pub struct PrActivity {
@@ -63,6 +74,10 @@ pub struct PrActivity {
     pub owner_coworker: Option<String>,
     /// The actor who triggered the event (coworker name or GitHub username)
     pub actor: String,
+    /// The comment/review node for adding reactions
+    pub comment_node: Option<CommentNode>,
+    /// The repository full name (owner/repo) for API calls
+    pub repo_full_name: Option<String>,
 }
 
 /// Configuration for the webhook server
@@ -309,12 +324,12 @@ struct PullRequestReviewEvent {
     action: String,
     review: Review,
     pull_request: PullRequestRef,
-    #[allow(dead_code)]
     repository: Repository,
 }
 
 #[derive(Debug, Deserialize)]
 struct Review {
+    id: u64,
     state: String,
     user: User,
 }
@@ -331,7 +346,6 @@ struct IssueCommentEvent {
     action: String,
     issue: Issue,
     comment: Comment,
-    #[allow(dead_code)]
     repository: Repository,
 }
 
@@ -343,6 +357,7 @@ struct Issue {
 
 #[derive(Debug, Deserialize)]
 struct Comment {
+    id: u64,
     user: User,
     body: String,
 }
@@ -352,7 +367,6 @@ struct ReviewCommentEvent {
     action: String,
     pull_request: PullRequestRef,
     comment: Comment,
-    #[allow(dead_code)]
     repository: Repository,
 }
 
@@ -603,6 +617,11 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
             pr_number: event.pull_request.number,
             owner_coworker: coworker.map(|s| s.to_string()),
             actor: event.review.user.login,
+            comment_node: Some(CommentNode::Review {
+                pull: event.pull_request.number,
+                review_id: event.review.id,
+            }),
+            repo_full_name: Some(event.repository.full_name),
         }),
         needs_review: None,
         merged_pr: None,
@@ -642,6 +661,8 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
             pr_number: event.issue.number,
             owner_coworker: None,
             actor: commenter,
+            comment_node: Some(CommentNode::IssueComment(event.comment.id)),
+            repo_full_name: Some(event.repository.full_name),
         }),
         needs_review: None,
         merged_pr: None,
@@ -681,6 +702,8 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
             pr_number: event.pull_request.number,
             owner_coworker: coworker.map(|s| s.to_string()),
             actor: commenter,
+            comment_node: Some(CommentNode::ReviewComment(event.comment.id)),
+            repo_full_name: Some(event.repository.full_name),
         }),
         needs_review: None,
         merged_pr: None,
@@ -1012,6 +1035,7 @@ mod tests {
         let payload = r#"{
             "action": "submitted",
             "review": {
+                "id": 100,
                 "state": "approved",
                 "user": {"login": "madison"}
             },
@@ -1023,6 +1047,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(event.message.content, "madison approved PR #42");
+        // Should include review node for reactions
+        let activity = event.pr_activity.unwrap();
+        assert!(matches!(
+            activity.comment_node,
+            Some(CommentNode::Review {
+                pull: 42,
+                review_id: 100
+            })
+        ));
+        assert_eq!(activity.repo_full_name.as_deref(), Some("org/repo"));
     }
 
     #[test]
@@ -1061,6 +1095,7 @@ mod tests {
         let payload = r#"{
             "action": "submitted",
             "review": {
+                "id": 101,
                 "state": "approved",
                 "user": {"login": "btucker"}
             },
@@ -1086,6 +1121,7 @@ mod tests {
         let payload = r#"{
             "action": "submitted",
             "review": {
+                "id": 102,
                 "state": "changes_requested",
                 "user": {"login": "reviewer"}
             },
@@ -1316,6 +1352,7 @@ mod tests {
                 "body": "PR body here"
             },
             "comment": {
+                "id": 200,
                 "user": {"login": "reviewer"},
                 "body": "Nice work!"
             },
@@ -1335,6 +1372,12 @@ mod tests {
         assert_eq!(activity.pr_number, 77);
         assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
         assert_eq!(activity.actor, "reviewer");
+        // Should include comment node for reactions
+        assert!(matches!(
+            activity.comment_node,
+            Some(CommentNode::ReviewComment(200))
+        ));
+        assert_eq!(activity.repo_full_name.as_deref(), Some("org/repo"));
     }
 
     #[test]
@@ -1348,6 +1391,7 @@ mod tests {
                 "pull_request": {}
             },
             "comment": {
+                "id": 201,
                 "user": {"login": "btucker"},
                 "body": "<!-- midtown: columbus -->\n\nLGTM! Nice fix."
             },
@@ -1365,6 +1409,12 @@ mod tests {
         let activity = event.pr_activity.unwrap();
         assert_eq!(activity.pr_number, 42);
         assert_eq!(activity.actor, "columbus");
+        // Should include comment node for reactions
+        assert!(matches!(
+            activity.comment_node,
+            Some(CommentNode::IssueComment(201))
+        ));
+        assert_eq!(activity.repo_full_name.as_deref(), Some("org/repo"));
     }
 
     #[test]
@@ -1377,6 +1427,7 @@ mod tests {
                 "pull_request": {}
             },
             "comment": {
+                "id": 202,
                 "user": {"login": "btucker"},
                 "body": "Regular comment without signature"
             },
@@ -1404,6 +1455,7 @@ mod tests {
                 "body": "PR body here"
             },
             "comment": {
+                "id": 203,
                 "user": {"login": "btucker"},
                 "body": "<!-- midtown: lexington -->\n\nConsider using a match here."
             },
