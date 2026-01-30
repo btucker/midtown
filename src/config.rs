@@ -47,6 +47,7 @@
 //! - `MIDTOWN_WEBHOOK_RESTART_INTERVAL`
 //! - `MIDTOWN_PR_POLL_INTERVAL`
 //! - `MIDTOWN_CHAT_MONITOR` (set to 0 to disable)
+//! - `MIDTOWN_GITHUB_USER`
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -332,6 +333,11 @@ pub struct DaemonSection {
     /// Enable chat monitor for @mention routing (default: true)
     #[serde(default)]
     pub chat_monitor_enabled: Option<bool>,
+
+    /// GitHub username for `gh` CLI authentication.
+    /// When set, runs `gh auth switch --user <github_user>` at daemon startup.
+    #[serde(default)]
+    pub github_user: Option<String>,
 }
 
 impl DaemonSection {
@@ -348,6 +354,10 @@ impl DaemonSection {
                 .or(self.webhook_restart_interval_secs),
             pr_poll_interval_secs: other.pr_poll_interval_secs.or(self.pr_poll_interval_secs),
             chat_monitor_enabled: other.chat_monitor_enabled.or(self.chat_monitor_enabled),
+            github_user: other
+                .github_user
+                .clone()
+                .or_else(|| self.github_user.clone()),
         }
     }
 }
@@ -436,6 +446,10 @@ impl GlobalConfig {
 
 # Enable chat monitor for @mention routing
 # chat_monitor_enabled = true
+
+# GitHub username for gh CLI authentication
+# When set, runs `gh auth switch --user <value>` at daemon startup
+# github_user = ""
 "#
         .to_string()
     }
@@ -469,6 +483,7 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
             || full.default.max_coworkers.is_some()
             || full.default.personality.is_some()
             || full.project.name.is_some()
+            || full.daemon.github_user.is_some()
         {
             return Some(full.default);
         }
@@ -897,6 +912,7 @@ max_coworkers = 4
         assert!(config.daemon.webhook_restart_interval_secs.is_none());
         assert!(config.daemon.pr_poll_interval_secs.is_none());
         assert!(config.daemon.chat_monitor_enabled.is_none());
+        assert!(config.daemon.github_user.is_none());
     }
 
     #[test]
@@ -942,6 +958,41 @@ webhook_port = 0
 "#;
         let config: GlobalConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.daemon.webhook_port, Some(0));
+    }
+
+    #[test]
+    fn test_daemon_github_user_parse() {
+        let toml = r#"
+[daemon]
+github_user = "midtown-sh"
+"#;
+        let config: GlobalConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.daemon.github_user, Some("midtown-sh".to_string()));
+    }
+
+    #[test]
+    fn test_daemon_github_user_merge_override() {
+        let global = DaemonSection {
+            github_user: Some("global-user".to_string()),
+            ..DaemonSection::default()
+        };
+        let project = DaemonSection {
+            github_user: Some("project-user".to_string()),
+            ..DaemonSection::default()
+        };
+        let merged = global.merge(&project);
+        assert_eq!(merged.github_user, Some("project-user".to_string()));
+    }
+
+    #[test]
+    fn test_daemon_github_user_merge_fallback() {
+        let global = DaemonSection {
+            github_user: Some("global-user".to_string()),
+            ..DaemonSection::default()
+        };
+        let project = DaemonSection::default();
+        let merged = global.merge(&project);
+        assert_eq!(merged.github_user, Some("global-user".to_string()));
     }
 
     #[test]
@@ -1158,6 +1209,7 @@ name = "solo"
             webhook_restart_interval_secs: Some(300),
             pr_poll_interval_secs: Some(60),
             chat_monitor_enabled: Some(true),
+            github_user: Some("global-user".to_string()),
         };
 
         let project = DaemonSection {
@@ -1166,6 +1218,7 @@ name = "solo"
             webhook_restart_interval_secs: None,
             pr_poll_interval_secs: Some(120),
             chat_monitor_enabled: None,
+            github_user: None,
         };
 
         let merged = global.merge(&project);
@@ -1174,6 +1227,7 @@ name = "solo"
         assert_eq!(merged.webhook_restart_interval_secs, Some(300)); // Falls back to global
         assert_eq!(merged.pr_poll_interval_secs, Some(120)); // Project overrides
         assert_eq!(merged.chat_monitor_enabled, Some(true)); // Falls back to global
+        assert_eq!(merged.github_user, Some("global-user".to_string())); // Falls back to global
     }
 
     #[test]
@@ -1184,6 +1238,7 @@ name = "solo"
             webhook_restart_interval_secs: None,
             pr_poll_interval_secs: None,
             chat_monitor_enabled: None,
+            github_user: None,
         };
 
         let empty = DaemonSection::default();
@@ -1363,5 +1418,6 @@ name = "solo"
         assert!(template.contains("personality"));
         assert!(template.contains("webhook_port"));
         assert!(template.contains("chat_layout"));
+        assert!(template.contains("github_user"));
     }
 }

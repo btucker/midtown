@@ -69,6 +69,9 @@ pub struct DaemonConfig {
     pub max_coworkers: usize,
     /// Explicit project name (from --project flag). Overrides auto-detection.
     pub project_name: Option<String>,
+    /// GitHub username for `gh` CLI authentication.
+    /// When set, runs `gh auth switch --user <github_user>` at daemon startup.
+    pub github_user: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -130,6 +133,11 @@ impl Default for DaemonConfig {
             None => daemon_section.chat_monitor_enabled.unwrap_or(true),
         };
 
+        // GitHub user: env var -> config.toml -> None
+        let github_user = std::env::var("MIDTOWN_GITHUB_USER")
+            .ok()
+            .or_else(|| daemon_section.github_user.clone());
+
         // Max concurrent coworkers: env var > project config > global config > default (16)
         let max_coworkers = std::env::var("MIDTOWN_MAX_COWORKERS")
             .ok()
@@ -164,6 +172,7 @@ impl Default for DaemonConfig {
             chat_monitor_enabled,
             max_coworkers,
             project_name: None,
+            github_user,
         }
     }
 }
@@ -540,6 +549,32 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Ensure required plugins are installed (non-blocking, logs warnings on failure)
     ensure_plugins_installed().await;
+
+    // Switch gh CLI to the configured GitHub user (fail loudly if switch fails)
+    if let Some(ref github_user) = config.github_user {
+        info!("Switching gh CLI auth to user: {}", github_user);
+        let status = std::process::Command::new("gh")
+            .args(["auth", "switch", "--user", github_user])
+            .status()
+            .map_err(|e| crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "Failed to run `gh auth switch --user {}`: {}",
+                    github_user, e
+                ),
+            })?;
+        if !status.success() {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "gh auth switch --user {} failed (exit code: {}). Is the user logged in? Run `gh auth login` first.",
+                    github_user,
+                    status.code().unwrap_or(-1)
+                ),
+            });
+        }
+        info!("Successfully switched gh auth to user: {}", github_user);
+    }
 
     // Acquire exclusive lock on PID file to enforce singleton behavior
     let pid_file = acquire_pid_lock(&config.pid_file_path)?;
