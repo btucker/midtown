@@ -3398,57 +3398,52 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         .map(|tracker| tracker.active_assignments())
         .unwrap_or_default();
 
-    // Fetch PRs from all repos in the project
+    // Fetch PRs and repo metadata from all repos in the project.
+    // We resolve nameWithOwner once per repo and reuse it for both the
+    // batched GraphQL PR query and the repo metadata response.
     let is_multi_repo = state.all_repo_paths.len() > 1;
     let mut prs = Vec::new();
     let mut merged_prs = Vec::new();
+    let mut repos = Vec::new();
     for repo_path in &state.all_repo_paths {
-        // Only include repo label when the project has multiple repos
         let repo_label = if is_multi_repo {
             repo_path.file_name().and_then(|s| s.to_str())
         } else {
             None
         };
-        prs.extend(fetch_kanban_prs(
-            &reviewer_assignments,
-            repo_path,
-            repo_label,
-        ));
-        merged_prs.extend(fetch_kanban_merged_prs(repo_path, repo_label));
-    }
 
-    // Build repo metadata for TUI status lines
-    let repos: Vec<serde_json::Value> = state
-        .all_repo_paths
-        .iter()
-        .map(|repo_path| {
-            let label = repo_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            // Get the full owner/name from gh
-            let full_name = std::process::Command::new("gh")
-                .current_dir(repo_path)
-                .args([
-                    "repo",
-                    "view",
-                    "--json",
-                    "nameWithOwner",
-                    "--jq",
-                    ".nameWithOwner",
-                ])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-            serde_json::json!({
-                "label": label,
-                "full_name": full_name,
-            })
-        })
-        .collect();
+        // Resolve owner/name once — used by both the GraphQL query and repo metadata
+        let full_name = std::process::Command::new("gh")
+            .current_dir(repo_path)
+            .args([
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".nameWithOwner",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        let label = repo_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        repos.push(serde_json::json!({
+            "label": label,
+            "full_name": full_name,
+        }));
+
+        let (open, merged) =
+            fetch_kanban_all_prs(&reviewer_assignments, &full_name, repo_path, repo_label);
+        prs.extend(open);
+        merged_prs.extend(merged);
+    }
 
     Response::success(
         id,
@@ -3460,132 +3455,199 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     )
 }
 
-/// Fetch open PRs with rich data for the kanban board.
+/// GraphQL query that fetches both open and recently merged PRs in a single call.
 ///
-/// Called once per repo with the repo's path. The `repo_label` is `Some(name)`
-/// only for multi-repo projects (to display a repo badge on kanban cards).
-fn fetch_kanban_prs(
+/// This replaces two separate `gh pr list` CLI calls with one GraphQL request,
+/// cutting API usage in half for the kanban board.
+const KANBAN_GRAPHQL_QUERY: &str = r#"
+query($owner: String!, $repo: String!) {
+  repository(owner: $owner, name: $repo) {
+    openPrs: pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes {
+        number
+        title
+        author { login }
+        createdAt
+        body
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                contexts(first: 100) {
+                  nodes {
+                    __typename
+                    ... on CheckRun {
+                      status
+                      conclusion
+                    }
+                    ... on StatusContext {
+                      state
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        comments(first: 100) {
+          nodes {
+            body
+            createdAt
+          }
+        }
+      }
+    }
+    mergedPrs: pullRequests(states: MERGED, first: 10, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number
+        title
+        mergedAt
+      }
+    }
+  }
+}
+"#;
+
+/// Fetch both open and merged PRs for a repo using a single GraphQL call.
+///
+/// `name_with_owner` should be `"owner/repo"` (e.g. `"anthropics/midtown"`).
+/// Returns `(open_prs, merged_prs)` formatted for the kanban board.
+/// Falls back to empty vectors on failure.
+fn fetch_kanban_all_prs(
     reviewer_assignments: &HashMap<u64, (String, Instant)>,
+    name_with_owner: &str,
     repo_path: &std::path::Path,
     repo_label: Option<&str>,
-) -> Vec<serde_json::Value> {
-    let output = std::process::Command::new("gh")
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let parts: Vec<&str> = name_with_owner.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        debug!("Unexpected nameWithOwner format: {}", name_with_owner);
+        return (Vec::new(), Vec::new());
+    }
+    let (owner, repo_name) = (parts[0], parts[1]);
+
+    // Execute the batched GraphQL query
+    let graphql_output = std::process::Command::new("gh")
         .current_dir(repo_path)
         .args([
-            "pr",
-            "list",
-            "--json",
-            "number,title,author,createdAt,body,statusCheckRollup,comments",
+            "api",
+            "graphql",
+            "-F",
+            &format!("owner={}", owner),
+            "-F",
+            &format!("repo={}", repo_name),
+            "-f",
+            &format!("query={}", KANBAN_GRAPHQL_QUERY),
         ])
         .output();
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                prs.iter()
-                    .filter_map(|pr| {
-                        let number = pr.get("number").and_then(|v| v.as_u64())?;
-
-                        let title = pr
-                            .get("title")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let github_author = pr
-                            .get("author")
-                            .and_then(|v| v.get("login"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-
-                        let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                        let author = extract_coworker_from_pr_body(body).unwrap_or(github_author);
-
-                        let created_at = pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
-
-                        // Parse CI status
-                        let ci_status = kanban_ci_status(
-                            pr.get("statusCheckRollup")
-                                .and_then(|v| v.as_array())
-                                .map(|a| a.as_slice())
-                                .unwrap_or(&[]),
-                        );
-
-                        // Extract reviewer from comments
-                        let (comment_reviewer, reviewed_at) = extract_reviewer_from_pr_comments(
-                            pr.get("comments")
-                                .and_then(|v| v.as_array())
-                                .map(|a| a.as_slice())
-                                .unwrap_or(&[]),
-                        );
-
-                        // Use comment reviewer, or fall back to assigned reviewer
-                        let (reviewer, reviewer_assigned_at) = if let Some(reviewer) =
-                            comment_reviewer
-                        {
-                            (Some(reviewer), reviewed_at)
-                        } else if let Some((name, instant)) = reviewer_assignments.get(&number) {
-                            // Convert Instant to approximate DateTime
-                            let elapsed = instant.elapsed();
-                            let assigned_at = chrono::Utc::now()
-                                - chrono::Duration::seconds(elapsed.as_secs() as i64);
-                            (Some(name.clone()), Some(assigned_at.to_rfc3339()))
-                        } else {
-                            (None, None)
-                        };
-
-                        Some(serde_json::json!({
-                            "number": number,
-                            "title": title,
-                            "author": author,
-                            "created_at": created_at,
-                            "ci_status": ci_status,
-                            "reviewer": reviewer,
-                            "reviewed_at": reviewer_assigned_at,
-                            "repo": repo_label,
-                        }))
-                    })
-                    .collect()
-            } else {
-                Vec::new()
+    let data = match graphql_output {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            match serde_json::from_str::<serde_json::Value>(&stdout) {
+                Ok(v) => v,
+                Err(_) => {
+                    debug!("Failed to parse kanban GraphQL response");
+                    return (Vec::new(), Vec::new());
+                }
             }
         }
         _ => {
-            debug!("Failed to fetch kanban PRs from gh CLI");
-            Vec::new()
+            debug!("Failed to execute kanban GraphQL query");
+            return (Vec::new(), Vec::new());
         }
-    }
-}
+    };
 
-/// Fetch recently merged PRs for the kanban Done column.
-///
-/// Called once per repo. The `repo_label` is `Some(name)` only for multi-repo projects.
-fn fetch_kanban_merged_prs(
-    repo_path: &std::path::Path,
-    repo_label: Option<&str>,
-) -> Vec<serde_json::Value> {
-    let output = std::process::Command::new("gh")
-        .current_dir(repo_path)
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--json",
-            "number,title,mergedAt",
-            "--limit",
-            "10",
-        ])
-        .output();
+    let repository = match data.pointer("/data/repository") {
+        Some(r) => r,
+        None => {
+            debug!("No repository data in kanban GraphQL response");
+            return (Vec::new(), Vec::new());
+        }
+    };
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            serde_json::from_str::<Vec<serde_json::Value>>(&stdout)
-                .unwrap_or_default()
-                .into_iter()
+    // Process open PRs
+    let open_prs = repository
+        .pointer("/openPrs/nodes")
+        .and_then(|v| v.as_array())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|pr| {
+                    let number = pr.get("number").and_then(|v| v.as_u64())?;
+
+                    let title = pr
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let github_author = pr
+                        .pointer("/author/login")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                    let author = extract_coworker_from_pr_body(body).unwrap_or(github_author);
+
+                    let created_at = pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
+
+                    // Extract CI status from the last commit's statusCheckRollup
+                    let check_contexts: Vec<serde_json::Value> = pr
+                        .pointer("/commits/nodes")
+                        .and_then(|v| v.as_array())
+                        .and_then(|a| a.last())
+                        .and_then(|node| node.pointer("/commit/statusCheckRollup/contexts/nodes"))
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let ci_status = kanban_ci_status(&check_contexts);
+
+                    // Extract reviewer from comments
+                    let comments: Vec<serde_json::Value> = pr
+                        .pointer("/comments/nodes")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let (comment_reviewer, reviewed_at) =
+                        extract_reviewer_from_pr_comments(&comments);
+
+                    // Use comment reviewer, or fall back to assigned reviewer
+                    let (reviewer, reviewer_assigned_at) = if let Some(reviewer) = comment_reviewer
+                    {
+                        (Some(reviewer), reviewed_at)
+                    } else if let Some((name, instant)) = reviewer_assignments.get(&number) {
+                        let elapsed = instant.elapsed();
+                        let assigned_at = chrono::Utc::now()
+                            - chrono::Duration::seconds(elapsed.as_secs() as i64);
+                        (Some(name.clone()), Some(assigned_at.to_rfc3339()))
+                    } else {
+                        (None, None)
+                    };
+
+                    Some(serde_json::json!({
+                        "number": number,
+                        "title": title,
+                        "author": author,
+                        "created_at": created_at,
+                        "ci_status": ci_status,
+                        "reviewer": reviewer,
+                        "reviewed_at": reviewer_assigned_at,
+                        "repo": repo_label,
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Process merged PRs
+    let merged_prs = repository
+        .pointer("/mergedPrs/nodes")
+        .and_then(|v| v.as_array())
+        .map(|nodes| {
+            nodes
+                .iter()
                 .filter_map(|pr| {
                     let number = pr.get("number").and_then(|v| v.as_u64())?;
                     let title = pr
@@ -3606,12 +3668,10 @@ fn fetch_kanban_merged_prs(
                     }))
                 })
                 .collect()
-        }
-        _ => {
-            debug!("Failed to fetch merged PRs from gh CLI");
-            Vec::new()
-        }
-    }
+        })
+        .unwrap_or_default();
+
+    (open_prs, merged_prs)
 }
 
 /// Extract coworker name from PR body frontmatter (<!-- midtown: name -->).
