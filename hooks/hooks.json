@@ -1,4 +1,26 @@
 {
+  "PostToolUse": [
+    {
+      "matcher": "TaskCreate",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "midtown hook task",
+          "timeout": 10
+        }
+      ]
+    },
+    {
+      "matcher": "TaskUpdate",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "midtown hook task",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
   "Stop": [
     {
       "matcher": "*",

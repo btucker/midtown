@@ -458,6 +458,13 @@ fn handle_task_hook() -> Result<Response, String> {
         .send(&message)
         .map_err(|e| format!("Failed to post to channel: {}", e))?;
 
+    // On TaskCreate, notify daemon to immediately check for pending tasks
+    if tool_name == "TaskCreate"
+        && let Ok(client) = crate::client::DaemonClient::connect()
+    {
+        let _ = client.check_pending();
+    }
+
     Ok(Response::Message {
         message: format!("Posted: * {} {}", agent, action_message),
     })

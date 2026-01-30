@@ -256,6 +256,12 @@ impl DaemonClient {
         self.send("pr.list", None)
     }
 
+    // Daemon commands
+
+    pub fn check_pending(&self) -> Result<Response, String> {
+        self.send("daemon.check-pending", None)
+    }
+
     // Kanban commands
 
     pub fn kanban_data(&self) -> Result<Value, String> {
