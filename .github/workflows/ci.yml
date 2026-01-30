@@ -54,14 +54,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
       - name: Build release binary
         run: cargo build --release
 
-      - name: Run e2e tests
+      - name: Run daemon e2e tests
         run: cargo test --all-features --test daemon_e2e -- --ignored
         env:
           MIDTOWN_WEBHOOK_PORT: "0"
           MIDTOWN_CHAT_MONITOR: "0"
+
+      - name: Run tmux e2e tests
+        run: cargo test --all-features --test tmux_rename_e2e -- --ignored
 
   clippy:
     name: Clippy
