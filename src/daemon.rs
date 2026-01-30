@@ -1179,10 +1179,12 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     }
 
     // Get in_progress tasks to determine who is busy
-    let busy_coworkers = get_busy_coworkers(&state.repo_name);
+    let busy_coworkers: HashSet<String> =
+        get_busy_coworkers(&state.repo_name).into_iter().collect();
 
     // Get coworkers with open PRs - they should NEVER be sent on a break
-    let coworkers_with_open_prs = get_coworkers_with_open_prs();
+    let coworkers_with_open_prs: HashSet<String> =
+        get_coworkers_with_open_prs().into_iter().collect();
 
     // Get coworkers actively assigned to review PRs - they should not be considered idle.
     // Check BOTH in-memory and persistent state. The in-memory tracker can be empty after
@@ -1198,121 +1200,50 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         reviewers
     };
 
-    let now = Instant::now();
-    let now_utc = chrono::Utc::now();
-    let mut to_shutdown = Vec::new();
+    // Build coworker snapshots for the pure decision function
+    let snapshots: Vec<crate::rules::CoworkerSnapshot> = active_coworkers
+        .iter()
+        .map(|cw| crate::rules::CoworkerSnapshot {
+            name: cw.name.clone(),
+            started_at: cw.started_at,
+            isolated_tasks: cw.isolated_tasks,
+        })
+        .collect();
 
-    {
+    // Pure decision: who should be shut down?
+    let to_shutdown = {
         let mut idle_since = state.idle_since.write().await;
-
-        for cw in &active_coworkers {
-            let coworker = &cw.name;
-
-            // Check minimum lifetime - coworker must be alive for at least 5 minutes
-            let lifetime = now_utc.signed_duration_since(cw.started_at);
-            if lifetime < chrono::Duration::from_std(MINIMUM_COWORKER_LIFETIME).unwrap_or_default()
-            {
-                debug!(
-                    "Coworker {} is too young for a break ({} < {})",
-                    coworker,
-                    lifetime,
-                    MINIMUM_COWORKER_LIFETIME.as_secs()
-                );
-                // Remove from idle tracking since they're protected
-                idle_since.remove(coworker);
-                continue;
-            }
-
-            let is_busy = busy_coworkers
-                .iter()
-                .any(|b| b.eq_ignore_ascii_case(coworker));
-
-            // Check if coworker has an open PR (case-insensitive)
-            let has_open_pr = coworkers_with_open_prs
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case(coworker));
-
-            // Check if coworker is actively assigned to review a PR
-            let is_reviewing = active_reviewers
-                .iter()
-                .any(|r| r.eq_ignore_ascii_case(coworker));
-
-            if is_busy || has_open_pr || is_reviewing {
-                // Coworker is busy, has open PR, or is reviewing - remove from idle tracking
-                if idle_since.remove(coworker).is_some() {
-                    if has_open_pr {
-                        debug!(
-                            "Coworker {} has open PR, removed from idle tracking",
-                            coworker
-                        );
-                    } else if is_reviewing {
-                        debug!(
-                            "Coworker {} is actively reviewing a PR, removed from idle tracking",
-                            coworker
-                        );
-                    } else {
-                        debug!(
-                            "Coworker {} is now busy, removed from idle tracking",
-                            coworker
-                        );
-                    }
-                }
-            } else {
-                // Coworker is idle, has no open PRs, and is not reviewing
-                // Isolated coworkers (e.g., reviewers) go on a break immediately when idle
-                if cw.isolated_tasks {
-                    to_shutdown.push(coworker.clone());
-                    debug!(
-                        "Isolated coworker {} is idle, sending on a break immediately",
-                        coworker
-                    );
-                } else {
-                    match idle_since.get(coworker) {
-                        Some(since) => {
-                            // Check if they've been idle long enough
-                            if now.duration_since(*since) >= IDLE_BREAK_DURATION {
-                                to_shutdown.push(coworker.clone());
-                            }
-                        }
-                        None => {
-                            // Just became idle, start tracking
-                            idle_since.insert(coworker.clone(), now);
-                            debug!("Coworker {} is now idle, starting timer", coworker);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Remove shutdown coworkers from tracking
-        for name in &to_shutdown {
-            idle_since.remove(name);
-        }
-    }
+        crate::rules::decide_idle_shutdowns(
+            &snapshots,
+            &busy_coworkers,
+            &coworkers_with_open_prs,
+            &active_reviewers,
+            &mut idle_since,
+            Instant::now(),
+            chrono::Utc::now(),
+            IDLE_BREAK_DURATION,
+            MINIMUM_COWORKER_LIFETIME,
+        )
+    };
 
     // Shutdown idle coworkers (outside the lock)
-    for name in to_shutdown {
-        // Check if this is an isolated coworker for the log message
-        let is_isolated = active_coworkers
-            .iter()
-            .find(|cw| cw.name == name)
-            .map(|cw| cw.isolated_tasks)
-            .unwrap_or(false);
+    for decision in to_shutdown {
+        let name = &decision.name;
 
         // For isolated coworkers (reviewers), verify the review was actually posted
-        let (should_shutdown, shutdown_msg) = if is_isolated {
+        let (should_shutdown, shutdown_msg) = if decision.is_isolated {
             // Look up the PR this reviewer was assigned to
             // Try in-memory tracker first
             let pr_number = {
                 let tracker = state.pr_review_tracker.lock().await;
-                tracker.pr_for_coworker(&name)
+                tracker.pr_for_coworker(name)
             };
             let pr_number = match pr_number {
                 Some(pr) => Some(pr),
                 None => {
                     // Fall back to persistent state
                     let github_state = state.github_state.lock().await;
-                    github_state.pr_for_reviewer(&name)
+                    github_state.pr_for_reviewer(name)
                 }
             };
 
@@ -1327,7 +1258,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                         (
                             true,
                             daemon_messages::break_review_complete(
-                                &name,
+                                name,
                                 pr,
                                 config::get_personality(),
                             ),
@@ -1360,7 +1291,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                     );
                     (
                         true,
-                        daemon_messages::break_no_pr(&name, config::get_personality()),
+                        daemon_messages::break_no_pr(name, config::get_personality()),
                     )
                 }
             }
@@ -1371,7 +1302,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             );
             (
                 true,
-                daemon_messages::break_idle(&name, config::get_personality()),
+                daemon_messages::break_idle(name, config::get_personality()),
             )
         };
 
@@ -1386,8 +1317,8 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         }
 
         // Shutdown the coworker
-        state.broadcast_coworker_update(&name, "stopped", None);
-        if let Err(e) = state.coworkers.shutdown(&name) {
+        state.broadcast_coworker_update(name, "stopped", None);
+        if let Err(e) = state.coworkers.shutdown(name) {
             warn!("Failed to send idle coworker {} on a break: {}", name, e);
         }
     }
@@ -1405,52 +1336,36 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
     }
 
     let session_name = state.coworkers.session_name();
-    let now = Instant::now();
-    let mut to_nudge = Vec::new();
 
-    {
-        let mut interrupted_since = state.interrupted_since.write().await;
-
-        for cw in &active_coworkers {
-            let coworker = &cw.name;
-            let target = format!("{}:{}", session_name, coworker);
-
-            let pane_content = match crate::tmux::capture_pane(&target) {
-                Some(content) => content,
-                None => {
-                    // Can't capture pane, remove from tracking
-                    interrupted_since.remove(coworker);
-                    continue;
-                }
-            };
-
-            let is_interrupted = pane_content.contains("Interrupted")
-                || pane_content.contains("What should Claude do instead?");
-
-            if is_interrupted {
-                match interrupted_since.get(coworker) {
-                    Some(since) => {
-                        if now.duration_since(*since) >= INTERRUPTED_NUDGE_DURATION {
-                            to_nudge.push(coworker.clone());
-                            // Reset tracking so we don't spam nudges every 30s
-                            interrupted_since.remove(coworker);
-                        }
-                    }
-                    None => {
-                        interrupted_since.insert(coworker.clone(), now);
-                        debug!("Coworker {} appears interrupted, starting timer", coworker);
-                    }
-                }
-            } else {
-                // Not interrupted, clear tracking
-                if interrupted_since.remove(coworker).is_some() {
-                    debug!("Coworker {} is no longer interrupted", coworker);
-                }
-            }
+    // Build coworker snapshots and capture pane contents
+    let mut snapshots = Vec::new();
+    let mut pane_contents = HashMap::new();
+    for cw in &active_coworkers {
+        snapshots.push(crate::rules::CoworkerSnapshot {
+            name: cw.name.clone(),
+            started_at: cw.started_at,
+            isolated_tasks: cw.isolated_tasks,
+        });
+        let target = format!("{}:{}", session_name, &cw.name);
+        if let Some(content) = crate::tmux::capture_pane(&target) {
+            pane_contents.insert(cw.name.clone(), content);
         }
     }
 
-    for name in to_nudge {
+    // Pure decision: who should be nudged?
+    let to_nudge = {
+        let mut interrupted_since = state.interrupted_since.write().await;
+        crate::rules::decide_interrupt_nudges(
+            &snapshots,
+            &pane_contents,
+            &mut interrupted_since,
+            Instant::now(),
+            INTERRUPTED_NUDGE_DURATION,
+        )
+    };
+
+    for nudge in to_nudge {
+        let name = &nudge.name;
         info!(
             "Nudging interrupted coworker: {} (interrupted for 60+ seconds)",
             name
@@ -1464,39 +1379,13 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
             warn!("Failed to post interrupted nudge message to channel: {}", e);
         }
 
-        if let Err(e) = state.coworkers.nudge(&name, "continue") {
+        if let Err(e) = state.coworkers.nudge(name, "continue") {
             warn!("Failed to nudge interrupted coworker {}: {}", name, e);
         }
     }
 }
 
-/// Patterns that indicate a coworker is waiting on an interactive prompt.
-/// Each tuple: (pattern to search for, short label for the nudge message)
-const INTERACTIVE_PROMPT_PATTERNS: &[(&str, &str)] = &[
-    // Plan mode approval menu
-    ("Yes, and don't ask again for this project", "plan approval"),
-    ("Yes, and bypass permissions", "plan approval"),
-    ("Yes, clear context and bypass permissions", "plan approval"),
-    // Generic yes/no confirmation
-    ("Do you want to proceed?", "confirmation prompt"),
-    ("Would you like to proceed?", "confirmation prompt"),
-    // Permission request
-    ("Allow once", "permission request"),
-    ("Allow always", "permission request"),
-    // Question prompts from AskUserQuestion
-    ("Select an option", "question prompt"),
-];
-
-/// Check if pane content contains an interactive prompt that needs human input.
-/// Returns the label of the detected prompt, or None if no prompt is detected.
-fn detect_interactive_prompt(pane_content: &str) -> Option<&'static str> {
-    for (pattern, label) in INTERACTIVE_PROMPT_PATTERNS {
-        if pane_content.contains(pattern) {
-            return Some(label);
-        }
-    }
-    None
-}
+// Interactive prompt detection moved to crate::rules::detect_interactive_prompt
 
 /// Detect coworkers waiting on interactive prompts (plan approval, permission dialogs, etc.)
 /// and nudge the lead so they can provide guidance.
@@ -1510,55 +1399,30 @@ async fn check_and_nudge_prompted_coworkers(state: &DaemonState) {
     }
 
     let session_name = state.coworkers.session_name();
-    let mut to_nudge: Vec<(String, String)> = Vec::new();
 
-    {
-        let mut prompted_nudged = state.prompted_nudged.write().await;
-
-        for cw in &active_coworkers {
-            let coworker = &cw.name;
-
-            // Skip the lead — they're the human
-            if coworker == "lead" {
-                continue;
-            }
-
-            let target = format!("{}:{}", session_name, coworker);
-            let pane_content = match crate::tmux::capture_pane(&target) {
-                Some(content) => content,
-                None => {
-                    prompted_nudged.remove(coworker);
-                    continue;
-                }
-            };
-
-            match detect_interactive_prompt(&pane_content) {
-                Some(label) => {
-                    // Create a fingerprint from the prompt type to track what we've already nudged about
-                    let fingerprint = label.to_string();
-
-                    match prompted_nudged.get(coworker) {
-                        Some(prev_fingerprint) if prev_fingerprint == &fingerprint => {
-                            // Already nudged for this exact prompt — don't spam
-                        }
-                        _ => {
-                            // New prompt or different prompt type — nudge the lead
-                            prompted_nudged.insert(coworker.clone(), fingerprint);
-                            to_nudge.push((coworker.clone(), label.to_string()));
-                        }
-                    }
-                }
-                None => {
-                    // No prompt detected — clear tracking
-                    if prompted_nudged.remove(coworker).is_some() {
-                        debug!("Coworker {} is no longer waiting on a prompt", coworker);
-                    }
-                }
-            }
+    // Build coworker snapshots and capture pane contents
+    let mut snapshots = Vec::new();
+    let mut pane_contents = HashMap::new();
+    for cw in &active_coworkers {
+        snapshots.push(crate::rules::CoworkerSnapshot {
+            name: cw.name.clone(),
+            started_at: cw.started_at,
+            isolated_tasks: cw.isolated_tasks,
+        });
+        let target = format!("{}:{}", session_name, &cw.name);
+        if let Some(content) = crate::tmux::capture_pane(&target) {
+            pane_contents.insert(cw.name.clone(), content);
         }
     }
 
-    for (name, label) in to_nudge {
+    // Pure decision: which coworkers need lead attention?
+    let to_nudge = {
+        let mut prompted_nudged = state.prompted_nudged.write().await;
+        crate::rules::decide_prompt_nudges(&snapshots, &pane_contents, &mut prompted_nudged)
+    };
+
+    for nudge in to_nudge {
+        let (name, label) = (&nudge.name, &nudge.label);
         info!("Coworker {} is waiting on a {}, nudging lead", name, label);
 
         let msg = Message::text(
@@ -1586,85 +1450,7 @@ async fn check_and_nudge_prompted_coworkers(state: &DaemonState) {
     }
 }
 
-/// Patterns that indicate a coworker has hit a usage/rate limit.
-/// These are messages Claude Code displays when the Anthropic API returns a rate limit error.
-const USAGE_LIMIT_PATTERNS: &[&str] = &[
-    "usage limit",
-    "rate limit",
-    "Usage limit reached",
-    "rate_limit_error",
-    "You've hit your",
-    "limit resets",
-];
-
-/// Try to parse a duration from usage limit text (e.g., "try again in 15 minutes",
-/// "resets in 2 hours", "available in 30 minutes").
-///
-/// Returns the parsed duration if found, or a default of 15 minutes.
-fn parse_usage_limit_duration(pane_content: &str) -> Duration {
-    // Normalize to lowercase for matching
-    let lower = pane_content.to_lowercase();
-
-    // Look for patterns like "in X minutes", "in X hours", "in X hour"
-    // Also handles "in X minute", "in X mins", etc.
-    // We iterate through all occurrences since "in " can appear as a suffix
-    // of other words (e.g., "again in 2 hours" — first "in " is inside "again").
-    for keyword in &["in ", "after "] {
-        let mut search_from = 0;
-        while let Some(rel_idx) = lower[search_from..].find(keyword) {
-            let idx = search_from + rel_idx;
-            let after = &lower[idx + keyword.len()..];
-            search_from = idx + keyword.len();
-
-            // Try to parse a number immediately after the keyword
-            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(num) = num_str.parse::<u64>() {
-                if num == 0 {
-                    continue;
-                }
-                let remaining = after[num_str.len()..].trim_start();
-                if remaining.starts_with("hour") {
-                    return Duration::from_secs(num * 3600);
-                } else if remaining.starts_with("min") {
-                    return Duration::from_secs(num * 60);
-                } else if remaining.starts_with("sec") {
-                    return Duration::from_secs(num);
-                }
-            }
-        }
-    }
-
-    // Look for HH:MM timestamp pattern like "resets at 3:45" or "at 15:30"
-    if let Some(idx) = lower.find("at ") {
-        let after = &lower[idx + 3..];
-        let time_str: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == ':')
-            .collect();
-        if let Some((h, m)) = time_str.split_once(':')
-            && let (Ok(hour), Ok(min)) = (h.parse::<u32>(), m.parse::<u32>())
-        {
-            // Calculate duration from now to that time
-            let now = chrono::Utc::now();
-            let mut target = now
-                .date_naive()
-                .and_hms_opt(hour, min, 0)
-                .unwrap_or_default();
-            // If the time is in the past, assume it's tomorrow
-            if target < now.naive_utc() {
-                target += chrono::Duration::days(1);
-            }
-            let diff = target - now.naive_utc();
-            if let Ok(std_diff) = diff.to_std() {
-                return std_diff;
-            }
-        }
-    }
-
-    // Default: 15 minutes
-    info!("Could not parse usage limit duration, defaulting to 15 minutes");
-    Duration::from_secs(15 * 60)
-}
+// Usage limit patterns and parse_usage_limit_duration moved to crate::rules
 
 /// Check all active coworkers' tmux panes for usage/rate limit messages.
 /// If detected, schedule a nudge for when the limit expires.
@@ -1674,11 +1460,13 @@ fn parse_usage_limit_duration(pane_content: &str) -> Duration {
 /// schedule a single nudge time for everyone.
 async fn check_for_usage_limits(state: &DaemonState) {
     // If we already have a nudge scheduled, don't re-detect
-    {
+    let nudge_already_scheduled = {
         let nudge_at = state.usage_limit_nudge_at.lock().await;
-        if nudge_at.is_some() {
-            return;
-        }
+        nudge_at.is_some()
+    };
+
+    if nudge_already_scheduled {
+        return;
     }
 
     let active_coworkers = state.coworkers.list();
@@ -1688,70 +1476,78 @@ async fn check_for_usage_limits(state: &DaemonState) {
 
     let session_name = state.coworkers.session_name();
 
+    // Gather pane contents
+    let mut pane_contents: Vec<(String, String)> = Vec::new();
     for cw in &active_coworkers {
         let target = format!("{}:{}", session_name, cw.name);
-        let pane_content = match crate::tmux::capture_pane(&target) {
-            Some(content) => content,
-            None => continue,
-        };
-
-        let has_limit = USAGE_LIMIT_PATTERNS
-            .iter()
-            .any(|p| pane_content.to_lowercase().contains(&p.to_lowercase()));
-
-        if has_limit {
-            let wait_duration = parse_usage_limit_duration(&pane_content);
-            let nudge_time = tokio::time::Instant::now() + wait_duration + USAGE_LIMIT_NUDGE_BUFFER;
-
-            // Store the scheduled nudge time
-            {
-                let mut nudge_at = state.usage_limit_nudge_at.lock().await;
-                *nudge_at = Some(nudge_time);
-            }
-
-            let human_duration = if wait_duration.as_secs() >= 3600 {
-                format!(
-                    "{}h {}m",
-                    wait_duration.as_secs() / 3600,
-                    (wait_duration.as_secs() % 3600) / 60
-                )
-            } else {
-                format!("{}m", wait_duration.as_secs() / 60)
-            };
-
-            info!(
-                "Usage limit detected via coworker {} — scheduling nudge in {} + 30s buffer",
-                cw.name, human_duration
-            );
-
-            let msg = Message::text(
-                "system",
-                format!(
-                    "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~{} when it resets.",
-                    cw.name, human_duration
-                ),
-            );
-            if let Err(e) = state.send_and_broadcast(&msg) {
-                warn!("Failed to post usage limit message to channel: {}", e);
-            }
-
-            // One detection is enough — limits are account-wide
-            return;
+        if let Some(content) = crate::tmux::capture_pane(&target) {
+            pane_contents.push((cw.name.clone(), content));
         }
+    }
+
+    // Pure decision: detect usage limit
+    let decision =
+        crate::rules::decide_usage_limit_detection(&pane_contents, nudge_already_scheduled);
+
+    let detected_coworker = match decision {
+        crate::rules::UsageLimitDecision::Detected { coworker } => coworker,
+        _ => return,
+    };
+
+    // Find the pane content for the detected coworker to parse duration
+    let pane_content = pane_contents
+        .iter()
+        .find(|(name, _)| *name == detected_coworker)
+        .map(|(_, content)| content.as_str())
+        .unwrap_or("");
+
+    let wait_duration = crate::rules::parse_usage_limit_duration(pane_content);
+    let nudge_time = tokio::time::Instant::now() + wait_duration + USAGE_LIMIT_NUDGE_BUFFER;
+
+    // Store the scheduled nudge time
+    {
+        let mut nudge_at = state.usage_limit_nudge_at.lock().await;
+        *nudge_at = Some(nudge_time);
+    }
+
+    let human_duration = if wait_duration.as_secs() >= 3600 {
+        format!(
+            "{}h {}m",
+            wait_duration.as_secs() / 3600,
+            (wait_duration.as_secs() % 3600) / 60
+        )
+    } else {
+        format!("{}m", wait_duration.as_secs() / 60)
+    };
+
+    info!(
+        "Usage limit detected via coworker {} — scheduling nudge in {} + 30s buffer",
+        detected_coworker, human_duration
+    );
+
+    let msg = Message::text(
+        "system",
+        format!(
+            "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~{} when it resets.",
+            detected_coworker, human_duration
+        ),
+    );
+    if let Err(e) = state.send_and_broadcast(&msg) {
+        warn!("Failed to post usage limit message to channel: {}", e);
     }
 }
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all active coworkers.
 async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) {
-    let should_nudge = {
+    // Pure decision: should we nudge?
+    let nudge_at_value = {
         let nudge_at = state.usage_limit_nudge_at.lock().await;
-        match *nudge_at {
-            Some(at) => tokio::time::Instant::now() >= at,
-            None => false,
-        }
+        *nudge_at
     };
+    let decision =
+        crate::rules::decide_usage_limit_expiry(nudge_at_value, tokio::time::Instant::now());
 
-    if !should_nudge {
+    if decision != crate::rules::UsageLimitExpiryDecision::NudgeNow {
         return;
     }
 
@@ -4988,10 +4784,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
 mod decisions {
     use std::time::Instant;
 
-    use super::{
-        IDLE_BREAK_DURATION, INTERRUPTED_NUDGE_DURATION, MINIMUM_COWORKER_LIFETIME,
-        detect_interactive_prompt,
-    };
+    use super::{IDLE_BREAK_DURATION, INTERRUPTED_NUDGE_DURATION, MINIMUM_COWORKER_LIFETIME};
+    use crate::rules::detect_interactive_prompt;
 
     /// Snapshot of a coworker's state for decision-making (no async, no side effects).
     #[derive(Debug, Clone)]
@@ -5149,9 +4943,7 @@ mod decisions {
         }
 
         for (name, content) in pane_contents {
-            let has_limit = super::USAGE_LIMIT_PATTERNS
-                .iter()
-                .any(|p| content.to_lowercase().contains(&p.to_lowercase()));
+            let has_limit = crate::rules::has_usage_limit_pattern(content);
 
             if has_limit {
                 return UsageLimitDecision::Detected {
@@ -6294,75 +6086,102 @@ mod tests {
   │  3. No, and tell Claude what to do differently           │
   ╰──────────────────────────────────────────────────────────╯
         "#;
-        assert_eq!(detect_interactive_prompt(pane), Some("plan approval"));
+        assert_eq!(
+            crate::rules::detect_interactive_prompt(pane),
+            Some("plan approval")
+        );
     }
 
     #[test]
     fn test_detect_interactive_prompt_permission_request() {
         let pane = "Claude wants to run: cargo test\n  Allow once  Allow always  Deny";
-        assert_eq!(detect_interactive_prompt(pane), Some("permission request"));
+        assert_eq!(
+            crate::rules::detect_interactive_prompt(pane),
+            Some("permission request")
+        );
     }
 
     #[test]
     fn test_detect_interactive_prompt_confirmation() {
         let pane = "This will modify 15 files. Would you like to proceed?";
-        assert_eq!(detect_interactive_prompt(pane), Some("confirmation prompt"));
+        assert_eq!(
+            crate::rules::detect_interactive_prompt(pane),
+            Some("confirmation prompt")
+        );
     }
 
     #[test]
     fn test_detect_interactive_prompt_question() {
         let pane = "Which approach do you prefer?\n  Select an option\n  > Option A\n    Option B";
-        assert_eq!(detect_interactive_prompt(pane), Some("question prompt"));
+        assert_eq!(
+            crate::rules::detect_interactive_prompt(pane),
+            Some("question prompt")
+        );
     }
 
     #[test]
     fn test_detect_interactive_prompt_none() {
         // Normal working output — no prompt
         let pane = "Reading file src/main.rs\nEditing src/daemon.rs\n";
-        assert_eq!(detect_interactive_prompt(pane), None);
+        assert_eq!(crate::rules::detect_interactive_prompt(pane), None);
     }
 
     #[test]
     fn test_detect_interactive_prompt_empty() {
-        assert_eq!(detect_interactive_prompt(""), None);
+        assert_eq!(crate::rules::detect_interactive_prompt(""), None);
     }
 
     // Usage limit detection tests
     #[test]
     fn test_parse_usage_limit_duration_minutes() {
         let pane = "You've hit your usage limit. Try again in 15 minutes.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 15 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            15 * 60
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_hours() {
         let pane = "Rate limited. Try again in 2 hours.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 2 * 3600);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            2 * 3600
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_seconds() {
         let pane = "Too many requests. Try again in 30 seconds.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 30);
+        assert_eq!(crate::rules::parse_usage_limit_duration(pane).as_secs(), 30);
     }
 
     #[test]
     fn test_parse_usage_limit_duration_after_keyword() {
         let pane = "Limit reached. Available after 10 minutes.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 10 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            10 * 60
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_default() {
         // No parseable duration — should default to 15 minutes
         let pane = "Usage limit reached. Please wait.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 15 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            15 * 60
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_case_insensitive() {
         let pane = "USAGE LIMIT REACHED. TRY AGAIN IN 20 MINUTES.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 20 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            20 * 60
+        );
     }
 
     #[test]
@@ -6375,11 +6194,11 @@ mod tests {
         ];
 
         for msg in messages {
-            let lower = msg.to_lowercase();
-            let detected = USAGE_LIMIT_PATTERNS
-                .iter()
-                .any(|p| lower.contains(&p.to_lowercase()));
-            assert!(detected, "Pattern not detected in: {}", msg);
+            assert!(
+                crate::rules::has_usage_limit_pattern(msg),
+                "Pattern not detected in: {}",
+                msg
+            );
         }
     }
 
@@ -6393,11 +6212,11 @@ mod tests {
         ];
 
         for msg in messages {
-            let lower = msg.to_lowercase();
-            let detected = USAGE_LIMIT_PATTERNS
-                .iter()
-                .any(|p| lower.contains(&p.to_lowercase()));
-            assert!(!detected, "False positive in: {}", msg);
+            assert!(
+                !crate::rules::has_usage_limit_pattern(msg),
+                "False positive in: {}",
+                msg
+            );
         }
     }
 
