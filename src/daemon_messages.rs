@@ -25,18 +25,6 @@ fn pick<'a>(pool: &'a [&'a str], personality: Personality) -> &'a str {
 // Spawn / call-in messages
 // ---------------------------------------------------------------------------
 
-/// Called in {name} in response to @mention.
-pub fn called_in_mention(name: &str, personality: Personality) -> String {
-    let templates: &[&str] = &[
-        "🚀 Called in {name} in response to @mention",
-        "📞 Paging {name} — someone dropped an @mention",
-        "🏃 {name} is on the way — got the @mention",
-        "👋 {name} just walked in after the @mention",
-        "🎯 Tapped {name} for the @mention",
-    ];
-    pick(templates, personality).replace("{name}", name)
-}
-
 /// Called in {name} to address {issue_type} on PR #{pr_number}.
 pub fn called_in_pr_issue(
     name: &str,
@@ -170,10 +158,6 @@ mod tests {
         // Run many times to confirm determinism
         for _ in 0..50 {
             assert_eq!(
-                called_in_mention("alice", Personality::Normal),
-                "🚀 Called in alice in response to @mention"
-            );
-            assert_eq!(
                 break_idle("bob", Personality::Normal),
                 "☕ Letting bob take a break"
             );
@@ -185,6 +169,10 @@ mod tests {
                 called_in_reviewer("dave", 99, Personality::Normal),
                 "🔍 Called in dave to review PR #99"
             );
+            assert_eq!(
+                called_in_assigned_task("eve", "5", "Fix bug", Personality::Normal),
+                "🚀 Called in coworker eve for assigned task #5: Fix bug"
+            );
         }
     }
 
@@ -192,9 +180,6 @@ mod tests {
     fn fun_personality_produces_valid_messages() {
         // Just verify every function returns a non-empty string containing the name
         let name = "eve";
-        let msg = called_in_mention(name, Personality::Fun);
-        assert!(msg.contains(name), "message should contain name: {msg}");
-
         let msg = called_in_pr_issue(name, "CI failure", 10, Personality::Fun);
         assert!(msg.contains(name) && msg.contains("10"), "{msg}");
 
@@ -227,8 +212,8 @@ mod tests {
     fn wild_personality_produces_valid_messages() {
         let name = "frank";
         for _ in 0..20 {
-            let msg = called_in_mention(name, Personality::Wild);
-            assert!(msg.contains(name), "{msg}");
+            let msg = called_in_pending_task(name, "7", Personality::Wild);
+            assert!(msg.contains(name) && msg.contains("7"), "{msg}");
             let msg = break_idle(name, Personality::Wild);
             assert!(msg.contains(name), "{msg}");
         }

@@ -2058,7 +2058,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                     // Post to channel about the call-in
                     let spawn_msg = Message::text(
                         "midtown",
-                        daemon_messages::called_in_mention(&name, config::get_personality()),
+                        format!("🚀 Called in {} in response to @mention", name),
                     );
                     if let Err(e) = state.send_and_broadcast(&spawn_msg) {
                         warn!("Failed to post call-in message: {}", e);
