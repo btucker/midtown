@@ -2071,31 +2071,57 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // Check if PR already has a Claude review (expensive, do last)
         if pr_has_claude_review(pr_number) {
             debug!("PR #{} already has a Claude review", pr_number);
-            // Free the tracker slot if this PR was assigned — the review completed
-            // but mark_reviewed() was never called (it only fires on nudge failure)
-            {
-                let mut tracker = state.pr_review_tracker.lock().await;
-                if tracker.is_assigned(pr_number) {
-                    debug!(
-                        "PR #{} review completed, freeing tracker slot (in-memory)",
-                        pr_number
-                    );
-                    tracker.mark_reviewed(pr_number);
+
+            // Before cleaning up the assignment, check if the reviewer is still running.
+            // If so, leave the assignment in place so the idle shutdown path can
+            // properly send them off with break_review_complete() instead of break_no_pr().
+            let reviewer_still_running = {
+                let tracker = state.pr_review_tracker.lock().await;
+                if let Some(reviewer_name) = tracker.get_reviewer(pr_number) {
+                    state.coworkers.get(reviewer_name).is_some()
+                } else {
+                    // Check persistent state too
+                    let github_state = state.github_state.lock().await;
+                    if let Some(reviewer_name) = github_state.get_reviewer(pr_number) {
+                        state.coworkers.get(reviewer_name).is_some()
+                    } else {
+                        false
+                    }
                 }
-            }
-            // Also clean up persistent state
-            {
-                let mut github_state = state.github_state.lock().await;
-                if github_state.is_assigned(pr_number) {
-                    debug!(
-                        "PR #{} review completed, freeing tracker slot (persistent)",
-                        pr_number
-                    );
-                    github_state.remove_assignment(pr_number);
-                    if let Err(e) =
-                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
-                    {
-                        warn!("Failed to save github-state.json: {}", e);
+            };
+
+            if reviewer_still_running {
+                debug!(
+                    "PR #{} has Claude review but reviewer is still running — keeping assignment",
+                    pr_number
+                );
+            } else {
+                // Free the tracker slot — the review completed and the reviewer is gone
+                {
+                    let mut tracker = state.pr_review_tracker.lock().await;
+                    if tracker.is_assigned(pr_number) {
+                        debug!(
+                            "PR #{} review completed, freeing tracker slot (in-memory)",
+                            pr_number
+                        );
+                        tracker.mark_reviewed(pr_number);
+                    }
+                }
+                // Also clean up persistent state
+                {
+                    let mut github_state = state.github_state.lock().await;
+                    if github_state.is_assigned(pr_number) {
+                        debug!(
+                            "PR #{} review completed, freeing tracker slot (persistent)",
+                            pr_number
+                        );
+                        github_state.remove_assignment(pr_number);
+                        if let Err(e) = crate::github_state::save_state_for_repo(
+                            &state.repo_name,
+                            &github_state,
+                        ) {
+                            warn!("Failed to save github-state.json: {}", e);
+                        }
                     }
                 }
             }
@@ -4101,6 +4127,21 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         .map(|cw| cw.name.to_lowercase())
         .collect();
 
+    // Build set of busy coworkers (those with in_progress tasks) for idle detection
+    let busy_coworkers: std::collections::HashSet<String> =
+        crate::tasks::get_busy_coworkers_for_repo(&state.repo_name)
+            .into_iter()
+            .map(|n| n.to_lowercase())
+            .collect();
+
+    // Build set of idle coworkers: active, non-busy, non-isolated (not reviewers)
+    let idle_coworkers: Vec<String> = active_coworkers
+        .iter()
+        .filter(|cw| !cw.isolated_tasks) // Skip reviewers
+        .filter(|cw| !busy_coworkers.contains(&cw.name.to_lowercase()))
+        .map(|cw| cw.name.clone())
+        .collect();
+
     // Case 1: Pending tasks with owners assigned but coworker not running
     let pending_with_owners = crate::tasks::get_pending_tasks_with_owners();
     for (task_id, task_subject, owner) in pending_with_owners {
@@ -4246,16 +4287,33 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             None
         };
 
+        // Step 1b: If no grouping found, prefer an idle coworker over spawning a new one.
+        // An idle coworker is already running but has no in_progress tasks and isn't
+        // a reviewer — assigning them work avoids the cost of spawning a new session.
         let coworker_name = if let Some(name) = grouped_name {
             name
+        } else if let Some(idle_name) = idle_coworkers
+            .iter()
+            .find(|name| {
+                // Skip coworkers already assigned work in this tick
+                !task_coworker_map
+                    .values()
+                    .any(|v| v.eq_ignore_ascii_case(name))
+            })
+            .cloned()
+        {
+            idle_name
         } else {
-            // No grouping found - allocate a new coworker name
+            // No idle coworkers available - allocate a new coworker name
             let Some(name) = state.coworkers.next_available_name() else {
                 debug!("No available coworker slots for unowned task #{}", task.id);
                 break;
             };
             name
         };
+
+        // Check if this coworker is already running (idle reuse) vs needs spawning
+        let already_running = active_names.contains(&coworker_name.to_lowercase());
 
         // Step 2: Atomically assign task ownership BEFORE spawning
         // This prevents race conditions where multiple coworkers could claim the same task
@@ -4268,8 +4326,8 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         }
 
         info!(
-            "Assigned task #{} to {} (pre-spawn)",
-            task.id, coworker_name
+            "Assigned task #{} to {} (pre-spawn, already_running={})",
+            task.id, coworker_name, already_running
         );
 
         // Record this assignment in in-memory maps for same-tick grouping
@@ -4278,46 +4336,77 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             pr_coworker_map.insert(pr_num, coworker_name.clone());
         }
 
-        // Build the prompt message to send during spawn
+        // Build the prompt message
         let prompt = format!(
             "You've been assigned task #{}: {}. Get started!",
             task.id, task.subject
         );
 
-        // Step 3: Now spawn the coworker with the pre-assigned name and prompt
-        // spawn_with_name handles waiting and sending the prompt internally
-        // Use shared task list (not isolated) for pre-assigned task spawns
-        match state
-            .coworkers
-            .spawn_with_name(&coworker_name, false, Some(&prompt), false)
-        {
-            Ok(_) => {
-                info!(
-                    "Spawned coworker {} for pre-assigned task #{}",
-                    coworker_name, task.id
-                );
-
-                // Post to channel
-                let msg = Message::text(
-                    "midtown",
-                    daemon_messages::called_in_assigned_task(
-                        &coworker_name,
-                        &task.id.to_string(),
-                        &task.subject,
-                        config::get_personality(),
-                    ),
-                );
-                if let Err(e) = state.send_and_broadcast(&msg) {
-                    warn!("Failed to post assignment message: {}", e);
+        if already_running {
+            // Step 3a: Coworker is already running (idle reuse) — nudge instead of spawn
+            match state.coworkers.nudge(&coworker_name, &prompt) {
+                Ok(()) => {
+                    info!(
+                        "Nudged idle coworker {} with pre-assigned task #{}",
+                        coworker_name, task.id
+                    );
+                    let msg = Message::text(
+                        "midtown",
+                        daemon_messages::called_in_assigned_task(
+                            &coworker_name,
+                            &task.id.to_string(),
+                            &task.subject,
+                            config::get_personality(),
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&msg) {
+                        warn!("Failed to post assignment message: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to nudge idle coworker {} for task #{}: {}",
+                        coworker_name, task.id, e
+                    );
                 }
             }
-            Err(e) => {
-                // Spawn failed but task is already assigned - that's okay,
-                // the next daemon tick will see the assigned task and try to spawn again
-                warn!(
-                    "Failed to spawn {} for pre-assigned task #{}: {}",
-                    coworker_name, task.id, e
-                );
+        } else {
+            // Step 3b: Spawn a new coworker with the pre-assigned name and prompt
+            // spawn_with_name handles waiting and sending the prompt internally
+            // Use shared task list (not isolated) for pre-assigned task spawns
+            match state
+                .coworkers
+                .spawn_with_name(&coworker_name, false, Some(&prompt), false)
+            {
+                Ok(_) => {
+                    info!(
+                        "Spawned coworker {} for pre-assigned task #{}",
+                        coworker_name, task.id
+                    );
+                    state.broadcast_coworker_update(&coworker_name, "running", None);
+
+                    // Post to channel
+                    let msg = Message::text(
+                        "midtown",
+                        daemon_messages::called_in_assigned_task(
+                            &coworker_name,
+                            &task.id.to_string(),
+                            &task.subject,
+                            config::get_personality(),
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&msg) {
+                        warn!("Failed to post assignment message: {}", e);
+                    }
+                }
+                Err(e) => {
+                    // Spawn failed but task is already assigned - that's okay,
+                    // the next daemon tick will see the assigned task and try to spawn again
+                    warn!(
+                        "Failed to spawn {} for pre-assigned task #{}: {}",
+                        coworker_name, task.id, e
+                    );
+                }
             }
         }
     }
@@ -5160,6 +5249,37 @@ mod tests {
         assert!(!reviewers.contains("lexington"));
         assert!(reviewers.contains("park"));
         assert_eq!(reviewers.len(), 1);
+    }
+
+    #[test]
+    fn test_pr_review_tracker_get_reviewer() {
+        let mut tracker = PrReviewTracker::new();
+        tracker.assign(42, "lexington");
+        tracker.assign(43, "park");
+
+        assert_eq!(tracker.get_reviewer(42), Some("lexington"));
+        assert_eq!(tracker.get_reviewer(43), Some("park"));
+        assert_eq!(tracker.get_reviewer(99), None);
+
+        // get_reviewer should return the name even after mark_reviewed removes it
+        tracker.mark_reviewed(42);
+        assert_eq!(tracker.get_reviewer(42), None);
+    }
+
+    #[test]
+    fn test_pr_review_tracker_get_reviewer_ignores_timeout() {
+        let mut tracker = PrReviewTracker::new();
+        // Simulate an expired assignment (> 10 minutes old)
+        tracker.assign_at(
+            42,
+            "broadway",
+            Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
+        );
+
+        // is_assigned should return false (expired)
+        assert!(!tracker.is_assigned(42));
+        // get_reviewer should still return the name (ignores timeout)
+        assert_eq!(tracker.get_reviewer(42), Some("broadway"));
     }
 
     #[test]
