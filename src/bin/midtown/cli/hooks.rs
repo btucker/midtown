@@ -181,7 +181,7 @@ fn handle_idle_hook() -> Result<Response, String> {
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
     let personality = midtown::config::get_personality();
 
-    let idle_text = midtown::daemon_messages::idle_waiting(&agent, personality);
+    let idle_text = midtown::daemon_messages::idle_waiting(personality);
     let message = midtown::Message::action(&agent, &idle_text);
     channel
         .send(&message)
