@@ -6,6 +6,7 @@
 //! actionable issues.
 
 mod constants;
+mod helpers;
 mod trackers;
 
 use constants::*;
@@ -14,6 +15,7 @@ pub use constants::{
     DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, MAX_CONCURRENT_REVIEWS, PR_NUDGE_COOLDOWN_SECS,
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
+use helpers::*;
 pub use trackers::{PrIssueTracker, PrIssueType, PrReviewTracker};
 
 use std::collections::{HashMap, HashSet};
@@ -1750,22 +1752,6 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
     }
 }
 
-/// Check if a message contains @all (case-insensitive, with word boundary).
-fn contains_at_all(content: &str) -> bool {
-    let content_lower = content.to_lowercase();
-    if let Some(idx) = content_lower.find("@all") {
-        let after_idx = idx + 4; // "@all".len()
-        after_idx >= content.len()
-            || !content[after_idx..]
-                .chars()
-                .next()
-                .unwrap_or(' ')
-                .is_alphanumeric()
-    } else {
-        false
-    }
-}
-
 /// Route an @all broadcast: nudge every active coworker and the lead, except the sender.
 fn route_at_all(state: &DaemonState, msg: &Message) {
     let active_coworkers = state.coworkers.list();
@@ -1798,36 +1784,6 @@ fn route_at_all(state: &DaemonState, msg: &Message) {
             info!("Nudged {} for @all from {}", coworker.name, msg.from);
         }
     }
-}
-
-/// Extract valid coworker @mentions from message content.
-///
-/// Returns a list of coworker names that were mentioned (lowercase).
-/// Uses word boundary detection to avoid false positives.
-fn extract_mentions(content: &str) -> Vec<String> {
-    let mut mentions = Vec::new();
-    let content_lower = content.to_lowercase();
-
-    // Look for @name patterns where name is a valid coworker name
-    for &name in COWORKER_NAMES {
-        let pattern = format!("@{}", name);
-        if let Some(idx) = content_lower.find(&pattern) {
-            // Check that this is at a word boundary (not part of a larger word)
-            let after_idx = idx + pattern.len();
-            let at_word_boundary = after_idx >= content.len()
-                || !content[after_idx..]
-                    .chars()
-                    .next()
-                    .unwrap_or(' ')
-                    .is_alphanumeric();
-
-            if at_word_boundary && !mentions.contains(&name.to_string()) {
-                mentions.push(name.to_string());
-            }
-        }
-    }
-
-    mentions
 }
 
 /// Poll all open PRs and nudge for actionable issues.
@@ -2428,81 +2384,6 @@ async fn handle_webhook_review_spawn(state: &DaemonState, pr_number: u64) {
     spawn_reviewers_for_prs(state, &[pr]).await;
 }
 
-/// Detect actionable issues for a PR.
-fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
-    let mut issues = Vec::new();
-
-    // Check for merge conflicts
-    let mergeable = pr.get("mergeable").and_then(|m| m.as_str()).unwrap_or("");
-    if mergeable == "CONFLICTING" {
-        issues.push(PrIssueType::MergeConflict);
-    }
-
-    // Check for CI failures
-    if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
-        let has_failure = checks.iter().any(|check| {
-            let conclusion = check
-                .get("conclusion")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            conclusion == "FAILURE"
-        });
-        if has_failure {
-            issues.push(PrIssueType::CiFailed);
-        }
-    }
-
-    // Check review decision
-    let review_decision = pr
-        .get("reviewDecision")
-        .and_then(|r| r.as_str())
-        .unwrap_or("");
-    match review_decision {
-        "CHANGES_REQUESTED" => issues.push(PrIssueType::ChangesRequested),
-        "APPROVED" => issues.push(PrIssueType::Approved),
-        _ => {}
-    }
-
-    issues
-}
-
-/// Get action text for a PR issue type.
-fn get_issue_action(issue_type: PrIssueType) -> &'static str {
-    match issue_type {
-        PrIssueType::MergeConflict => "please rebase",
-        PrIssueType::CiFailed => "please investigate",
-        PrIssueType::ChangesRequested => "please address feedback",
-        PrIssueType::Approved => "ready to merge!",
-        PrIssueType::NeedsReview => "calling in reviewer",
-        PrIssueType::ReviewComment => "please address review feedback and merge if appropriate",
-        PrIssueType::ReviewComplete => {
-            "review is complete — please address feedback and merge if appropriate"
-        }
-    }
-}
-
-/// Truncate a string to max length with ellipsis.
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
-}
-
-/// Check if text contains a coworker review signature.
-///
-/// Coworker reviews are identified by:
-/// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
-/// - The "<!-- midtown:" frontmatter (comment-based reviews)
-/// - The "## Code Review by" header (comment-based reviews)
-fn text_contains_review_signature(text: &str) -> bool {
-    text.contains("🤖 Reviewed by")
-        || text.contains("Reviewed by")
-        || text.contains("<!-- midtown:")
-        || text.contains("## Code Review by")
-}
-
 /// Check if a PR has a review comment from a Claude coworker.
 ///
 /// Checks both formal reviews (`.reviews[].body`) and comments (`.comments[].body`)
@@ -2555,17 +2436,6 @@ fn pr_has_claude_review(pr_number: u64) -> bool {
             false
         }
     }
-}
-
-/// Get the creation time of a PR to enforce review delay.
-///
-/// Returns None if the PR age couldn't be determined.
-fn get_pr_age_secs(pr: &serde_json::Value) -> Option<u64> {
-    let created_at = pr.get("createdAt").and_then(|c| c.as_str())?;
-    let created = chrono::DateTime::parse_from_rfc3339(created_at).ok()?;
-    let now = chrono::Utc::now();
-    let duration = now.signed_duration_since(created);
-    Some(duration.num_seconds().max(0) as u64)
 }
 
 /// Handle a single client connection.
@@ -2934,11 +2804,6 @@ fn handle_coworker_asking(
             "message": format!("Notified Lead about question from {}", name),
         }),
     )
-}
-
-/// Check if a sender is a coworker (not Lead or system).
-fn is_coworker_sender(from: &str) -> bool {
-    !SYSTEM_SENDERS.contains(&from)
 }
 
 /// Handle channel.post RPC method.
@@ -3660,58 +3525,9 @@ fn get_recent_channel_activity() -> Vec<serde_json::Value> {
     }
 }
 
-/// Truncate a message for summary display.
-fn truncate_message(msg: &str, max_len: usize) -> String {
-    let first_line = msg.lines().next().unwrap_or(msg);
-    if first_line.len() <= max_len {
-        first_line.to_string()
-    } else {
-        format!("{}...", &first_line[..max_len])
-    }
-}
-
 // ============================================================================
 // Auto-nudge helpers for PR activity
 // ============================================================================
-
-/// Extract PR number from a message content.
-///
-/// Looks for patterns like "PR #42", "#42", "PR #123".
-#[cfg(test)]
-fn extract_pr_number(content: &str) -> Option<u64> {
-    // Look for "PR #N" pattern first
-    if let Some(idx) = content.find("PR #") {
-        let after = &content[idx + 4..];
-        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(num) = num_str.parse() {
-            return Some(num);
-        }
-    }
-
-    // Look for " #N " pattern (standalone PR reference)
-    // This handles messages like "approved PR #42" where we already caught it above
-    // but also cases like "on #42:"
-    for (i, _) in content.match_indices(" #") {
-        let after = &content[i + 2..];
-        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !num_str.is_empty()
-            && let Ok(num) = num_str.parse()
-        {
-            return Some(num);
-        }
-    }
-
-    None
-}
-
-/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
-fn coworker_from_branch(branch: &str) -> Option<String> {
-    let prefix = branch.split('/').next()?;
-    COWORKER_NAMES
-        .iter()
-        .find(|&&name| name.eq_ignore_ascii_case(prefix))
-        .map(|&s| s.to_string())
-}
 
 /// Async version of `get_pr_owner_coworker` that doesn't block the Tokio runtime.
 async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
