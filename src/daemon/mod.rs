@@ -3922,10 +3922,10 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         return;
     }
 
-    // Get list of currently active coworkers
+    // Get list of currently running coworkers (excludes Stopping/Stopped)
     let active_names: std::collections::HashSet<String> = state
         .coworkers
-        .list()
+        .list_running()
         .iter()
         .map(|cw| cw.name.to_lowercase())
         .collect();
@@ -4303,8 +4303,8 @@ fn cleanup_orphaned_worktrees(state: &DaemonState) {
 /// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
 /// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
 fn spawn_for_pending_tasks(state: &DaemonState) {
-    // Get list of currently active coworkers
-    let active_coworkers = state.coworkers.list();
+    // Get list of currently running coworkers (excludes Stopping/Stopped)
+    let active_coworkers = state.coworkers.list_running();
     let active_names: std::collections::HashSet<String> = active_coworkers
         .iter()
         .map(|cw| cw.name.to_lowercase())
