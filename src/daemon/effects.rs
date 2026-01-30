@@ -23,7 +23,7 @@ pub enum Effect {
     /// Nudge a coworker by sending a message to their tmux pane.
     NudgeCoworker { name: String, message: String },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
-    PostToChannel { message: String },
+    PostToChannel { sender: String, message: String },
     /// Broadcast a coworker status update to WebSocket clients.
     BroadcastCoworkerUpdate {
         name: String,
@@ -76,8 +76,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to nudge coworker {}: {}", name, e);
                 }
             }
-            Effect::PostToChannel { message } => {
-                let msg = Message::text("midtown", &message);
+            Effect::PostToChannel { sender, message } => {
+                let msg = Message::text(&sender, &message);
                 if let Err(e) = state.send_and_broadcast(&msg) {
                     warn!("Failed to post channel message: {}", e);
                 }
