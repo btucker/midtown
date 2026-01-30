@@ -201,7 +201,7 @@ TaskUpdate with taskId: <new task id>, owner: "{name}"
 ```
 Review sub-tasks are internal workflow steps — they should not appear as claimable work for other coworkers.
 
-2. **Post your review as a GitHub comment** on the PR. The skill will guide you through this, but you MUST ensure your review is posted to GitHub (not just the channel).
+2. **Post your review as a GitHub comment** on the PR. The skill will guide you through this, but you MUST ensure your review is posted to GitHub (not just the channel). **Even if the skill finds no issues above the scoring threshold and says "do not proceed", you MUST still post a comment** using the "no issues found" format. The daemon and PR author cannot see that a review happened unless a GitHub comment exists.
 
 3. **Confirm completion** by posting to the channel with the comment URL:
 ```bash
