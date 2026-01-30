@@ -2803,6 +2803,16 @@ fn handle_coworker_asking(
     )
 }
 
+/// Remove shell escaping artifacts from channel messages.
+///
+/// When Claude Code posts messages via its Bash tool, the LLM often escapes `!`
+/// as `\!` (to avoid bash history expansion). Since the Bash tool runs in
+/// non-interactive mode where history expansion is disabled, the backslash passes
+/// through literally. This function cleans up such artifacts.
+fn unescape_shell_artifacts(s: &str) -> String {
+    s.replace("\\!", "!")
+}
+
 /// Handle channel.post RPC method.
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
@@ -2811,6 +2821,9 @@ fn handle_coworker_asking(
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
 fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonState) -> Response {
+    // Clean up shell escaping artifacts (e.g. "\!" from bash history expansion escaping)
+    let message = unescape_shell_artifacts(message);
+
     // Check for /me prefix (IRC-style action)
     let (content, msg_type) = if let Some(action) = message.strip_prefix("/me ") {
         (action.to_string(), MessageType::Action)
@@ -6399,6 +6412,39 @@ mod tests {
             PrIssueAction::DevLimitReached {
                 owner: "park".to_string()
             }
+        );
+    }
+
+    // Shell artifact unescaping tests
+    #[test]
+    fn test_unescape_shell_artifacts_exclamation() {
+        assert_eq!(
+            unescape_shell_artifacts("Game time\\! Let's go"),
+            "Game time! Let's go"
+        );
+    }
+
+    #[test]
+    fn test_unescape_shell_artifacts_multiple_exclamations() {
+        assert_eq!(
+            unescape_shell_artifacts("Wow\\! Amazing\\! Done\\!"),
+            "Wow! Amazing! Done!"
+        );
+    }
+
+    #[test]
+    fn test_unescape_shell_artifacts_no_escapes() {
+        assert_eq!(
+            unescape_shell_artifacts("Normal message with ! marks"),
+            "Normal message with ! marks"
+        );
+    }
+
+    #[test]
+    fn test_unescape_shell_artifacts_preserves_other_backslashes() {
+        assert_eq!(
+            unescape_shell_artifacts("path\\to\\file and \\!"),
+            "path\\to\\file and !"
         );
     }
 }
