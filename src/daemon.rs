@@ -457,6 +457,9 @@ struct DaemonState {
     idle_since: RwLock<HashMap<String, Instant>>,
     /// Tracks when each coworker was first detected as interrupted
     interrupted_since: RwLock<HashMap<String, Instant>>,
+    /// Tracks prompts we've already nudged the lead about (coworker_name -> prompt_fingerprint)
+    /// to avoid spamming the same prompt repeatedly
+    prompted_nudged: RwLock<HashMap<String, String>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Tracker for PRs assigned for review
@@ -524,6 +527,7 @@ impl DaemonState {
             nudged_messages: std::sync::RwLock::new(HashSet::new()),
             idle_since: RwLock::new(HashMap::new()),
             interrupted_since: RwLock::new(HashMap::new()),
+            prompted_nudged: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
@@ -967,6 +971,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
                 check_and_shutdown_idle_coworkers(&state).await;
                 check_and_nudge_interrupted_coworkers(&state).await;
+                check_and_nudge_prompted_coworkers(&state).await;
             }
 
             // Periodic orphan check, duplicate detection, and worktree cleanup
@@ -1347,6 +1352,122 @@ async fn check_and_nudge_interrupted_coworkers(state: &DaemonState) {
 
         if let Err(e) = state.coworkers.nudge(&name, "continue") {
             warn!("Failed to nudge interrupted coworker {}: {}", name, e);
+        }
+    }
+}
+
+/// Patterns that indicate a coworker is waiting on an interactive prompt.
+/// Each tuple: (pattern to search for, short label for the nudge message)
+const INTERACTIVE_PROMPT_PATTERNS: &[(&str, &str)] = &[
+    // Plan mode approval menu
+    ("Yes, and don't ask again for this project", "plan approval"),
+    ("Yes, and bypass permissions", "plan approval"),
+    ("Yes, clear context and bypass permissions", "plan approval"),
+    // Generic yes/no confirmation
+    ("Do you want to proceed?", "confirmation prompt"),
+    ("Would you like to proceed?", "confirmation prompt"),
+    // Permission request
+    ("Allow once", "permission request"),
+    ("Allow always", "permission request"),
+    // Question prompts from AskUserQuestion
+    ("Select an option", "question prompt"),
+];
+
+/// Check if pane content contains an interactive prompt that needs human input.
+/// Returns the label of the detected prompt, or None if no prompt is detected.
+fn detect_interactive_prompt(pane_content: &str) -> Option<&'static str> {
+    for (pattern, label) in INTERACTIVE_PROMPT_PATTERNS {
+        if pane_content.contains(pattern) {
+            return Some(label);
+        }
+    }
+    None
+}
+
+/// Detect coworkers waiting on interactive prompts (plan approval, permission dialogs, etc.)
+/// and nudge the lead so they can provide guidance.
+///
+/// Unlike interrupted coworkers (who just need a "continue"), prompted coworkers need a
+/// *human decision* — so we alert the lead with context about what's being asked.
+async fn check_and_nudge_prompted_coworkers(state: &DaemonState) {
+    let active_coworkers = state.coworkers.list();
+    if active_coworkers.is_empty() {
+        return;
+    }
+
+    let session_name = state.coworkers.session_name();
+    let mut to_nudge: Vec<(String, String)> = Vec::new();
+
+    {
+        let mut prompted_nudged = state.prompted_nudged.write().await;
+
+        for cw in &active_coworkers {
+            let coworker = &cw.name;
+
+            // Skip the lead — they're the human
+            if coworker == "lead" {
+                continue;
+            }
+
+            let target = format!("{}:{}", session_name, coworker);
+            let pane_content = match crate::tmux::capture_pane(&target) {
+                Some(content) => content,
+                None => {
+                    prompted_nudged.remove(coworker);
+                    continue;
+                }
+            };
+
+            match detect_interactive_prompt(&pane_content) {
+                Some(label) => {
+                    // Create a fingerprint from the prompt type to track what we've already nudged about
+                    let fingerprint = label.to_string();
+
+                    match prompted_nudged.get(coworker) {
+                        Some(prev_fingerprint) if prev_fingerprint == &fingerprint => {
+                            // Already nudged for this exact prompt — don't spam
+                        }
+                        _ => {
+                            // New prompt or different prompt type — nudge the lead
+                            prompted_nudged.insert(coworker.clone(), fingerprint);
+                            to_nudge.push((coworker.clone(), label.to_string()));
+                        }
+                    }
+                }
+                None => {
+                    // No prompt detected — clear tracking
+                    if prompted_nudged.remove(coworker).is_some() {
+                        debug!("Coworker {} is no longer waiting on a prompt", coworker);
+                    }
+                }
+            }
+        }
+    }
+
+    for (name, label) in to_nudge {
+        info!("Coworker {} is waiting on a {}, nudging lead", name, label);
+
+        let msg = Message::text(
+            "system",
+            format!(
+                "⚠️ @lead {} is waiting on a {} — check their tmux pane and respond",
+                name, label
+            ),
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post prompt nudge to channel: {}", e);
+        }
+
+        // Also nudge lead directly via tmux
+        let nudge_text = format!(
+            "{} is waiting on a {} — run: tmux select-window -t {}:{}",
+            name, label, session_name, name
+        );
+        if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
+            warn!(
+                "Failed to nudge lead about prompted coworker {}: {}",
+                name, e
+            );
         }
     }
 }
@@ -5243,5 +5364,50 @@ mod tests {
             kanban_ci_status(&[serde_json::json!({"status": "IN_PROGRESS"})]),
             "running"
         );
+    }
+
+    // Interactive prompt detection tests
+    #[test]
+    fn test_detect_interactive_prompt_plan_approval() {
+        let pane = r#"
+  ╭──────────────────────────────────────────────────────────╮
+  │ Plan: Add authentication endpoint                        │
+  │                                                          │
+  │  1. Yes, and bypass permissions                          │
+  │  2. Yes, clear context and bypass permissions            │
+  │  3. No, and tell Claude what to do differently           │
+  ╰──────────────────────────────────────────────────────────╯
+        "#;
+        assert_eq!(detect_interactive_prompt(pane), Some("plan approval"));
+    }
+
+    #[test]
+    fn test_detect_interactive_prompt_permission_request() {
+        let pane = "Claude wants to run: cargo test\n  Allow once  Allow always  Deny";
+        assert_eq!(detect_interactive_prompt(pane), Some("permission request"));
+    }
+
+    #[test]
+    fn test_detect_interactive_prompt_confirmation() {
+        let pane = "This will modify 15 files. Would you like to proceed?";
+        assert_eq!(detect_interactive_prompt(pane), Some("confirmation prompt"));
+    }
+
+    #[test]
+    fn test_detect_interactive_prompt_question() {
+        let pane = "Which approach do you prefer?\n  Select an option\n  > Option A\n    Option B";
+        assert_eq!(detect_interactive_prompt(pane), Some("question prompt"));
+    }
+
+    #[test]
+    fn test_detect_interactive_prompt_none() {
+        // Normal working output — no prompt
+        let pane = "Reading file src/main.rs\nEditing src/daemon.rs\n";
+        assert_eq!(detect_interactive_prompt(pane), None);
+    }
+
+    #[test]
+    fn test_detect_interactive_prompt_empty() {
+        assert_eq!(detect_interactive_prompt(""), None);
     }
 }
