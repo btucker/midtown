@@ -237,10 +237,12 @@ function handleUpdate(update) {
       break
     case 'lead_typing':
       leadTyping.set(update.data.working)
-      // Auto-dismiss after 10s if no further updates (safety net)
+      // Auto-dismiss after 45s if no further updates (safety net).
+      // The daemon uses a 30s grace period before sending working=false,
+      // so this client timeout should be longer to avoid premature dismissal.
       if (leadTypingTimeout) clearTimeout(leadTypingTimeout)
       if (update.data.working) {
-        leadTypingTimeout = setTimeout(() => leadTyping.set(false), 10000)
+        leadTypingTimeout = setTimeout(() => leadTyping.set(false), 45000)
       }
       break
     default:
