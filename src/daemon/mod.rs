@@ -1852,6 +1852,55 @@ fn route_at_all(state: &DaemonState, msg: &Message) {
     }
 }
 
+/// Auto-merge a PR using `gh pr merge --squash`.
+///
+/// Posts a channel message on success or failure.
+async fn auto_merge_pr(
+    state: &DaemonState,
+    pr_number: u64,
+    title: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let output = tokio::process::Command::new("gh")
+        .args(["pr", "merge", &pr_number.to_string(), "--squash", "--auto"])
+        .output()
+        .await?;
+
+    if output.status.success() {
+        info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
+                pr_number,
+                truncate_str(title, 40)
+            ),
+            MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge message: {}", e);
+        }
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err_msg = format!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
+        warn!("{}", err_msg);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "⚠️ Auto-merge failed for PR #{} ({}) — {}",
+                pr_number,
+                truncate_str(title, 40),
+                truncate_str(stderr.trim(), 80)
+            ),
+            MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge failure message: {}", e);
+        }
+        Err(err_msg.into())
+    }
+}
+
 /// Poll all open PRs and nudge for actionable issues.
 async fn poll_prs_for_issues(
     state: &DaemonState,
@@ -1951,6 +2000,37 @@ async fn poll_prs_for_issues(
                 continue;
             }
 
+            // For approved PRs with all checks passing, auto-merge instead of nudging
+            use crate::rules::{PrAction, decide_pr_issue_action};
+            if issue_type == PrIssueType::Approved && is_auto_mergeable(pr) {
+                info!(
+                    "PR #{} ({}) is approved with all checks passing — auto-merging",
+                    pr_number, title
+                );
+                let action = PrAction::AutoMerge {
+                    pr_number,
+                    title: title.to_string(),
+                };
+                let merged = match action {
+                    PrAction::AutoMerge {
+                        pr_number: num,
+                        title: ref t,
+                    } => match auto_merge_pr(state, num, t).await {
+                        Ok(()) => true,
+                        Err(e) => {
+                            warn!("Auto-merge failed for PR #{}: {}", num, e);
+                            false
+                        }
+                    },
+                    _ => unreachable!(),
+                };
+                if merged {
+                    let mut tracker = state.pr_issue_tracker.lock().await;
+                    tracker.record_nudge(pr_number, issue_type);
+                }
+                continue;
+            }
+
             // Format the nudge message
             let message = format!(
                 "PR #{} ({}) - {}: {}",
@@ -1961,7 +2041,6 @@ async fn poll_prs_for_issues(
             );
 
             // Decide action using pure decision function
-            use crate::rules::{PrAction, decide_pr_issue_action};
             let action =
                 decide_pr_issue_action(owner, &active_coworkers, state.is_at_dev_limit(), &message);
 
@@ -2046,6 +2125,10 @@ async fn poll_prs_for_issues(
                 }
                 PrAction::Skip { ref reason } => {
                     debug!("{}", reason);
+                    false
+                }
+                PrAction::AutoMerge { .. } => {
+                    // AutoMerge is handled above before the nudge path
                     false
                 }
             };
@@ -2294,6 +2377,9 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                             if let Err(e) = state.send_and_broadcast(&channel_msg) {
                                 warn!("Failed to post review complete to channel: {}", e);
                             }
+                        }
+                        crate::rules::PrAction::AutoMerge { .. } => {
+                            // AutoMerge is only used in the PR polling loop, not here
                         }
                     }
 
@@ -3913,6 +3999,10 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
             debug!("{}", reason);
             false
         }
+        crate::rules::PrAction::AutoMerge { .. } => {
+            // AutoMerge is only used in the PR polling loop, not here
+            false
+        }
     };
 
     // Record the nudge to prevent spamming
@@ -5376,6 +5466,98 @@ mod tests {
         assert!(issues.contains(&PrIssueType::MergeConflict));
         assert!(issues.contains(&PrIssueType::CiFailed));
         assert!(issues.contains(&PrIssueType::ChangesRequested));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_auto_mergeable tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_auto_mergeable_approved_all_checks_pass() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "name": "test"},
+                {"conclusion": "SUCCESS", "name": "lint"}
+            ],
+            "reviewDecision": "APPROVED"
+        });
+        assert!(is_auto_mergeable(&pr));
+    }
+
+    #[test]
+    fn test_auto_mergeable_not_approved() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "name": "test"}
+            ],
+            "reviewDecision": "REVIEW_REQUIRED"
+        });
+        assert!(!is_auto_mergeable(&pr));
+    }
+
+    #[test]
+    fn test_auto_mergeable_has_ci_failure() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "FAILURE", "name": "test"}
+            ],
+            "reviewDecision": "APPROVED"
+        });
+        assert!(!is_auto_mergeable(&pr));
+    }
+
+    #[test]
+    fn test_auto_mergeable_has_merge_conflict() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "CONFLICTING",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "name": "test"}
+            ],
+            "reviewDecision": "APPROVED"
+        });
+        assert!(!is_auto_mergeable(&pr));
+    }
+
+    #[test]
+    fn test_auto_mergeable_has_pending_checks() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS", "name": "test"},
+                {"conclusion": "", "name": "deploy"}
+            ],
+            "reviewDecision": "APPROVED"
+        });
+        assert!(!is_auto_mergeable(&pr));
+    }
+
+    #[test]
+    fn test_auto_mergeable_empty_checks() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [],
+            "reviewDecision": "APPROVED"
+        });
+        assert!(is_auto_mergeable(&pr));
+    }
+
+    #[test]
+    fn test_auto_mergeable_no_checks_field() {
+        let pr = serde_json::json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "APPROVED"
+        });
+        assert!(is_auto_mergeable(&pr));
     }
 
     #[test]

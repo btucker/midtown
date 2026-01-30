@@ -135,6 +135,55 @@ pub(super) fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
     issues
 }
 
+/// Check if a PR is eligible for daemon-assisted auto-merge.
+///
+/// A PR is auto-mergeable when:
+/// - It has an `APPROVED` review decision
+/// - It has no CI failures
+/// - It has no merge conflicts (mergeable != "CONFLICTING")
+/// - All status checks have completed (no pending checks)
+pub(super) fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
+    let review_decision = pr
+        .get("reviewDecision")
+        .and_then(|r| r.as_str())
+        .unwrap_or("");
+    if review_decision != "APPROVED" {
+        return false;
+    }
+
+    let mergeable = pr.get("mergeable").and_then(|m| m.as_str()).unwrap_or("");
+    if mergeable == "CONFLICTING" {
+        return false;
+    }
+
+    if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
+        let has_failure = checks.iter().any(|check| {
+            let conclusion = check
+                .get("conclusion")
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            conclusion == "FAILURE"
+        });
+        if has_failure {
+            return false;
+        }
+
+        // Ensure all checks have completed (no pending/in-progress checks)
+        let has_pending = checks.iter().any(|check| {
+            let conclusion = check
+                .get("conclusion")
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            conclusion.is_empty() || conclusion == "PENDING"
+        });
+        if has_pending {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Get action text for a PR issue type.
 pub(super) fn get_issue_action(issue_type: PrIssueType) -> &'static str {
     match issue_type {

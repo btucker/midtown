@@ -461,6 +461,8 @@ pub(crate) enum PrAction {
     PostToChannel { message: String },
     /// Skip — dev limit reached, self-comment, on cooldown, or no owner.
     Skip { reason: String },
+    /// PR is approved with all checks passing — auto-merge it.
+    AutoMerge { pr_number: u64, title: String },
 }
 
 /// Decide what action to take for a PR issue detected by polling.
