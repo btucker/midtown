@@ -905,7 +905,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 if let Err(e) = state.coworkers.sync_with_tmux() {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }
-                check_and_shutdown_idle_coworkers(&state).await;
+                let idle_effects = check_and_shutdown_idle_coworkers(&state).await;
+                effects::execute_effects(idle_effects, &state).await;
                 check_and_nudge_interrupted_coworkers(&state).await;
                 check_and_nudge_prompted_coworkers(&state).await;
                 check_for_usage_limits(&state).await;
@@ -1090,12 +1091,14 @@ fn determine_lead_working(
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be sent on a break. This prevents spawn storms where
 /// coworkers are rapidly sent on breaks.
-async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
+async fn check_and_shutdown_idle_coworkers(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     // Get list of active coworkers with their data (need started_at for lifetime check)
     let active_coworkers = state.coworkers.list();
 
     if active_coworkers.is_empty() {
-        return;
+        return vec![];
     }
 
     // Get in_progress tasks to determine who is busy
@@ -1180,7 +1183,9 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         )
     };
 
-    // Shutdown idle coworkers (outside the lock)
+    let mut effects = Vec::new();
+
+    // Determine effects for idle coworkers
     for decision in to_shutdown {
         let name = &decision.name;
 
@@ -1222,18 +1227,14 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                             "Reviewer {} is idle but no review found for PR #{} - keeping alive",
                             name, pr
                         );
-                        // Don't shutdown - let them continue working
-                        // Post a warning to the channel so the team knows
-                        let warning_msg = Message::text(
-                            "system",
-                            format!(
+                        // Don't shutdown - post a warning to the channel so the team knows
+                        effects.push(Effect::PostToChannel {
+                            sender: "system".to_string(),
+                            message: format!(
                                 "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
                                 name, pr
                             ),
-                        );
-                        if let Err(e) = state.send_and_broadcast(&warning_msg) {
-                            warn!("Failed to post warning message to channel: {}", e);
-                        }
+                        });
                         (false, String::new())
                     }
                 }
@@ -1281,18 +1282,23 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             continue;
         }
 
-        // Post system message to channel
-        let msg = Message::text("system", shutdown_msg);
-        if let Err(e) = state.send_and_broadcast(&msg) {
-            warn!("Failed to post break message to channel: {}", e);
-        }
-
-        // Shutdown the coworker
-        state.broadcast_coworker_update(name, "stopped", None);
-        if let Err(e) = state.coworkers.shutdown(name) {
-            warn!("Failed to send idle coworker {} on a break: {}", name, e);
-        }
+        // Post system message, broadcast status, and shut down
+        effects.push(Effect::PostToChannel {
+            sender: "system".to_string(),
+            message: shutdown_msg,
+        });
+        effects.push(Effect::BroadcastCoworkerUpdate {
+            name: name.clone(),
+            status: "stopped".to_string(),
+            current_task: None,
+        });
+        effects.push(Effect::ShutdownCoworker {
+            name: name.clone(),
+            message: String::new(),
+        });
     }
+
+    effects
 }
 
 /// Check for coworkers whose Claude Code session is interrupted and nudge them to continue.
@@ -4479,6 +4485,7 @@ fn check_and_recover_orphans(state: &DaemonState) -> Vec<effects::Effect> {
                     key: "global".to_string(),
                 },
                 Effect::PostToChannel {
+                    sender: "midtown".to_string(),
                     message: format!(
                         "♻️ Recovered coworker {} for orphaned task #{}",
                         recovery.owner, recovery.task_id
@@ -4497,6 +4504,7 @@ fn check_and_recover_orphans(state: &DaemonState) -> Vec<effects::Effect> {
                     repo_name: state.repo_name.clone(),
                 },
                 Effect::PostToChannel {
+                    sender: "midtown".to_string(),
                     message: format!(
                         "🔄 Task #{} reset to pending - {} could not be called back in",
                         recovery.task_id, recovery.owner
