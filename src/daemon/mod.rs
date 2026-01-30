@@ -2627,16 +2627,8 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                     truncate_str(title, 40)
                 );
 
-                // Set tmux tab to show review status immediately
-                let review_status = format!("reviewing PR #{}", pr_number);
-                if let Err(e) = state
-                    .coworkers
-                    .update_status_display(&new_coworker, Some(&review_status))
-                {
-                    warn!("Failed to set review status for {}: {}", new_coworker, e);
-                }
-
-                // Post to channel
+                // Post to channel (the coworker's /me status update will set
+                // the tmux tab name via the channel handler).
                 let channel_msg = Message::new(
                     "midtown",
                     daemon_messages::called_in_reviewer(
@@ -3157,19 +3149,21 @@ fn handle_coworker_asking(
         error!("Failed to post question to channel: {}", e);
     }
 
+    // Mark the coworker as waiting for feedback in tmux tab.
+    // This is a direct call since the question is posted as a text message,
+    // not a /me action, so the channel handler won't pick it up.
+    if let Err(e) = state
+        .coworkers
+        .update_status_display(name, Some("waiting for feedback"))
+    {
+        debug!("Failed to update tmux tab for {}: {}", name, e);
+    }
+
     // Nudge the Lead with the question
     let nudge_message = format!("{} is asking: {}", name, question);
     if let Err(e) = state.coworkers.nudge("Lead", &nudge_message) {
         // Log but don't fail - Lead might not be in a tmux window
         debug!("Failed to nudge Lead: {}", e);
-    }
-
-    // Update coworker status to show they're waiting
-    if let Err(e) = state
-        .coworkers
-        .update_status_display(name, Some("waiting for feedback"))
-    {
-        debug!("Failed to update coworker status: {}", e);
     }
 
     info!("Coworker {} asking: {}", name, question);
