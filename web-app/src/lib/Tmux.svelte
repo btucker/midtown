@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
-  import { connected } from './store.js'
+  import { connected, activeProject } from './store.js'
 
   let paneContent = $state('')
   let error = $state(null)
@@ -11,7 +11,9 @@
 
   async function fetchWindows() {
     try {
-      const res = await fetch('/api/tmux-windows')
+      const project = $activeProject
+      if (!project) return
+      const res = await fetch(`/api/projects/${encodeURIComponent(project)}/tmux-windows`)
       if (res.ok) {
         const data = await res.json()
         windows = data.windows || []
@@ -27,7 +29,9 @@
 
   async function fetchPane() {
     try {
-      const res = await fetch(`/api/tmux-pane?window=${encodeURIComponent(selectedWindow)}`)
+      const project = $activeProject
+      if (!project) return
+      const res = await fetch(`/api/projects/${encodeURIComponent(project)}/tmux-pane?window=${encodeURIComponent(selectedWindow)}`)
       if (res.ok) {
         const data = await res.json()
         paneContent = stripAnsi(data.content)
