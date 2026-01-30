@@ -157,6 +157,228 @@ impl CooldownTracker {
 }
 
 // ---------------------------------------------------------------------------
+// Lifecycle decision types
+// ---------------------------------------------------------------------------
+
+/// Decision to shut down an idle coworker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShutdownDecision {
+    pub name: String,
+    pub is_isolated: bool,
+}
+
+/// Decision to nudge an interrupted coworker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InterruptNudge {
+    pub name: String,
+}
+
+/// Decision to alert the lead about a prompted coworker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptNudge {
+    pub name: String,
+    pub label: String,
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle decision functions (pure — no async, no side effects)
+// ---------------------------------------------------------------------------
+
+/// Decide which coworkers should be shut down due to idleness.
+///
+/// Takes pre-collected state snapshots and mutable idle tracking.
+/// Returns shutdown decisions without performing any side effects.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide_idle_shutdowns(
+    coworkers: &[CoworkerSnapshot],
+    busy_coworkers: &HashSet<String>,
+    coworkers_with_open_prs: &HashSet<String>,
+    active_reviewers: &HashSet<String>,
+    idle_since: &mut HashMap<String, Instant>,
+    now: Instant,
+    now_utc: DateTime<Utc>,
+    idle_break_duration: Duration,
+    minimum_lifetime: Duration,
+) -> Vec<ShutdownDecision> {
+    let mut to_shutdown = Vec::new();
+
+    for cw in coworkers {
+        let coworker = &cw.name;
+
+        // Check minimum lifetime
+        let lifetime = now_utc.signed_duration_since(cw.started_at);
+        if lifetime < chrono::Duration::from_std(minimum_lifetime).unwrap_or_default() {
+            idle_since.remove(coworker);
+            continue;
+        }
+
+        let is_busy = busy_coworkers
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(coworker));
+        let has_open_pr = coworkers_with_open_prs
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(coworker));
+        let is_reviewing = active_reviewers
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(coworker));
+
+        if is_busy || has_open_pr || is_reviewing {
+            idle_since.remove(coworker);
+        } else if cw.isolated_tasks {
+            // Isolated coworkers (reviewers) go on break immediately when idle
+            to_shutdown.push(ShutdownDecision {
+                name: coworker.clone(),
+                is_isolated: true,
+            });
+        } else {
+            match idle_since.get(coworker) {
+                Some(since) => {
+                    if now.duration_since(*since) >= idle_break_duration {
+                        to_shutdown.push(ShutdownDecision {
+                            name: coworker.clone(),
+                            is_isolated: false,
+                        });
+                    }
+                }
+                None => {
+                    idle_since.insert(coworker.clone(), now);
+                }
+            }
+        }
+    }
+
+    // Remove shutdown coworkers from tracking
+    for decision in &to_shutdown {
+        idle_since.remove(&decision.name);
+    }
+
+    to_shutdown
+}
+
+/// Decide which coworkers should be nudged due to interrupted sessions.
+///
+/// Takes pane contents and mutable interruption tracking.
+/// Returns nudge decisions without performing any side effects.
+pub(crate) fn decide_interrupt_nudges(
+    coworkers: &[CoworkerSnapshot],
+    pane_contents: &HashMap<String, String>,
+    interrupted_since: &mut HashMap<String, Instant>,
+    now: Instant,
+    nudge_duration: Duration,
+) -> Vec<InterruptNudge> {
+    let mut to_nudge = Vec::new();
+
+    for cw in coworkers {
+        let coworker = &cw.name;
+
+        let pane_content = match pane_contents.get(coworker) {
+            Some(content) => content,
+            None => {
+                interrupted_since.remove(coworker);
+                continue;
+            }
+        };
+
+        let is_interrupted = pane_content.contains("Interrupted")
+            || pane_content.contains("What should Claude do instead?");
+
+        if is_interrupted {
+            match interrupted_since.get(coworker) {
+                Some(since) => {
+                    if now.duration_since(*since) >= nudge_duration {
+                        to_nudge.push(InterruptNudge {
+                            name: coworker.clone(),
+                        });
+                        interrupted_since.remove(coworker);
+                    }
+                }
+                None => {
+                    interrupted_since.insert(coworker.clone(), now);
+                }
+            }
+        } else if interrupted_since.remove(coworker).is_some() {
+            // No longer interrupted — cleared
+        }
+    }
+
+    to_nudge
+}
+
+/// Decide which coworkers should trigger a lead prompt nudge.
+///
+/// Takes pane contents and mutable prompt tracking.
+/// Returns nudge decisions without performing any side effects.
+pub(crate) fn decide_prompt_nudges(
+    coworkers: &[CoworkerSnapshot],
+    pane_contents: &HashMap<String, String>,
+    prompted_nudged: &mut HashMap<String, String>,
+) -> Vec<PromptNudge> {
+    let mut to_nudge = Vec::new();
+
+    for cw in coworkers {
+        let coworker = &cw.name;
+
+        // Skip the lead — they're the human
+        if coworker == "lead" {
+            continue;
+        }
+
+        let pane_content = match pane_contents.get(coworker) {
+            Some(content) => content,
+            None => {
+                prompted_nudged.remove(coworker);
+                continue;
+            }
+        };
+
+        match detect_interactive_prompt(pane_content) {
+            Some(label) => {
+                let fingerprint = label.to_string();
+                match prompted_nudged.get(coworker) {
+                    Some(prev) if prev == &fingerprint => {
+                        // Already nudged for this exact prompt
+                    }
+                    _ => {
+                        prompted_nudged.insert(coworker.clone(), fingerprint);
+                        to_nudge.push(PromptNudge {
+                            name: coworker.clone(),
+                            label: label.to_string(),
+                        });
+                    }
+                }
+            }
+            None => {
+                prompted_nudged.remove(coworker);
+            }
+        }
+    }
+
+    to_nudge
+}
+
+/// Patterns that indicate a coworker is waiting on an interactive prompt.
+const INTERACTIVE_PROMPT_PATTERNS: &[(&str, &str)] = &[
+    ("Yes, and don't ask again for this project", "plan approval"),
+    ("Yes, and bypass permissions", "plan approval"),
+    ("Yes, clear context and bypass permissions", "plan approval"),
+    ("Do you want to proceed?", "confirmation prompt"),
+    ("Would you like to proceed?", "confirmation prompt"),
+    ("Allow once", "permission request"),
+    ("Allow always", "permission request"),
+    ("Select an option", "question prompt"),
+];
+
+/// Check if pane content contains an interactive prompt that needs human input.
+pub(crate) fn detect_interactive_prompt(pane_content: &str) -> Option<&'static str> {
+    for (pattern, label) in INTERACTIVE_PROMPT_PATTERNS {
+        if pane_content.contains(pattern) {
+            return Some(label);
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -267,5 +489,362 @@ mod tests {
         // Sleep past the cooldown.
         thread::sleep(Duration::from_millis(15));
         assert!(tracker.check("fast", "k", Duration::from_millis(10)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers for lifecycle decision tests
+    // -----------------------------------------------------------------------
+
+    fn cw(name: &str, minutes_old: i64) -> CoworkerSnapshot {
+        CoworkerSnapshot {
+            name: name.to_string(),
+            started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
+            isolated_tasks: false,
+        }
+    }
+
+    fn cw_isolated(name: &str, minutes_old: i64) -> CoworkerSnapshot {
+        CoworkerSnapshot {
+            name: name.to_string(),
+            started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
+            isolated_tasks: true,
+        }
+    }
+
+    fn set(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_idle_shutdowns tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn idle_shutdown_after_timeout() {
+        let coworkers = vec![cw("york", 10)];
+        let mut idle_since = HashMap::new();
+        // york has been idle for 60s already
+        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].name, "york");
+        assert!(!decisions[0].is_isolated);
+        assert!(!idle_since.contains_key("york"));
+    }
+
+    #[test]
+    fn idle_shutdown_skips_busy_coworker() {
+        let coworkers = vec![cw("york", 10)];
+        let mut idle_since = HashMap::new();
+        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&["york"]),
+            &set(&[]),
+            &set(&[]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert!(decisions.is_empty());
+        // Busy coworker removed from idle tracking
+        assert!(!idle_since.contains_key("york"));
+    }
+
+    #[test]
+    fn idle_shutdown_skips_coworker_with_open_pr() {
+        let coworkers = vec![cw("york", 10)];
+        let mut idle_since = HashMap::new();
+        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&["york"]),
+            &set(&[]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn idle_shutdown_skips_active_reviewer() {
+        let coworkers = vec![cw("york", 10)];
+        let mut idle_since = HashMap::new();
+        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&[]),
+            &set(&["york"]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn idle_shutdown_skips_young_coworker() {
+        let coworkers = vec![cw("york", 2)]; // Only 2 minutes old
+        let mut idle_since = HashMap::new();
+        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert!(decisions.is_empty());
+        // Young coworker also removed from idle tracking
+        assert!(!idle_since.contains_key("york"));
+    }
+
+    #[test]
+    fn idle_shutdown_isolated_coworker_immediate() {
+        let coworkers = vec![cw_isolated("reviewer", 10)];
+        let mut idle_since = HashMap::new();
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].name, "reviewer");
+        assert!(decisions[0].is_isolated);
+    }
+
+    #[test]
+    fn idle_shutdown_starts_tracking_newly_idle() {
+        let coworkers = vec![cw("york", 10)];
+        let mut idle_since = HashMap::new();
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        // No shutdown yet — just started tracking
+        assert!(decisions.is_empty());
+        assert!(idle_since.contains_key("york"));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_interrupt_nudges tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interrupt_nudge_after_duration() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("york".to_string(), "Some output\nInterrupted\n".to_string());
+        let mut interrupted_since = HashMap::new();
+        interrupted_since.insert("york".to_string(), Instant::now() - Duration::from_secs(90));
+
+        let nudges = decide_interrupt_nudges(
+            &coworkers,
+            &pane_contents,
+            &mut interrupted_since,
+            Instant::now(),
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(nudges.len(), 1);
+        assert_eq!(nudges[0].name, "york");
+        // Tracking reset after nudge
+        assert!(!interrupted_since.contains_key("york"));
+    }
+
+    #[test]
+    fn interrupt_nudge_not_yet_due() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("york".to_string(), "Interrupted".to_string());
+        let mut interrupted_since = HashMap::new();
+        interrupted_since.insert("york".to_string(), Instant::now() - Duration::from_secs(10));
+
+        let nudges = decide_interrupt_nudges(
+            &coworkers,
+            &pane_contents,
+            &mut interrupted_since,
+            Instant::now(),
+            Duration::from_secs(60),
+        );
+
+        assert!(nudges.is_empty());
+        // Still tracking
+        assert!(interrupted_since.contains_key("york"));
+    }
+
+    #[test]
+    fn interrupt_tracking_cleared_when_no_longer_interrupted() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("york".to_string(), "All good, working fine".to_string());
+        let mut interrupted_since = HashMap::new();
+        interrupted_since.insert("york".to_string(), Instant::now() - Duration::from_secs(90));
+
+        let nudges = decide_interrupt_nudges(
+            &coworkers,
+            &pane_contents,
+            &mut interrupted_since,
+            Instant::now(),
+            Duration::from_secs(60),
+        );
+
+        assert!(nudges.is_empty());
+        // Tracking cleared
+        assert!(!interrupted_since.contains_key("york"));
+    }
+
+    #[test]
+    fn interrupt_starts_tracking_newly_interrupted() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert(
+            "york".to_string(),
+            "What should Claude do instead?".to_string(),
+        );
+        let mut interrupted_since = HashMap::new();
+
+        let nudges = decide_interrupt_nudges(
+            &coworkers,
+            &pane_contents,
+            &mut interrupted_since,
+            Instant::now(),
+            Duration::from_secs(60),
+        );
+
+        assert!(nudges.is_empty());
+        assert!(interrupted_since.contains_key("york"));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_prompt_nudges tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prompt_nudge_new_prompt_detected() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert(
+            "york".to_string(),
+            "Some output\nAllow once\nAllow always".to_string(),
+        );
+        let mut prompted_nudged = HashMap::new();
+
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+
+        assert_eq!(nudges.len(), 1);
+        assert_eq!(nudges[0].name, "york");
+        assert_eq!(nudges[0].label, "permission request");
+        assert_eq!(prompted_nudged.get("york").unwrap(), "permission request");
+    }
+
+    #[test]
+    fn prompt_nudge_skips_already_nudged_same_type() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("york".to_string(), "Allow once\nAllow always".to_string());
+        let mut prompted_nudged = HashMap::new();
+        prompted_nudged.insert("york".to_string(), "permission request".to_string());
+
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+
+        assert!(nudges.is_empty());
+    }
+
+    #[test]
+    fn prompt_nudge_fires_for_different_prompt_type() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert(
+            "york".to_string(),
+            "Yes, and don't ask again for this project".to_string(),
+        );
+        let mut prompted_nudged = HashMap::new();
+        prompted_nudged.insert("york".to_string(), "permission request".to_string());
+
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+
+        assert_eq!(nudges.len(), 1);
+        assert_eq!(nudges[0].label, "plan approval");
+    }
+
+    #[test]
+    fn prompt_nudge_clears_when_no_prompt() {
+        let coworkers = vec![cw("york", 10)];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("york".to_string(), "Working normally".to_string());
+        let mut prompted_nudged = HashMap::new();
+        prompted_nudged.insert("york".to_string(), "permission request".to_string());
+
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+
+        assert!(nudges.is_empty());
+        assert!(!prompted_nudged.contains_key("york"));
+    }
+
+    #[test]
+    fn prompt_nudge_skips_lead() {
+        let coworkers = vec![CoworkerSnapshot {
+            name: "lead".to_string(),
+            started_at: Utc::now() - chrono::Duration::minutes(10),
+            isolated_tasks: false,
+        }];
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("lead".to_string(), "Allow once\nAllow always".to_string());
+        let mut prompted_nudged = HashMap::new();
+
+        let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
+
+        assert!(nudges.is_empty());
     }
 }
