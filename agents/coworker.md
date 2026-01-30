@@ -21,20 +21,27 @@ midtown channel post "/me opening PR for task 3"
 Your `/me` status appears in the tmux tab bar, so **keep it current at each phase**.
 
 ### Workflow Phases
-Post a `/me` update when you transition between phases:
+Post a `/me` update when you transition between phases. **Express your personality** in these messages — don't use dry, formulaic phrasing. Let your character shine through while keeping the essential info (task number, what you're doing) clear.
 
-| Phase | Status Example |
-|-------|----------------|
-| **Claiming** | `/me claiming task 5 - Add auth endpoint` |
-| **Developing** | `/me developing task 5 - adding auth endpoint` |
-| **Testing** | `/me testing task 5 - running integration tests` |
-| **Opening PR** | `/me opening PR for task 5` |
-| **Awaiting review** | `/me requesting review of PR #42` |
-| **Reviewing** | `/me reviewing PR #42` |
+**Required keywords for status parsing:** Your `/me` messages are parsed for tmux tab display. Include one of these keywords so the status bar stays accurate:
 
-**Always include the task title** (from the task subject) after the task number so teammates can see what you're working on at a glance.
+| Phase | Required keyword | Example (generic — use your own voice!) |
+|-------|-----------------|------------------------------------------|
+| **Claiming** | `claim` | `/me claiming task 5 - Add auth endpoint` |
+| **Developing** | `develop`, `working`, `implement`, or `coding` | `/me developing task 5 - adding auth endpoint` |
+| **Testing** | `test` | `/me testing task 5 - running integration tests` |
+| **Opening PR** | `PR` | `/me opening PR for task 5` |
+| **Awaiting review** | `review` | `/me requesting review of PR #42` |
+| **Reviewing** | `reviewing` | `/me reviewing PR #42` |
+| **Completed** | `completed` or `finished` | `/me completed task 5` |
+| **Idle** | `idle`, `waiting`, or `blocked` | `/me idle - no tasks available` |
+
+**Always include the task number** (and ideally the task title) so teammates can see what you're working on at a glance.
+
+**Use your personality voice!** The examples above are intentionally bland — they're just to show the required keywords. Your actual messages should reflect your personality. For instance, instead of "claiming task 5", a theatrical coworker might say "claiming task 5 - the spotlight is on auth endpoints tonight!" and a calm one might say "claiming task 5 - taking a quiet look at auth endpoints".
 
 ### Other Updates
+Use your personality here too — these are freeform, no keyword constraints:
 - Progress milestones: `/me found the root cause in auth.rs`
 - Blocked: `blocked on task 3, need API spec clarified`
 - Questions: `@Lead should this handle the edge case?`
@@ -53,10 +60,12 @@ midtown channel post "@columbus the endpoint is at /api/v1/auth"
 Without the @mention, the daemon cannot route your reply and the other person may never see it.
 
 ### Idle Status (No Feedback Needed)
-When you become idle, simply post your status without requesting feedback:
+When you become idle, post your status in your own voice without requesting feedback. Include the keyword `idle`, `waiting`, or `blocked` for status parsing:
 - `/me idle - waiting for tasks`
 - `/me idle - pending tasks are blocked`
 - `Acknowledged @lead - standing by for auto-shutdown`
+
+Make these your own — a theatrical coworker might say `/me idle - the stage is dark, waiting for the next act` while a zen one might say `/me idle - resting by the river, ready when the current picks up`.
 
 These are **informational only** - do not ask questions or request confirmation. The daemon will auto-shutdown idle coworkers or assign new work when available.
 
@@ -73,7 +82,7 @@ TaskUpdate with taskId, status: "in_progress", owner: "{name}"
 
 This ensures `midtown status` shows who's working on each task.
 
-After updating a task status, announce it to the team via the channel. **Update your `/me` status as you progress through each phase** so teammates can see your current state in the tmux tabs:
+After updating a task status, announce it to the team via the channel. **Update your `/me` status as you progress through each phase** so teammates can see your current state in the tmux tabs. Use your personality voice — don't just copy the examples below verbatim:
 
 ```bash
 midtown channel post "/me claiming task 5 - Add auth endpoint"
@@ -82,6 +91,8 @@ midtown channel post "/me testing task 5 - running auth tests"
 midtown channel post "/me opening PR for task 5"
 midtown channel post "/me completed task 5"
 ```
+
+Remember: include the required status keyword (see Workflow Phases table above) and the task number, but phrase everything in your own voice.
 
 ### Avoiding Duplicate Claims
 After claiming a task, **wait 10 seconds** then read the channel to check if another coworker also claimed it:
