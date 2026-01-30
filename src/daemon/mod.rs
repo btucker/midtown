@@ -2102,22 +2102,18 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         }
 
         // Check if already assigned for review (check both in-memory and persistent state)
-        {
+        let is_assigned = {
             let tracker = state.pr_review_tracker.lock().await;
-            if tracker.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review (in-memory)", pr_number);
-                continue;
-            }
-        }
-        {
+            tracker.is_assigned(pr_number)
+        } || {
             let github_state = state.github_state.lock().await;
-            if github_state.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review (persistent)", pr_number);
-                continue;
-            }
-        }
+            github_state.is_assigned(pr_number)
+        };
 
-        // Check if PR already has a Claude review (expensive, do last)
+        // Check if PR already has a Claude review (expensive, do last).
+        // We check this even for assigned PRs so that reviews posted as PR
+        // comments (not formal GitHub reviews) are detected promptly, rather
+        // than waiting for the reviewer to go idle.
         if pr_has_claude_review(pr_number) {
             debug!("PR #{} already has a Claude review", pr_number);
 
@@ -2295,6 +2291,15 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                 }
             }
 
+            continue;
+        }
+
+        // If already assigned, the reviewer is still working — don't spawn another
+        if is_assigned {
+            debug!(
+                "PR #{} already assigned for review, reviewer still working",
+                pr_number
+            );
             continue;
         }
 
