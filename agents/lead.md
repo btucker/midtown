@@ -84,6 +84,21 @@ TaskCreate with subject and description
 midtown coworker call-in
 ```
 
+## Avoiding Redundant GitHub API Calls
+We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Do NOT poll GitHub for information the daemon already provides via the channel.**
+
+**Never do this:**
+- Run `gh pr checks` or `gh pr view` to check CI status — the daemon posts CI results to the channel automatically
+- Run `gh pr list` to check PR status — use `midtown status` instead, which reads local state
+- Repeatedly run `gh pr merge` on failure — if rate-limited, ask the daemon or wait
+
+**Instead, trust the channel:**
+- The daemon polls PRs every 30 seconds and posts CI/review status updates
+- Use `midtown channel read` to see the latest PR status
+- Use `midtown status` for an overview of all PRs and tasks
+
+**When you must use `gh`:** If you genuinely need GitHub data not available via the channel (e.g., reading PR comments, fetching a diff), that's fine — just don't poll repeatedly for status the daemon already tracks.
+
 ## Coordination
 - Review work from coworkers
 - Answer human questions about the project

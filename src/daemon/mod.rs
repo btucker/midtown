@@ -20,6 +20,7 @@ pub use trackers::{PrIssueTracker, PrIssueType, PrReviewTracker};
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -302,6 +303,10 @@ pub(crate) struct DaemonState {
     usage_limit_nudge_at: Mutex<Option<tokio::time::Instant>>,
     /// Persistent reminder state (one-shot condition-based notifications)
     reminder_state: std::sync::Mutex<crate::reminders::ReminderState>,
+    /// Hash of the last PR poll response body, used to skip re-processing when data hasn't changed.
+    /// This doesn't reduce API calls, but avoids redundant lock acquisition and issue detection
+    /// when the PR state hasn't changed between poll cycles.
+    last_pr_poll_hash: Mutex<u64>,
 }
 
 impl DaemonState {
@@ -366,6 +371,7 @@ impl DaemonState {
             lead_working: std::sync::Mutex::new(false),
             last_lead_activity: std::sync::Mutex::new(None),
             reminder_state: std::sync::Mutex::new(reminder_state),
+            last_pr_poll_hash: Mutex::new(0),
         })
     }
 
@@ -1907,6 +1913,23 @@ async fn poll_prs_for_issues(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Hash the response to detect changes. If the PR data hasn't changed since the last poll,
+    // skip the expensive lock acquisition, issue detection, and nudge logic.
+    let response_hash = {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        stdout.hash(&mut hasher);
+        hasher.finish()
+    };
+    {
+        let mut last_hash = state.last_pr_poll_hash.lock().await;
+        if *last_hash == response_hash && response_hash != 0 {
+            debug!("PR poll: data unchanged, skipping processing");
+            return Ok(());
+        }
+        *last_hash = response_hash;
+    }
+
     let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
 
     // Cleanup old tracking entries, but preserve assignments for active coworkers
