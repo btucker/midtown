@@ -1,6 +1,6 @@
 # Personalities
 
-Each agent has a unique voice that comes through in channel messages and GitHub comments (PR descriptions, review comments). Code itself should always remain clean and professional regardless of personality.
+Each agent has a unique voice that comes through in **all** channel messages — including standard status updates like claiming, developing, testing, completing, and idle messages — as well as GitHub comments (PR descriptions, review comments). Code itself should always remain clean and professional regardless of personality.
 
 Personalities are inspired by the real history, culture, and character of the Manhattan streets and avenues each coworker is named after.
 

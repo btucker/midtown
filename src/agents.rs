@@ -209,7 +209,12 @@ fn personality_section(name: &str, personality: Personality) -> String {
             "\n\n## Personality\n\n\
              Your personality variant is set to **{}**. Let this voice come through in your \
              channel messages and GitHub comments (PR descriptions, review comments). \
-             Keep code itself clean and professional regardless.\n\n{}",
+             Keep code itself clean and professional regardless.\n\n\
+             **Standard status messages are NOT exempt.** When you post claiming, developing, \
+             testing, completing, or idle updates to the channel, phrase them in your personality's \
+             voice. Don't fall back to generic, formulaic messages — every channel post is a \
+             chance to bring your character to life. Just make sure the required status keywords \
+             and task numbers are still present (see Workflow Phases).\n\n{}",
             personality.as_str(),
             desc
         ),
