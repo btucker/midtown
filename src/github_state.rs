@@ -139,6 +139,46 @@ impl GitHubState {
         }
     }
 
+    /// Clean up expired assignments, but preserve those for active coworkers.
+    ///
+    /// Same as `cleanup_expired_assignments` but skips removal of assignments
+    /// where the reviewer coworker is still running. This prevents losing track
+    /// of a reviewer just because the review is taking longer than the timeout.
+    /// Active coworkers' assignments are refreshed to the current time.
+    pub fn cleanup_expired_preserving(
+        &mut self,
+        active_coworkers: &std::collections::HashSet<String>,
+    ) {
+        let now = Utc::now();
+        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+        let to_remove: Vec<_> = self
+            .pr_reviewers
+            .iter()
+            .filter(|(_, a)| {
+                now.signed_duration_since(a.assigned_at) > timeout
+                    && !active_coworkers.contains(&a.reviewer)
+            })
+            .map(|(pr, _)| *pr)
+            .collect();
+
+        for pr in to_remove {
+            debug!(
+                "Cleaning up expired reviewer assignment for PR #{} (timed out, coworker inactive)",
+                pr
+            );
+            self.pr_reviewers.remove(&pr);
+        }
+
+        // Refresh timestamps for active coworkers whose assignments would have expired
+        for assignment in self.pr_reviewers.values_mut() {
+            if now.signed_duration_since(assignment.assigned_at) > timeout
+                && active_coworkers.contains(&assignment.reviewer)
+            {
+                assignment.assigned_at = now;
+            }
+        }
+    }
+
     /// Clean up assignments for PRs that are no longer open.
     ///
     /// Takes a list of open PR numbers and removes assignments for any PRs not in the list.
@@ -320,5 +360,49 @@ mod tests {
         // PR 42 should be removed (expired), PR 43 should remain (fresh)
         assert!(!state.pr_reviewers.contains_key(&42));
         assert!(state.pr_reviewers.contains_key(&43));
+    }
+
+    #[test]
+    fn test_cleanup_expired_preserves_active_coworkers() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "broadway");
+        state.assign_reviewer(43, "park");
+
+        // Backdate broadway's assignment past the timeout
+        if let Some(assignment) = state.pr_reviewers.get_mut(&42) {
+            assignment.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        // broadway is still active
+        let active: std::collections::HashSet<String> =
+            ["broadway".to_string()].into_iter().collect();
+
+        state.cleanup_expired_preserving(&active);
+
+        // broadway's expired assignment should be preserved (still active coworker)
+        assert!(state.pr_reviewers.contains_key(&42));
+        // park's fresh assignment should also be there
+        assert!(state.pr_reviewers.contains_key(&43));
+    }
+
+    #[test]
+    fn test_cleanup_expired_removes_inactive_expired() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "broadway");
+
+        // Backdate assignment past timeout
+        if let Some(assignment) = state.pr_reviewers.get_mut(&42) {
+            assignment.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        // broadway is NOT active
+        let active: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        state.cleanup_expired_preserving(&active);
+
+        // Should be removed (expired + inactive)
+        assert!(!state.pr_reviewers.contains_key(&42));
     }
 }
