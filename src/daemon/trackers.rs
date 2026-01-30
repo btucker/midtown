@@ -119,6 +119,12 @@ impl PrReviewTracker {
         }
     }
 
+    /// Get the assigned reviewer name for a PR (ignoring timeout).
+    /// Used to check if a reviewer is still running before cleaning up assignments.
+    pub fn get_reviewer(&self, pr_number: u64) -> Option<&str> {
+        self.assigned.get(&pr_number).map(|(name, _)| name.as_str())
+    }
+
     /// Record a review assignment
     pub fn assign(&mut self, pr_number: u64, coworker: &str) {
         self.assigned
