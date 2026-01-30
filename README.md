@@ -31,7 +31,7 @@ This starts the daemon and creates a tmux session with the Lead window.
 For multi-repo projects, specify a project name and additional repos:
 
 ```bash
-midtown start --project myapp --repo /path/to/frontend --repo /path/to/shared-lib
+midtown start --project myapp --add-repo /path/to/frontend --add-repo /path/to/shared-lib
 ```
 
 ### 3. Attach to the session
@@ -105,7 +105,7 @@ Midtown can manage multiple projects, each with its own daemon, tmux session, an
 midtown start
 
 # Named project with additional repos
-midtown start --project myapp --repo /path/to/frontend --repo /path/to/shared-lib
+midtown start --project myapp --add-repo /path/to/frontend --add-repo /path/to/shared-lib
 ```
 
 **Managing projects:**
@@ -289,7 +289,7 @@ Options:
 Commands:
   start               Start the daemon and tmux session
     --project <NAME>     Project name (overrides auto-detection)
-    --repo <PATH>        Additional repository paths (repeatable)
+    --add-repo <PATH>    Additional repository paths (repeatable)
     --daemon-only        Start daemon without tmux session
   stop                Stop daemon and all coworkers
     --keep-session       Keep the tmux session running
