@@ -1695,7 +1695,11 @@ async fn chat_monitor_loop(
                                     // System/daemon messages may contain @lead that still
                                     // needs to trigger a nudge (e.g., orphaned worktree
                                     // warnings). Route @lead before skipping.
-                                    if msg.content.to_lowercase().contains("@lead") {
+                                    // Exclude "user" — user messages with @lead are already
+                                    // handled in handle_channel_post to avoid double-nudging.
+                                    if !msg.from.eq_ignore_ascii_case("user")
+                                        && msg.content.to_lowercase().contains("@lead")
+                                    {
                                         let nudge_text = format!("{}: {}", msg.from, msg.content);
                                         if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
                                             warn!("Failed to nudge lead for @lead in {} message: {}", msg.from, e);
@@ -5268,9 +5272,13 @@ mod tests {
         // System messages containing @lead should be detected as needing a lead
         // nudge. The chat_monitor_loop checks for @lead in SKIP_SENDERS messages
         // before skipping them. This test validates the detection logic.
+        // Mirrors the chat_monitor_loop logic: skip-sender messages nudge lead
+        // for @lead, EXCEPT "user" messages (already handled in handle_channel_post).
         let should_nudge = |from: &str, content: &str| -> bool {
             let is_skip_sender = SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(from));
-            is_skip_sender && content.to_lowercase().contains("@lead")
+            is_skip_sender
+                && !from.eq_ignore_ascii_case("user")
+                && content.to_lowercase().contains("@lead")
         };
 
         // System messages with @lead should trigger nudge
@@ -5290,6 +5298,9 @@ mod tests {
             "system",
             "Channel log rotated: 50 old messages archived"
         ));
+
+        // User messages with @lead should NOT trigger here (handled in handle_channel_post)
+        assert!(!should_nudge("user", "@lead what do you think?"));
 
         // Coworker messages should NOT be in SKIP_SENDERS at all
         assert!(!should_nudge("lexington", "@lead can you review this?"));
