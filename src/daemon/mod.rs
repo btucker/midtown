@@ -4599,33 +4599,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         .map(|cw| cw.name.to_lowercase())
         .collect();
 
-    // Build set of busy coworkers (those with in_progress tasks) for idle detection
-    let busy_coworkers: std::collections::HashSet<String> =
-        crate::tasks::get_busy_coworkers_for_repo(&state.repo_name)
-            .into_iter()
-            .map(|n| n.to_lowercase())
-            .collect();
-
-    // Build set of idle coworkers: active, non-busy, non-isolated (not reviewers)
-    // Shuffle to distribute tasks across idle coworkers instead of always picking the first.
-    let mut idle_coworkers: Vec<String> = active_coworkers
-        .iter()
-        .filter(|cw| !cw.isolated_tasks) // Skip reviewers
-        .filter(|cw| !busy_coworkers.contains(&cw.name.to_lowercase()))
-        .map(|cw| cw.name.clone())
-        .collect();
-    fastrand::shuffle(&mut idle_coworkers);
-
-    debug!(
-        "Task assignment state: active={}, busy=[{}], idle=[{}]",
-        active_coworkers.len(),
-        busy_coworkers
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", "),
-        idle_coworkers.join(", "),
-    );
+    debug!("Task assignment state: active={}", active_coworkers.len(),);
 
     // Case 1: Pending tasks with owners assigned but coworker not running
     let pending_with_owners = crate::tasks::get_pending_tasks_with_owners();
@@ -4772,47 +4746,22 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
             None
         };
 
-        // Step 1b: If no grouping found, prefer an idle coworker over spawning a new one.
-        // An idle coworker is already running but has no in_progress tasks and isn't
-        // a reviewer — assigning them work avoids the cost of spawning a new session.
+        // Step 1b: Use grouped name if found, otherwise allocate a fresh coworker.
+        // We always spawn fresh rather than reusing idle coworkers — idle coworkers
+        // get shut down by the idle check loop, keeping the lifecycle simple:
+        // spawn → work → PR → idle → shutdown.
         let coworker_name = if let Some(name) = grouped_name {
             name
-        } else if let Some(idle_name) = idle_coworkers
-            .iter()
-            .find(|name| {
-                // Skip coworkers already assigned work in this tick
-                !task_coworker_map
-                    .values()
-                    .any(|v| v.eq_ignore_ascii_case(name))
-            })
-            .cloned()
-        {
-            debug!(
-                "Task #{}: selected idle coworker {} (idle=[{}], already_assigned=[{}])",
-                task.id,
-                idle_name,
-                idle_coworkers.join(", "),
-                task_coworker_map
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            idle_name
         } else {
-            // No idle coworkers available - allocate a new coworker name
             let Some(name) = state.coworkers.next_available_name() else {
                 debug!("No available coworker slots for unowned task #{}", task.id);
                 break;
             };
-            debug!(
-                "Task #{}: no idle coworkers available, allocated new name {}",
-                task.id, name,
-            );
+            debug!("Task #{}: allocated fresh coworker name {}", task.id, name,);
             name
         };
 
-        // Check if this coworker is already running (idle reuse) vs needs spawning
+        // Check if this coworker is already running (grouped to an active coworker)
         let already_running = active_names.contains(&coworker_name.to_lowercase());
 
         // Step 2: Atomically assign task ownership BEFORE spawning
@@ -4843,11 +4792,11 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
         );
 
         if already_running {
-            // Step 3a: Coworker is already running (idle reuse) — nudge instead of spawn
+            // Step 3a: Coworker is already running (grouped task) — nudge about new assignment
             match state.coworkers.nudge(&coworker_name, &prompt) {
                 Ok(()) => {
                     info!(
-                        "Nudged idle coworker {} with pre-assigned task #{}",
+                        "Nudged running coworker {} with grouped task #{}",
                         coworker_name, task.id
                     );
                     let msg = Message::text(
