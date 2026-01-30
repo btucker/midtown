@@ -2174,53 +2174,53 @@ async fn poll_prs_for_issues(
                 get_issue_action(issue_type)
             );
 
-            // Determine who to nudge
-            let nudged = if active_coworkers.contains(&owner.to_string()) {
-                // Owner is an active coworker, nudge them
-                match state.coworkers.nudge(owner, &message) {
+            // Decide action using pure decision function
+            use crate::rules::{PrAction, decide_pr_issue_action};
+            let action =
+                decide_pr_issue_action(owner, &active_coworkers, state.is_at_dev_limit(), &message);
+
+            let nudged = match action {
+                PrAction::NudgeOwner {
+                    owner: ref o,
+                    message: ref msg,
+                } => match state.coworkers.nudge(o, msg) {
                     Ok(()) => {
-                        info!("Nudged {} about PR #{}: {}", owner, pr_number, issue_type);
+                        info!("Nudged {} about PR #{}: {}", o, pr_number, issue_type);
                         true
                     }
                     Err(e) => {
-                        warn!("Failed to nudge {}: {}", owner, e);
+                        warn!("Failed to nudge {}: {}", o, e);
                         false
                     }
-                }
-            } else if !owner.is_empty() {
-                // Owner is not active — check dev limit before spawning (reserve slots for reviewers)
-                if state.is_at_dev_limit() {
-                    debug!(
-                        "Dev coworkers limit reached, cannot spawn {} for PR #{}",
-                        owner, pr_number
-                    );
-                    false
-                } else {
+                },
+                PrAction::SpawnOwner {
+                    owner: ref o,
+                    message: ref msg,
+                } => {
                     info!(
                         "PR #{} owner {} is not active, spawning to address {}",
-                        pr_number, owner, issue_type
+                        pr_number, o, issue_type
                     );
-                    // Use shared task list (not isolated) for PR issue spawns
                     match state
                         .coworkers
-                        .spawn_with_name(owner, true, Some(&message), false)
+                        .spawn_with_name(o, true, Some(msg.as_str()), false)
                     {
                         Ok(_) => {
                             info!(
                                 "Spawned {} to address {} on PR #{}",
-                                owner, issue_type, pr_number
+                                o, issue_type, pr_number
                             );
-                            state.broadcast_coworker_update(owner, "running", None);
-                            let msg = Message::text(
+                            state.broadcast_coworker_update(o, "running", None);
+                            let call_msg = Message::text(
                                 "midtown",
                                 daemon_messages::called_in_pr_issue(
-                                    owner,
+                                    o,
                                     &issue_type.to_string(),
                                     pr_number,
                                     config::get_personality(),
                                 ),
                             );
-                            if let Err(e) = state.send_and_broadcast(&msg) {
+                            if let Err(e) = state.send_and_broadcast(&call_msg) {
                                 warn!("Failed to post call-in message: {}", e);
                             }
                             true
@@ -2228,36 +2228,40 @@ async fn poll_prs_for_issues(
                         Err(e) => {
                             warn!(
                                 "Failed to spawn {} for PR #{} {}: {}",
-                                owner, pr_number, issue_type, e
+                                o, pr_number, issue_type, e
                             );
-                            // Fall back to posting to channel (indicate spawn was attempted)
                             let channel_message = format!(
                                 "PR #{} ({}) owned by {} - {}: {} (call-in failed)",
                                 pr_number,
                                 truncate_str(title, 40),
-                                owner,
+                                o,
                                 issue_type,
                                 get_issue_action(issue_type)
                             );
-                            let msg = Message::new("midtown", channel_message, MessageType::Text);
-                            if let Err(e) = state.send_and_broadcast(&msg) {
+                            let fallback =
+                                Message::new("midtown", channel_message, MessageType::Text);
+                            if let Err(e) = state.send_and_broadcast(&fallback) {
                                 warn!("Failed to post PR issue to channel: {}", e);
                             }
                             true
                         }
                     }
                 }
-            } else {
-                // No owner, post to channel
-                let msg = Message::new("midtown", message.clone(), MessageType::Text);
-                if let Err(e) = state.send_and_broadcast(&msg) {
-                    warn!("Failed to post PR issue to channel: {}", e);
+                PrAction::PostToChannel { message: ref msg } => {
+                    let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
+                    if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                        warn!("Failed to post PR issue to channel: {}", e);
+                    }
+                    info!(
+                        "Posted PR #{} issue to channel (no owner): {}",
+                        pr_number, issue_type
+                    );
+                    true
                 }
-                info!(
-                    "Posted PR #{} issue to channel (no owner): {}",
-                    pr_number, issue_type
-                );
-                true
+                PrAction::Skip { ref reason } => {
+                    debug!("{}", reason);
+                    false
+                }
             };
 
             // Record the nudge
@@ -2406,74 +2410,89 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                         .map(|c| c.name.clone())
                         .collect();
 
-                    if active_coworkers.contains(&owner.to_string()) {
-                        // Owner is active — nudge them
-                        match state.coworkers.nudge(owner, &nudge_msg) {
+                    // Decide action using pure decision function
+                    let action = crate::rules::decide_review_complete_action(
+                        owner,
+                        &active_coworkers,
+                        state.is_at_dev_limit(),
+                        &nudge_msg,
+                    );
+
+                    match action {
+                        crate::rules::PrAction::NudgeOwner {
+                            owner: ref o,
+                            message: ref msg,
+                        } => match state.coworkers.nudge(o, msg) {
                             Ok(()) => {
-                                info!(
-                                    "Nudged {} about completed review on PR #{}",
-                                    owner, pr_number
-                                );
+                                info!("Nudged {} about completed review on PR #{}", o, pr_number);
                             }
                             Err(e) => {
                                 warn!(
                                     "Failed to nudge {} about completed review on PR #{}: {}",
-                                    owner, pr_number, e
+                                    o, pr_number, e
                                 );
+                            }
+                        },
+                        crate::rules::PrAction::SpawnOwner {
+                            owner: ref o,
+                            message: ref msg,
+                        } => {
+                            info!(
+                                "PR #{} owner {} is idle/on a break, spawning to address completed review",
+                                pr_number, o
+                            );
+                            match state.coworkers.spawn_with_name(
+                                o,
+                                true,
+                                Some(msg.as_str()),
+                                false,
+                            ) {
+                                Ok(_) => {
+                                    info!(
+                                        "Spawned {} to address completed review on PR #{}",
+                                        o, pr_number
+                                    );
+                                    state.broadcast_coworker_update(o, "running", None);
+                                    let call_msg = Message::text(
+                                        "midtown",
+                                        daemon_messages::called_in_review_feedback(
+                                            o,
+                                            pr_number,
+                                            config::get_personality(),
+                                        ),
+                                    );
+                                    if let Err(e) = state.send_and_broadcast(&call_msg) {
+                                        warn!("Failed to post call-in message: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to spawn {} for PR #{} review complete: {}",
+                                        o, pr_number, e
+                                    );
+                                    let channel_message = format!(
+                                        "PR #{} ({}) owned by {} - review complete: {} (call-in failed)",
+                                        pr_number,
+                                        truncate_str(title, 40),
+                                        o,
+                                        get_issue_action(PrIssueType::ReviewComplete)
+                                    );
+                                    let fallback =
+                                        Message::new("midtown", channel_message, MessageType::Text);
+                                    if let Err(e) = state.send_and_broadcast(&fallback) {
+                                        warn!("Failed to post PR issue to channel: {}", e);
+                                    }
+                                }
                             }
                         }
-                    } else if state.is_at_dev_limit() {
-                        // At dev limit — post to channel instead of spawning (reserve slots for reviewers)
-                        debug!(
-                            "Dev coworkers limit reached, cannot spawn {} for PR #{}",
-                            owner, pr_number
-                        );
-                    } else {
-                        // Owner is not active — spawn them to address the review
-                        info!(
-                            "PR #{} owner {} is idle/on a break, spawning to address completed review",
-                            pr_number, owner
-                        );
-                        match state
-                            .coworkers
-                            .spawn_with_name(owner, true, Some(&nudge_msg), false)
-                        {
-                            Ok(_) => {
-                                info!(
-                                    "Spawned {} to address completed review on PR #{}",
-                                    owner, pr_number
-                                );
-                                state.broadcast_coworker_update(owner, "running", None);
-                                let msg = Message::text(
-                                    "midtown",
-                                    daemon_messages::called_in_review_feedback(
-                                        owner,
-                                        pr_number,
-                                        config::get_personality(),
-                                    ),
-                                );
-                                if let Err(e) = state.send_and_broadcast(&msg) {
-                                    warn!("Failed to post call-in message: {}", e);
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Failed to spawn {} for PR #{} review complete: {}",
-                                    owner, pr_number, e
-                                );
-                                // Fall back to posting to channel so the team knows
-                                let channel_message = format!(
-                                    "PR #{} ({}) owned by {} - review complete: {} (call-in failed)",
-                                    pr_number,
-                                    truncate_str(title, 40),
-                                    owner,
-                                    get_issue_action(PrIssueType::ReviewComplete)
-                                );
-                                let msg =
-                                    Message::new("midtown", channel_message, MessageType::Text);
-                                if let Err(e) = state.send_and_broadcast(&msg) {
-                                    warn!("Failed to post PR issue to channel: {}", e);
-                                }
+                        crate::rules::PrAction::Skip { ref reason } => {
+                            debug!("{}", reason);
+                        }
+                        crate::rules::PrAction::PostToChannel { message: ref msg } => {
+                            let channel_msg =
+                                Message::new("midtown", msg.clone(), MessageType::Text);
+                            if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                                warn!("Failed to post review complete to channel: {}", e);
                             }
                         }
                     }
@@ -4006,15 +4025,6 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
         return;
     };
 
-    // Don't nudge the owner about their own comments
-    if owner == activity.actor {
-        debug!(
-            "PR #{} comment is from owner {}, skipping self-nudge",
-            pr_number, owner
-        );
-        return;
-    }
-
     // Check cooldown to avoid spamming
     {
         let tracker = state.pr_issue_tracker.lock().await;
@@ -4032,62 +4042,89 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
         pr_number, activity.actor
     );
 
-    // Try to nudge an active coworker, or spawn them if inactive
+    // Decide action using pure decision function
     let is_active = state.coworkers.get(&owner).is_some();
+    let action = crate::rules::decide_pr_comment_action(
+        &owner,
+        &activity.actor,
+        is_active,
+        state.is_at_dev_limit(),
+        &nudge_msg,
+    );
 
-    if is_active {
-        match state.coworkers.nudge(&owner, &nudge_msg) {
+    let success = match action {
+        crate::rules::PrAction::NudgeOwner {
+            owner: ref o,
+            message: ref msg,
+        } => match state.coworkers.nudge(o, msg) {
             Ok(()) => {
                 info!(
                     "Nudged {} about review comment on PR #{} from {}",
-                    owner, pr_number, activity.actor
+                    o, pr_number, activity.actor
                 );
+                true
             }
             Err(e) => {
-                warn!("Failed to nudge {} about PR #{}: {}", owner, pr_number, e);
-                return;
+                warn!("Failed to nudge {} about PR #{}: {}", o, pr_number, e);
+                false
             }
-        }
-    } else {
-        // Owner is not active — spawn them with the review feedback prompt
-        info!(
-            "PR #{} owner {} is not active, spawning to address review feedback",
-            pr_number, owner
-        );
-        // Use shared task list (not isolated) for review feedback spawns
-        match state
-            .coworkers
-            .spawn_with_name(&owner, true, Some(&nudge_msg), false)
-        {
-            Ok(_) => {
-                info!(
-                    "Spawned {} to address review feedback on PR #{}",
-                    owner, pr_number
-                );
-                let msg = Message::text(
-                    "daemon",
-                    format!(
-                        "Called in {} to address review feedback on PR #{}",
-                        owner, pr_number
-                    ),
-                );
-                if let Err(e) = state.send_and_broadcast(&msg) {
-                    warn!("Failed to post call-in message: {}", e);
+        },
+        crate::rules::PrAction::SpawnOwner {
+            owner: ref o,
+            message: ref msg,
+        } => {
+            info!(
+                "PR #{} owner {} is not active, spawning to address review feedback",
+                pr_number, o
+            );
+            match state
+                .coworkers
+                .spawn_with_name(o, true, Some(msg.as_str()), false)
+            {
+                Ok(_) => {
+                    info!(
+                        "Spawned {} to address review feedback on PR #{}",
+                        o, pr_number
+                    );
+                    let call_msg = Message::text(
+                        "daemon",
+                        format!(
+                            "Called in {} to address review feedback on PR #{}",
+                            o, pr_number
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&call_msg) {
+                        warn!("Failed to post call-in message: {}", e);
+                    }
+                    true
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to spawn {} for PR #{} review feedback: {}",
+                        o, pr_number, e
+                    );
+                    false
                 }
             }
-            Err(e) => {
-                warn!(
-                    "Failed to spawn {} for PR #{} review feedback: {}",
-                    owner, pr_number, e
-                );
-                return;
-            }
         }
-    }
+        crate::rules::PrAction::PostToChannel { message: ref msg } => {
+            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
+            if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                warn!("Failed to post PR comment to channel: {}", e);
+            }
+            true
+        }
+        crate::rules::PrAction::Skip { ref reason } => {
+            debug!("{}", reason);
+            false
+        }
+    };
 
     // Record the nudge to prevent spamming
-    let mut tracker = state.pr_issue_tracker.lock().await;
-    tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
+    if success {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
+    }
 }
 
 // ============================================================================

@@ -523,6 +523,130 @@ pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// PR/review decision types and functions
+// ---------------------------------------------------------------------------
+
+/// Action to take for a PR issue or comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrAction {
+    /// Owner is active — nudge them with a message.
+    NudgeOwner { owner: String, message: String },
+    /// Owner is inactive — spawn them with a message.
+    SpawnOwner { owner: String, message: String },
+    /// No identifiable owner — post to channel.
+    PostToChannel { message: String },
+    /// Skip — dev limit reached, self-comment, on cooldown, or no owner.
+    Skip { reason: String },
+}
+
+/// Decide what action to take for a PR issue detected by polling.
+///
+/// Pure function: takes the issue context and returns a `PrAction`.
+/// The caller handles side effects (nudge/spawn/post).
+pub(crate) fn decide_pr_issue_action(
+    owner: &str,
+    active_coworkers: &[String],
+    at_dev_limit: bool,
+    message: &str,
+) -> PrAction {
+    let is_active = active_coworkers
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(owner));
+
+    if is_active {
+        PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    } else if !owner.is_empty() {
+        if at_dev_limit {
+            PrAction::Skip {
+                reason: format!("dev limit reached, cannot spawn {} for PR issue", owner),
+            }
+        } else {
+            PrAction::SpawnOwner {
+                owner: owner.to_string(),
+                message: message.to_string(),
+            }
+        }
+    } else {
+        PrAction::PostToChannel {
+            message: message.to_string(),
+        }
+    }
+}
+
+/// Decide what action to take for a PR comment nudge (webhook-driven).
+///
+/// Pure function: determines whether to nudge, spawn, or skip based on
+/// whether the owner is active and whether the comment is a self-comment.
+pub(crate) fn decide_pr_comment_action(
+    owner: &str,
+    actor: &str,
+    is_active: bool,
+    at_dev_limit: bool,
+    message: &str,
+) -> PrAction {
+    // Don't nudge about own comments
+    if owner == actor {
+        return PrAction::Skip {
+            reason: format!("PR comment is from owner {}, skipping self-nudge", owner),
+        };
+    }
+
+    if is_active {
+        PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    } else if at_dev_limit {
+        PrAction::Skip {
+            reason: format!("dev limit reached, cannot spawn {} for PR comment", owner),
+        }
+    } else {
+        PrAction::SpawnOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
+/// Decide what action to take when a PR has a completed review and the
+/// author needs to address feedback.
+///
+/// Same logic as `decide_pr_issue_action` — nudge if active, spawn if not,
+/// skip if at dev limit.
+pub(crate) fn decide_review_complete_action(
+    owner: &str,
+    active_coworkers: &[String],
+    at_dev_limit: bool,
+    message: &str,
+) -> PrAction {
+    let is_active = active_coworkers
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(owner));
+
+    if is_active {
+        PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    } else if at_dev_limit {
+        PrAction::Skip {
+            reason: format!(
+                "dev limit reached, cannot spawn {} for review complete",
+                owner
+            ),
+        }
+    } else {
+        PrAction::SpawnOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -990,5 +1114,130 @@ mod tests {
         let nudges = decide_prompt_nudges(&coworkers, &pane_contents, &mut prompted_nudged);
 
         assert!(nudges.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_pr_issue_action tests
+    // -----------------------------------------------------------------------
+
+    fn active(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pr_issue_nudges_active_owner() {
+        let action =
+            decide_pr_issue_action("york", &active(&["york", "amsterdam"]), false, "fix checks");
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_issue_spawns_inactive_owner() {
+        let action = decide_pr_issue_action("york", &active(&["amsterdam"]), false, "fix checks");
+        assert_eq!(
+            action,
+            PrAction::SpawnOwner {
+                owner: "york".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_issue_skips_at_dev_limit() {
+        let action = decide_pr_issue_action("york", &active(&["amsterdam"]), true, "fix checks");
+        assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pr_issue_posts_to_channel_no_owner() {
+        let action = decide_pr_issue_action("", &active(&["amsterdam"]), false, "fix checks");
+        assert_eq!(
+            action,
+            PrAction::PostToChannel {
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_issue_case_insensitive_active_check() {
+        let action = decide_pr_issue_action("York", &active(&["york"]), false, "fix checks");
+        assert!(matches!(action, PrAction::NudgeOwner { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_pr_comment_action tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pr_comment_nudges_active_owner() {
+        let action = decide_pr_comment_action("york", "amsterdam", true, false, "review feedback");
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_spawns_inactive_owner() {
+        let action = decide_pr_comment_action("york", "amsterdam", false, false, "review feedback");
+        assert_eq!(
+            action,
+            PrAction::SpawnOwner {
+                owner: "york".to_string(),
+                message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_skips_self_comment() {
+        let action = decide_pr_comment_action("york", "york", true, false, "review feedback");
+        assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pr_comment_skips_at_dev_limit_when_inactive() {
+        let action = decide_pr_comment_action("york", "amsterdam", false, true, "review feedback");
+        assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_review_complete_action tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn review_complete_nudges_active_owner() {
+        let action =
+            decide_review_complete_action("york", &active(&["york"]), false, "review complete");
+        assert!(matches!(action, PrAction::NudgeOwner { .. }));
+    }
+
+    #[test]
+    fn review_complete_spawns_inactive_owner() {
+        let action = decide_review_complete_action(
+            "york",
+            &active(&["amsterdam"]),
+            false,
+            "review complete",
+        );
+        assert!(matches!(action, PrAction::SpawnOwner { .. }));
+    }
+
+    #[test]
+    fn review_complete_skips_at_dev_limit() {
+        let action =
+            decide_review_complete_action("york", &active(&["amsterdam"]), true, "review complete");
+        assert!(matches!(action, PrAction::Skip { .. }));
     }
 }
