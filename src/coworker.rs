@@ -77,7 +77,7 @@ pub struct Coworker {
     /// Claude Code session ID (UUID) for task symlink management
     pub session_id: Option<String>,
     /// Whether this coworker has an isolated task list (e.g., review coworkers)
-    /// Isolated coworkers are auto-killed immediately when they go idle.
+    /// Isolated coworkers are sent on a break immediately when they go idle.
     #[serde(default)]
     pub isolated_tasks: bool,
 }
@@ -205,7 +205,7 @@ impl CoworkerManager {
 
             // Create a coworker entry
             // Assume not isolated (shared task list) for discovered coworkers - they were
-            // likely regular coworkers. Isolated review coworkers get killed when idle anyway.
+            // likely regular coworkers. Isolated review coworkers go on a break when idle anyway.
             let coworker = Coworker {
                 name: window_name.clone(),
                 status: CoworkerStatus::Running,
@@ -492,7 +492,7 @@ impl CoworkerManager {
         }
     }
 
-    /// Shutdown a coworker by name.
+    /// Send a coworker on a break (shut down their session).
     pub fn shutdown(&self, name: &str) -> crate::Result<()> {
         // Update status to stopping
         {
@@ -522,7 +522,7 @@ impl CoworkerManager {
         Ok(())
     }
 
-    /// Shutdown all coworkers.
+    /// Send all coworkers on a break.
     pub fn shutdown_all(&self) -> crate::Result<()> {
         let names: Vec<String> = {
             let coworkers = self.coworkers.read().unwrap();
