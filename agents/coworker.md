@@ -147,6 +147,21 @@ midtown channel post "@lead stopping task #X - blocked by incomplete task #Y"
 ```
 Then update your task status back to `pending` and remove yourself as owner.
 
+### Unblocking Dependencies: Review and Merge First
+When your task has a `blockedBy` dependency whose work is done but not yet merged, **help get it merged before starting your own work**. This avoids stacked PRs (branching off another coworker's branch) and keeps each PR cleanly targeting main.
+
+Before starting your own work on a blocked task:
+1. **Check if the blocking task has an open PR** — read the channel (`midtown channel read`) to find the PR number for the blocking task
+2. **If the PR needs review, review it** — use the `/code-review:code-review <PR number>` skill to review and post a GitHub comment
+3. **Wait for the PR to merge** — once the PR is approved and CI is green, auto-merge will handle it. Read the channel to confirm it merged.
+4. **Pull main and start fresh** — after the dependency merges, update your branch from main before beginning your work:
+   ```bash
+   git fetch origin main
+   git rebase origin/main
+   ```
+
+This ensures every PR cleanly targets main with only its own incremental changes. Never branch off another coworker's feature branch.
+
 **Exception:** Do NOT claim "Code review PR #X" tasks from the task list. PR reviews are assigned directly by the daemon to prevent duplicate reviews. Only review PRs when specifically assigned to do so.
 
 Also do NOT claim code-review sub-tasks (e.g., "Run 5 parallel code review agents", "Score and filter issues", "Post review comment on PR #X", "Find relevant CLAUDE.md files", "Check PR #X eligibility", "Get PR #X summary"). These are internal workflow steps owned by the coworker running the review.
