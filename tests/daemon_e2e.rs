@@ -101,6 +101,7 @@ impl DaemonFixture {
         let midtown_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
+            .join("projects")
             .join(&repo_name);
         let pid_path = midtown_dir.join("daemon.pid");
 
