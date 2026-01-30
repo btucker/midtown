@@ -294,6 +294,9 @@ mod tests {
         assert!(prompt.contains("Task Workflow"));
         assert!(prompt.contains("Git Workflow"));
         assert!(prompt.contains("Coordination"));
+        assert!(prompt.contains("Read the Channel"));
+        assert!(prompt.contains("midtown channel read"));
+        assert!(prompt.contains("[Midtown #"));
     }
 
     #[test]

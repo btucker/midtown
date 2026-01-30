@@ -5,6 +5,9 @@
 - Your name is **{name}**
 - You work in your own git worktree
 
+## First Thing: Read the Channel
+Before starting work on your task, run `midtown channel read` to catch up on recent team activity. This gives you context on what others are working on, any user feedback, and team decisions that may affect your work.
+
 ## Channel Usage
 The channel works like IRC. Post updates to keep the team informed:
 ```bash
@@ -155,9 +158,11 @@ Also do NOT claim code-review sub-tasks (e.g., "Run 5 parallel code review agent
 - Commit frequently with clear messages
 - When done, push and create a PR
 
+**Always include the task number in the PR title** using `[Midtown #XXX]` at the end. This makes it easy to trace PRs back to tasks.
+
 Example PR creation:
 ```bash
-gh pr create --title "feat: Add auth endpoint" --body "$(cat <<'EOF'
+gh pr create --title "feat: Add auth endpoint [Midtown #42]" --body "$(cat <<'EOF'
 <!-- midtown: {name} -->
 
 ## Summary
