@@ -5,6 +5,19 @@
 //! runs a webhook server to receive GitHub events, and polls PRs for
 //! actionable issues.
 
+mod constants;
+mod helpers;
+mod trackers;
+
+use constants::*;
+pub use constants::{
+    DEFAULT_MAX_COWORKERS, DEFAULT_PR_POLL_INTERVAL_SECS, DEFAULT_WEBHOOK_PORT,
+    DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, MAX_CONCURRENT_REVIEWS, PR_NUDGE_COOLDOWN_SECS,
+    PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
+};
+use helpers::*;
+pub use trackers::{PrIssueTracker, PrIssueType, PrReviewTracker};
+
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
@@ -29,11 +42,6 @@ use crate::rpc::{Request, RequestId, Response, RpcError};
 use crate::web::{self, WebUpdate};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
-
-/// Default maximum number of concurrent coworkers.
-///
-/// This matches the total number of available name slots (10 avenues + 6 overflow).
-pub const DEFAULT_MAX_COWORKERS: usize = 16;
 
 /// Configuration for the daemon server.
 #[derive(Debug, Clone)]
@@ -60,97 +68,6 @@ pub struct DaemonConfig {
     pub max_coworkers: usize,
     /// Explicit project name (from --project flag). Overrides auto-detection.
     pub project_name: Option<String>,
-}
-
-/// Default interval for restarting the webhook forwarder (5 minutes)
-pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
-
-/// Default port for the per-project webhook server.
-/// Port 47022 is reserved for the shared multi-project webserver.
-/// Per-project daemons use 47023+.
-pub const DEFAULT_WEBHOOK_PORT: u16 = 47023;
-
-/// Default interval for polling PRs (30 seconds)
-pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
-
-/// Minimum time between nudging the same PR issue (10 minutes)
-pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
-
-/// Types of actionable PR issues
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PrIssueType {
-    /// PR has merge conflicts
-    MergeConflict,
-    /// CI checks failed
-    CiFailed,
-    /// Review requested changes
-    ChangesRequested,
-    /// PR is approved and ready to merge
-    Approved,
-    /// PR needs code review (no Claude review comment yet)
-    NeedsReview,
-    /// PR has review comments from non-owners
-    ReviewComment,
-    /// PR review is complete (Claude review posted), author should act
-    ReviewComplete,
-}
-
-impl std::fmt::Display for PrIssueType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PrIssueType::MergeConflict => write!(f, "merge conflict"),
-            PrIssueType::CiFailed => write!(f, "CI failed"),
-            PrIssueType::ChangesRequested => write!(f, "changes requested"),
-            PrIssueType::Approved => write!(f, "approved"),
-            PrIssueType::NeedsReview => write!(f, "needs review"),
-            PrIssueType::ReviewComment => write!(f, "review comment"),
-            PrIssueType::ReviewComplete => write!(f, "review complete"),
-        }
-    }
-}
-
-/// Tracks which PR issues have been nudged to avoid spamming
-#[derive(Debug, Default)]
-pub struct PrIssueTracker {
-    /// Map of (pr_number, issue_type) -> last_nudge_time
-    nudged: HashMap<(u64, PrIssueType), Instant>,
-}
-
-impl PrIssueTracker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Check if a PR has been recently tracked for any issue
-    pub fn is_recently_tracked(&self, pr_number: u64) -> bool {
-        self.nudged.keys().any(|(num, _)| {
-            *num == pr_number
-                && self
-                    .nudged
-                    .get(&(*num, PrIssueType::NeedsReview))
-                    .is_some_and(|t| t.elapsed() < Duration::from_secs(PR_NUDGE_COOLDOWN_SECS))
-        })
-    }
-
-    /// Check if we should nudge for this issue (not nudged recently)
-    pub fn should_nudge(&self, pr_number: u64, issue_type: PrIssueType) -> bool {
-        match self.nudged.get(&(pr_number, issue_type)) {
-            Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(PR_NUDGE_COOLDOWN_SECS),
-            None => true,
-        }
-    }
-
-    /// Record that we nudged for this issue
-    pub fn record_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
-        self.nudged.insert((pr_number, issue_type), Instant::now());
-    }
-
-    /// Clean up old entries (older than cooldown period)
-    pub fn cleanup(&mut self) {
-        let cutoff = Duration::from_secs(PR_NUDGE_COOLDOWN_SECS);
-        self.nudged
-            .retain(|_, last_nudge| last_nudge.elapsed() < cutoff);
-    }
 }
 
 impl Default for DaemonConfig {
@@ -250,42 +167,6 @@ impl Default for DaemonConfig {
     }
 }
 
-/// How long a coworker must be idle before being sent on a break (30 seconds)
-const IDLE_BREAK_DURATION: Duration = Duration::from_secs(30);
-
-/// How often to check for idle coworkers (30 seconds)
-const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
-
-/// How often to check lead pane activity for typing indicator (3 seconds)
-const LEAD_TYPING_CHECK_INTERVAL: Duration = Duration::from_secs(3);
-
-/// How often to check if channel rotation is needed (1 hour)
-const CHANNEL_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
-
-/// Maximum age of the oldest message before rotation triggers (24 hours)
-const CHANNEL_ROTATION_MAX_AGE_HOURS: u64 = 24;
-
-/// How many minutes of recent messages to retain after rotation (60 minutes)
-const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
-
-/// Interval for checking orphaned tasks (5 seconds)
-const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
-
-/// Minimum time a coworker must be alive before being sent on a break (5 minutes)
-/// This prevents spawn storms where coworkers are rapidly sent on breaks.
-const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
-
-/// How long a coworker must be interrupted before nudging them to continue (60 seconds)
-const INTERRUPTED_NUDGE_DURATION: Duration = Duration::from_secs(60);
-
-/// Cooldown between orphan recovery spawns (5 seconds)
-/// Only spawn one coworker per tick, with a minimum gap between spawns.
-const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
-
-/// Extra buffer added to usage limit expiry times before nudging (30 seconds).
-/// Gives the API a moment to actually reset before we ask coworkers to retry.
-const USAGE_LIMIT_NUDGE_BUFFER: Duration = Duration::from_secs(30);
-
 /// Ensure required Claude Code plugins are installed.
 ///
 /// Reads the required plugins list from config, checks which are already
@@ -374,110 +255,6 @@ async fn install_plugin(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Tracks which PRs have been assigned for review to avoid duplicates.
-#[derive(Debug, Default)]
-pub struct PrReviewTracker {
-    /// Map of pr_number -> (assigned_coworker, assignment_time)
-    assigned: HashMap<u64, (String, Instant)>,
-}
-
-/// How long to wait after PR is opened before auto-reviewing (1 minute)
-/// This gives CI time to start and allows the author to add context.
-pub const PR_REVIEW_DELAY_SECS: u64 = 60;
-
-/// How long a review assignment is valid before it can be reassigned (10 minutes)
-/// Re-exported from github_state for use by the in-memory tracker.
-pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
-
-/// Maximum number of concurrent review assignments (rate limiting)
-pub const MAX_CONCURRENT_REVIEWS: usize = 4;
-
-impl PrReviewTracker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Check if a PR has been assigned for review recently
-    pub fn is_assigned(&self, pr_number: u64) -> bool {
-        match self.assigned.get(&pr_number) {
-            Some((_, assigned_at)) => {
-                assigned_at.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
-            }
-            None => false,
-        }
-    }
-
-    /// Record a review assignment
-    pub fn assign(&mut self, pr_number: u64, coworker: &str) {
-        self.assigned
-            .insert(pr_number, (coworker.to_string(), Instant::now()));
-    }
-
-    /// Get the number of active review assignments
-    pub fn active_count(&self) -> usize {
-        self.assigned
-            .values()
-            .filter(|(_, t)| t.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS))
-            .count()
-    }
-
-    /// Clean up stale assignments
-    pub fn cleanup(&mut self) {
-        let timeout = Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS);
-        self.assigned.retain(|_, (_, t)| t.elapsed() < timeout);
-    }
-
-    /// Clean up stale assignments, but preserve assignments for active coworkers.
-    ///
-    /// This prevents reviewers from losing their PR assignment tracking while
-    /// they are still actively running (e.g., a review taking longer than the
-    /// timeout). Assignments for inactive coworkers are cleaned up normally.
-    /// Active coworkers' assignments are refreshed so timeout-based lookups
-    /// (active_reviewers, pr_for_coworker) continue to work.
-    pub fn cleanup_preserving(&mut self, active_coworkers: &HashSet<String>) {
-        let timeout = Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS);
-        let now = Instant::now();
-        self.assigned.retain(|_, (name, t)| {
-            if t.elapsed() < timeout {
-                return true;
-            }
-            // Expired, but coworker is still active — refresh the timestamp
-            if active_coworkers.contains(name) {
-                *t = now;
-                return true;
-            }
-            false
-        });
-    }
-
-    /// Mark a PR as reviewed (remove from tracking)
-    pub fn mark_reviewed(&mut self, pr_number: u64) {
-        self.assigned.remove(&pr_number);
-    }
-
-    /// Get the PR number assigned to a specific coworker.
-    pub fn pr_for_coworker(&self, coworker: &str) -> Option<u64> {
-        self.assigned
-            .iter()
-            .find(|(_, (name, assigned_at))| {
-                name == coworker
-                    && assigned_at.elapsed()
-                        < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
-            })
-            .map(|(pr_number, _)| *pr_number)
-    }
-
-    /// Get the set of coworker names that are actively assigned to review PRs.
-    pub fn active_reviewers(&self) -> HashSet<String> {
-        let timeout = Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS);
-        self.assigned
-            .values()
-            .filter(|(_, t)| t.elapsed() < timeout)
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-}
-
 /// Shared daemon state.
 pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
@@ -524,10 +301,6 @@ pub(crate) struct DaemonState {
     /// The main loop checks this and nudges everyone when the time arrives.
     usage_limit_nudge_at: Mutex<Option<tokio::time::Instant>>,
 }
-
-/// Number of coworker slots reserved for reviewers.
-/// Dev coworker spawning is capped at `max_coworkers - REVIEW_HEADROOM`.
-const REVIEW_HEADROOM: usize = 2;
 
 impl DaemonState {
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
@@ -1813,9 +1586,6 @@ async fn pr_poll_task(
 // Chat Monitor - @mention routing
 // ============================================================================
 
-/// Senders to skip when routing mentions (loop protection).
-const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user"];
-
 /// Background task that monitors the channel for @mentions and routes them.
 ///
 /// Uses `tailf` to watch `channel.jsonl` for new messages in real-time.
@@ -1982,22 +1752,6 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
     }
 }
 
-/// Check if a message contains @all (case-insensitive, with word boundary).
-fn contains_at_all(content: &str) -> bool {
-    let content_lower = content.to_lowercase();
-    if let Some(idx) = content_lower.find("@all") {
-        let after_idx = idx + 4; // "@all".len()
-        after_idx >= content.len()
-            || !content[after_idx..]
-                .chars()
-                .next()
-                .unwrap_or(' ')
-                .is_alphanumeric()
-    } else {
-        false
-    }
-}
-
 /// Route an @all broadcast: nudge every active coworker and the lead, except the sender.
 fn route_at_all(state: &DaemonState, msg: &Message) {
     let active_coworkers = state.coworkers.list();
@@ -2030,36 +1784,6 @@ fn route_at_all(state: &DaemonState, msg: &Message) {
             info!("Nudged {} for @all from {}", coworker.name, msg.from);
         }
     }
-}
-
-/// Extract valid coworker @mentions from message content.
-///
-/// Returns a list of coworker names that were mentioned (lowercase).
-/// Uses word boundary detection to avoid false positives.
-fn extract_mentions(content: &str) -> Vec<String> {
-    let mut mentions = Vec::new();
-    let content_lower = content.to_lowercase();
-
-    // Look for @name patterns where name is a valid coworker name
-    for &name in COWORKER_NAMES {
-        let pattern = format!("@{}", name);
-        if let Some(idx) = content_lower.find(&pattern) {
-            // Check that this is at a word boundary (not part of a larger word)
-            let after_idx = idx + pattern.len();
-            let at_word_boundary = after_idx >= content.len()
-                || !content[after_idx..]
-                    .chars()
-                    .next()
-                    .unwrap_or(' ')
-                    .is_alphanumeric();
-
-            if at_word_boundary && !mentions.contains(&name.to_string()) {
-                mentions.push(name.to_string());
-            }
-        }
-    }
-
-    mentions
 }
 
 /// Poll all open PRs and nudge for actionable issues.
@@ -2660,81 +2384,6 @@ async fn handle_webhook_review_spawn(state: &DaemonState, pr_number: u64) {
     spawn_reviewers_for_prs(state, &[pr]).await;
 }
 
-/// Detect actionable issues for a PR.
-fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
-    let mut issues = Vec::new();
-
-    // Check for merge conflicts
-    let mergeable = pr.get("mergeable").and_then(|m| m.as_str()).unwrap_or("");
-    if mergeable == "CONFLICTING" {
-        issues.push(PrIssueType::MergeConflict);
-    }
-
-    // Check for CI failures
-    if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
-        let has_failure = checks.iter().any(|check| {
-            let conclusion = check
-                .get("conclusion")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            conclusion == "FAILURE"
-        });
-        if has_failure {
-            issues.push(PrIssueType::CiFailed);
-        }
-    }
-
-    // Check review decision
-    let review_decision = pr
-        .get("reviewDecision")
-        .and_then(|r| r.as_str())
-        .unwrap_or("");
-    match review_decision {
-        "CHANGES_REQUESTED" => issues.push(PrIssueType::ChangesRequested),
-        "APPROVED" => issues.push(PrIssueType::Approved),
-        _ => {}
-    }
-
-    issues
-}
-
-/// Get action text for a PR issue type.
-fn get_issue_action(issue_type: PrIssueType) -> &'static str {
-    match issue_type {
-        PrIssueType::MergeConflict => "please rebase",
-        PrIssueType::CiFailed => "please investigate",
-        PrIssueType::ChangesRequested => "please address feedback",
-        PrIssueType::Approved => "ready to merge!",
-        PrIssueType::NeedsReview => "calling in reviewer",
-        PrIssueType::ReviewComment => "please address review feedback and merge if appropriate",
-        PrIssueType::ReviewComplete => {
-            "review is complete — please address feedback and merge if appropriate"
-        }
-    }
-}
-
-/// Truncate a string to max length with ellipsis.
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
-}
-
-/// Check if text contains a coworker review signature.
-///
-/// Coworker reviews are identified by:
-/// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
-/// - The "<!-- midtown:" frontmatter (comment-based reviews)
-/// - The "## Code Review by" header (comment-based reviews)
-fn text_contains_review_signature(text: &str) -> bool {
-    text.contains("🤖 Reviewed by")
-        || text.contains("Reviewed by")
-        || text.contains("<!-- midtown:")
-        || text.contains("## Code Review by")
-}
-
 /// Check if a PR has a review comment from a Claude coworker.
 ///
 /// Checks both formal reviews (`.reviews[].body`) and comments (`.comments[].body`)
@@ -2787,17 +2436,6 @@ fn pr_has_claude_review(pr_number: u64) -> bool {
             false
         }
     }
-}
-
-/// Get the creation time of a PR to enforce review delay.
-///
-/// Returns None if the PR age couldn't be determined.
-fn get_pr_age_secs(pr: &serde_json::Value) -> Option<u64> {
-    let created_at = pr.get("createdAt").and_then(|c| c.as_str())?;
-    let created = chrono::DateTime::parse_from_rfc3339(created_at).ok()?;
-    let now = chrono::Utc::now();
-    let duration = now.signed_duration_since(created);
-    Some(duration.num_seconds().max(0) as u64)
 }
 
 /// Handle a single client connection.
@@ -3168,14 +2806,6 @@ fn handle_coworker_asking(
     )
 }
 
-/// Known system senders that should not trigger feedback detection.
-const SYSTEM_SENDERS: &[&str] = &["Lead", "lead", "github", "system", "GitHub"];
-
-/// Check if a sender is a coworker (not Lead or system).
-fn is_coworker_sender(from: &str) -> bool {
-    !SYSTEM_SENDERS.contains(&from)
-}
-
 /// Handle channel.post RPC method.
 ///
 /// Supports IRC-style `/me` actions. If the message starts with `/me `,
@@ -3496,16 +3126,7 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     let reviewer_assignments: HashMap<u64, (String, Instant)> = state
         .pr_review_tracker
         .try_lock()
-        .map(|tracker| {
-            tracker
-                .assigned
-                .iter()
-                .filter(|(_, (_, t))| {
-                    t.elapsed() < Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS)
-                })
-                .map(|(pr, (name, instant))| (*pr, (name.clone(), *instant)))
-                .collect()
-        })
+        .map(|tracker| tracker.active_assignments())
         .unwrap_or_default();
 
     // Fetch PRs from all repos in the project
@@ -3904,79 +3525,9 @@ fn get_recent_channel_activity() -> Vec<serde_json::Value> {
     }
 }
 
-/// Truncate a message for summary display.
-fn truncate_message(msg: &str, max_len: usize) -> String {
-    let first_line = msg.lines().next().unwrap_or(msg);
-    if first_line.len() <= max_len {
-        first_line.to_string()
-    } else {
-        format!("{}...", &first_line[..max_len])
-    }
-}
-
 // ============================================================================
 // Auto-nudge helpers for PR activity
 // ============================================================================
-
-/// Known coworker names (Manhattan avenues).
-const COWORKER_NAMES: &[&str] = &[
-    "lexington",
-    "park",
-    "madison",
-    "broadway",
-    "amsterdam",
-    "columbus",
-    "central",
-    "riverside",
-    "york",
-    "pleasant",
-    "vernon",
-    "bleecker",
-    "houston",
-    "canal",
-    "spring",
-    "prince",
-    "mercer",
-];
-
-/// Extract PR number from a message content.
-///
-/// Looks for patterns like "PR #42", "#42", "PR #123".
-#[cfg(test)]
-fn extract_pr_number(content: &str) -> Option<u64> {
-    // Look for "PR #N" pattern first
-    if let Some(idx) = content.find("PR #") {
-        let after = &content[idx + 4..];
-        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(num) = num_str.parse() {
-            return Some(num);
-        }
-    }
-
-    // Look for " #N " pattern (standalone PR reference)
-    // This handles messages like "approved PR #42" where we already caught it above
-    // but also cases like "on #42:"
-    for (i, _) in content.match_indices(" #") {
-        let after = &content[i + 2..];
-        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !num_str.is_empty()
-            && let Ok(num) = num_str.parse()
-        {
-            return Some(num);
-        }
-    }
-
-    None
-}
-
-/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
-fn coworker_from_branch(branch: &str) -> Option<String> {
-    let prefix = branch.split('/').next()?;
-    COWORKER_NAMES
-        .iter()
-        .find(|&&name| name.eq_ignore_ascii_case(prefix))
-        .map(|&s| s.to_string())
-}
 
 /// Async version of `get_pr_owner_coworker` that doesn't block the Tokio runtime.
 async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
@@ -5614,12 +5165,10 @@ mod tests {
         let mut tracker = PrReviewTracker::new();
 
         // Simulate an expired assignment (> 10 minutes old) for an active coworker
-        tracker.assigned.insert(
+        tracker.assign_at(
             42,
-            (
-                "broadway".to_string(),
-                Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
-            ),
+            "broadway",
+            Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
         );
         // And a fresh assignment for another coworker
         tracker.assign(43, "park");
@@ -5643,12 +5192,10 @@ mod tests {
         let mut tracker = PrReviewTracker::new();
 
         // Simulate an expired assignment for an inactive coworker
-        tracker.assigned.insert(
+        tracker.assign_at(
             42,
-            (
-                "broadway".to_string(),
-                Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
-            ),
+            "broadway",
+            Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
         );
 
         // broadway is NOT active
