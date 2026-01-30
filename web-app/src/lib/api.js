@@ -81,7 +81,7 @@ export function switchProject(projectName, webhookPort) {
 }
 
 // Get the API base for the current project
-function getApiBase() {
+export function getApiBase() {
   return projectApiBase ? `${projectApiBase}/api` : '/api'
 }
 
