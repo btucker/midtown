@@ -38,6 +38,41 @@ fn cleanup_orphaned_test_daemons() {
 
     // Give processes a moment to die
     thread::sleep(Duration::from_millis(50));
+
+    // Clean up stale project directories from crashed previous runs
+    let projects_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".midtown")
+        .join("projects");
+    if let Ok(entries) = fs::read_dir(&projects_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("daemon-e2e-test-") {
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
+
+    // Also clean up stale socket directories
+    let state_dir = std::env::var("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("state")
+        });
+    let sockets_dir = state_dir.join("midtown");
+    if let Ok(entries) = fs::read_dir(&sockets_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("daemon-e2e-test-") {
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
 }
 
 /// Test fixture for daemon e2e tests.
@@ -48,6 +83,8 @@ fn cleanup_orphaned_test_daemons() {
 struct DaemonFixture {
     /// Temporary directory containing the test repo
     temp_dir: PathBuf,
+    /// Project directory under ~/.midtown/projects/<name>/
+    project_dir: PathBuf,
     /// Repository name (used for socket path derivation)
     repo_name: String,
     /// Path to the daemon socket
@@ -98,12 +135,12 @@ impl DaemonFixture {
             .join(&repo_name)
             .join("daemon.sock");
 
-        let midtown_dir = dirs::home_dir()
+        let project_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
             .join("projects")
             .join(&repo_name);
-        let pid_path = midtown_dir.join("daemon.pid");
+        let pid_path = project_dir.join("daemon.pid");
 
         // Ensure parent directories exist
         if let Some(parent) = socket_path.parent() {
@@ -115,6 +152,7 @@ impl DaemonFixture {
 
         Some(Self {
             temp_dir,
+            project_dir,
             repo_name,
             socket_path,
             pid_path,
@@ -256,21 +294,17 @@ impl Drop for DaemonFixture {
     fn drop(&mut self) {
         self.stop_daemon();
 
-        // Clean up socket and pid files
+        // Clean up socket file and its parent directory
         let _ = fs::remove_file(&self.socket_path);
-        let _ = fs::remove_file(&self.pid_path);
-
-        // Clean up socket parent directory if empty
         if let Some(parent) = self.socket_path.parent() {
             let _ = fs::remove_dir(parent);
         }
 
-        // Clean up pid parent directory if empty
-        if let Some(parent) = self.pid_path.parent() {
-            let _ = fs::remove_dir(parent);
-        }
+        // Clean up the entire project directory (~/.midtown/projects/<name>/)
+        // This includes config.toml, daemon.pid, channel.jsonl, cursors/, etc.
+        let _ = fs::remove_dir_all(&self.project_dir);
 
-        // Clean up temp directory
+        // Clean up temp directory (the fake git repo)
         let _ = fs::remove_dir_all(&self.temp_dir);
     }
 }
