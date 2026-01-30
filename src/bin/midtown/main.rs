@@ -42,7 +42,7 @@ enum Commands {
         #[arg(short, long)]
         socket: Option<std::path::PathBuf>,
 
-        /// Working directory for spawned coworkers
+        /// Working directory for coworkers
         #[arg(short, long)]
         workdir: Option<std::path::PathBuf>,
 

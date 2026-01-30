@@ -1814,7 +1814,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                 let err_msg = Message::text(
                     "midtown",
                     format!(
-                        "⚠️ Cannot spawn {} for @mention: dev coworkers limit reached",
+                        "⚠️ Cannot call in {} for @mention: dev coworkers limit reached",
                         name
                     ),
                 );
@@ -1838,7 +1838,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                     // Post to channel about the spawn
                     let spawn_msg = Message::text(
                         "midtown",
-                        format!("🚀 Spawned {} in response to @mention", name),
+                        format!("🚀 Called in {} in response to @mention", name),
                     );
                     if let Err(e) = state.send_and_broadcast(&spawn_msg) {
                         warn!("Failed to post spawn message: {}", e);
@@ -1849,7 +1849,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                     // Post error to channel
                     let err_msg = Message::text(
                         "midtown",
-                        format!("⚠️ Failed to spawn {} for @mention: {}", name, e),
+                        format!("⚠️ Failed to call in {} for @mention: {}", name, e),
                     );
                     let _ = state.send_and_broadcast(&err_msg);
                     continue;
@@ -2087,7 +2087,7 @@ async fn poll_prs_for_issues(
                             let msg = Message::text(
                                 "midtown",
                                 format!(
-                                    "🚀 Spawned {} to address {} on PR #{}",
+                                    "🚀 Called in {} to address {} on PR #{}",
                                     owner, issue_type, pr_number
                                 ),
                             );
@@ -2103,7 +2103,7 @@ async fn poll_prs_for_issues(
                             );
                             // Fall back to posting to channel (indicate spawn was attempted)
                             let channel_message = format!(
-                                "PR #{} ({}) owned by {} - {}: {} (spawn failed)",
+                                "PR #{} ({}) owned by {} - {}: {} (call-in failed)",
                                 pr_number,
                                 truncate_str(title, 40),
                                 owner,
@@ -2318,7 +2318,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                 let msg = Message::text(
                                     "midtown",
                                     format!(
-                                        "🚀 Spawned {} to address review feedback on PR #{}",
+                                        "🚀 Called in {} to address review feedback on PR #{}",
                                         owner, pr_number
                                     ),
                                 );
@@ -2333,7 +2333,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                 );
                                 // Fall back to posting to channel so the team knows
                                 let channel_message = format!(
-                                    "PR #{} ({}) owned by {} - review complete: {} (spawn failed)",
+                                    "PR #{} ({}) owned by {} - review complete: {} (call-in failed)",
                                     pr_number,
                                     truncate_str(title, 40),
                                     owner,
@@ -2422,14 +2422,14 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                     warn!("Failed to set review status for {}: {}", new_coworker, e);
                 }
 
-                // Post to channel about the spawn
+                // Post to channel
                 let channel_msg = Message::new(
                     "midtown",
-                    format!("🔍 Spawned {} to review PR #{}", new_coworker, pr_number),
+                    format!("🔍 Called in {} to review PR #{}", new_coworker, pr_number),
                     MessageType::Text,
                 );
                 if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                    warn!("Failed to post spawn message to channel: {}", e);
+                    warn!("Failed to post call-in message to channel: {}", e);
                 }
 
                 reviews_spawned += 1;
@@ -2555,7 +2555,7 @@ fn get_issue_action(issue_type: PrIssueType) -> &'static str {
         PrIssueType::CiFailed => "please investigate",
         PrIssueType::ChangesRequested => "please address feedback",
         PrIssueType::Approved => "ready to merge!",
-        PrIssueType::NeedsReview => "spawning reviewer",
+        PrIssueType::NeedsReview => "calling in reviewer",
         PrIssueType::ReviewComment => "please address review feedback and merge if appropriate",
         PrIssueType::ReviewComplete => {
             "review is complete — please address feedback and merge if appropriate"
@@ -2868,7 +2868,7 @@ fn handle_coworker_spawn(
                 id,
                 serde_json::json!({
                     "success": true,
-                    "message": format!("Spawned coworker: {}", name),
+                    "message": format!("Called in coworker: {}", name),
                     "coworkers": [{
                         "name": name,
                         "status": "running",
@@ -3917,12 +3917,12 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
                 let msg = Message::text(
                     "daemon",
                     format!(
-                        "Spawned {} to address review feedback on PR #{}",
+                        "Called in {} to address review feedback on PR #{}",
                         owner, pr_number
                     ),
                 );
                 if let Err(e) = state.send_and_broadcast(&msg) {
-                    warn!("Failed to post spawn message: {}", e);
+                    warn!("Failed to post call-in message: {}", e);
                 }
             }
             Err(e) => {
@@ -4071,7 +4071,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
                     let msg = Message::text(
                         "midtown",
                         format!(
-                            "🔄 Task #{} reset to pending - {} could not be respawned",
+                            "🔄 Task #{} reset to pending - {} could not be called back in",
                             task_id, owner
                         ),
                     );
@@ -4456,7 +4456,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 let msg = Message::text(
                     "midtown",
                     format!(
-                        "🚀 Spawned coworker {} for pending task #{}",
+                        "🚀 Called in coworker {} for pending task #{}",
                         owner, task_id
                     ),
                 );
@@ -4598,7 +4598,7 @@ fn spawn_for_pending_tasks(state: &DaemonState) {
                 let msg = Message::text(
                     "midtown",
                     format!(
-                        "🚀 Spawned coworker {} for assigned task #{}: {}",
+                        "🚀 Called in coworker {} for assigned task #{}: {}",
                         coworker_name, task.id, task.subject
                     ),
                 );
@@ -4870,7 +4870,7 @@ mod tests {
         assert_eq!(get_issue_action(PrIssueType::Approved), "ready to merge!");
         assert_eq!(
             get_issue_action(PrIssueType::NeedsReview),
-            "spawning reviewer"
+            "calling in reviewer"
         );
         assert_eq!(
             get_issue_action(PrIssueType::ReviewComplete),
