@@ -784,6 +784,21 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     });
                 }
 
+                // Nudge lead to pull main when a PR merges
+                if let Some(pr_number) = webhook_event.merged_pr {
+                    let nudge_msg = Message::text(
+                        "system",
+                        format!(
+                            "@lead PR #{} merged into main. Run `git pull` to stay current.",
+                            pr_number
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&nudge_msg) {
+                        warn!("Failed to post merge nudge for PR #{}: {}", pr_number, e);
+                    }
+                    route_mentions(&state, &nudge_msg);
+                }
+
                 // Route @mentions in webhook messages directly (chat monitor skips
                 // "github" sender for loop protection, so we handle it here)
                 route_mentions(&state, &webhook_event.message);

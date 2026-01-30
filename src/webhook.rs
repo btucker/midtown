@@ -48,6 +48,8 @@ pub struct WebhookEvent {
     pub pr_activity: Option<PrActivity>,
     /// PR number that needs a reviewer spawned (set on "opened" / "ready_for_review")
     pub needs_review: Option<u64>,
+    /// PR number that was just merged (set on "closed" with merged=true)
+    pub merged_pr: Option<u64>,
 }
 
 /// Structured data about PR-related webhook activity.
@@ -546,11 +548,18 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         _ => None,
     };
 
+    // Flag merged PRs so the daemon can nudge the lead to pull main
+    let merged_pr = match event.action.as_str() {
+        "closed" if event.pull_request.merged.unwrap_or(false) => Some(event.number),
+        _ => None,
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
         pr_activity: None,
         needs_review,
+        merged_pr,
     }))
 }
 
@@ -592,6 +601,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
             actor: event.review.user.login,
         }),
         needs_review: None,
+        merged_pr: None,
     }))
 }
 
@@ -629,6 +639,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
             actor: commenter,
         }),
         needs_review: None,
+        merged_pr: None,
     }))
 }
 
@@ -666,6 +677,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
             actor: commenter,
         }),
         needs_review: None,
+        merged_pr: None,
     }))
 }
 
@@ -706,6 +718,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
         message: Message::new("github", content, MessageType::Text),
         pr_activity: None,
         needs_review: None,
+        merged_pr: None,
     }))
 }
 
@@ -750,6 +763,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         message: Message::new("github", content, MessageType::Text),
         pr_activity: None,
         needs_review: None,
+        merged_pr: None,
     }))
 }
 
@@ -909,6 +923,31 @@ mod tests {
         assert_eq!(event.message.from, "github");
         // Merged PRs should NOT trigger review spawn
         assert_eq!(event.needs_review, None);
+        // Merged PRs should flag for lead nudge
+        assert_eq!(event.merged_pr, Some(42));
+    }
+
+    #[test]
+    fn test_handle_pull_request_closed_not_merged() {
+        let payload = r#"{
+            "action": "closed",
+            "number": 42,
+            "pull_request": {
+                "title": "Add auth endpoint",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {"ref": "lexington/add-auth"}
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            event.message.content,
+            "@lexington closed PR #42 (not merged): Add auth endpoint"
+        );
+        // Closed (not merged) PRs should NOT flag for lead nudge
+        assert_eq!(event.merged_pr, None);
     }
 
     #[test]
