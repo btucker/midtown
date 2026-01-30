@@ -1781,6 +1781,15 @@ async fn chat_monitor_loop(
                         // Parse the line as a Message
                         match serde_json::from_str::<Message>(&line) {
                             Ok(msg) => {
+                                // Trigger immediate spawn check when a task creation
+                                // message is detected, regardless of sender. This runs
+                                // before the SKIP_SENDERS check so daemon/system task
+                                // creation messages also trigger spawning.
+                                if contains_task_creation(&msg.content) {
+                                    info!("Chat monitor: task creation detected from {} — triggering immediate spawn check", msg.from);
+                                    spawn_for_pending_tasks(&state);
+                                }
+
                                 // Skip messages from protected senders (loop protection),
                                 // but first check for @lead mentions that need nudging.
                                 if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from)) {
@@ -3257,6 +3266,16 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                     content.clone()
                 };
                 state.send_push_notification(&format!("@user from {}", from), &summary, "mention");
+            }
+
+            // Immediately check for pending tasks when a task creation message
+            // is detected, instead of waiting for the next periodic interval.
+            if contains_task_creation(&content) {
+                info!(
+                    "Task creation detected in channel post from {} — triggering immediate spawn check",
+                    from
+                );
+                spawn_for_pending_tasks(state);
             }
 
             Response::success(
@@ -5474,6 +5493,24 @@ mod tests {
         assert!(is_coworker_sender("park"));
         assert!(is_coworker_sender("amsterdam"));
         assert!(is_coworker_sender("madison"));
+    }
+
+    #[test]
+    fn test_contains_task_creation() {
+        // Standard lead task creation messages
+        assert!(contains_task_creation(
+            "Created task #675 — speed up spawning"
+        ));
+        assert!(contains_task_creation("created task #42"));
+        assert!(contains_task_creation(
+            "Created task #1 — Add auth endpoint"
+        ));
+
+        // Should not match unrelated messages
+        assert!(!contains_task_creation("working on task #675"));
+        assert!(!contains_task_creation("completed task #42"));
+        assert!(!contains_task_creation("claiming task 5"));
+        assert!(!contains_task_creation("hello world"));
     }
 
     #[test]

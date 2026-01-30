@@ -84,6 +84,16 @@ pub(super) fn is_coworker_sender(from: &str) -> bool {
     !SYSTEM_SENDERS.contains(&from)
 }
 
+/// Check if a message indicates a new task was created.
+///
+/// Detects patterns like "Created task #123", "created task #45 — description".
+/// Used to trigger immediate coworker spawning instead of waiting for the next
+/// periodic check interval.
+pub(super) fn contains_task_creation(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    lower.contains("created task")
+}
+
 /// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
 pub(super) fn coworker_from_branch(branch: &str) -> Option<String> {
     let prefix = branch.split('/').next()?;
