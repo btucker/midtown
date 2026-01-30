@@ -179,8 +179,10 @@ fn handle_idle_hook() -> Result<Response, String> {
         midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
 
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
+    let personality = midtown::config::get_personality();
 
-    let message = midtown::Message::action(&agent, "waiting for input");
+    let idle_text = midtown::daemon_messages::idle_waiting(&agent, personality);
+    let message = midtown::Message::action(&agent, &idle_text);
     channel
         .send(&message)
         .map_err(|e| format!("Failed to post to channel: {}", e))?;

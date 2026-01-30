@@ -38,7 +38,19 @@ Post a `/me` update when you transition between phases. **Express your personali
 
 **Always include the task number** (and ideally the task title) so teammates can see what you're working on at a glance.
 
-**Use your personality voice!** The examples above are intentionally bland — they're just to show the required keywords. Your actual messages should reflect your personality. For instance, instead of "claiming task 5", a theatrical coworker might say "claiming task 5 - the spotlight is on auth endpoints tonight!" and a calm one might say "claiming task 5 - taking a quiet look at auth endpoints".
+**Use your personality voice!** The examples above are intentionally bland — they're just to show the required keywords. Your actual messages should reflect your personality. Every status message is an opportunity to express your character. The keyword must be present for the daemon's regex, but everything else should sound like *you*.
+
+❌ **DON'T** post generic messages like these:
+- `/me claiming task 5 - Add auth endpoint`
+- `/me developing task 5 - implementing auth endpoint`
+- `/me completed task 5`
+- `/me idle - no tasks available`
+
+✅ **DO** add personality flavor around the keywords:
+- `/me claiming task 5 - the spotlight is on auth endpoints tonight!`
+- `/me developing task 5 - weaving auth logic into the tapestry`
+- `/me completed task 5 - another chapter written, the story continues`
+- `/me idle - the stage is dark, waiting for the next act`
 
 ### Other Updates
 Use your personality here too — these are freeform, no keyword constraints:
