@@ -1011,6 +1011,9 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     let coworkers_with_open_prs: HashSet<String> =
         get_coworkers_with_open_prs().into_iter().collect();
 
+    // Get coworkers with recently merged PRs - used for better shutdown messages
+    let coworkers_with_merged_prs: HashSet<String> = get_coworkers_with_merged_prs();
+
     // Get coworkers actively assigned to review PRs - they should not be considered idle.
     // Check BOTH in-memory and persistent state. The in-memory tracker can be empty after
     // a daemon restart, and the persistent state survives restarts.
@@ -1129,17 +1132,34 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                     }
                 }
                 None => {
-                    // Can't find PR assignment - shut down with warning
-                    warn!(
-                        "Isolated coworker {} has no PR assignment found, sending on a break",
-                        name
-                    );
-                    (
-                        true,
-                        daemon_messages::break_no_pr(name, config::get_personality()),
-                    )
+                    // Can't find PR assignment — check if their work already merged
+                    if coworkers_with_merged_prs.contains(name) {
+                        info!(
+                            "Isolated coworker {} has no PR assignment but has merged PR, sending on a break",
+                            name
+                        );
+                        (
+                            true,
+                            daemon_messages::break_work_merged(name, config::get_personality()),
+                        )
+                    } else {
+                        warn!(
+                            "Isolated coworker {} has no PR assignment found, sending on a break",
+                            name
+                        );
+                        (
+                            true,
+                            daemon_messages::break_no_pr(name, config::get_personality()),
+                        )
+                    }
                 }
             }
+        } else if coworkers_with_merged_prs.contains(name) {
+            info!("Sending idle coworker {} on a break (PR merged)", name);
+            (
+                true,
+                daemon_messages::break_work_merged(name, config::get_personality()),
+            )
         } else {
             info!(
                 "Sending idle coworker {} on a break (idle for 30+ seconds)",
@@ -1472,6 +1492,43 @@ fn get_coworkers_with_open_prs() -> Vec<String> {
         _ => {
             debug!("Failed to get PRs from gh CLI for idle check");
             Vec::new()
+        }
+    }
+}
+
+/// Get coworker names that have recently merged PRs (branch name starts with coworker name).
+fn get_coworkers_with_merged_prs() -> HashSet<String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--limit",
+            "20",
+            "--json",
+            "headRefName",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return prs
+                    .iter()
+                    .filter_map(|pr| {
+                        pr.get("headRefName")
+                            .and_then(|r| r.as_str())
+                            .and_then(coworker_from_branch)
+                    })
+                    .collect();
+            }
+            HashSet::new()
+        }
+        _ => {
+            debug!("Failed to get merged PRs from gh CLI for idle check");
+            HashSet::new()
         }
     }
 }
