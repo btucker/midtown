@@ -4046,11 +4046,11 @@ async fn add_eyes_reaction(repo_full_name: &str, comment_node: &crate::webhook::
         crate::webhook::CommentNode::ReviewComment(id) => {
             format!("/repos/{}/pulls/comments/{}/reactions", repo_full_name, id)
         }
-        crate::webhook::CommentNode::Review { pull, review_id } => {
-            format!(
-                "/repos/{}/pulls/{}/reviews/{}/reactions",
-                repo_full_name, pull, review_id
-            )
+        crate::webhook::CommentNode::Review { .. } => {
+            // GitHub API does not support reactions on pull request reviews
+            // (only on issue comments and review comments).
+            debug!("Skipping eyes reaction: GitHub API does not support reactions on reviews");
+            return;
         }
     };
 
