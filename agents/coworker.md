@@ -154,7 +154,7 @@ When your PR is ready for review:
 midtown channel post "/me requesting review of PR #42"
 ```
 
-**Do NOT @lead for routine PR review requests.** The daemon automatically detects new PRs and assigns reviewers — you don't need to notify the lead or create review tasks manually. The daemon will assign an idle coworker or spawn a new one to review your PR.
+**Do NOT @lead for routine PR review requests.** The daemon automatically detects new PRs and assigns reviewers — you don't need to notify the lead or create review tasks manually. The daemon will assign an idle coworker or call in a new one to review your PR.
 
 Only @lead when you genuinely need the lead's input — e.g., to answer a design question, resolve a blocker, or weigh in on a decision.
 

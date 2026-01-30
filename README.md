@@ -48,13 +48,13 @@ To attach to a named project from any directory:
 midtown attach myapp
 ```
 
-### 4. Spawn coworkers
+### 4. Call in coworkers
 
-The Lead can spawn coworkers to parallelize work:
+The Lead can call in coworkers to parallelize work:
 
 ```bash
-midtown coworker spawn
-# => Spawned coworker: lexington
+midtown coworker call-in
+# => Called in coworker: lexington
 ```
 
 Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
@@ -88,7 +88,7 @@ When you're working with Claude Code on a complex project, you might want to par
 Midtown provides the infrastructure for this coordination:
 
 - **Channel messaging** - IRC-like append-only message stream for team communication
-- **Coworker spawning** - Launch Claude Code instances in isolated git worktrees
+- **Coworker call-in** - Launch Claude Code instances in isolated git worktrees
 - **Task coordination** - Coworkers claim tasks via Claude Code's native task system
 - **Multi-project support** - Run multiple projects simultaneously with isolated daemons
 
@@ -127,7 +127,7 @@ Each project gets:
 
 ### Multi-Repo Worktrees
 
-For projects spanning multiple repositories, coworkers automatically get isolated worktrees in every repo. When a coworker spawns, midtown creates a git worktree in each configured repo and passes them to Claude Code via `--add-dir` flags. This gives each coworker access to all repos in the project.
+For projects spanning multiple repositories, coworkers automatically get isolated worktrees in every repo. When a coworker is called in, midtown creates a git worktree in each configured repo and passes them to Claude Code via `--add-dir` flags. This gives each coworker access to all repos in the project.
 
 When coworkers shut down, worktrees with no commits and no uncommitted changes are automatically cleaned up, along with their branches.
 
@@ -178,9 +178,9 @@ The terminal also displays a **repo status bar** showing the latest commit, CI s
 
 The daemon handles routine coordination automatically:
 
-- **Auto-spawn** - Spawns coworkers when pending tasks are available
+- **Auto-call-in** - Calls in coworkers when pending tasks are available
 - **Auto-shutdown** - Shuts down idle coworkers after 5 minutes
-- **Auto-review** - Spawns reviewers for open PRs
+- **Auto-review** - Calls in reviewers for open PRs
 - **CI failure handling** - Notifies PR owners of CI failures and merge conflicts
 - **Plugin sync** - Automatically installs required plugins for coworkers
 - **Duplicate detection** - Kills duplicate workers claiming the same task
@@ -247,7 +247,7 @@ Content from these files is appended to the built-in system prompts. Project-lev
 │                    Midtown Daemon                            │
 ├─────────────────────────┬───────────────────────────────────┤
 │      Channel            │          Coworker Manager          │
-│   (append-only log)     │       (spawn/track/shutdown)       │
+│   (append-only log)     │     (call-in/track/shutdown)       │
 └─────────────────────────┴───────────────────────────────────┘
                           │
 ┌─────────────────────────────────────────────────────────────┐
@@ -305,7 +305,7 @@ Commands:
     read                 Read recent messages
 
   coworker            Coworker management
-    spawn                Spawn a new coworker
+    call-in              Call in a new coworker
     list                 List active coworkers
     shutdown <NAME>      Shutdown coworker by name
 
@@ -404,7 +404,7 @@ Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the
 
 ### Worktree Lifecycle
 
-When a coworker is spawned, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.
+When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.
 
 ### Webhook Ports
 

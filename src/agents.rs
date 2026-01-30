@@ -295,7 +295,7 @@ mod tests {
     fn test_lead_prompt_contains_commands() {
         let prompt = lead_system_prompt();
         assert!(prompt.contains("midtown status"));
-        assert!(prompt.contains("midtown coworker spawn"));
+        assert!(prompt.contains("midtown coworker call-in"));
         assert!(prompt.contains("midtown channel"));
     }
 

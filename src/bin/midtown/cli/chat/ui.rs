@@ -1820,7 +1820,7 @@ mod tests {
         let daemon_msg = Message {
             id: "2".to_string(),
             from: "daemon".to_string(),
-            content: "Spawned coworker".to_string(),
+            content: "Called in coworker".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };
@@ -1920,7 +1920,7 @@ mod tests {
         let daemon_msg = Message {
             id: "2".to_string(),
             from: "daemon".to_string(),
-            content: "Spawned coworker".to_string(),
+            content: "Called in coworker".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
         };

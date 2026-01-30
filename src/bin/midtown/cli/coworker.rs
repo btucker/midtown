@@ -5,12 +5,13 @@ use crate::client::DaemonClient;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CoworkerCommand {
-    /// Spawn a new coworker
-    Spawn {
+    /// Call in a new coworker
+    #[command(alias = "spawn")]
+    CallIn {
         /// Resume the previous Claude session (passes --continue to claude)
         #[arg(long)]
         resume: bool,
-        /// Initial prompt to send after spawn (avoids separate nudge step)
+        /// Initial prompt to send after calling in (avoids separate nudge step)
         #[arg(long, short)]
         prompt: Option<String>,
     },
@@ -68,7 +69,7 @@ pub enum NudgeConfigCommand {
 
 pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        CoworkerCommand::Spawn { resume, prompt } => {
+        CoworkerCommand::CallIn { resume, prompt } => {
             client.coworker_spawn(*resume, prompt.as_deref())
         }
         CoworkerCommand::Break { name } => client.coworker_break(name),
