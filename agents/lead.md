@@ -111,8 +111,13 @@ midtown channel post "@user The test suite is failing on CI - should I block the
 - Things you can decide yourself based on context
 - Routine progress reports
 
+## Auto-Routed User @mentions
+When the user @mentions a coworker directly (e.g., "@riverside continue"), the daemon automatically routes the message to that coworker as a nudge. **You do not need to forward these messages.** The daemon skips nudging you entirely for user messages that @mention specific coworkers, so you won't even see them unless the user also @mentions you with `@lead`.
+
+If the user sends a general message without @mentions, you'll still receive it as usual and can decide how to handle it.
+
 ## Forwarding User Suggestions
-When the human makes a suggestion or provides feedback related to an in-progress task, post it to the channel using @mentions so the relevant coworker sees it:
+When the human makes a suggestion or provides feedback related to an in-progress task but does NOT @mention the coworker directly, post it to the channel using @mentions so the relevant coworker sees it:
 
 ```bash
 # User suggests something about task #3 that park is working on:

@@ -3055,14 +3055,29 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
 
             // Nudge lead when user messages arrive (from web UI or TUI input)
             if from == "user" {
-                let nudge_msg = format!("user: {}", content);
-                info!("Nudging Lead about user message");
-                if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
-                    warn!("Failed to nudge Lead about user message: {}", e);
-                }
+                // Check if user is @mentioning specific coworkers or @all
+                let has_coworker_mentions =
+                    !extract_mentions(&content).is_empty() || contains_at_all(&content);
+                let has_lead_mention = content.to_lowercase().contains("@lead");
 
                 // Route @mentions in user messages directly to coworkers
                 route_mentions(state, &msg);
+
+                // Only nudge lead if there are no coworker @mentions (regular
+                // message for the lead) or if the user also @mentioned the lead.
+                // This lets users talk directly to coworkers without the lead
+                // acting as a middleman.
+                if !has_coworker_mentions || has_lead_mention {
+                    let nudge_msg = format!("user: {}", content);
+                    info!("Nudging Lead about user message");
+                    if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
+                        warn!("Failed to nudge Lead about user message: {}", e);
+                    }
+                } else {
+                    info!(
+                        "Skipping Lead nudge — user message routed directly to mentioned coworker(s)"
+                    );
+                }
             }
 
             // Nudge the Lead when a coworker explicitly mentions @lead
@@ -5136,6 +5151,46 @@ mod tests {
         let lead_msg = "@lead what do you think?";
         let mentions = extract_mentions(lead_msg);
         assert!(mentions.is_empty() || !mentions.contains(&"lead".to_string()));
+    }
+
+    #[test]
+    fn test_user_mention_routing_skips_lead() {
+        // When a user message @mentions a coworker, the lead should NOT be
+        // nudged — the daemon routes directly to the coworker. This test
+        // validates the detection logic used in handle_channel_post.
+
+        // User @mentions a coworker → has_coworker_mentions = true, skip lead
+        let content = "@riverside continue";
+        let has_coworker_mentions =
+            !extract_mentions(content).is_empty() || contains_at_all(content);
+        let has_lead_mention = content.to_lowercase().contains("@lead");
+        assert!(has_coworker_mentions);
+        assert!(!has_lead_mention);
+        // Should skip lead: has_coworker_mentions && !has_lead_mention
+        assert!(has_coworker_mentions && !has_lead_mention);
+
+        // User sends a regular message → no mentions, nudge lead
+        let content = "how is task 5 going?";
+        let has_coworker_mentions =
+            !extract_mentions(content).is_empty() || contains_at_all(content);
+        assert!(!has_coworker_mentions);
+
+        // User @mentions coworker AND @lead → nudge lead too
+        let content = "@riverside @lead please coordinate on this";
+        let has_coworker_mentions =
+            !extract_mentions(content).is_empty() || contains_at_all(content);
+        let has_lead_mention = content.to_lowercase().contains("@lead");
+        assert!(has_coworker_mentions);
+        assert!(has_lead_mention);
+
+        // User uses @all → coworker mentions detected, skip lead
+        // (route_at_all already broadcasts to lead)
+        let content = "@all stand up time";
+        let has_coworker_mentions =
+            !extract_mentions(content).is_empty() || contains_at_all(content);
+        let has_lead_mention = content.to_lowercase().contains("@lead");
+        assert!(has_coworker_mentions);
+        assert!(!has_lead_mention);
     }
 
     // Duplicate task worker detection tests
