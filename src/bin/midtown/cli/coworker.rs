@@ -14,9 +14,9 @@ pub enum CoworkerCommand {
         #[arg(long, short)]
         prompt: Option<String>,
     },
-    /// Shutdown a coworker
-    Shutdown {
-        /// Name of the coworker to shutdown
+    /// Send a coworker on a break
+    Break {
+        /// Name of the coworker to send on a break
         name: String,
     },
     /// List all coworkers
@@ -71,7 +71,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
         CoworkerCommand::Spawn { resume, prompt } => {
             client.coworker_spawn(*resume, prompt.as_deref())
         }
-        CoworkerCommand::Shutdown { name } => client.coworker_shutdown(name),
+        CoworkerCommand::Break { name } => client.coworker_break(name),
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),
         CoworkerCommand::NudgeConfig { command } => handle_nudge_config(command, client),

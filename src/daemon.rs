@@ -248,8 +248,8 @@ impl Default for DaemonConfig {
     }
 }
 
-/// How long a coworker must be idle before automatic shutdown (5 minutes)
-const IDLE_SHUTDOWN_DURATION: Duration = Duration::from_secs(300);
+/// How long a coworker must be idle before being sent on a break (5 minutes)
+const IDLE_BREAK_DURATION: Duration = Duration::from_secs(300);
 
 /// How often to check for idle coworkers (30 seconds)
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
@@ -266,8 +266,8 @@ const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
 /// Interval for checking orphaned tasks (5 seconds)
 const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 
-/// Minimum time a coworker must be alive before auto-shutdown (5 minutes)
-/// This prevents spawn storms where coworkers are rapidly spawned and killed.
+/// Minimum time a coworker must be alive before being sent on a break (5 minutes)
+/// This prevents spawn storms where coworkers are rapidly sent on breaks.
 const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 
 /// How long a coworker must be interrupted before nudging them to continue (60 seconds)
@@ -1048,19 +1048,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     Ok(())
 }
 
-/// Check for idle coworkers and shut them down after the idle timeout.
+/// Check for idle coworkers and send them on a break after the idle timeout.
 ///
 /// A coworker is considered idle if they have no tasks in "in_progress" status
 /// with their name as owner. After 5 minutes of continuous idle, they are
-/// automatically shut down.
+/// automatically sent on a break.
 ///
 /// IMPORTANT: Coworkers with open PRs or active review assignments are NEVER
-/// auto-killed, regardless of idle time. This ensures they can respond to PR
+/// sent on a break, regardless of idle time. This ensures they can respond to PR
 /// feedback, merge their work, or complete their review.
 ///
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
-/// 5 minutes before they can be auto-shutdown. This prevents spawn storms where
-/// coworkers are rapidly spawned and killed.
+/// 5 minutes before they can be sent on a break. This prevents spawn storms where
+/// coworkers are rapidly sent on breaks.
 async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     // Get list of active coworkers with their data (need started_at for lifetime check)
     let active_coworkers = state.coworkers.list();
@@ -1072,7 +1072,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
     // Get in_progress tasks to determine who is busy
     let busy_coworkers = get_busy_coworkers(&state.repo_name);
 
-    // Get coworkers with open PRs - they should NEVER be auto-killed
+    // Get coworkers with open PRs - they should NEVER be sent on a break
     let coworkers_with_open_prs = get_coworkers_with_open_prs();
 
     // Get coworkers actively assigned to review PRs - they should not be considered idle
@@ -1096,7 +1096,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
             if lifetime < chrono::Duration::from_std(MINIMUM_COWORKER_LIFETIME).unwrap_or_default()
             {
                 debug!(
-                    "Coworker {} is too young for auto-shutdown ({} < {})",
+                    "Coworker {} is too young for a break ({} < {})",
                     coworker,
                     lifetime,
                     MINIMUM_COWORKER_LIFETIME.as_secs()
@@ -1142,18 +1142,18 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                 }
             } else {
                 // Coworker is idle, has no open PRs, and is not reviewing
-                // Isolated coworkers (e.g., reviewers) are killed immediately when idle
+                // Isolated coworkers (e.g., reviewers) go on a break immediately when idle
                 if cw.isolated_tasks {
                     to_shutdown.push(coworker.clone());
                     debug!(
-                        "Isolated coworker {} is idle, scheduling immediate shutdown",
+                        "Isolated coworker {} is idle, sending on a break immediately",
                         coworker
                     );
                 } else {
                     match idle_since.get(coworker) {
                         Some(since) => {
                             // Check if they've been idle long enough
-                            if now.duration_since(*since) >= IDLE_SHUTDOWN_DURATION {
+                            if now.duration_since(*since) >= IDLE_BREAK_DURATION {
                                 to_shutdown.push(coworker.clone());
                             }
                         }
@@ -1204,13 +1204,13 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                     // Check if review was actually posted
                     if pr_has_claude_review(pr) {
                         info!(
-                            "Auto-shutting down reviewer: {} (review verified for PR #{})",
+                            "Sending reviewer {} on a break (review verified for PR #{})",
                             name, pr
                         );
                         (
                             true,
                             format!(
-                                "🔍 Auto-shutting down reviewer: {} (review complete for PR #{})",
+                                "🔍 Sending {} on a break (review complete for PR #{})",
                                 name, pr
                             ),
                         )
@@ -1237,26 +1237,23 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                 None => {
                     // Can't find PR assignment - shut down with warning
                     warn!(
-                        "Isolated coworker {} has no PR assignment found, shutting down",
+                        "Isolated coworker {} has no PR assignment found, sending on a break",
                         name
                     );
                     (
                         true,
-                        format!(
-                            "⚠️ Auto-shutting down reviewer: {} (no PR assignment found)",
-                            name
-                        ),
+                        format!("⚠️ Sending {} on a break (no PR assignment found)", name),
                     )
                 }
             }
         } else {
             info!(
-                "Auto-shutting down idle coworker: {} (idle for 5+ minutes)",
+                "Sending idle coworker {} on a break (idle for 5+ minutes)",
                 name
             );
             (
                 true,
-                format!("⏱️ Auto-shutting down idle coworker: {}", name),
+                format!("⏱️ Sending {} on a break (idle for 5+ minutes)", name),
             )
         };
 
@@ -1267,13 +1264,13 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
         // Post system message to channel
         let msg = Message::text("system", shutdown_msg);
         if let Err(e) = state.send_and_broadcast(&msg) {
-            warn!("Failed to post shutdown message to channel: {}", e);
+            warn!("Failed to post break message to channel: {}", e);
         }
 
         // Shutdown the coworker
         state.broadcast_coworker_update(&name, "stopped", None);
         if let Err(e) = state.coworkers.shutdown(&name) {
-            warn!("Failed to shutdown idle coworker {}: {}", name, e);
+            warn!("Failed to send idle coworker {} on a break: {}", name, e);
         }
     }
 }
@@ -1483,7 +1480,7 @@ fn get_busy_coworkers(repo_name: &str) -> Vec<String> {
 ///
 /// A coworker is considered to have an open PR if the PR's branch name
 /// starts with the coworker's name (e.g., "lexington/fix-auth").
-/// Coworkers with open PRs should NEVER be auto-killed.
+/// Coworkers with open PRs should NEVER be sent on a break.
 fn get_coworkers_with_open_prs() -> Vec<String> {
     let output = std::process::Command::new("gh")
         .args(["pr", "list", "--json", "headRefName"])
@@ -2302,7 +2299,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                     } else {
                         // Owner is not active — spawn them to address the review
                         info!(
-                            "PR #{} owner {} is idle/shutdown, spawning to address completed review",
+                            "PR #{} owner {} is idle/on a break, spawning to address completed review",
                             pr_number, owner
                         );
                         match state
@@ -2380,6 +2377,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // Passing the prompt directly to spawn() is more reliable than the old
         // approach of spawning without a prompt and nudging via tmux send-keys,
         // which could fail if the Enter key didn't register.
+        // Isolated review coworkers are sent on a break when they go idle (no 5-minute wait).
         let review_prompt = format!(
             "First, post a /me status update: `midtown channel post \"/me reviewing PR #{}\"` — then run: /code-review:code-review {}",
             pr_number, pr_number
@@ -2749,7 +2747,7 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
             handle_coworker_spawn(request.id, state, resume, prompt)
         }
 
-        "coworker.shutdown" => {
+        "coworker.break" => {
             let name = request
                 .params
                 .as_ref()
@@ -2757,7 +2755,7 @@ fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|v| v.as_str());
 
             match name {
-                Some(name) => handle_coworker_shutdown(request.id, name, state),
+                Some(name) => handle_coworker_break(request.id, name, state),
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -2885,22 +2883,22 @@ fn handle_coworker_spawn(
     }
 }
 
-/// Handle coworker.shutdown RPC method.
-fn handle_coworker_shutdown(id: RequestId, name: &str, state: &DaemonState) -> Response {
+/// Handle coworker.break RPC method.
+fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Response {
     state.broadcast_coworker_update(name, "stopped", None);
     match state.coworkers.shutdown(name) {
         Ok(()) => {
-            info!("Shutdown coworker: {}", name);
+            info!("Sent coworker on a break: {}", name);
             Response::success(
                 id,
                 serde_json::json!({
                     "success": true,
-                    "message": format!("Shutdown coworker: {}", name),
+                    "message": format!("Sent {} on a break", name),
                 }),
             )
         }
         Err(e) => {
-            error!("Failed to shutdown coworker {}: {}", name, e);
+            error!("Failed to send coworker {} on a break: {}", name, e);
             Response::error(id, RpcError::new(-32603, e.to_string()))
         }
     }
@@ -4292,10 +4290,13 @@ async fn check_for_duplicate_task_workers(state: &DaemonState) {
                 duplicate, dup_time, task_id, keeper
             );
 
-            // Shutdown the duplicate
+            // Send the duplicate on a break
             state.broadcast_coworker_update(&duplicate, "stopped", None);
             if let Err(e) = state.coworkers.shutdown(&duplicate) {
-                warn!("Failed to shutdown duplicate worker {}: {}", duplicate, e);
+                warn!(
+                    "Failed to send duplicate worker {} on a break: {}",
+                    duplicate, e
+                );
                 continue;
             }
 

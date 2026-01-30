@@ -155,11 +155,8 @@ impl DaemonClient {
         self.send("coworker.spawn", Some(params))
     }
 
-    pub fn coworker_shutdown(&self, name: &str) -> Result<Response, String> {
-        self.send(
-            "coworker.shutdown",
-            Some(serde_json::json!({ "name": name })),
-        )
+    pub fn coworker_break(&self, name: &str) -> Result<Response, String> {
+        self.send("coworker.break", Some(serde_json::json!({ "name": name })))
     }
 
     pub fn coworker_list(&self) -> Result<Response, String> {

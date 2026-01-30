@@ -612,12 +612,12 @@ fn test_daemon_creates_pid_file() {
     assert!(pid > 0, "PID should be a positive number");
 }
 
-/// Test that newly spawned coworkers are not killed immediately.
+/// Test that newly spawned coworkers are not sent on a break immediately.
 ///
 /// This test guards against a race condition where the daemon's idle-check
-/// could kill a coworker before it has a chance to claim work. Coworkers
-/// should have a minimum lifetime (e.g., 5 minutes) before being eligible
-/// for auto-shutdown.
+/// could send a coworker on a break before it has a chance to claim work.
+/// Coworkers should have a minimum lifetime (e.g., 5 minutes) before being
+/// eligible for an automatic break.
 #[test]
 #[ignore] // Requires built binary
 fn test_coworker_minimum_lifetime() {
@@ -673,8 +673,8 @@ fn test_coworker_minimum_lifetime() {
 
     assert!(
         test_coworker.is_some(),
-        "Newly spawned coworker should NOT be killed within 30 seconds. \
-         Coworkers need a minimum lifetime before auto-shutdown to prevent \
-         race conditions where they're killed before claiming work."
+        "Newly spawned coworker should NOT be sent on a break within 30 seconds. \
+         Coworkers need a minimum lifetime before an automatic break to prevent \
+         race conditions where they're sent on a break before claiming work."
     );
 }
