@@ -115,6 +115,7 @@ pub(crate) fn decide_idle_shutdowns(
     busy_coworkers: &HashSet<String>,
     coworkers_with_open_prs: &HashSet<String>,
     active_reviewers: &HashSet<String>,
+    coworkers_with_unblocked_deps: &HashSet<String>,
     idle_since: &mut HashMap<String, Instant>,
     now: Instant,
     now_utc: DateTime<Utc>,
@@ -142,8 +143,11 @@ pub(crate) fn decide_idle_shutdowns(
         let is_reviewing = active_reviewers
             .iter()
             .any(|r| r.eq_ignore_ascii_case(coworker));
+        let has_unblocked_deps = coworkers_with_unblocked_deps
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(coworker));
 
-        if is_busy || has_open_pr || is_reviewing {
+        if is_busy || has_open_pr || is_reviewing || has_unblocked_deps {
             idle_since.remove(coworker);
         } else if cw.isolated_tasks {
             // Isolated coworkers (reviewers) go on break immediately when idle
@@ -882,6 +886,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]),
             &mut idle_since,
             Instant::now(),
             Utc::now(),
@@ -904,6 +909,7 @@ mod tests {
         let decisions = decide_idle_shutdowns(
             &coworkers,
             &set(&["york"]),
+            &set(&[]),
             &set(&[]),
             &set(&[]),
             &mut idle_since,
@@ -929,6 +935,7 @@ mod tests {
             &set(&[]),
             &set(&["york"]),
             &set(&[]),
+            &set(&[]),
             &mut idle_since,
             Instant::now(),
             Utc::now(),
@@ -950,6 +957,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&["york"]),
+            &set(&[]),
             &mut idle_since,
             Instant::now(),
             Utc::now(),
@@ -961,6 +969,30 @@ mod tests {
     }
 
     #[test]
+    fn idle_shutdown_skips_coworker_with_unblocked_deps() {
+        let coworkers = vec![cw("york", 10)];
+        let mut idle_since = HashMap::new();
+        idle_since.insert("york".to_string(), Instant::now() - Duration::from_secs(60));
+
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &set(&["york"]),
+            &mut idle_since,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert!(decisions.is_empty());
+        // Coworker with unblocked deps removed from idle tracking
+        assert!(!idle_since.contains_key("york"));
+    }
+
+    #[test]
     fn idle_shutdown_skips_young_coworker() {
         let coworkers = vec![cw("york", 2)]; // Only 2 minutes old
         let mut idle_since = HashMap::new();
@@ -968,6 +1000,7 @@ mod tests {
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
+            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]),
@@ -993,6 +1026,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]),
             &mut idle_since,
             Instant::now(),
             Utc::now(),
@@ -1012,6 +1046,7 @@ mod tests {
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
+            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]),
