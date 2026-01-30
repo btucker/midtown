@@ -379,6 +379,150 @@ pub(crate) fn detect_interactive_prompt(pane_content: &str) -> Option<&'static s
 }
 
 // ---------------------------------------------------------------------------
+// Detection types and functions
+// ---------------------------------------------------------------------------
+
+/// Patterns that indicate a coworker has hit a usage/rate limit.
+const USAGE_LIMIT_PATTERNS: &[&str] = &[
+    "usage limit",
+    "rate limit",
+    "Usage limit reached",
+    "rate_limit_error",
+    "You've hit your",
+    "limit resets",
+];
+
+/// Decision output for usage limit detection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UsageLimitDecision {
+    /// Usage limit detected in pane — schedule a nudge.
+    Detected { coworker: String },
+    /// Nudge is already scheduled — skip re-detection.
+    AlreadyScheduled,
+    /// No usage limit found in any pane.
+    NoneDetected,
+}
+
+/// Decide whether pane contents indicate a usage limit.
+///
+/// Scans pane contents for known usage/rate limit patterns. If a nudge is
+/// already scheduled (`nudge_already_scheduled`), skips re-detection.
+pub(crate) fn decide_usage_limit_detection(
+    pane_contents: &[(String, String)], // (coworker_name, pane_content)
+    nudge_already_scheduled: bool,
+) -> UsageLimitDecision {
+    if nudge_already_scheduled {
+        return UsageLimitDecision::AlreadyScheduled;
+    }
+
+    for (name, content) in pane_contents {
+        let has_limit = USAGE_LIMIT_PATTERNS
+            .iter()
+            .any(|p| content.to_lowercase().contains(&p.to_lowercase()));
+
+        if has_limit {
+            return UsageLimitDecision::Detected {
+                coworker: name.clone(),
+            };
+        }
+    }
+
+    UsageLimitDecision::NoneDetected
+}
+
+/// Decision output for usage limit expiry check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UsageLimitExpiryDecision {
+    /// Nudge time has arrived — nudge all coworkers.
+    NudgeNow,
+    /// Nudge is scheduled but not yet due.
+    NotYet,
+    /// No nudge is scheduled.
+    NoNudge,
+}
+
+/// Decide whether a scheduled usage limit nudge should fire.
+pub(crate) fn decide_usage_limit_expiry(
+    nudge_at: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+) -> UsageLimitExpiryDecision {
+    match nudge_at {
+        Some(at) if now >= at => UsageLimitExpiryDecision::NudgeNow,
+        Some(_) => UsageLimitExpiryDecision::NotYet,
+        None => UsageLimitExpiryDecision::NoNudge,
+    }
+}
+
+/// Try to parse a duration from usage limit text.
+///
+/// Looks for patterns like "try again in 15 minutes", "resets in 2 hours",
+/// "available after 30 minutes". Returns a default of 15 minutes if no
+/// parseable duration is found.
+pub(crate) fn parse_usage_limit_duration(pane_content: &str) -> Duration {
+    let lower = pane_content.to_lowercase();
+
+    for keyword in &["in ", "after "] {
+        let mut search_from = 0;
+        while let Some(rel_idx) = lower[search_from..].find(keyword) {
+            let idx = search_from + rel_idx;
+            let after = &lower[idx + keyword.len()..];
+            search_from = idx + keyword.len();
+
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(num) = num_str.parse::<u64>() {
+                if num == 0 {
+                    continue;
+                }
+                let remaining = after[num_str.len()..].trim_start();
+                if remaining.starts_with("hour") {
+                    return Duration::from_secs(num * 3600);
+                } else if remaining.starts_with("min") {
+                    return Duration::from_secs(num * 60);
+                } else if remaining.starts_with("sec") {
+                    return Duration::from_secs(num);
+                }
+            }
+        }
+    }
+
+    // Look for HH:MM timestamp pattern like "resets at 3:45" or "at 15:30"
+    if let Some(idx) = lower.find("at ") {
+        let after = &lower[idx + 3..];
+        let time_str: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == ':')
+            .collect();
+        if let Some((h, m)) = time_str.split_once(':')
+            && let (Ok(hour), Ok(min)) = (h.parse::<u32>(), m.parse::<u32>())
+        {
+            let now = chrono::Utc::now();
+            let mut target = now
+                .date_naive()
+                .and_hms_opt(hour, min, 0)
+                .unwrap_or_default();
+            if target < now.naive_utc() {
+                target += chrono::Duration::days(1);
+            }
+            let diff = target - now.naive_utc();
+            if let Ok(std_diff) = diff.to_std() {
+                return std_diff;
+            }
+        }
+    }
+
+    // Default: 15 minutes
+    Duration::from_secs(15 * 60)
+}
+
+/// Check if pane content contains any usage/rate limit patterns.
+pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
+    let lower = pane_content.to_lowercase();
+    USAGE_LIMIT_PATTERNS
+        .iter()
+        .any(|p| lower.contains(&p.to_lowercase()))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -1450,85 +1450,7 @@ async fn check_and_nudge_prompted_coworkers(state: &DaemonState) {
     }
 }
 
-/// Patterns that indicate a coworker has hit a usage/rate limit.
-/// These are messages Claude Code displays when the Anthropic API returns a rate limit error.
-const USAGE_LIMIT_PATTERNS: &[&str] = &[
-    "usage limit",
-    "rate limit",
-    "Usage limit reached",
-    "rate_limit_error",
-    "You've hit your",
-    "limit resets",
-];
-
-/// Try to parse a duration from usage limit text (e.g., "try again in 15 minutes",
-/// "resets in 2 hours", "available in 30 minutes").
-///
-/// Returns the parsed duration if found, or a default of 15 minutes.
-fn parse_usage_limit_duration(pane_content: &str) -> Duration {
-    // Normalize to lowercase for matching
-    let lower = pane_content.to_lowercase();
-
-    // Look for patterns like "in X minutes", "in X hours", "in X hour"
-    // Also handles "in X minute", "in X mins", etc.
-    // We iterate through all occurrences since "in " can appear as a suffix
-    // of other words (e.g., "again in 2 hours" — first "in " is inside "again").
-    for keyword in &["in ", "after "] {
-        let mut search_from = 0;
-        while let Some(rel_idx) = lower[search_from..].find(keyword) {
-            let idx = search_from + rel_idx;
-            let after = &lower[idx + keyword.len()..];
-            search_from = idx + keyword.len();
-
-            // Try to parse a number immediately after the keyword
-            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(num) = num_str.parse::<u64>() {
-                if num == 0 {
-                    continue;
-                }
-                let remaining = after[num_str.len()..].trim_start();
-                if remaining.starts_with("hour") {
-                    return Duration::from_secs(num * 3600);
-                } else if remaining.starts_with("min") {
-                    return Duration::from_secs(num * 60);
-                } else if remaining.starts_with("sec") {
-                    return Duration::from_secs(num);
-                }
-            }
-        }
-    }
-
-    // Look for HH:MM timestamp pattern like "resets at 3:45" or "at 15:30"
-    if let Some(idx) = lower.find("at ") {
-        let after = &lower[idx + 3..];
-        let time_str: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == ':')
-            .collect();
-        if let Some((h, m)) = time_str.split_once(':')
-            && let (Ok(hour), Ok(min)) = (h.parse::<u32>(), m.parse::<u32>())
-        {
-            // Calculate duration from now to that time
-            let now = chrono::Utc::now();
-            let mut target = now
-                .date_naive()
-                .and_hms_opt(hour, min, 0)
-                .unwrap_or_default();
-            // If the time is in the past, assume it's tomorrow
-            if target < now.naive_utc() {
-                target += chrono::Duration::days(1);
-            }
-            let diff = target - now.naive_utc();
-            if let Ok(std_diff) = diff.to_std() {
-                return std_diff;
-            }
-        }
-    }
-
-    // Default: 15 minutes
-    info!("Could not parse usage limit duration, defaulting to 15 minutes");
-    Duration::from_secs(15 * 60)
-}
+// Usage limit patterns and parse_usage_limit_duration moved to crate::rules
 
 /// Check all active coworkers' tmux panes for usage/rate limit messages.
 /// If detected, schedule a nudge for when the limit expires.
@@ -1538,11 +1460,13 @@ fn parse_usage_limit_duration(pane_content: &str) -> Duration {
 /// schedule a single nudge time for everyone.
 async fn check_for_usage_limits(state: &DaemonState) {
     // If we already have a nudge scheduled, don't re-detect
-    {
+    let nudge_already_scheduled = {
         let nudge_at = state.usage_limit_nudge_at.lock().await;
-        if nudge_at.is_some() {
-            return;
-        }
+        nudge_at.is_some()
+    };
+
+    if nudge_already_scheduled {
+        return;
     }
 
     let active_coworkers = state.coworkers.list();
@@ -1552,70 +1476,78 @@ async fn check_for_usage_limits(state: &DaemonState) {
 
     let session_name = state.coworkers.session_name();
 
+    // Gather pane contents
+    let mut pane_contents: Vec<(String, String)> = Vec::new();
     for cw in &active_coworkers {
         let target = format!("{}:{}", session_name, cw.name);
-        let pane_content = match crate::tmux::capture_pane(&target) {
-            Some(content) => content,
-            None => continue,
-        };
-
-        let has_limit = USAGE_LIMIT_PATTERNS
-            .iter()
-            .any(|p| pane_content.to_lowercase().contains(&p.to_lowercase()));
-
-        if has_limit {
-            let wait_duration = parse_usage_limit_duration(&pane_content);
-            let nudge_time = tokio::time::Instant::now() + wait_duration + USAGE_LIMIT_NUDGE_BUFFER;
-
-            // Store the scheduled nudge time
-            {
-                let mut nudge_at = state.usage_limit_nudge_at.lock().await;
-                *nudge_at = Some(nudge_time);
-            }
-
-            let human_duration = if wait_duration.as_secs() >= 3600 {
-                format!(
-                    "{}h {}m",
-                    wait_duration.as_secs() / 3600,
-                    (wait_duration.as_secs() % 3600) / 60
-                )
-            } else {
-                format!("{}m", wait_duration.as_secs() / 60)
-            };
-
-            info!(
-                "Usage limit detected via coworker {} — scheduling nudge in {} + 30s buffer",
-                cw.name, human_duration
-            );
-
-            let msg = Message::text(
-                "system",
-                format!(
-                    "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~{} when it resets.",
-                    cw.name, human_duration
-                ),
-            );
-            if let Err(e) = state.send_and_broadcast(&msg) {
-                warn!("Failed to post usage limit message to channel: {}", e);
-            }
-
-            // One detection is enough — limits are account-wide
-            return;
+        if let Some(content) = crate::tmux::capture_pane(&target) {
+            pane_contents.push((cw.name.clone(), content));
         }
+    }
+
+    // Pure decision: detect usage limit
+    let decision =
+        crate::rules::decide_usage_limit_detection(&pane_contents, nudge_already_scheduled);
+
+    let detected_coworker = match decision {
+        crate::rules::UsageLimitDecision::Detected { coworker } => coworker,
+        _ => return,
+    };
+
+    // Find the pane content for the detected coworker to parse duration
+    let pane_content = pane_contents
+        .iter()
+        .find(|(name, _)| *name == detected_coworker)
+        .map(|(_, content)| content.as_str())
+        .unwrap_or("");
+
+    let wait_duration = crate::rules::parse_usage_limit_duration(pane_content);
+    let nudge_time = tokio::time::Instant::now() + wait_duration + USAGE_LIMIT_NUDGE_BUFFER;
+
+    // Store the scheduled nudge time
+    {
+        let mut nudge_at = state.usage_limit_nudge_at.lock().await;
+        *nudge_at = Some(nudge_time);
+    }
+
+    let human_duration = if wait_duration.as_secs() >= 3600 {
+        format!(
+            "{}h {}m",
+            wait_duration.as_secs() / 3600,
+            (wait_duration.as_secs() % 3600) / 60
+        )
+    } else {
+        format!("{}m", wait_duration.as_secs() / 60)
+    };
+
+    info!(
+        "Usage limit detected via coworker {} — scheduling nudge in {} + 30s buffer",
+        detected_coworker, human_duration
+    );
+
+    let msg = Message::text(
+        "system",
+        format!(
+            "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~{} when it resets.",
+            detected_coworker, human_duration
+        ),
+    );
+    if let Err(e) = state.send_and_broadcast(&msg) {
+        warn!("Failed to post usage limit message to channel: {}", e);
     }
 }
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all active coworkers.
 async fn maybe_nudge_usage_limit_expiry(state: &DaemonState) {
-    let should_nudge = {
+    // Pure decision: should we nudge?
+    let nudge_at_value = {
         let nudge_at = state.usage_limit_nudge_at.lock().await;
-        match *nudge_at {
-            Some(at) => tokio::time::Instant::now() >= at,
-            None => false,
-        }
+        *nudge_at
     };
+    let decision =
+        crate::rules::decide_usage_limit_expiry(nudge_at_value, tokio::time::Instant::now());
 
-    if !should_nudge {
+    if decision != crate::rules::UsageLimitExpiryDecision::NudgeNow {
         return;
     }
 
@@ -5011,9 +4943,7 @@ mod decisions {
         }
 
         for (name, content) in pane_contents {
-            let has_limit = super::USAGE_LIMIT_PATTERNS
-                .iter()
-                .any(|p| content.to_lowercase().contains(&p.to_lowercase()));
+            let has_limit = crate::rules::has_usage_limit_pattern(content);
 
             if has_limit {
                 return UsageLimitDecision::Detected {
@@ -6205,38 +6135,53 @@ mod tests {
     #[test]
     fn test_parse_usage_limit_duration_minutes() {
         let pane = "You've hit your usage limit. Try again in 15 minutes.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 15 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            15 * 60
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_hours() {
         let pane = "Rate limited. Try again in 2 hours.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 2 * 3600);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            2 * 3600
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_seconds() {
         let pane = "Too many requests. Try again in 30 seconds.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 30);
+        assert_eq!(crate::rules::parse_usage_limit_duration(pane).as_secs(), 30);
     }
 
     #[test]
     fn test_parse_usage_limit_duration_after_keyword() {
         let pane = "Limit reached. Available after 10 minutes.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 10 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            10 * 60
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_default() {
         // No parseable duration — should default to 15 minutes
         let pane = "Usage limit reached. Please wait.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 15 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            15 * 60
+        );
     }
 
     #[test]
     fn test_parse_usage_limit_duration_case_insensitive() {
         let pane = "USAGE LIMIT REACHED. TRY AGAIN IN 20 MINUTES.";
-        assert_eq!(parse_usage_limit_duration(pane).as_secs(), 20 * 60);
+        assert_eq!(
+            crate::rules::parse_usage_limit_duration(pane).as_secs(),
+            20 * 60
+        );
     }
 
     #[test]
@@ -6249,11 +6194,11 @@ mod tests {
         ];
 
         for msg in messages {
-            let lower = msg.to_lowercase();
-            let detected = USAGE_LIMIT_PATTERNS
-                .iter()
-                .any(|p| lower.contains(&p.to_lowercase()));
-            assert!(detected, "Pattern not detected in: {}", msg);
+            assert!(
+                crate::rules::has_usage_limit_pattern(msg),
+                "Pattern not detected in: {}",
+                msg
+            );
         }
     }
 
@@ -6267,11 +6212,11 @@ mod tests {
         ];
 
         for msg in messages {
-            let lower = msg.to_lowercase();
-            let detected = USAGE_LIMIT_PATTERNS
-                .iter()
-                .any(|p| lower.contains(&p.to_lowercase()));
-            assert!(!detected, "False positive in: {}", msg);
+            assert!(
+                !crate::rules::has_usage_limit_pattern(msg),
+                "False positive in: {}",
+                msg
+            );
         }
     }
 
