@@ -6333,6 +6333,16 @@ mod tests {
     }
 
     #[test]
+    fn test_idle_shutdown_isolated_but_reviewing_protected() {
+        // Regression test for PR #344: isolated coworkers (reviewers) must NOT be
+        // shut down while they still have an active review assignment.
+        let cw = test_isolated_coworker("broadway");
+        let now = Instant::now();
+        let decision = decide_idle_shutdown(&cw, false, false, true, None, now, Utc::now());
+        assert_eq!(decision, IdleDecision::Protected);
+    }
+
+    #[test]
     fn test_idle_shutdown_starts_tracking_new_idle() {
         let cw = test_coworker("park");
         let now = Instant::now();
