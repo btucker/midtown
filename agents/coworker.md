@@ -234,6 +234,25 @@ When your PR receives review comments with suggested changes:
 TaskCreate with subject: "Add input validation for edge case", description: "From PR #42 review: handle empty string input. Depends on PR #42 being merged first."
 ```
 
+## Avoiding Redundant GitHub API Calls
+We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Minimize your `gh` CLI usage** — the daemon already tracks PR and CI status.
+
+**Avoid these patterns:**
+- Running `gh pr checks` or `gh pr view` to poll CI status — the daemon posts check results to the channel
+- Running `gh pr list` to see PR status — read the channel instead
+- Retrying `gh pr merge` when rate-limited — post to the channel and let the daemon handle it
+- Running `gh api` calls for information available in the channel
+
+**Use the channel for status:**
+- The daemon posts CI pass/fail results as they happen
+- The daemon posts when PRs are merged
+- Read the channel (`midtown channel read`) for the latest status instead of querying GitHub directly
+
+**Acceptable `gh` usage:**
+- `gh pr create` — creating your PR (once)
+- `gh pr comment` — posting review comments
+- One-off data fetches not available from the channel (e.g., reading a diff)
+
 ## Coordination
 - The Lead coordinates overall direction
 - Other coworkers are peers - collaborate via channel
