@@ -155,6 +155,18 @@ pub fn break_no_pr(name: &str, personality: Personality) -> String {
     pick(templates, personality).replace("{name}", name)
 }
 
+/// Letting {name} take a break (work merged).
+pub fn break_work_merged(name: &str, personality: Personality) -> String {
+    let templates: &[&str] = &[
+        "☕ Letting {name} take a break (work's all merged)",
+        "🎉 {name}'s PR landed — heading out on a high note",
+        "✅ {name}'s work is merged, taking a well-earned break",
+        "🚀 {name} shipped it! Stepping out now",
+        "🏁 {name} crossed the finish line — PR merged, signing off",
+    ];
+    pick(templates, personality).replace("{name}", name)
+}
+
 /// Letting {name} take a break (generic idle).
 pub fn break_idle(name: &str, personality: Personality) -> String {
     let templates: &[&str] = &[
@@ -182,6 +194,10 @@ mod tests {
             assert_eq!(
                 break_review_complete("carol", 42, Personality::Normal),
                 "☕ Letting carol take a break (review complete for PR #42)"
+            );
+            assert_eq!(
+                break_work_merged("alice", Personality::Normal),
+                "☕ Letting alice take a break (work's all merged)"
             );
             assert_eq!(
                 called_in_reviewer("dave", 99, Personality::Normal),
@@ -219,6 +235,9 @@ mod tests {
 
         let msg = break_review_complete(name, 40, Personality::Fun);
         assert!(msg.contains(name) && msg.contains("40"), "{msg}");
+
+        let msg = break_work_merged(name, Personality::Fun);
+        assert!(msg.contains(name), "{msg}");
 
         let msg = break_no_pr(name, Personality::Fun);
         assert!(msg.contains(name), "{msg}");
