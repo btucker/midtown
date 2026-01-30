@@ -5320,6 +5320,153 @@ mod decisions {
 
         actions
     }
+
+    // ─── Pending Task Spawn Decision ───────────────────────────────────
+
+    /// Action to take for a pending task with an owner.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum PendingTaskAction {
+        /// Owner is not running — should spawn them.
+        Spawn { task_id: String, owner: String },
+        /// Owner is running — nudge them about the pending task.
+        Nudge { task_id: String, owner: String },
+        /// Owner is running but nudge is on cooldown — skip.
+        NudgeCooldown { task_id: String, owner: String },
+        /// Dev limit reached — can't spawn.
+        DevLimitReached { task_id: String, owner: String },
+        /// Skip (owner is lead or empty).
+        Skip,
+    }
+
+    /// Decide what to do for a pending task that has an assigned owner.
+    pub fn decide_pending_task_action(
+        task_id: &str,
+        owner: &str,
+        is_owner_active: bool,
+        last_nudge_elapsed: Option<std::time::Duration>,
+        at_dev_limit: bool,
+    ) -> PendingTaskAction {
+        if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
+            return PendingTaskAction::Skip;
+        }
+
+        if is_owner_active {
+            // Check nudge cooldown (300s = 5 min)
+            let should_nudge = match last_nudge_elapsed {
+                Some(elapsed) => elapsed >= std::time::Duration::from_secs(300),
+                None => true,
+            };
+            if should_nudge {
+                PendingTaskAction::Nudge {
+                    task_id: task_id.to_string(),
+                    owner: owner.to_string(),
+                }
+            } else {
+                PendingTaskAction::NudgeCooldown {
+                    task_id: task_id.to_string(),
+                    owner: owner.to_string(),
+                }
+            }
+        } else if at_dev_limit {
+            PendingTaskAction::DevLimitReached {
+                task_id: task_id.to_string(),
+                owner: owner.to_string(),
+            }
+        } else {
+            PendingTaskAction::Spawn {
+                task_id: task_id.to_string(),
+                owner: owner.to_string(),
+            }
+        }
+    }
+
+    // ─── Mention Routing Decision ──────────────────────────────────────
+
+    /// Action to take when a coworker is @mentioned.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum MentionAction {
+        /// Mentioned coworker is not running — spawn them.
+        Spawn { name: String },
+        /// Mentioned coworker is running — nudge them.
+        Nudge { name: String },
+        /// Mentioned coworker is the sender — skip self-mention.
+        SelfMention,
+        /// Dev limit reached — can't spawn inactive coworker.
+        DevLimitReached { name: String },
+    }
+
+    /// Decide what to do for a single @mention.
+    pub fn decide_mention_action(
+        mentioned_name: &str,
+        sender: &str,
+        is_running: bool,
+        at_dev_limit: bool,
+    ) -> MentionAction {
+        if mentioned_name.eq_ignore_ascii_case(sender) {
+            return MentionAction::SelfMention;
+        }
+
+        if is_running {
+            MentionAction::Nudge {
+                name: mentioned_name.to_string(),
+            }
+        } else if at_dev_limit {
+            MentionAction::DevLimitReached {
+                name: mentioned_name.to_string(),
+            }
+        } else {
+            MentionAction::Spawn {
+                name: mentioned_name.to_string(),
+            }
+        }
+    }
+
+    // ─── PR Issue Action Decision ──────────────────────────────────────
+
+    /// Action to take when a PR has an actionable issue.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum PrIssueAction {
+        /// Owner is active — nudge them.
+        NudgeOwner { owner: String },
+        /// Owner is inactive — spawn them.
+        SpawnOwner { owner: String },
+        /// Dev limit reached — can't spawn inactive owner.
+        DevLimitReached { owner: String },
+        /// No owner — post to channel.
+        PostToChannel,
+        /// Already nudged recently — skip (cooldown active).
+        CooldownActive,
+    }
+
+    /// Decide what to do about a PR issue.
+    pub fn decide_pr_issue_action(
+        owner: &str,
+        is_owner_active: bool,
+        at_dev_limit: bool,
+        cooldown_active: bool,
+    ) -> PrIssueAction {
+        if cooldown_active {
+            return PrIssueAction::CooldownActive;
+        }
+
+        if owner.is_empty() {
+            return PrIssueAction::PostToChannel;
+        }
+
+        if is_owner_active {
+            PrIssueAction::NudgeOwner {
+                owner: owner.to_string(),
+            }
+        } else if at_dev_limit {
+            PrIssueAction::DevLimitReached {
+                owner: owner.to_string(),
+            }
+        } else {
+            PrIssueAction::SpawnOwner {
+                owner: owner.to_string(),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -6736,5 +6883,171 @@ mod tests {
 
         let actions = decide_duplicate_workers(&tasks, &start_times);
         assert!(actions.is_empty());
+    }
+
+    // ─── Pending Task Spawn Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_pending_task_inactive_owner_spawns() {
+        let decision = decide_pending_task_action("42", "park", false, None, false);
+        assert_eq!(
+            decision,
+            PendingTaskAction::Spawn {
+                task_id: "42".to_string(),
+                owner: "park".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pending_task_active_owner_nudges() {
+        let decision = decide_pending_task_action("42", "park", true, None, false);
+        assert_eq!(
+            decision,
+            PendingTaskAction::Nudge {
+                task_id: "42".to_string(),
+                owner: "park".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pending_task_active_owner_nudge_cooldown() {
+        // Last nudge was 60 seconds ago — within the 300s cooldown
+        let decision =
+            decide_pending_task_action("42", "park", true, Some(Duration::from_secs(60)), false);
+        assert_eq!(
+            decision,
+            PendingTaskAction::NudgeCooldown {
+                task_id: "42".to_string(),
+                owner: "park".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pending_task_active_owner_nudge_after_cooldown() {
+        // Last nudge was 301 seconds ago — past the 300s cooldown
+        let decision =
+            decide_pending_task_action("42", "park", true, Some(Duration::from_secs(301)), false);
+        assert_eq!(
+            decision,
+            PendingTaskAction::Nudge {
+                task_id: "42".to_string(),
+                owner: "park".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pending_task_dev_limit_reached() {
+        let decision = decide_pending_task_action("42", "park", false, None, true);
+        assert_eq!(
+            decision,
+            PendingTaskAction::DevLimitReached {
+                task_id: "42".to_string(),
+                owner: "park".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_pending_task_lead_owner_skipped() {
+        let decision = decide_pending_task_action("42", "lead", false, None, false);
+        assert_eq!(decision, PendingTaskAction::Skip);
+    }
+
+    #[test]
+    fn test_pending_task_empty_owner_skipped() {
+        let decision = decide_pending_task_action("42", "", false, None, false);
+        assert_eq!(decision, PendingTaskAction::Skip);
+    }
+
+    // ─── Mention Routing Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_mention_inactive_coworker_spawns() {
+        let action = decide_mention_action("park", "broadway", false, false);
+        assert_eq!(
+            action,
+            MentionAction::Spawn {
+                name: "park".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_mention_active_coworker_nudges() {
+        let action = decide_mention_action("park", "broadway", true, false);
+        assert_eq!(
+            action,
+            MentionAction::Nudge {
+                name: "park".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_mention_self_skipped() {
+        let action = decide_mention_action("park", "park", true, false);
+        assert_eq!(action, MentionAction::SelfMention);
+    }
+
+    #[test]
+    fn test_mention_dev_limit_blocks_spawn() {
+        let action = decide_mention_action("park", "broadway", false, true);
+        assert_eq!(
+            action,
+            MentionAction::DevLimitReached {
+                name: "park".to_string()
+            }
+        );
+    }
+
+    // ─── PR Issue Action Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_pr_issue_active_owner_nudged() {
+        let action = decide_pr_issue_action("park", true, false, false);
+        assert_eq!(
+            action,
+            PrIssueAction::NudgeOwner {
+                owner: "park".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_issue_inactive_owner_spawned() {
+        let action = decide_pr_issue_action("park", false, false, false);
+        assert_eq!(
+            action,
+            PrIssueAction::SpawnOwner {
+                owner: "park".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_pr_issue_cooldown_skips() {
+        let action = decide_pr_issue_action("park", true, false, true);
+        assert_eq!(action, PrIssueAction::CooldownActive);
+    }
+
+    #[test]
+    fn test_pr_issue_no_owner_posts_to_channel() {
+        let action = decide_pr_issue_action("", false, false, false);
+        assert_eq!(action, PrIssueAction::PostToChannel);
+    }
+
+    #[test]
+    fn test_pr_issue_inactive_owner_dev_limit() {
+        let action = decide_pr_issue_action("park", false, true, false);
+        assert_eq!(
+            action,
+            PrIssueAction::DevLimitReached {
+                owner: "park".to_string()
+            }
+        );
     }
 }
