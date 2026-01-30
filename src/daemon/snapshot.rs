@@ -1,0 +1,179 @@
+//! World snapshot — an immutable view of all daemon state for a single tick.
+//!
+//! Pure evaluation functions read from the snapshot instead of reaching into
+//! `DaemonState` directly. This eliminates duplicate data fetching across
+//! multiple check functions within the same tick and makes decision logic
+//! easier to test.
+
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
+use chrono::{DateTime, Utc};
+
+use crate::coworker::Coworker;
+use crate::rules::CoworkerSnapshot;
+
+use super::DaemonState;
+
+/// Immutable snapshot of the daemon's world, collected once per tick.
+///
+/// Each field is owned data — no references back to `DaemonState`. This means
+/// evaluation functions that take `&WorldSnapshot` cannot accidentally trigger
+/// side effects on the underlying state.
+#[derive(Debug)]
+pub struct WorldSnapshot {
+    // ── Coworker state ──────────────────────────────────────────────────
+    /// All coworkers (any status).
+    pub active_coworkers: Vec<Coworker>,
+    /// Only coworkers with `Running` status.
+    pub running_coworkers: Vec<Coworker>,
+    /// Coworker snapshots for pure decision functions in `rules`.
+    pub coworker_snapshots: Vec<CoworkerSnapshot>,
+    /// Lowercase names of running coworkers (for fast lookup).
+    pub active_names: HashSet<String>,
+    /// Tmux session name (e.g., "midtown-projectname").
+    pub session_name: String,
+    /// Coworker start times keyed by lowercase name.
+    pub coworker_start_times: HashMap<String, DateTime<Utc>>,
+
+    // ── Pane contents ───────────────────────────────────────────────────
+    /// Captured tmux pane content per coworker (keyed by name).
+    pub pane_contents: HashMap<String, String>,
+
+    // ── Task state ──────────────────────────────────────────────────────
+    /// In-progress tasks: `(task_id, subject, owner)`.
+    pub in_progress_tasks: Vec<(String, String, String)>,
+    /// Names of coworkers who are busy (have in-progress tasks), lowercase.
+    pub busy_coworkers: HashSet<String>,
+
+    // ── PR / GitHub state ───────────────────────────────────────────────
+    /// Coworkers who have at least one open PR.
+    pub coworkers_with_open_prs: HashSet<String>,
+    /// Coworkers whose PR was recently merged.
+    pub coworkers_with_merged_prs: HashSet<String>,
+
+    // ── Reviewer state ──────────────────────────────────────────────────
+    /// Currently active reviewers (from both in-memory tracker and persistent state).
+    pub active_reviewers: HashSet<String>,
+
+    // ── Dependency state ──────────────────────────────────────────────────
+    /// Coworkers whose completed tasks have unblocked pending follow-ups.
+    pub coworkers_with_unblocked_deps: HashSet<String>,
+
+    // ── Usage limit state ────────────────────────────────────────────────
+    /// Whether a usage-limit nudge is already scheduled.
+    pub usage_limit_nudge_scheduled: bool,
+    /// The scheduled usage-limit nudge time (if any).
+    pub usage_limit_nudge_at: Option<tokio::time::Instant>,
+
+    // ── Limits & timing ─────────────────────────────────────────────────
+    /// Whether the daemon is at the dev coworker limit.
+    pub is_at_dev_limit: bool,
+    /// Current monotonic instant (for timeout comparisons).
+    pub now: Instant,
+    /// Current wall-clock time.
+    pub now_utc: DateTime<Utc>,
+    /// Repository name.
+    pub repo_name: String,
+}
+
+/// Collect a full world snapshot from the daemon state.
+///
+/// This is the single place where we read from `DaemonState` and external
+/// sources (tmux, task storage, GitHub CLI). Called once per tick, before
+/// any evaluation functions.
+pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
+    // ── Coworker state ──────────────────────────────────────────────────
+    let active_coworkers = state.coworkers.list();
+    let running_coworkers = state.coworkers.list_running();
+    let session_name = state.coworkers.session_name().to_string();
+
+    let coworker_snapshots: Vec<CoworkerSnapshot> = active_coworkers
+        .iter()
+        .map(|cw| CoworkerSnapshot {
+            name: cw.name.clone(),
+            started_at: cw.started_at,
+            isolated_tasks: cw.isolated_tasks,
+        })
+        .collect();
+
+    let active_names: HashSet<String> = running_coworkers
+        .iter()
+        .map(|cw| cw.name.to_lowercase())
+        .collect();
+
+    let coworker_start_times: HashMap<String, DateTime<Utc>> = active_coworkers
+        .iter()
+        .map(|cw| (cw.name.to_lowercase(), cw.started_at))
+        .collect();
+
+    // ── Pane contents ───────────────────────────────────────────────────
+    let mut pane_contents = HashMap::new();
+    for cw in &active_coworkers {
+        let target = format!("{}:{}", session_name, cw.name);
+        if let Some(content) = crate::tmux::capture_pane(&target) {
+            pane_contents.insert(cw.name.clone(), content);
+        }
+    }
+
+    // ── Task state ──────────────────────────────────────────────────────
+    let in_progress_tasks = super::get_in_progress_tasks_with_owners();
+    let busy_coworkers: HashSet<String> = super::get_busy_coworkers(&state.repo_name)
+        .into_iter()
+        .map(|n| n.to_lowercase())
+        .collect();
+
+    // ── PR / GitHub state ───────────────────────────────────────────────
+    let coworkers_with_open_prs: HashSet<String> = super::get_coworkers_with_open_prs(state)
+        .into_iter()
+        .collect();
+    let coworkers_with_merged_prs: HashSet<String> = super::get_coworkers_with_merged_prs(state);
+
+    // ── Reviewer state ──────────────────────────────────────────────────
+    let active_reviewers = {
+        let tracker = state.pr_review_tracker.lock().await;
+        let mut reviewers = tracker.active_reviewers();
+        let github_state = state.github_state.lock().await;
+        for reviewer_name in github_state.assigned_reviewers() {
+            reviewers.insert(reviewer_name.to_string());
+        }
+        reviewers
+    };
+
+    // ── Dependency state ──────────────────────────────────────────────────
+    let coworkers_with_unblocked_deps = crate::tasks::get_coworkers_with_unblocked_dependents();
+
+    // ── Usage limit state ────────────────────────────────────────────────
+    let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
+        let nudge_at = state.usage_limit_nudge_at.lock().await;
+        (nudge_at.is_some(), *nudge_at)
+    };
+
+    // ── Limits & timing ─────────────────────────────────────────────────
+    let is_at_dev_limit = state.is_at_dev_limit();
+    let now = Instant::now();
+    let now_utc = Utc::now();
+    let repo_name = state.repo_name.clone();
+
+    WorldSnapshot {
+        active_coworkers,
+        running_coworkers,
+        coworker_snapshots,
+        active_names,
+        session_name,
+        coworker_start_times,
+        pane_contents,
+        in_progress_tasks,
+        busy_coworkers,
+        coworkers_with_open_prs,
+        coworkers_with_merged_prs,
+        active_reviewers,
+        coworkers_with_unblocked_deps,
+        usage_limit_nudge_scheduled,
+        usage_limit_nudge_at,
+        is_at_dev_limit,
+        now,
+        now_utc,
+        repo_name,
+    }
+}
