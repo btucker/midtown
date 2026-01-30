@@ -785,13 +785,34 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut shared_push_manager: Option<std::sync::Arc<crate::push::PushManager>> = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
+    // Build list of all repo paths for multi-repo PR fetching
+    // (needed by both the web server and daemon state)
+    let all_repo_paths = {
+        let mut paths = vec![config.workdir.clone()];
+        if let Some(full_config) = crate::config::load_full_project_config(&project_name) {
+            for repo in full_config.project.repos() {
+                let path = PathBuf::from(repo);
+                if path != config.workdir {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
+    };
+
     if let Some(port) = config.webhook_port {
         let webhook_config = WebhookConfig {
             port,
             secret: config.webhook_secret.clone(),
             repo: repo_name.clone(),
         };
-        match start_webhook_server(webhook_config, Some(coworker_manager.clone())).await {
+        match start_webhook_server(
+            webhook_config,
+            Some(coworker_manager.clone()),
+            all_repo_paths.clone(),
+        )
+        .await
+        {
             Ok((rx, updates_tx, mob_rx, push_mgr)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
@@ -817,20 +838,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Create daemon state (pass channel and web updates sender so messages
     // are broadcast to WebSocket clients in real-time)
-    // Build list of all repo paths for multi-repo PR fetching
-    let all_repo_paths = {
-        let mut paths = vec![config.workdir.clone()];
-        if let Some(full_config) = crate::config::load_full_project_config(&project_name) {
-            for repo in full_config.project.repos() {
-                let path = PathBuf::from(repo);
-                if path != config.workdir {
-                    paths.push(path);
-                }
-            }
-        }
-        paths
-    };
-
     let state = Arc::new(DaemonState::new(
         config.socket_path.clone(),
         coworker_manager,

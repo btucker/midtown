@@ -57,6 +57,8 @@ pub struct WebState {
     pub channel_post_tx: mpsc::Sender<MobileChannelPost>,
     /// Web Push notification manager (shared with daemon)
     pub push_manager: Option<Arc<PushManager>>,
+    /// Paths to all repos in the project (for multi-repo PR URL resolution)
+    pub all_repo_paths: Vec<std::path::PathBuf>,
 }
 
 /// Types of real-time updates sent to clients
@@ -396,6 +398,46 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         .await
         .unwrap_or_default();
 
+    // Build repo metadata for multi-repo PR URL resolution
+    let repo_paths = state.all_repo_paths.clone();
+    let repo_statuses: Vec<serde_json::Value> = if repo_paths.len() > 1 {
+        tokio::task::spawn_blocking(move || {
+            repo_paths
+                .iter()
+                .map(|repo_path| {
+                    let label = repo_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let full_name = std::process::Command::new("gh")
+                        .current_dir(repo_path)
+                        .args([
+                            "repo",
+                            "view",
+                            "--json",
+                            "nameWithOwner",
+                            "--jq",
+                            ".nameWithOwner",
+                        ])
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    serde_json::json!({
+                        "label": label,
+                        "fullName": full_name,
+                    })
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let status = serde_json::json!({
         "daemon": "running",
         "coworkers": coworkers_data,
@@ -404,6 +446,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "merged_prs": merged_prs,
         "repo_name": state.config.repo,
         "repo_status": repo_status,
+        "repo_statuses": repo_statuses,
     });
 
     Ok(axum::Json(status))
@@ -716,6 +759,7 @@ mod tests {
             coworkers: None,
             channel_post_tx,
             push_manager: None,
+            all_repo_paths: Vec::new(),
         });
 
         let json = r#"{"type": "send_message", "content": "hello from mobile"}"#;
