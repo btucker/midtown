@@ -22,6 +22,12 @@ pub struct GitHubState {
     /// Map of PR number -> reviewer assignment
     #[serde(default)]
     pub pr_reviewers: HashMap<u64, PrReviewerAssignment>,
+
+    /// Set of PR numbers that have a confirmed Claude review.
+    /// Review status is monotonic — once a PR has a review, it never loses it.
+    /// This cache eliminates redundant `gh pr view` calls on every poll cycle.
+    #[serde(default)]
+    pub reviewed_prs: std::collections::HashSet<u64>,
 }
 
 /// A PR reviewer assignment record.
@@ -179,6 +185,22 @@ impl GitHubState {
         }
     }
 
+    /// Check if a PR has a cached Claude review result.
+    pub fn has_cached_review(&self, pr_number: u64) -> bool {
+        self.reviewed_prs.contains(&pr_number)
+    }
+
+    /// Mark a PR as having a Claude review (cache it permanently).
+    pub fn mark_reviewed_pr(&mut self, pr_number: u64) {
+        self.reviewed_prs.insert(pr_number);
+    }
+
+    /// Clean up review cache entries for PRs that are no longer open.
+    fn cleanup_closed_review_cache(&mut self, open_pr_numbers: &[u64]) {
+        let open_set: std::collections::HashSet<_> = open_pr_numbers.iter().collect();
+        self.reviewed_prs.retain(|pr| open_set.contains(pr));
+    }
+
     /// Clean up assignments for PRs that are no longer open.
     ///
     /// Takes a list of open PR numbers and removes assignments for any PRs not in the list.
@@ -195,6 +217,9 @@ impl GitHubState {
             debug!("Cleaning up reviewer assignment for closed PR #{}", pr);
             self.pr_reviewers.remove(&pr);
         }
+
+        // Also clean up review cache for closed PRs
+        self.cleanup_closed_review_cache(open_pr_numbers);
     }
 }
 

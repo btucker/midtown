@@ -52,6 +52,9 @@ pub struct WebhookEvent {
     pub merged_pr: Option<u64>,
     /// If set, a CI check failed on the default branch — nudge the lead with this message
     pub ci_failed_on_default_branch: Option<String>,
+    /// PR number that received a Claude review comment (for caching review status).
+    /// Set when an `issue_comment` webhook contains a review signature.
+    pub reviewed_pr: Option<u64>,
 }
 
 /// Identifies a GitHub comment for the reactions API.
@@ -578,6 +581,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         needs_review,
         merged_pr,
         ci_failed_on_default_branch: None,
+        reviewed_pr: None,
     }))
 }
 
@@ -626,6 +630,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         needs_review: None,
         merged_pr: None,
         ci_failed_on_default_branch: None,
+        reviewed_pr: None,
     }))
 }
 
@@ -653,6 +658,13 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
         commenter, event.issue.number, preview
     );
 
+    // Check if this comment is a Claude code review (for review status caching)
+    let reviewed_pr = if is_review_comment(&event.comment.body) {
+        Some(event.issue.number)
+    } else {
+        None
+    };
+
     // For issue_comment, the payload doesn't include the PR branch,
     // so owner_coworker is None. The daemon will look it up asynchronously.
     Ok(Some(WebhookEvent {
@@ -667,6 +679,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
         needs_review: None,
         merged_pr: None,
         ci_failed_on_default_branch: None,
+        reviewed_pr,
     }))
 }
 
@@ -708,6 +721,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         needs_review: None,
         merged_pr: None,
         ci_failed_on_default_branch: None,
+        reviewed_pr: None,
     }))
 }
 
@@ -750,6 +764,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
         needs_review: None,
         merged_pr: None,
         ci_failed_on_default_branch: None,
+        reviewed_pr: None,
     }))
 }
 
@@ -821,7 +836,18 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         needs_review: None,
         merged_pr: None,
         ci_failed_on_default_branch,
+        reviewed_pr: None,
     }))
+}
+
+/// Check if a comment body contains a Claude code review signature.
+///
+/// This uses the same signatures as `text_contains_review_signature` in
+/// `daemon/helpers.rs` to detect review comments from webhook payloads.
+fn is_review_comment(body: &str) -> bool {
+    body.contains("🤖 Reviewed by")
+        || body.contains("## Code Review by")
+        || body.contains("## No Issues Found")
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
