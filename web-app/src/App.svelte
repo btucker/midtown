@@ -4,8 +4,8 @@
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
-  import { messages, connected, coworkers, projects, activeProject, multiProjectMode } from './lib/store.js'
-  import { connectWebSocket, fetchHistory, fetchStatus, detectMode, fetchProjects, switchProject } from './lib/api.js'
+  import { messages, connected, coworkers, projects, activeProject } from './lib/store.js'
+  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from './lib/api.js'
   import {
     pushSupported,
     pushPermission,
@@ -18,29 +18,17 @@
   let activeTab = $state('channel')
 
   onMount(async () => {
-    const isMultiProject = detectMode()
-
-    if (isMultiProject) {
-      // Multi-project mode: fetch project list, auto-select first running project
-      const projectList = await fetchProjects()
-      const running = projectList.find(p => p.status === 'running' && p.webhook_port)
-      if (running) {
-        switchProject(running.name, running.webhook_port)
-      }
-      // Refresh project list every 30s
-      const projectInterval = setInterval(fetchProjects, 30000)
-      // Check push notification status
-      checkPushSubscription()
-      return () => clearInterval(projectInterval)
-    } else {
-      // Single-project mode: connect directly as before
-      await Promise.all([fetchHistory(), fetchStatus()])
-      connectWebSocket()
-      // Check push notification status
-      checkPushSubscription()
-      const interval = setInterval(fetchStatus, 30000)
-      return () => clearInterval(interval)
+    // Always in multi-project mode — served from shared gateway on port 47022
+    const projectList = await fetchProjects()
+    const running = projectList.find(p => p.status === 'running' && p.webhook_port)
+    if (running) {
+      switchProject(running.name, running.webhook_port)
     }
+    // Refresh project list every 30s
+    const projectInterval = setInterval(fetchProjects, 30000)
+    // Check push notification status
+    checkPushSubscription()
+    return () => clearInterval(projectInterval)
   })
 
   function selectProject(project) {
@@ -87,7 +75,7 @@
     </div>
   </header>
 
-  {#if $multiProjectMode && $projects.length > 0}
+  {#if $projects.length > 0}
     <div class="project-tabs">
       {#each $projects as project}
         <button
@@ -104,7 +92,7 @@
     </div>
   {/if}
 
-  {#if !$multiProjectMode || $activeProject}
+  {#if $activeProject}
     <Kanban />
 
     <nav>
@@ -137,7 +125,7 @@
         <Tmux />
       {/if}
     </div>
-  {:else if $multiProjectMode}
+  {:else}
     <div class="no-project">
       <p>No running projects found.</p>
       <p class="hint">Start a project with <code>midtown start</code></p>

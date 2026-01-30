@@ -777,7 +777,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             port,
             secret: config.webhook_secret.clone(),
             repo: repo_name.clone(),
-            web_static_dir: None, // Use default location
         };
         match start_webhook_server(webhook_config, Some(coworker_manager.clone())).await {
             Ok((rx, updates_tx, mob_rx, push_mgr)) => {

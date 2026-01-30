@@ -1,7 +1,8 @@
-//! Web server for Svelte mobile app
+//! Web API server for Svelte mobile app
 //!
-//! Serves static files for the Svelte frontend and provides WebSocket
-//! connections for live updates (channel messages, coworker status, etc.)
+//! Provides API endpoints and WebSocket connections for live updates
+//! (channel messages, coworker status, etc.). Static files are served
+//! only by the shared gateway on port 47022.
 
 use axum::{
     Json, Router,
@@ -15,10 +16,8 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tower_http::services::{ServeDir, ServeFile};
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
@@ -30,8 +29,6 @@ use crate::tmux;
 /// Configuration for the web server
 #[derive(Debug, Clone)]
 pub struct WebConfig {
-    /// Path to static files directory (built Svelte app)
-    pub static_dir: PathBuf,
     /// Repository name for channel access
     pub repo: String,
 }
@@ -39,7 +36,6 @@ pub struct WebConfig {
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
-            static_dir: crate::resolve_web_dir(),
             repo: "default".to_string(),
         }
     }
@@ -109,94 +105,20 @@ pub enum ClientMessage {
 /// Create the web server router
 ///
 /// This can be nested into the main webhook server.
+/// Only serves API endpoints — static files are handled by the shared gateway.
 pub fn create_web_router(state: Arc<WebState>) -> Router {
-    let static_dir = state.config.static_dir.clone();
-    let index_path = static_dir.join("index.html");
-
-    // Check if static files exist
-    let has_static = static_dir.exists() && index_path.exists();
-
-    if has_static {
-        info!("Serving static files from {:?}", static_dir);
-        // Serve static files with SPA fallback
-        let serve_dir = ServeDir::new(&static_dir).fallback(ServeFile::new(&index_path));
-
-        Router::new()
-            .route("/api/ws", get(ws_handler))
-            .route("/api/health", get(api_health))
-            .route("/api/channel", get(api_channel_history))
-            .route("/api/status", get(api_status))
-            .route("/api/lead-pane", get(api_lead_pane))
-            .route("/api/tmux-pane", get(api_tmux_pane))
-            .route("/api/tmux-windows", get(api_tmux_windows))
-            .route("/api/push/vapid-key", get(api_push_vapid_key))
-            .route("/api/push/subscribe", post(api_push_subscribe))
-            .route("/api/push/unsubscribe", post(api_push_unsubscribe))
-            .fallback_service(serve_dir)
-            .with_state(state)
-    } else {
-        warn!(
-            "Static directory not found at {:?}, serving API only",
-            static_dir
-        );
-        // API-only mode for development
-        Router::new()
-            .route("/api/ws", get(ws_handler))
-            .route("/api/health", get(api_health))
-            .route("/api/channel", get(api_channel_history))
-            .route("/api/status", get(api_status))
-            .route("/api/lead-pane", get(api_lead_pane))
-            .route("/api/tmux-pane", get(api_tmux_pane))
-            .route("/api/tmux-windows", get(api_tmux_windows))
-            .route("/api/push/vapid-key", get(api_push_vapid_key))
-            .route("/api/push/subscribe", post(api_push_subscribe))
-            .route("/api/push/unsubscribe", post(api_push_unsubscribe))
-            .route("/", get(dev_placeholder))
-            .with_state(state)
-    }
-}
-
-/// Placeholder page for development
-async fn dev_placeholder() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/html")],
-        r#"<!DOCTYPE html>
-<html>
-<head>
-    <title>Midtown Mobile</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body {
-            font-family: system-ui, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            padding: 20px;
-            margin: 0;
-        }
-        h1 { color: #00d9ff; }
-        .status { color: #00d050; }
-        code {
-            background: #16213e;
-            padding: 2px 6px;
-            border-radius: 4px;
-        }
-    </style>
-</head>
-<body>
-    <h1>Midtown Mobile API</h1>
-    <p class="status">Server is running</p>
-    <p>Build the Svelte app and place in the <code>web/</code> directory to enable the UI.</p>
-    <h2>API Endpoints</h2>
-    <ul>
-        <li><code>GET /api/health</code> - Health check</li>
-        <li><code>GET /api/channel</code> - Get channel history</li>
-        <li><code>GET /api/status</code> - Get daemon status</li>
-        <li><code>GET /api/ws</code> - WebSocket for live updates</li>
-    </ul>
-</body>
-</html>"#,
-    )
+    Router::new()
+        .route("/api/ws", get(ws_handler))
+        .route("/api/health", get(api_health))
+        .route("/api/channel", get(api_channel_history))
+        .route("/api/status", get(api_status))
+        .route("/api/lead-pane", get(api_lead_pane))
+        .route("/api/tmux-pane", get(api_tmux_pane))
+        .route("/api/tmux-windows", get(api_tmux_windows))
+        .route("/api/push/vapid-key", get(api_push_vapid_key))
+        .route("/api/push/subscribe", post(api_push_subscribe))
+        .route("/api/push/unsubscribe", post(api_push_unsubscribe))
+        .with_state(state)
 }
 
 /// Health check endpoint

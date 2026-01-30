@@ -7,7 +7,6 @@ import {
   repoStatus,
   projects,
   activeProject,
-  multiProjectMode,
   repoStatuses,
 } from './store.js'
 
@@ -15,22 +14,10 @@ let ws = null
 let reconnectTimeout = null
 
 // Base URL for the current project's daemon API.
-// In single-project mode: '' (same origin)
-// In multi-project mode: 'http://localhost:{webhookPort}'
+// Always connects via the project's webhook port.
 let projectApiBase = ''
 
 const WEBSERVER_API = '/api'
-
-// Detect if we're running in multi-project mode (served from shared webserver port 47022)
-export function detectMode() {
-  const port = parseInt(window.location.port, 10)
-  if (port === 47022) {
-    multiProjectMode.set(true)
-    return true
-  }
-  multiProjectMode.set(false)
-  return false
-}
 
 // Fetch the list of projects from the shared webserver
 export async function fetchProjects() {
