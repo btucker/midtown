@@ -6,6 +6,7 @@
 //! actionable issues.
 
 mod constants;
+pub(crate) mod effects;
 mod helpers;
 mod trackers;
 
@@ -919,7 +920,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             // Periodic orphan check, duplicate detection, and worktree cleanup
             _ = orphan_check_interval.tick() => {
                 check_for_duplicate_task_workers(&state).await;
-                check_and_recover_orphans(&state).await;
+                let orphan_effects = check_and_recover_orphans(&state);
+                effects::execute_effects(orphan_effects, &state).await;
                 spawn_for_pending_tasks(&state);
                 cleanup_orphaned_worktrees(&state);
                 check_and_fire_reminders(&state);
@@ -4412,13 +4414,15 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-async fn check_and_recover_orphans(state: &DaemonState) {
+fn check_and_recover_orphans(state: &DaemonState) -> Vec<effects::Effect> {
+    use effects::Effect;
+
     // Check cooldown - skip if we spawned too recently
     {
         let cooldowns = state.cooldowns.lock().unwrap();
         if !cooldowns.check("orphan_spawn", "global", ORPHAN_SPAWN_COOLDOWN) {
             debug!("Orphan recovery cooldown active");
-            return;
+            return vec![];
         }
     }
 
@@ -4426,7 +4430,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
     let in_progress = get_in_progress_tasks_with_owners();
 
     if in_progress.is_empty() {
-        return;
+        return vec![];
     }
 
     // Get list of currently running coworkers (excludes Stopping/Stopped)
@@ -4442,7 +4446,7 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         crate::rules::decide_orphan_recovery(&in_progress, &active_names, state.is_at_dev_limit());
 
     let Some(recovery) = recovery else {
-        return;
+        return vec![];
     };
 
     info!(
@@ -4455,61 +4459,50 @@ async fn check_and_recover_orphans(state: &DaemonState) {
         recovery.task_id, recovery.task_subject
     );
 
+    // Try spawn inline — the result determines which effects we return.
+    // (A future phase will make this fully pure by modeling spawn as an effect
+    // with success/failure continuations.)
     match state
         .coworkers
         .spawn_with_name(&recovery.owner, true, Some(&prompt), false)
     {
         Ok(_) => {
             info!("Respawned coworker {} successfully", recovery.owner);
-            state.broadcast_coworker_update(&recovery.owner, "running", None);
-
-            // Update cooldown for rate limiting
-            {
-                let mut cooldowns = state.cooldowns.lock().unwrap();
-                cooldowns.record("orphan_spawn", "global");
-            }
-
-            let recovery_msg = Message::text(
-                "midtown",
-                format!(
-                    "♻️ Recovered coworker {} for orphaned task #{}",
-                    recovery.owner, recovery.task_id
-                ),
-            );
-            if let Err(e) = state.send_and_broadcast(&recovery_msg) {
-                warn!("Failed to post recovery message: {}", e);
-            }
+            vec![
+                Effect::BroadcastCoworkerUpdate {
+                    name: recovery.owner.clone(),
+                    status: "running".to_string(),
+                    current_task: None,
+                },
+                Effect::RecordCooldown {
+                    category: "orphan_spawn".to_string(),
+                    key: "global".to_string(),
+                },
+                Effect::PostToChannel {
+                    message: format!(
+                        "♻️ Recovered coworker {} for orphaned task #{}",
+                        recovery.owner, recovery.task_id
+                    ),
+                },
+            ]
         }
         Err(e) => {
             warn!(
                 "Could not respawn {} for orphaned task #{}: {} - resetting task to pending",
                 recovery.owner, recovery.task_id, e
             );
-
-            if let Err(reset_err) =
-                crate::tasks::reset_task_to_pending_for_repo(&recovery.task_id, &state.repo_name)
-            {
-                warn!(
-                    "Failed to reset orphaned task #{} to pending: {}",
-                    recovery.task_id, reset_err
-                );
-            } else {
-                info!(
-                    "Reset orphaned task #{} to pending (original owner {} could not be respawned)",
-                    recovery.task_id, recovery.owner
-                );
-
-                let msg = Message::text(
-                    "midtown",
-                    format!(
+            vec![
+                Effect::ResetTaskToPending {
+                    task_id: recovery.task_id.clone(),
+                    repo_name: state.repo_name.clone(),
+                },
+                Effect::PostToChannel {
+                    message: format!(
                         "🔄 Task #{} reset to pending - {} could not be called back in",
                         recovery.task_id, recovery.owner
                     ),
-                );
-                if let Err(e) = state.send_and_broadcast(&msg) {
-                    warn!("Failed to post task reset message: {}", e);
-                }
-            }
+                },
+            ]
         }
     }
 }
