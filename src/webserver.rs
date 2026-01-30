@@ -429,8 +429,8 @@ mod tests {
         assert!(config.static_dir.is_some(), "static_dir should not be None");
         let dir = config.static_dir.unwrap();
         assert!(
-            dir.ends_with("web"),
-            "static_dir should end with 'web', got: {:?}",
+            dir.ends_with("web-app/dist"),
+            "static_dir should end with 'web-app/dist', got: {:?}",
             dir
         );
         assert!(

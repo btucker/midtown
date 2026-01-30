@@ -53,7 +53,6 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../web',
     emptyOutDir: true,
   },
 })
