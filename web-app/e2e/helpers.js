@@ -78,6 +78,10 @@ export const MOCK_STATUS = {
   ],
 }
 
+export const MOCK_PROJECTS = [
+  { name: 'test-project', status: 'running', webhook_port: 47099 },
+]
+
 export const MOCK_LEAD_PANE = {
   content: 'claude> Running tests...\n$ npm test\nAll 42 tests passed.',
 }
@@ -95,6 +99,10 @@ export async function mockAllRoutes(page, overrides = {}) {
   const msgs = overrides.messages ?? MOCK_MESSAGES
   const status = overrides.status ?? MOCK_STATUS
   const leadPane = overrides.leadPane ?? MOCK_LEAD_PANE
+
+  await page.route('**/api/projects', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_PROJECTS) })
+  )
 
   await page.route('**/api/channel', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(msgs) })

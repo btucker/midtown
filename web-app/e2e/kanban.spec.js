@@ -110,6 +110,36 @@ test.describe('Kanban board', () => {
     await expect(kanban.locator('.empty', { hasText: 'No merged PRs' })).toBeVisible()
   })
 
+  test('kanban updates automatically via status polling', async ({ page }) => {
+    // Set up a dynamic mock that adds a task after the first status fetch
+    let statusCallCount = 0
+    const updatedStatus = {
+      ...MOCK_STATUS,
+      tasks: [
+        ...MOCK_STATUS.tasks,
+        { id: 4, subject: 'New polled task', status: 'pending', owner: null },
+      ],
+    }
+
+    await page.unroute('**/api/status')
+    await page.route('**/api/status', (route) => {
+      statusCallCount++
+      const data = statusCallCount <= 1 ? MOCK_STATUS : updatedStatus
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(data) })
+    })
+    await page.goto('/')
+
+    const kanban = page.locator(kanbanSelector)
+    const backlogColumn = kanban.locator('.kanban-column').first()
+
+    // Initially 2 backlog tasks
+    await expect(backlogColumn.locator('.kanban-card')).toHaveCount(2)
+
+    // Wait for the polling interval to fire — the new task should appear
+    await expect(backlogColumn.locator('.kanban-card')).toHaveCount(3, { timeout: 15000 })
+    await expect(backlogColumn.locator('.kanban-card').last().locator('.task-subject')).toHaveText('New polled task')
+  })
+
   test('kanban board is visible on all tabs', async ({ page }) => {
     const kanban = page.locator(kanbanSelector)
 
@@ -120,8 +150,8 @@ test.describe('Kanban board', () => {
     await page.locator('nav').getByRole('button', { name: 'Status' }).click()
     await expect(kanban).toBeVisible()
 
-    // Lead tab - kanban still visible
-    await page.locator('nav').getByRole('button', { name: 'Lead' }).click()
+    // Tmux tab - kanban still visible
+    await page.locator('nav').getByRole('button', { name: 'Tmux' }).click()
     await expect(kanban).toBeVisible()
   })
 })
