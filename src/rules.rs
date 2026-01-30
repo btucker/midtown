@@ -363,24 +363,17 @@ const USAGE_LIMIT_PATTERNS: &[&str] = &[
 pub(crate) enum UsageLimitDecision {
     /// Usage limit detected in pane — schedule a nudge.
     Detected { coworker: String },
-    /// Nudge is already scheduled — skip re-detection.
-    AlreadyScheduled,
     /// No usage limit found in any pane.
     NoneDetected,
 }
 
 /// Decide whether pane contents indicate a usage limit.
 ///
-/// Scans pane contents for known usage/rate limit patterns. If a nudge is
-/// already scheduled (`nudge_already_scheduled`), skips re-detection.
+/// Scans pane contents for known usage/rate limit patterns.
+/// The caller is responsible for skipping this call when a nudge is already scheduled.
 pub(crate) fn decide_usage_limit_detection(
-    pane_contents: &[(String, String)], // (coworker_name, pane_content)
-    nudge_already_scheduled: bool,
+    pane_contents: &HashMap<String, String>,
 ) -> UsageLimitDecision {
-    if nudge_already_scheduled {
-        return UsageLimitDecision::AlreadyScheduled;
-    }
-
     for (name, content) in pane_contents {
         let has_limit = USAGE_LIMIT_PATTERNS
             .iter()
