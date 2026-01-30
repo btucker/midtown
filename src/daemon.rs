@@ -1210,7 +1210,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                         (
                             true,
                             format!(
-                                "🔍 Sending {} on a break (review complete for PR #{})",
+                                "☕ Letting {} take a break (review complete for PR #{})",
                                 name, pr
                             ),
                         )
@@ -1242,7 +1242,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                     );
                     (
                         true,
-                        format!("⚠️ Sending {} on a break (no PR assignment found)", name),
+                        format!("☕ Letting {} take a break (no PR assignment found)", name),
                     )
                 }
             }
@@ -1251,10 +1251,7 @@ async fn check_and_shutdown_idle_coworkers(state: &DaemonState) {
                 "Sending idle coworker {} on a break (idle for 5+ minutes)",
                 name
             );
-            (
-                true,
-                format!("⏱️ Sending {} on a break (idle for 5+ minutes)", name),
-            )
+            (true, format!("☕ Letting {} take a break", name))
         };
 
         if !should_shutdown {
