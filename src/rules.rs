@@ -3,8 +3,8 @@
 //! Each `decide_*` function takes pre-collected state snapshots and returns
 //! a decision enum or struct — no side effects, no async, fully testable.
 //!
-//! The [`CooldownTracker`] provides a unified cooldown mechanism that will
-//! replace the six separate cooldown fields in `DaemonState` (Phase 6).
+//! The [`CooldownTracker`] provides a unified cooldown mechanism.
+//! The [`CoworkerPhase`] enum tracks per-coworker lifecycle state.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -33,7 +33,7 @@ pub(crate) struct CoworkerSnapshot {
 /// were last recorded. Call [`check`](CooldownTracker::check) before firing
 /// and [`record`](CooldownTracker::record) after a successful fire.
 ///
-/// Currently used only in tests; will be wired into DaemonState in Phase 6.
+/// Currently used in DaemonState's `cooldowns` field.
 #[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct CooldownTracker {

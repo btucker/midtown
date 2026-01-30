@@ -3734,7 +3734,6 @@ fn check_and_fire_reminders(
     // Convert snapshot HashSet to Vec for evaluate_trigger compatibility
     let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
 
-    // reminder_state is mutable tracker state — stays on DaemonState until Phase 6
     let mut reminder_state = state.reminder_state.lock().unwrap();
     let mut fired_any = false;
     let mut effects = Vec::new();
@@ -4600,7 +4599,6 @@ fn check_and_recover_orphans(
     use effects::Effect;
 
     // Check cooldown - skip if we spawned too recently
-    // (cooldowns is mutable tracker state — stays on DaemonState until Phase 6)
     {
         let cooldowns = state.cooldowns.lock().unwrap();
         if !cooldowns.check("orphan_spawn", "global", ORPHAN_SPAWN_COOLDOWN) {
@@ -5250,10 +5248,9 @@ fn spawn_for_pending_tasks(
 
 // ─── Pure Decision Functions ───────────────────────────────────────────────
 //
-// These functions extract the decision logic from the async check-and-act
-// functions so it can be tested without mocking tmux, `gh`, or async state.
-// Phase 3 (PRs 5-8) will refactor the async functions to call these,
-// at which point the #[cfg(test)] gates can be removed.
+// Per-coworker decision helpers for unit tests. The batch `decide_*` functions
+// in `rules.rs` handle the full coworker set; these single-coworker variants
+// make individual test cases easier to write.
 #[cfg(test)]
 mod decisions {
     use std::time::Instant;
@@ -5263,7 +5260,7 @@ mod decisions {
 
     /// Snapshot of a coworker's state for decision-making (no async, no side effects).
     #[derive(Debug, Clone)]
-    #[allow(dead_code)] // name used in tests and will be used by async callers in Phase 3
+    #[allow(dead_code)]
     pub struct CoworkerSnapshot {
         pub name: String,
         pub started_at: chrono::DateTime<chrono::Utc>,

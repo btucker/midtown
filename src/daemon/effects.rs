@@ -10,7 +10,7 @@ use crate::message::Message;
 /// effects are carried out. This separation makes the decision logic testable
 /// without mocking async infrastructure.
 #[derive(Debug)]
-#[allow(dead_code)] // Variants defined for upcoming phases of the state machine refactor
+#[allow(dead_code)] // SpawnCoworker defined for when inline spawns are fully extracted
 pub enum Effect {
     /// Spawn a coworker (or respawn an existing one).
     SpawnCoworker {
