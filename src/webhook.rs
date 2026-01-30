@@ -102,6 +102,7 @@ const GITHUB_SIGNATURE_HEADER: &str = "X-Hub-Signature-256";
 pub async fn start_webhook_server(
     config: WebhookConfig,
     coworker_manager: Option<CoworkerManager>,
+    all_repo_paths: Vec<std::path::PathBuf>,
 ) -> crate::Result<(
     mpsc::Receiver<WebhookEvent>,
     broadcast::Sender<WebUpdate>,
@@ -140,6 +141,7 @@ pub async fn start_webhook_server(
         coworkers: coworker_manager,
         channel_post_tx: mobile_tx,
         push_manager: push_manager.clone(),
+        all_repo_paths,
     });
 
     // CORS layer for development (allows requests from Vite dev server)
