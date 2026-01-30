@@ -81,6 +81,26 @@ pub(super) const USAGE_LIMIT_NUDGE_BUFFER: Duration = Duration::from_secs(30);
 pub(super) const REVIEW_HEADROOM: usize = 2;
 
 // ---------------------------------------------------------------------------
+// Stuck detection constants (nudge lead when things are stuck)
+// ---------------------------------------------------------------------------
+
+/// How long a PR can be open with no review before nudging lead (15 minutes)
+pub(super) const STUCK_NO_REVIEW_DURATION: Duration = Duration::from_secs(15 * 60);
+
+/// How long a PR can have unresolved feedback before nudging lead (30 minutes)
+pub(super) const STUCK_UNRESOLVED_FEEDBACK_DURATION: Duration = Duration::from_secs(30 * 60);
+
+/// How long a PR can be approved + green but not merged before nudging lead (10 minutes)
+pub(super) const STUCK_MERGE_READY_DURATION: Duration = Duration::from_secs(10 * 60);
+
+/// How long a coworker can be silent (no channel activity) before nudging lead (20 minutes)
+pub(super) const STUCK_SILENT_COWORKER_DURATION: Duration = Duration::from_secs(20 * 60);
+
+/// Cooldown between stuck-condition nudges for the same issue (30 minutes)
+/// Longer than PR_NUDGE_COOLDOWN_SECS because these go to the lead, not coworkers.
+pub const STUCK_NUDGE_COOLDOWN_SECS: u64 = 30 * 60;
+
+// ---------------------------------------------------------------------------
 // Name / sender lists
 // ---------------------------------------------------------------------------
 
