@@ -269,6 +269,43 @@ async fn install_plugin(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Unified cache for coworker names extracted from open and merged PR branches.
+///
+/// Replaces three separate fields (`cached_open_pr_branches`, `last_merged_prs_fetch`,
+/// `cached_merged_pr_coworkers`) with a single struct behind one lock. Coworker names
+/// are extracted at write time (via `coworker_from_branch`) rather than at read time.
+struct PrCoworkerCache {
+    open_pr_owners: HashSet<String>,
+    merged_pr_owners: HashSet<String>,
+    merged_updated_at: Option<Instant>,
+}
+
+impl PrCoworkerCache {
+    fn new() -> Self {
+        Self {
+            open_pr_owners: HashSet::new(),
+            merged_pr_owners: HashSet::new(),
+            merged_updated_at: None,
+        }
+    }
+
+    fn update_open(&mut self, owners: HashSet<String>) {
+        self.open_pr_owners = owners;
+    }
+
+    fn update_merged(&mut self, owners: HashSet<String>) {
+        self.merged_pr_owners = owners;
+        self.merged_updated_at = Some(Instant::now());
+    }
+
+    fn merged_needs_refresh(&self) -> bool {
+        match self.merged_updated_at {
+            Some(t) => t.elapsed() >= Duration::from_secs(MERGED_PRS_FETCH_INTERVAL_SECS),
+            None => true,
+        }
+    }
+}
+
 /// Shared daemon state.
 pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
@@ -316,14 +353,8 @@ pub(crate) struct DaemonState {
     /// Mirrors `GitHubState.reviewed_prs` for fast lookup without locking github_state.
     /// Review status is monotonic — once cached, never removed (except for closed PRs).
     reviewed_prs_cache: std::sync::RwLock<HashSet<u64>>,
-    /// Cached result from the latest `poll_prs_for_issues` call.
-    /// Contains `headRefName` from each open PR, allowing `get_coworkers_with_open_prs`
-    /// to reuse poll data instead of making a separate `gh pr list` call.
-    cached_open_pr_branches: std::sync::RwLock<Vec<String>>,
-    /// When merged PRs were last fetched (for reducing poll frequency).
-    last_merged_prs_fetch: std::sync::Mutex<Option<Instant>>,
-    /// Cached coworker names from recently merged PRs.
-    cached_merged_pr_coworkers: std::sync::RwLock<HashSet<String>>,
+    /// Unified cache for coworker names from open and merged PR branches.
+    pr_coworker_cache: std::sync::RwLock<PrCoworkerCache>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
     /// Tracks when each coworker last posted to the channel (for silent coworker detection)
@@ -435,9 +466,7 @@ impl DaemonState {
             reminder_state: std::sync::Mutex::new(reminder_state),
             last_pr_poll_hash: Mutex::new(0),
             reviewed_prs_cache: std::sync::RwLock::new(reviewed_prs_cache),
-            cached_open_pr_branches: std::sync::RwLock::new(Vec::new()),
-            last_merged_prs_fetch: std::sync::Mutex::new(None),
-            cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
+            pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             last_coworker_activity: std::sync::RwLock::new(HashMap::new()),
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
@@ -904,12 +933,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     });
                 }
 
-                // Schedule immediate (after delay) reviewer spawn for new PRs
+                // Schedule persistent review spawn for new PRs (survives daemon restarts)
                 if let Some(pr_number) = webhook_event.needs_review {
-                    let state = Arc::clone(&state);
-                    tokio::spawn(async move {
-                        handle_webhook_review_spawn(&state, pr_number).await;
-                    });
+                    let mut github_state = state.github_state.lock().await;
+                    github_state.schedule_review_spawn(pr_number, PR_REVIEW_DELAY_SECS);
+                    if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
+                        warn!("Failed to save github-state.json after scheduling review spawn: {}", e);
+                    }
                 }
 
                 // Nudge lead to pull main when a PR merges
@@ -1017,6 +1047,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 effects::execute_effects(tick_effects, &state).await;
                 // cleanup_orphaned_worktrees is not yet effect-based
                 cleanup_orphaned_worktrees(&state);
+                // Drain any pending review spawns whose delay has elapsed
+                check_pending_review_spawns(&state).await;
             }
 
             // Periodic channel log rotation
@@ -1672,24 +1704,17 @@ fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<effects
     effects
 }
 
-/// Get list of coworker names who have open PRs.
-///
-/// A coworker is considered to have an open PR if the PR's branch name
-/// starts with the coworker's name (e.g., "lexington/fix-auth").
-/// Coworkers with open PRs should NEVER be sent on a break.
 /// Get coworker names that have open PRs (branch name starts with coworker name).
 ///
 /// Uses cached data from the latest `poll_prs_for_issues` call when available,
 /// avoiding a separate `gh pr list` API call.
 fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
-    let cached = state.cached_open_pr_branches.read().unwrap();
-    if !cached.is_empty() {
-        return cached
-            .iter()
-            .filter_map(|branch| coworker_from_branch(branch))
-            .collect();
+    {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        if !cache.open_pr_owners.is_empty() {
+            return cache.open_pr_owners.iter().cloned().collect();
+        }
     }
-    drop(cached);
 
     // Fallback to API call if cache is empty (e.g., first tick before poll runs)
     let output = std::process::Command::new("gh")
@@ -1727,18 +1752,11 @@ const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
 /// Uses a time-based cache to reduce API calls. Merged PR status is only refreshed
 /// every 5 minutes since merge events aren't time-critical.
 fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
-    // Check if we need to refresh
-    let needs_refresh = {
-        let last_fetch = state.last_merged_prs_fetch.lock().unwrap();
-        match *last_fetch {
-            Some(t) => t.elapsed() >= Duration::from_secs(MERGED_PRS_FETCH_INTERVAL_SECS),
-            None => true,
+    {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        if !cache.merged_needs_refresh() {
+            return cache.merged_pr_owners.clone();
         }
-    };
-
-    if !needs_refresh {
-        let cached = state.cached_merged_pr_coworkers.read().unwrap();
-        return cached.clone();
     }
 
     // Fetch from API
@@ -1778,12 +1796,8 @@ fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
 
     // Update cache
     {
-        let mut cached = state.cached_merged_pr_coworkers.write().unwrap();
-        *cached = result.clone();
-    }
-    {
-        let mut last_fetch = state.last_merged_prs_fetch.lock().unwrap();
-        *last_fetch = Some(Instant::now());
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.update_merged(result.clone());
     }
 
     result
@@ -2321,18 +2335,18 @@ async fn poll_prs_for_issues(
         })
         .collect();
 
-    // Cache open PR branch names for reuse by get_coworkers_with_open_prs
+    // Cache open PR owners (extract coworker names at write time)
     {
-        let branches: Vec<String> = prs
+        let owners: HashSet<String> = prs
             .iter()
             .filter_map(|pr| {
                 pr.get("headRefName")
                     .and_then(|r| r.as_str())
-                    .map(|s| s.to_string())
+                    .and_then(coworker_from_branch)
             })
             .collect();
-        let mut cached = state.cached_open_pr_branches.write().unwrap();
-        *cached = branches;
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.update_open(owners);
     }
 
     // Clean up persistent reviewer assignments for PRs that are no longer open
@@ -2343,6 +2357,7 @@ async fn poll_prs_for_issues(
             .collect();
         let mut github_state = state.github_state.lock().await;
         github_state.cleanup_closed_prs(&open_pr_numbers);
+        github_state.cleanup_pending_spawns(&open_pr_numbers);
         github_state.cleanup_expired_preserving(&active_coworker_names);
         // Sync in-memory review cache to persistent state before saving
         {
@@ -3056,66 +3071,92 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
     }
 }
 
-/// Handle webhook-triggered reviewer spawning for a newly opened or ready-for-review PR.
+/// Drain pending review spawns whose delay has elapsed and spawn reviewers.
 ///
-/// Waits the review delay, then fetches the PR data and spawns a reviewer if eligible.
-/// This bypasses the polling interval so reviewers start sooner after a PR is opened.
-async fn handle_webhook_review_spawn(state: &DaemonState, pr_number: u64) {
-    info!(
-        "Webhook: PR #{} needs review, waiting {}s before spawning reviewer",
-        pr_number, PR_REVIEW_DELAY_SECS
-    );
-    tokio::time::sleep(Duration::from_secs(PR_REVIEW_DELAY_SECS)).await;
-
-    // Fetch this specific PR's data
-    let output = match tokio::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
-        ])
-        .output()
-        .await
-    {
-        Ok(output) => output,
-        Err(e) => {
+/// Called on each orphan-check tick (every 5s). Reads ready PR numbers from
+/// `GitHubState`, fetches each PR's data via `gh pr view`, then delegates
+/// to `spawn_reviewers_for_prs` for eligibility checks and reviewer assignment.
+async fn check_pending_review_spawns(state: &DaemonState) {
+    let ready_prs = {
+        let mut github_state = state.github_state.lock().await;
+        let ready = github_state.take_ready_review_spawns();
+        if !ready.is_empty()
+            && let Err(e) =
+                crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+        {
             warn!(
-                "Webhook: Failed to fetch PR #{} for review spawn: {}",
-                pr_number, e
+                "Failed to save github-state.json after draining review spawns: {}",
+                e
             );
-            return;
         }
+        ready
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("Webhook: gh pr view #{} failed: {}", pr_number, stderr);
+    if ready_prs.is_empty() {
         return;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let pr: serde_json::Value = match serde_json::from_str(&stdout) {
-        Ok(pr) => pr,
-        Err(e) => {
-            warn!("Webhook: Failed to parse PR #{} JSON: {}", pr_number, e);
-            return;
-        }
-    };
+    let mut pr_data = Vec::new();
+    for pr_number in &ready_prs {
+        let output = match tokio::process::Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
+            ])
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            Err(e) => {
+                warn!(
+                    "Pending review spawn: failed to fetch PR #{}: {}",
+                    pr_number, e
+                );
+                continue;
+            }
+        };
 
-    // Check the PR is still open
-    let pr_state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("");
-    if pr_state != "OPEN" {
-        debug!(
-            "Webhook: PR #{} is no longer open (state={}), skipping review",
-            pr_number, pr_state
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "Pending review spawn: gh pr view #{} failed: {}",
+                pr_number, stderr
+            );
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        match serde_json::from_str::<serde_json::Value>(&stdout) {
+            Ok(pr) => {
+                let pr_state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                if pr_state != "OPEN" {
+                    debug!(
+                        "Pending review spawn: PR #{} is no longer open (state={}), skipping",
+                        pr_number, pr_state
+                    );
+                    continue;
+                }
+                pr_data.push(pr);
+            }
+            Err(e) => {
+                warn!(
+                    "Pending review spawn: failed to parse PR #{} JSON: {}",
+                    pr_number, e
+                );
+            }
+        }
+    }
+
+    if !pr_data.is_empty() {
+        info!(
+            "Processing {} pending review spawn(s) from webhook queue",
+            pr_data.len()
         );
-        return;
+        spawn_reviewers_for_prs(state, &pr_data).await;
     }
-
-    // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
-    spawn_reviewers_for_prs(state, &[pr]).await;
 }
 
 /// Check if a PR has a review comment from a Claude coworker.

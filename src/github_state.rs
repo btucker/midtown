@@ -16,6 +16,16 @@ use tracing::{debug, warn};
 /// Mirrors PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS from the in-memory tracker.
 pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
 
+/// A pending review spawn scheduled by a webhook event.
+///
+/// Instead of fire-and-forget `tokio::spawn` + `sleep`, we persist these so they
+/// survive daemon restarts. The daemon tick loop drains ready entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingReviewSpawn {
+    pub pr_number: u64,
+    pub spawn_after: DateTime<Utc>,
+}
+
 /// Persistent state for GitHub-related data.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GitHubState {
@@ -28,6 +38,11 @@ pub struct GitHubState {
     /// This cache eliminates redundant `gh pr view` calls on every poll cycle.
     #[serde(default)]
     pub reviewed_prs: std::collections::HashSet<u64>,
+
+    /// Webhook-triggered review spawns waiting for their delay to elapse.
+    /// Persisted so they survive daemon restarts.
+    #[serde(default)]
+    pub pending_review_spawns: Vec<PendingReviewSpawn>,
 }
 
 /// A PR reviewer assignment record.
@@ -252,6 +267,50 @@ impl GitHubState {
 
         // Also clean up review cache for closed PRs
         self.cleanup_closed_review_cache(open_pr_numbers);
+    }
+
+    /// Schedule a review spawn after a delay (in seconds from now).
+    ///
+    /// Deduplicates: if a spawn for this PR is already pending, it is not added again.
+    pub fn schedule_review_spawn(&mut self, pr_number: u64, delay_secs: u64) {
+        if self
+            .pending_review_spawns
+            .iter()
+            .any(|p| p.pr_number == pr_number)
+        {
+            debug!(
+                "Review spawn for PR #{} already pending, skipping duplicate",
+                pr_number
+            );
+            return;
+        }
+        let spawn_after = Utc::now() + chrono::Duration::seconds(delay_secs as i64);
+        self.pending_review_spawns.push(PendingReviewSpawn {
+            pr_number,
+            spawn_after,
+        });
+        debug!(
+            "Scheduled review spawn for PR #{} at {}",
+            pr_number, spawn_after
+        );
+    }
+
+    /// Drain and return PR numbers whose delay has elapsed.
+    pub fn take_ready_review_spawns(&mut self) -> Vec<u64> {
+        let now = Utc::now();
+        let (ready, pending): (Vec<_>, Vec<_>) = self
+            .pending_review_spawns
+            .drain(..)
+            .partition(|p| now >= p.spawn_after);
+        self.pending_review_spawns = pending;
+        ready.into_iter().map(|p| p.pr_number).collect()
+    }
+
+    /// Remove pending review spawns for PRs that are no longer open.
+    pub fn cleanup_pending_spawns(&mut self, open_pr_numbers: &[u64]) {
+        let open_set: std::collections::HashSet<_> = open_pr_numbers.iter().collect();
+        self.pending_review_spawns
+            .retain(|p| open_set.contains(&p.pr_number));
     }
 }
 
@@ -525,5 +584,75 @@ mod tests {
         assert_eq!(assignments.len(), 1);
         assert!(!assignments.contains_key(&42));
         assert!(assignments.contains_key(&43));
+    }
+
+    #[test]
+    fn test_schedule_review_spawn() {
+        let mut state = GitHubState::default();
+        state.schedule_review_spawn(42, 60);
+        assert_eq!(state.pending_review_spawns.len(), 1);
+        assert_eq!(state.pending_review_spawns[0].pr_number, 42);
+    }
+
+    #[test]
+    fn test_schedule_review_spawn_dedup() {
+        let mut state = GitHubState::default();
+        state.schedule_review_spawn(42, 60);
+        state.schedule_review_spawn(42, 60); // duplicate
+        assert_eq!(state.pending_review_spawns.len(), 1);
+    }
+
+    #[test]
+    fn test_take_ready_review_spawns() {
+        let mut state = GitHubState::default();
+
+        // Schedule one that's already past due
+        state.pending_review_spawns.push(PendingReviewSpawn {
+            pr_number: 10,
+            spawn_after: Utc::now() - chrono::Duration::seconds(1),
+        });
+        // Schedule one that's still in the future
+        state.pending_review_spawns.push(PendingReviewSpawn {
+            pr_number: 20,
+            spawn_after: Utc::now() + chrono::Duration::seconds(3600),
+        });
+
+        let ready = state.take_ready_review_spawns();
+        assert_eq!(ready, vec![10]);
+        // The future one should remain
+        assert_eq!(state.pending_review_spawns.len(), 1);
+        assert_eq!(state.pending_review_spawns[0].pr_number, 20);
+    }
+
+    #[test]
+    fn test_cleanup_pending_spawns_removes_closed() {
+        let mut state = GitHubState::default();
+        state.schedule_review_spawn(10, 60);
+        state.schedule_review_spawn(20, 60);
+        state.schedule_review_spawn(30, 60);
+
+        // Only PR 10 and 30 are still open
+        state.cleanup_pending_spawns(&[10, 30]);
+
+        let prs: Vec<u64> = state
+            .pending_review_spawns
+            .iter()
+            .map(|p| p.pr_number)
+            .collect();
+        assert_eq!(prs, vec![10, 30]);
+    }
+
+    #[test]
+    fn test_pending_review_spawns_persist() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("github-state.json");
+
+        let mut state = GitHubState::default();
+        state.schedule_review_spawn(42, 60);
+        state.save(&path).unwrap();
+
+        let loaded = GitHubState::load(&path).unwrap();
+        assert_eq!(loaded.pending_review_spawns.len(), 1);
+        assert_eq!(loaded.pending_review_spawns[0].pr_number, 42);
     }
 }
