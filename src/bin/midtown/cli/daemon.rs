@@ -557,33 +557,8 @@ pub fn handle_start(
         // Set up hook to update status bar color based on active window
         let _ = midtown::tmux::setup_status_bar_hook(&session);
 
-        // Set up chat TUI based on layout configuration
-        let bin_command = midtown::config::get_bin_command();
-        let (chat_layout, chat_min_width) = midtown::config::get_chat_layout();
-
-        // Determine whether to use split or window layout
-        let use_split = match chat_layout {
-            midtown::config::ChatLayout::Split => true,
-            midtown::config::ChatLayout::Window => false,
-            midtown::config::ChatLayout::Auto => {
-                // Check terminal width and use split if wide enough
-                midtown::tmux::get_session_width(&session)
-                    .map(|w| w >= chat_min_width)
-                    .unwrap_or(true) // Default to split if can't determine width
-            }
-        };
-
-        if use_split {
-            // Split layout: chat pane on the right (30% width)
-            if let Err(e) = midtown::tmux::create_chat_split(&session, &bin_command) {
-                eprintln!("Warning: Failed to create chat split: {}", e);
-            }
-        } else {
-            // Window layout: chat in separate window
-            if let Err(e) = midtown::tmux::create_chat_window(&session, &bin_command) {
-                eprintln!("Warning: Failed to create chat window: {}", e);
-            }
-        }
+        // Set up chat TUI (split pane or separate window based on config)
+        midtown::tmux::setup_chat_pane(&session);
 
         // Write marker file indicating Lead was initialized by midtown
         let marker_path = lead_initialized_marker(&primary_repo);
@@ -1097,6 +1072,9 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
             &claude_cmd,
         ])
         .status();
+
+    // Set up chat pane (split or separate window based on config)
+    midtown::tmux::setup_chat_pane(session);
 
     // Write the marker file
     if let Some(parent) = marker_path.parent() {
