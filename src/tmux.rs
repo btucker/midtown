@@ -1682,7 +1682,7 @@ Claude is now processing the request
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--settings /tmp/settings.json"));
         assert!(cmd.contains("--append-system-prompt \"$(cat /tmp/prompt.txt)\""));
-        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; exec claude"));
+        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; claude"));
         assert!(!cmd.contains("-p "));
     }
 
