@@ -908,7 +908,7 @@ fn build_claude_command(
     };
 
     format!(
-        "{}; claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"{}",
+        "{}; exec claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"{}",
         env_vars,
         session_flag,
         add_dir_flags,
@@ -1062,7 +1062,7 @@ fn build_lead_command(
     add_dir_flags: &str,
 ) -> String {
     format!(
-        "export CLAUDE_CODE_TASK_LIST_ID='{}'; claude --dangerously-skip-permissions --settings {} --append-system-prompt \"$(cat {})\"{}",
+        "export CLAUDE_CODE_TASK_LIST_ID='{}'; exec claude --dangerously-skip-permissions --settings {} --append-system-prompt \"$(cat {})\"{}",
         task_list_id,
         settings_file.display(),
         prompt_file.display(),
@@ -1705,7 +1705,7 @@ Claude is now processing the request
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--settings /tmp/settings.json"));
         assert!(cmd.contains("--append-system-prompt \"$(cat /tmp/prompt.txt)\""));
-        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; claude"));
+        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; exec claude"));
         assert!(!cmd.contains("-p "));
     }
 
