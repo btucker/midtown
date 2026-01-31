@@ -1106,6 +1106,35 @@ pub fn get_session_width(session: &str) -> Option<u16> {
     width_str.trim().parse().ok()
 }
 
+/// Set up the chat pane for the lead session.
+///
+/// Determines whether to use a split pane or separate window based on
+/// the chat layout configuration and terminal width, then creates the
+/// appropriate chat interface.
+///
+/// This is the single entry point for chat pane setup — used both during
+/// initial session creation and when recreating the lead window.
+pub fn setup_chat_pane(session: &str) {
+    let bin_command = crate::config::get_bin_command();
+    let (chat_layout, chat_min_width) = crate::config::get_chat_layout();
+
+    let use_split = match chat_layout {
+        crate::config::ChatLayout::Split => true,
+        crate::config::ChatLayout::Window => false,
+        crate::config::ChatLayout::Auto => get_session_width(session)
+            .map(|w| w >= chat_min_width)
+            .unwrap_or(true),
+    };
+
+    if use_split {
+        if let Err(e) = create_chat_split(session, &bin_command) {
+            eprintln!("Warning: Failed to create chat split: {}", e);
+        }
+    } else if let Err(e) = create_chat_window(session, &bin_command) {
+        eprintln!("Warning: Failed to create chat window: {}", e);
+    }
+}
+
 /// Create a new window in the session for the chat TUI.
 ///
 /// This is used when the terminal is too narrow for a split layout.
