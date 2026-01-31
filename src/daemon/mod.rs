@@ -336,10 +336,6 @@ pub(crate) struct DaemonState {
     /// This doesn't reduce API calls, but avoids redundant lock acquisition and issue detection
     /// when the PR state hasn't changed between poll cycles.
     last_pr_poll_hash: Mutex<u64>,
-    /// In-memory cache of PR numbers with confirmed Claude reviews.
-    /// Mirrors `GitHubState.reviewed_prs` for fast lookup without locking github_state.
-    /// Review status is monotonic — once cached, never removed (except for closed PRs).
-    reviewed_prs_cache: std::sync::RwLock<HashSet<u64>>,
     /// Unified cache for PR-to-coworker mappings (open + merged).
     pr_coworker_cache: std::sync::RwLock<PrCoworkerCache>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
@@ -419,9 +415,6 @@ impl DaemonState {
                 crate::github_state::GitHubState::default()
             });
 
-        // Seed the in-memory review cache from persistent state
-        let reviewed_prs_cache = github_state.reviewed_prs.clone();
-
         // Load persistent reminder state
         let reminder_path = crate::paths::reminders_file_for_repo(&repo_name);
         let reminder_state =
@@ -449,7 +442,6 @@ impl DaemonState {
             lead_typing: std::sync::Mutex::new(trackers::LeadTypingState::default()),
             reminder_state: std::sync::Mutex::new(reminder_state),
             last_pr_poll_hash: Mutex::new(0),
-            reviewed_prs_cache: std::sync::RwLock::new(reviewed_prs_cache),
             pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
@@ -991,8 +983,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         "Webhook: caching review status for PR #{} (review comment detected)",
                         pr_number
                     );
-                    let mut cache = state.reviewed_prs_cache.write().unwrap();
-                    cache.insert(pr_number);
+                    let mut github_state = state.github_state.lock().await;
+                    github_state.mark_reviewed_pr(pr_number);
                 }
 
                 // Route @mentions in webhook messages directly (chat monitor skips
@@ -1329,7 +1321,7 @@ async fn check_and_shutdown_idle_coworkers(
             match pr_number {
                 Some(pr) => {
                     // Check if review was actually posted
-                    if pr_has_claude_review(pr, state) {
+                    if pr_has_claude_review(pr, state).await {
                         info!(
                             "Sending reviewer {} on a break (review verified for PR #{})",
                             name, pr
@@ -2389,19 +2381,8 @@ async fn poll_prs_for_issues(
         let mut github_state = state.github_state.lock().await;
         github_state.cleanup_closed_prs(&open_pr_numbers);
         github_state.cleanup_expired_preserving(&active_coworker_names);
-        // Sync in-memory review cache to persistent state before saving
-        {
-            let cache = state.reviewed_prs_cache.read().unwrap();
-            github_state.reviewed_prs = cache.clone();
-        }
         if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
             warn!("Failed to save github-state.json after cleanup: {}", e);
-        }
-        // Also clean up the in-memory cache for closed PRs
-        {
-            let mut cache = state.reviewed_prs_cache.write().unwrap();
-            let open_set: HashSet<u64> = open_pr_numbers.iter().copied().collect();
-            cache.retain(|pr| open_set.contains(pr));
         }
     }
 
@@ -2870,7 +2851,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // are detected even when a reviewer is still tracked as assigned
         // (e.g., after a daemon restart or when the reviewer posted a comment
         // instead of a formal GitHub review).
-        if pr_has_claude_review(pr_number, state) {
+        if pr_has_claude_review(pr_number, state).await {
             debug!("PR #{} already has a Claude review", pr_number);
 
             // Before cleaning up the assignment, check if the reviewer is still running.
@@ -3201,18 +3182,18 @@ async fn process_pending_review_spawns(state: &DaemonState) {
 
 /// Check if a PR has a review comment from a Claude coworker.
 ///
-/// First checks the in-memory cache (populated from persistent state on startup).
-/// If not cached, makes API calls to check formal reviews and comments, then
-/// caches positive results permanently (review status is monotonic).
+/// Checks `github_state.reviewed_prs` first (populated from persistent state on startup
+/// and updated by webhooks). If not found, makes API calls to verify, then caches
+/// positive results in `github_state` (review status is monotonic).
 ///
 /// Checks both formal reviews (`.reviews[].body`) and comments (`.comments[].body`)
 /// since coworkers use comments for reviews (they share one GitHub user and can't
 /// approve their own PRs).
-fn pr_has_claude_review(pr_number: u64, state: &DaemonState) -> bool {
-    // Fast path: check in-memory cache
+async fn pr_has_claude_review(pr_number: u64, state: &DaemonState) -> bool {
+    // Fast path: check persistent state
     {
-        let cache = state.reviewed_prs_cache.read().unwrap();
-        if cache.contains(&pr_number) {
+        let github_state = state.github_state.lock().await;
+        if github_state.has_cached_review(pr_number) {
             debug!(
                 "PR #{} has cached Claude review (skipping API call)",
                 pr_number
@@ -3226,8 +3207,8 @@ fn pr_has_claude_review(pr_number: u64, state: &DaemonState) -> bool {
 
     // Cache positive results (review status is monotonic)
     if has_review {
-        let mut cache = state.reviewed_prs_cache.write().unwrap();
-        cache.insert(pr_number);
+        let mut github_state = state.github_state.lock().await;
+        github_state.mark_reviewed_pr(pr_number);
     }
 
     has_review
