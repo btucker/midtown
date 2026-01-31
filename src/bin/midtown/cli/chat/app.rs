@@ -1,5 +1,6 @@
 //! Application state and logic for the chat TUI
 
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1038,10 +1039,42 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
     Some((prs, merged_prs, repos))
 }
 
+/// Cache for default branch names, keyed by repo full name (or empty string for current repo).
+/// Avoids an API call on every repo status refresh since the default branch rarely changes.
+static DEFAULT_BRANCH_CACHE: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
+/// Look up cached default branch for the given repo key.
+fn cached_default_branch(key: &str) -> Option<String> {
+    DEFAULT_BRANCH_CACHE
+        .lock()
+        .ok()?
+        .as_ref()?
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+/// Store a default branch in the cache.
+fn cache_default_branch(key: &str, branch: &str) {
+    if let Ok(mut guard) = DEFAULT_BRANCH_CACHE.lock() {
+        let entries = guard.get_or_insert_with(Vec::new);
+        if let Some(entry) = entries.iter_mut().find(|(k, _)| k == key) {
+            entry.1 = branch.to_string();
+        } else {
+            entries.push((key.to_string(), branch.to_string()));
+        }
+    }
+}
+
 /// Detect the default branch for a repository.
 ///
-/// Uses `gh api` to query the default branch from GitHub. Falls back to "main".
+/// Uses a process-lifetime cache to avoid repeated API calls, since the
+/// default branch rarely changes. Falls back to "main" on API failure.
 fn detect_default_branch_for_repo(repo_full_name: Option<&str>) -> String {
+    let cache_key = repo_full_name.unwrap_or("");
+    if let Some(cached) = cached_default_branch(cache_key) {
+        return cached;
+    }
     let api_path = match repo_full_name {
         Some(name) => format!("repos/{}", name),
         None => "repos/{owner}/{repo}".to_string(),
@@ -1053,10 +1086,13 @@ fn detect_default_branch_for_repo(repo_full_name: Option<&str>) -> String {
     {
         let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !branch.is_empty() {
+            cache_default_branch(cache_key, &branch);
             return branch;
         }
     }
-    "main".to_string()
+    let fallback = "main".to_string();
+    cache_default_branch(cache_key, &fallback);
+    fallback
 }
 
 /// Fetch repository status (commit, CI status, release) from GitHub using gh CLI.
