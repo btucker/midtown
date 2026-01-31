@@ -196,3 +196,63 @@ impl StuckConditionTracker {
             .retain(|_, (first_detected, _)| first_detected.elapsed() < cutoff);
     }
 }
+
+// ---------------------------------------------------------------------------
+// OrphanTracker
+// ---------------------------------------------------------------------------
+
+/// How long before re-warning about the same orphaned worktree (1 hour).
+const ORPHAN_WARN_COOLDOWN: Duration = Duration::from_secs(3600);
+
+/// Tracks orphaned worktrees with detection time and warning cooldown.
+///
+/// Unlike a plain `HashSet<String>`, this allows re-warning after a cooldown
+/// period and automatically prunes entries for worktrees that no longer exist.
+#[derive(Debug, Default)]
+pub struct OrphanTracker {
+    entries: HashMap<String, OrphanEntry>,
+}
+
+#[derive(Debug)]
+struct OrphanEntry {
+    #[allow(dead_code)]
+    first_detected: Instant,
+    warned_at: Option<Instant>,
+}
+
+impl OrphanTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Track an orphaned worktree. No-op if already tracked.
+    pub fn track(&mut self, name: String) {
+        self.entries.entry(name).or_insert(OrphanEntry {
+            first_detected: Instant::now(),
+            warned_at: None,
+        });
+    }
+
+    /// Check if we should warn about this orphan (never warned, or cooldown expired).
+    pub fn should_warn(&self, name: &str) -> bool {
+        match self.entries.get(name) {
+            Some(entry) => match entry.warned_at {
+                None => true,
+                Some(warned) => warned.elapsed() >= ORPHAN_WARN_COOLDOWN,
+            },
+            None => false,
+        }
+    }
+
+    /// Record that we warned about this orphan.
+    pub fn record_warn(&mut self, name: &str) {
+        if let Some(entry) = self.entries.get_mut(name) {
+            entry.warned_at = Some(Instant::now());
+        }
+    }
+
+    /// Remove entries for worktrees that are no longer in the flagged set.
+    pub fn prune(&mut self, still_flagged: &[String]) {
+        self.entries.retain(|name, _| still_flagged.contains(name));
+    }
+}

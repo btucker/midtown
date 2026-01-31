@@ -20,7 +20,9 @@ pub use constants::{
 };
 use effects::Effect;
 use helpers::*;
-pub use trackers::{PrIssueTracker, PrIssueType, StuckConditionTracker, StuckConditionType};
+pub use trackers::{
+    OrphanTracker, PrIssueTracker, PrIssueType, StuckConditionTracker, StuckConditionType,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -274,8 +276,6 @@ pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
-    /// Tracks message IDs that have already triggered a nudge to Lead (to avoid duplicates)
-    nudged_messages: std::sync::RwLock<HashSet<String>>,
     /// Per-coworker lifecycle phase (idle, interrupted, prompted).
     /// Replaces separate `idle_since`, `interrupted_since`, `prompted_nudged` maps.
     coworker_phases: RwLock<HashMap<String, crate::rules::CoworkerPhase>>,
@@ -289,8 +289,8 @@ pub(crate) struct DaemonState {
     all_repo_paths: Vec<PathBuf>,
     /// Unified cooldown tracker for orphan spawning and task nudge rate limiting.
     cooldowns: std::sync::Mutex<crate::rules::CooldownTracker>,
-    /// Tracks orphaned worktrees that have already been warned about (dedup across poll cycles)
-    warned_orphans: std::sync::RwLock<HashSet<String>>,
+    /// Tracks orphaned worktrees — detection time, warning cooldown, and auto-pruning
+    orphan_tracker: std::sync::RwLock<OrphanTracker>,
     /// Persistent GitHub state (PR reviewer assignments, etc.)
     github_state: Mutex<crate::github_state::GitHubState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
@@ -320,8 +320,6 @@ pub(crate) struct DaemonState {
     /// Contains `headRefName` from each open PR, allowing `get_coworkers_with_open_prs`
     /// to reuse poll data instead of making a separate `gh pr list` call.
     cached_open_pr_branches: std::sync::RwLock<Vec<String>>,
-    /// When merged PRs were last fetched (for reducing poll frequency).
-    last_merged_prs_fetch: std::sync::Mutex<Option<Instant>>,
     /// Cached coworker names from recently merged PRs.
     cached_merged_pr_coworkers: std::sync::RwLock<HashSet<String>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
@@ -418,14 +416,13 @@ impl DaemonState {
             coworkers,
             channel,
             socket_path,
-            nudged_messages: std::sync::RwLock::new(HashSet::new()),
             coworker_phases: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             repo_name,
             default_branch,
             all_repo_paths,
             cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),
-            warned_orphans: std::sync::RwLock::new(HashSet::new()),
+            orphan_tracker: std::sync::RwLock::new(OrphanTracker::new()),
             github_state: Mutex::new(github_state),
             web_updates_tx,
             max_coworkers,
@@ -436,7 +433,6 @@ impl DaemonState {
             last_pr_poll_hash: Mutex::new(0),
             reviewed_prs_cache: std::sync::RwLock::new(reviewed_prs_cache),
             cached_open_pr_branches: std::sync::RwLock::new(Vec::new()),
-            last_merged_prs_fetch: std::sync::Mutex::new(None),
             cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             last_coworker_activity: std::sync::RwLock::new(HashMap::new()),
@@ -1727,13 +1723,14 @@ const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
 /// Uses a time-based cache to reduce API calls. Merged PR status is only refreshed
 /// every 5 minutes since merge events aren't time-critical.
 fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
-    // Check if we need to refresh
+    // Check if we need to refresh (uses CooldownTracker instead of standalone timestamp)
     let needs_refresh = {
-        let last_fetch = state.last_merged_prs_fetch.lock().unwrap();
-        match *last_fetch {
-            Some(t) => t.elapsed() >= Duration::from_secs(MERGED_PRS_FETCH_INTERVAL_SECS),
-            None => true,
-        }
+        let cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.check(
+            "merged_pr_fetch",
+            "global",
+            Duration::from_secs(MERGED_PRS_FETCH_INTERVAL_SECS),
+        )
     };
 
     if !needs_refresh {
@@ -1782,8 +1779,8 @@ fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
         *cached = result.clone();
     }
     {
-        let mut last_fetch = state.last_merged_prs_fetch.lock().unwrap();
-        *last_fetch = Some(Instant::now());
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.record("merged_pr_fetch", "global");
     }
 
     result
@@ -2309,6 +2306,10 @@ async fn poll_prs_for_issues(
     {
         let mut github_state = state.github_state.lock().await;
         github_state.cleanup_expired_preserving(&active_coworker_names);
+    }
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.cleanup(Duration::from_secs(7200)); // 2 hours
     }
 
     // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
@@ -3696,17 +3697,17 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
             // Nudge the Lead when a coworker explicitly mentions @lead
             let content_lower = content.to_lowercase();
             if is_coworker_sender(from) && content_lower.contains("@lead") {
-                // Use message ID to avoid duplicate nudges
+                // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)
                 let should_nudge = {
-                    let nudged = state.nudged_messages.read().unwrap();
-                    !nudged.contains(&msg.id)
+                    let cooldowns = state.cooldowns.lock().unwrap();
+                    cooldowns.check("lead_mention", &msg.id, Duration::from_secs(3600))
                 };
 
                 if should_nudge {
                     // Record that we're nudging for this message
                     {
-                        let mut nudged = state.nudged_messages.write().unwrap();
-                        nudged.insert(msg.id.clone());
+                        let mut cooldowns = state.cooldowns.lock().unwrap();
+                        cooldowns.record("lead_mention", &msg.id);
                     }
 
                     // Truncate message for nudge (max 100 chars)
@@ -5072,37 +5073,32 @@ fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<effec
 fn cleanup_orphaned_worktrees(state: &DaemonState) {
     let flagged = state.coworkers.cleanup_orphaned_worktrees();
 
-    // Prune warned_orphans: remove entries for worktrees that are no longer
-    // flagged (they were cleaned up or manually deleted). This ensures that
-    // if a reused coworker name becomes orphaned again, it will trigger a
-    // new warning.
-    {
-        let mut warned = state.warned_orphans.write().unwrap();
-        warned.retain(|name| flagged.contains(name));
-    }
+    let mut tracker = state.orphan_tracker.write().unwrap();
 
-    // Filter out worktrees we've already warned about (dedup across poll cycles)
-    let already_warned = state.warned_orphans.read().unwrap();
-    let new_flags: Vec<_> = flagged
+    // Prune entries for worktrees that are no longer flagged
+    tracker.prune(&flagged);
+
+    // Track newly flagged worktrees and collect those due for a warning
+    let due_for_warning: Vec<_> = flagged
         .into_iter()
-        .filter(|name| !already_warned.contains(name))
+        .filter(|name| {
+            tracker.track(name.clone());
+            tracker.should_warn(name)
+        })
         .collect();
-    drop(already_warned);
 
-    if new_flags.is_empty() {
+    if due_for_warning.is_empty() {
         return;
     }
 
-    // Record these as warned
-    {
-        let mut warned = state.warned_orphans.write().unwrap();
-        for name in &new_flags {
-            warned.insert(name.clone());
-        }
+    // Record warnings
+    for name in &due_for_warning {
+        tracker.record_warn(name);
     }
+    drop(tracker);
 
     // Notify @lead about orphaned worktrees with unmerged commits
-    let names_list = new_flags.join(", ");
+    let names_list = due_for_warning.join(", ");
     let msg = Message::system(format!(
         "⚠️ @lead Orphaned worktrees with unmerged commits: {}. \
          Please investigate and decide whether to merge or delete these branches.",
