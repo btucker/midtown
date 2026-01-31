@@ -405,17 +405,31 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
             // RPC returns "ci_status" / "reviewer" / "reviewed_at"; gh CLI returns
             // "isDraft" / "reviewDecision". Handle both shapes.
-            let status = if let Some(ci) = pr.get("ci_status").and_then(|v| v.as_str()) {
-                // RPC shape — ci_status is already a string like "passed", "failed", etc.
-                // but we need PR review status, not CI status. Use reviewer presence.
-                if pr.get("reviewer").and_then(|v| v.as_str()).is_some() {
+            // Look up reviewer from persistent state (covers both RPC and CLI shapes)
+            let assignment = github_state.pr_reviewers.get(&pr_number);
+            let reviewer = pr
+                .get("reviewer")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| assignment.map(|a| a.reviewer.clone()));
+            let reviewer_assigned_at = assignment.map(|a| a.assigned_at.to_rfc3339());
+            // Prefer review_posted from RPC response (computed from actual PR comments),
+            // fall back to persistent local state for the CLI path
+            let review_posted = pr
+                .get("review_posted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| github_state.reviewed_prs.contains(&pr_number));
+            let status = if pr.get("ci_status").is_some() {
+                // RPC shape: derive review status from review_posted and reviewer
+                if review_posted {
                     "reviewed"
+                } else if reviewer.is_some() {
+                    "awaiting review"
                 } else {
-                    let _ = ci; // suppress unused warning
                     "open"
                 }
             } else {
-                // gh CLI shape
+                // gh CLI shape: use isDraft and reviewDecision fields
                 let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
                 if is_draft {
                     "draft"
@@ -432,15 +446,6 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                     }
                 }
             };
-            // Look up reviewer from persistent state (covers both RPC and CLI shapes)
-            let assignment = github_state.pr_reviewers.get(&pr_number);
-            let reviewer = pr
-                .get("reviewer")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| assignment.map(|a| a.reviewer.clone()));
-            let reviewer_assigned_at = assignment.map(|a| a.assigned_at.to_rfc3339());
-            let review_posted = github_state.reviewed_prs.contains(&pr_number);
             // Extract author: RPC uses flat "author" string, CLI uses {"login": ...}
             let author = pr
                 .get("author")
