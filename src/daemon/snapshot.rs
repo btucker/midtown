@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 
 use crate::coworker::Coworker;
 use crate::rules::CoworkerSnapshot;
+use crate::tasks::Task;
 
 use super::DaemonState;
 
@@ -45,6 +46,12 @@ pub struct WorldSnapshot {
     pub in_progress_tasks: Vec<(String, String, String)>,
     /// Names of coworkers who are busy (have in-progress tasks), lowercase.
     pub busy_coworkers: HashSet<String>,
+    /// All tasks from disk (for relationship lookups).
+    pub all_tasks: Vec<Task>,
+    /// Pending tasks that have an owner: `(task_id, subject, owner)`.
+    pub pending_tasks_with_owners: Vec<(String, String, String)>,
+    /// Pending tasks with no owner (unclaimed, past grace period, unblocked).
+    pub pending_tasks_without_owners: Vec<Task>,
 
     // ── PR / GitHub state ───────────────────────────────────────────────
     /// Coworkers who have at least one open PR.
@@ -123,6 +130,9 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
             .into_iter()
             .map(|n| n.to_lowercase())
             .collect();
+    let all_tasks = crate::tasks::read_tasks();
+    let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
+    let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
 
     // ── PR / GitHub state ───────────────────────────────────────────────
     let coworkers_with_open_prs: HashSet<String> = super::get_coworkers_with_open_prs(state)
@@ -166,6 +176,9 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         pane_contents,
         in_progress_tasks,
         busy_coworkers,
+        all_tasks,
+        pending_tasks_with_owners,
+        pending_tasks_without_owners,
         coworkers_with_open_prs,
         coworkers_with_merged_prs,
         active_reviewers,
