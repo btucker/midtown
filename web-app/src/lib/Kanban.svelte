@@ -207,7 +207,7 @@
             </div>
             <div class="card-detail"><span class="pipe">|</span> by: {pr.author}{pr.created_at ? ` (${formatRelativeTime(pr.created_at)})` : ''}</div>
             {#if pr.reviewer}
-              <div class="card-detail"><span class="pipe">|</span> rev: {pr.reviewer}{pr.reviewer_assigned_at ? ` (${formatRelativeTime(pr.reviewer_assigned_at)})` : ''}</div>
+              <div class="card-detail"><span class="pipe">|</span> rev: {pr.reviewer}{pr.review_posted ? ' (done)' : pr.reviewer_assigned_at ? ` (${formatRelativeTime(pr.reviewer_assigned_at)})` : ''}</div>
             {/if}
           </button>
         {/each}
