@@ -132,6 +132,21 @@ fn write_coworker_prompt_file(name: &str, prompt: &str) -> crate::Result<PathBuf
     Ok(path)
 }
 
+/// Write a coworker's initial prompt to a file and return the path.
+///
+/// This is the task/nudge message that the coworker should work on. It's
+/// passed to claude via `-p "$(cat file)"` so it's available at startup
+/// without needing to send keystrokes after the TUI initializes.
+fn write_coworker_initial_prompt_file(name: &str, prompt: &str) -> crate::Result<PathBuf> {
+    let dir = state_dir();
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+
+    let path = dir.join(format!("coworker-{}-initial-prompt.md", name));
+    std::fs::write(&path, prompt).map_err(Error::Io)?;
+
+    Ok(path)
+}
+
 /// Prefix for all midtown tmux sessions.
 pub const SESSION_PREFIX: &str = "midtown-";
 
@@ -879,25 +894,41 @@ fn write_coworker_settings_file(bin_command: &str) -> crate::Result<PathBuf> {
 ///
 /// Returns the full command including env vars, claude flags, and file references.
 /// Extracted for testability — the actual tmux interaction happens in `spawn_claude`.
+///
+/// If `initial_prompt_file` is provided, the prompt is passed as a positional
+/// argument via `$(cat file)` so Claude receives it at startup — no need to
+/// send keystrokes after the TUI initializes.
 fn build_claude_command(
     env_vars: &str,
     session_flag: &str,
     add_dir_flags: &str,
     settings_file: &std::path::Path,
     prompt_file: &std::path::Path,
+    initial_prompt_file: Option<&std::path::Path>,
 ) -> String {
+    let initial_prompt_arg = match initial_prompt_file {
+        Some(path) => format!(" -p \"$(cat {})\"", path.display()),
+        None => String::new(),
+    };
+
     format!(
-        "{}; exec claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        "{}; exec claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"{}",
         env_vars,
         session_flag,
         add_dir_flags,
         settings_file.display(),
-        prompt_file.display()
+        prompt_file.display(),
+        initial_prompt_arg,
     )
 }
 
 /// If `resume` is true, passes `--continue` to claude to resume the previous
 /// session from this worktree, preserving context from the last session.
+///
+/// If `initial_prompt` is provided, it's passed to claude as a `-p` argument
+/// so the coworker receives the task at startup without relying on tmux
+/// keystrokes (which can be lost if sent before the TUI is ready).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_claude(
     session: &str,
     name: &str,
@@ -906,6 +937,7 @@ pub fn spawn_claude(
     resume: bool,
     isolated_tasks: bool,
     additional_dirs: &[PathBuf],
+    initial_prompt: Option<&str>,
 ) -> crate::Result<String> {
     // Get bin_command from project config
     let bin_command = crate::config::get_bin_command();
@@ -954,12 +986,19 @@ pub fn spawn_claude(
         .map(|d| format!(" --add-dir {}", d))
         .collect();
 
+    // Write initial prompt to file if provided (avoids shell quoting issues
+    // and eliminates the timing race of sending keystrokes after spawn)
+    let initial_prompt_file = initial_prompt
+        .map(|p| write_coworker_initial_prompt_file(name, p))
+        .transpose()?;
+
     let command = build_claude_command(
         &env_vars,
         &session_flag,
         &add_dir_flags,
         &settings_file,
         &prompt_file,
+        initial_prompt_file.as_deref(),
     );
 
     // Create window with claude command running directly
@@ -991,6 +1030,7 @@ pub fn spawn_claude(
                 &add_dir_flags,
                 &settings_file,
                 &prompt_file,
+                initial_prompt_file.as_deref(),
             );
 
             create_window(session, name, working_dir, Some(&fresh_command))?;
@@ -1606,6 +1646,7 @@ Claude is now processing the request
             "",
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.txt"),
+            None,
         );
         assert!(cmd.contains("--session-id abc-123"));
         assert!(!cmd.contains("--continue"));
@@ -1613,6 +1654,7 @@ Claude is now processing the request
         assert!(cmd.contains("--settings /tmp/settings.json"));
         assert!(cmd.contains("--append-system-prompt \"$(cat /tmp/prompt.txt)\""));
         assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; exec claude"));
+        assert!(!cmd.contains("-p "));
     }
 
     #[test]
@@ -1623,6 +1665,7 @@ Claude is now processing the request
             "",
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.txt"),
+            None,
         );
         assert!(cmd.contains("--continue"));
         assert!(!cmd.contains("--session-id"));
@@ -1636,6 +1679,7 @@ Claude is now processing the request
             " --add-dir /other/repo --add-dir /another/repo",
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.txt"),
+            None,
         );
         assert!(cmd.contains("--add-dir /other/repo"));
         assert!(cmd.contains("--add-dir /another/repo"));
@@ -1651,6 +1695,7 @@ Claude is now processing the request
             "",
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.txt"),
+            None,
         );
         let fresh_cmd = build_claude_command(
             "export MIDTOWN_AGENT='lex'",
@@ -1658,6 +1703,7 @@ Claude is now processing the request
             "",
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.txt"),
+            None,
         );
 
         // The continue command should have --continue, not --session-id
@@ -1671,5 +1717,33 @@ Claude is now processing the request
         // Both should share the same structure otherwise
         assert!(continue_cmd.contains("--setting-sources project,local"));
         assert!(fresh_cmd.contains("--setting-sources project,local"));
+    }
+
+    #[test]
+    fn test_build_claude_command_with_initial_prompt() {
+        let cmd = build_claude_command(
+            "export MIDTOWN_AGENT='lex'",
+            " --session-id abc-123",
+            "",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+            Some(std::path::Path::new("/tmp/initial-prompt.md")),
+        );
+        assert!(cmd.contains("-p \"$(cat /tmp/initial-prompt.md)\""));
+        // The -p flag should come after the other flags
+        assert!(cmd.contains("--append-system-prompt"));
+    }
+
+    #[test]
+    fn test_build_claude_command_without_initial_prompt() {
+        let cmd = build_claude_command(
+            "export MIDTOWN_AGENT='lex'",
+            " --session-id abc-123",
+            "",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+            None,
+        );
+        assert!(!cmd.contains("-p "));
     }
 }
