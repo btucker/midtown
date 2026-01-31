@@ -417,6 +417,15 @@ impl DaemonState {
         })
     }
 
+    /// Clear stale coworker activity tracking for a given name.
+    ///
+    /// Called when a coworker is spawned/respawned to prevent the silent-coworker
+    /// detector from using timestamps from a previous incarnation.
+    fn clear_coworker_activity(&self, name: &str) {
+        let mut activity = self.last_coworker_activity.write().unwrap();
+        activity.remove(name);
+    }
+
     /// Send a message to the channel and broadcast it to WebSocket clients.
     fn send_and_broadcast(&self, message: &Message) -> crate::Result<()> {
         self.channel.send(message)?;
@@ -2113,6 +2122,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                 {
                     Ok(_) => {
                         info!("Spawned coworker {} via @mention", n);
+                        state.clear_coworker_activity(n);
                         let spawn_msg = Message::text(
                             "midtown",
                             format!("🚀 Called in {} in response to @mention", n),
@@ -2435,6 +2445,7 @@ async fn poll_prs_for_issues(
                                 "Spawned {} to address {} on PR #{}",
                                 o, issue_type, pr_number
                             );
+                            state.clear_coworker_activity(o);
                             state.broadcast_coworker_update(o, "running", None);
                             let call_msg = Message::text(
                                 "midtown",
@@ -2629,19 +2640,10 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
             let last_activity = activity.get(name.as_str());
             let is_silent = match last_activity {
                 Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
-                None => {
-                    // No activity recorded — coworker may have just started.
-                    // Check if they're past the minimum lifetime.
-                    if let Some(cw) = state.coworkers.get(name) {
-                        let age = chrono::Utc::now()
-                            .signed_duration_since(cw.started_at)
-                            .num_seconds()
-                            .max(0) as u64;
-                        age >= STUCK_SILENT_COWORKER_DURATION.as_secs()
-                    } else {
-                        false
-                    }
-                }
+                // No activity recorded — coworker hasn't posted to channel yet.
+                // They're still initializing (loading plugins, restoring session, etc.).
+                // Only start the silence clock after their first channel message.
+                None => false,
             };
 
             if is_silent {
@@ -2655,13 +2657,42 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
                         })
                         .unwrap_or_else(|| "their task".to_string());
 
-                    let nudge = format!(
-                        "@lead {} has been silent on {} for over {} minutes",
-                        name,
-                        task_info,
-                        STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
-                    );
-                    nudge_lead_stuck(state, &nudge);
+                    let prior_nudges =
+                        tracker.nudge_count(name, StuckConditionType::SilentCoworker);
+
+                    if prior_nudges == 0 {
+                        // First nudge: ask the coworker directly before escalating
+                        let nudge_msg = format!(
+                            "Status check — you've been quiet on {} for over {} minutes. \
+                             Are you stuck or still working?",
+                            task_info,
+                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                        );
+                        if let Err(e) = state.coworkers.nudge(name, &nudge_msg) {
+                            warn!("Failed to nudge silent coworker {}: {}", name, e);
+                        }
+                        // Post to channel so it's visible
+                        let channel_msg = Message::system(format!(
+                            "⚠️ Nudging {} — silent on {} for over {} minutes",
+                            name,
+                            task_info,
+                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                        ));
+                        if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                            warn!("Failed to post silent coworker nudge to channel: {}", e);
+                        }
+                    } else {
+                        // Escalation: coworker didn't respond, notify lead
+                        let nudge = format!(
+                            "@lead {} has been silent on {} for over {} minutes \
+                             (nudged {} previously with no response)",
+                            name,
+                            task_info,
+                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                            name,
+                        );
+                        nudge_lead_stuck(state, &nudge);
+                    }
                     tracker.record_nudge(name, StuckConditionType::SilentCoworker);
                     nudge_count += 1;
                 }
@@ -2919,6 +2950,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                         "Spawned {} to address completed review on PR #{}",
                                         o, pr_number
                                     );
+                                    state.clear_coworker_activity(o);
                                     state.broadcast_coworker_update(o, "running", None);
                                     let call_msg = Message::text(
                                         "midtown",
@@ -4695,6 +4727,7 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
                         "Spawned {} to address review feedback on PR #{}",
                         o, pr_number
                     );
+                    state.clear_coworker_activity(o);
                     let call_msg = Message::text(
                         "daemon",
                         format!(
@@ -4814,6 +4847,7 @@ fn check_and_recover_orphans(
     {
         Ok(_) => {
             info!("Respawned coworker {} successfully", recovery.owner);
+            state.clear_coworker_activity(&recovery.owner);
             vec![
                 Effect::BroadcastCoworkerUpdate {
                     name: recovery.owner.clone(),
@@ -5211,6 +5245,7 @@ fn spawn_for_pending_tasks(
                 {
                     Ok(_) => {
                         info!("Spawned coworker {} for pending task #{}", o, tid);
+                        state.clear_coworker_activity(o);
                         effects.push(Effect::BroadcastCoworkerUpdate {
                             name: o.clone(),
                             status: "running".to_string(),
@@ -5389,6 +5424,7 @@ fn spawn_for_pending_tasks(
                         "Spawned coworker {} for pre-assigned task #{}",
                         coworker_name, task.id
                     );
+                    state.clear_coworker_activity(&coworker_name);
                     effects.push(Effect::BroadcastCoworkerUpdate {
                         name: coworker_name.clone(),
                         status: "running".to_string(),
@@ -6069,6 +6105,55 @@ mod tests {
         assert_eq!(
             StuckConditionType::ReviewBacklog.to_string(),
             "review backlog"
+        );
+    }
+
+    #[test]
+    fn test_stuck_tracker_nudge_count() {
+        let mut tracker = StuckConditionTracker::new();
+
+        // Not tracked yet — nudge count is 0
+        assert_eq!(
+            tracker.nudge_count("lex", StuckConditionType::SilentCoworker),
+            0
+        );
+
+        // Track and first nudge
+        tracker.track("lex", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("lex", StuckConditionType::SilentCoworker),
+            0
+        );
+
+        tracker.record_nudge("lex", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("lex", StuckConditionType::SilentCoworker),
+            1
+        );
+
+        // Second nudge (would be escalation)
+        tracker.record_nudge("lex", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("lex", StuckConditionType::SilentCoworker),
+            2
+        );
+    }
+
+    #[test]
+    fn test_stuck_tracker_nudge_count_cleared_on_clear() {
+        let mut tracker = StuckConditionTracker::new();
+        tracker.track("lex", StuckConditionType::SilentCoworker);
+        tracker.record_nudge("lex", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("lex", StuckConditionType::SilentCoworker),
+            1
+        );
+
+        // Clear resets everything
+        tracker.clear("lex", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("lex", StuckConditionType::SilentCoworker),
+            0
         );
     }
 

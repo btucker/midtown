@@ -60,6 +60,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 {
                     Ok(_) => {
                         info!("Respawned coworker {} successfully", name);
+                        state.clear_coworker_activity(&name);
                     }
                     Err(e) => {
                         warn!("Failed to spawn coworker {}: {}", name, e);
