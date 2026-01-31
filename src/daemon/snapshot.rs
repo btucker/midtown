@@ -40,6 +40,8 @@ pub struct WorldSnapshot {
     // ── Pane contents ───────────────────────────────────────────────────
     /// Captured tmux pane content per coworker (keyed by name).
     pub pane_contents: HashMap<String, String>,
+    /// Running coworkers whose pane is entirely blank (no visible output).
+    pub blank_pane_coworkers: HashSet<String>,
 
     // ── Task state ──────────────────────────────────────────────────────
     /// In-progress tasks: `(task_id, subject, owner)`.
@@ -125,6 +127,18 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         }
     }
 
+    // Derive blank-pane set: running coworkers whose pane has no visible output
+    let blank_pane_coworkers: HashSet<String> = running_coworkers
+        .iter()
+        .filter(|cw| {
+            pane_contents
+                .get(&cw.name)
+                .map(|c| !crate::tmux::content_has_output(c))
+                .unwrap_or(true) // no pane content captured → treat as blank
+        })
+        .map(|cw| cw.name.to_lowercase())
+        .collect();
+
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
     let busy_coworkers: HashSet<String> =
@@ -175,6 +189,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         session_name,
         coworker_start_times,
         pane_contents,
+        blank_pane_coworkers,
         in_progress_tasks,
         busy_coworkers,
         all_tasks,

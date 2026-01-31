@@ -681,8 +681,13 @@ fn test_message_appears_in_tui_promptly() {
         .join("midtown");
 
     // Create test directory structure
+    // Use the projects/ path that midtown chat expects (auto_migrate moves old-style
+    // ~/.midtown/<repo>/ to ~/.midtown/projects/<repo>/, breaking subsequent writes)
     let test_dir = std::env::temp_dir().join(format!("midtown-delay-test-{}", std::process::id()));
-    let midtown_dir = test_dir.join(".midtown").join("delay-test-repo");
+    let midtown_dir = test_dir
+        .join(".midtown")
+        .join("projects")
+        .join("delay-test-repo");
     fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
 
     // Initialize git in test directory (midtown requires it)
@@ -814,9 +819,14 @@ fn test_message_update_in_existing_channel() {
         .join("midtown");
 
     // Create test directory structure
+    // Use the projects/ path that midtown chat expects (auto_migrate moves old-style
+    // ~/.midtown/<repo>/ to ~/.midtown/projects/<repo>/, breaking subsequent writes)
     let test_dir =
         std::env::temp_dir().join(format!("midtown-existing-test-{}", std::process::id()));
-    let midtown_dir = test_dir.join(".midtown").join("existing-test-repo");
+    let midtown_dir = test_dir
+        .join(".midtown")
+        .join("projects")
+        .join("existing-test-repo");
     fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
 
     // Initialize git in test directory

@@ -683,11 +683,24 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         default_hook(info);
     }));
 
-    // Initialize logging
-    let filter = if config.verbose { "debug" } else { "info" };
+    // Initialize logging — write to daemon.log file
+    let filter = std::env::var("MIDTOWN_LOG_LEVEL")
+        .ok()
+        .unwrap_or_else(|| if config.verbose { "debug" } else { "info" }.to_string());
+    let log_path = crate::paths::daemon_log_file();
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let log_file = std::fs::File::options()
+        .append(true)
+        .create(true)
+        .open(&log_path)
+        .expect("Failed to open daemon.log");
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_writer(log_file)
+        .with_ansi(false)
         .init();
 
     // Ensure required plugins are installed (non-blocking, logs warnings on failure)
@@ -4096,6 +4109,75 @@ fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &DaemonState)
 }
 
 /// Check all active reminders and fire any whose conditions are met.
+fn check_and_respawn_zombies(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
+    let zombies = crate::rules::detect_blank_pane_zombies(
+        &snap.blank_pane_coworkers,
+        &snap.coworker_start_times,
+        snap.now_utc,
+        chrono::Duration::seconds(ZOMBIE_MIN_AGE_SECS),
+    );
+
+    let mut effects = Vec::new();
+    for name in zombies {
+        // Per-coworker cooldown to prevent respawn loops
+        let cooldowns = state.cooldowns.lock().unwrap();
+        if !cooldowns.check("zombie_respawn", &name, ZOMBIE_RESPAWN_COOLDOWN) {
+            debug!("Zombie respawn cooldown active for {}", name);
+            continue;
+        }
+        drop(cooldowns);
+
+        // Capture diagnostics before respawning
+        let target = format!("{}:{}", snap.session_name, name);
+        let pane_pid = std::process::Command::new("tmux")
+            .args([
+                "list-panes",
+                "-t",
+                &target,
+                "-F",
+                "#{pane_pid} #{pane_width}x#{pane_height}",
+            ])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let raw_content = crate::tmux::capture_pane(&target)
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect::<String>();
+        let age = snap
+            .coworker_start_times
+            .get(&name)
+            .map(|t| snap.now_utc.signed_duration_since(*t).num_seconds())
+            .unwrap_or(-1);
+
+        warn!(
+            "BLANK PANE ZOMBIE {} — age={}s, pane_info=[{}], running_coworkers={}, raw={:?}",
+            name,
+            age,
+            pane_pid,
+            snap.running_coworkers.len(),
+            raw_content,
+        );
+
+        effects.push(Effect::RespawnZombieCoworker { name: name.clone() });
+        effects.push(Effect::RecordCooldown {
+            category: "zombie_respawn".to_string(),
+            key: name.clone(),
+        });
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!("🧟 Detected blank-pane zombie {} — respawning", name),
+        });
+    }
+
+    effects
+}
+
 fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,

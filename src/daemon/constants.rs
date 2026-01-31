@@ -82,6 +82,14 @@ pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
 /// other coworkers can pick it up.
 pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(120);
 
+/// Cooldown between zombie respawn attempts for the same coworker (5 minutes).
+/// Prevents respawn loops if the zombie condition keeps recurring.
+pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// Minimum age for a coworker before it can be flagged as a zombie (20 seconds).
+/// Avoids false positives during normal startup when the TUI hasn't rendered yet.
+pub(super) const ZOMBIE_MIN_AGE_SECS: i64 = 20;
+
 /// How long a coworker's pane can remain unchanged before considering it stuck (5 minutes).
 /// If the tmux pane content hash hasn't changed for this duration, the coworker is killed
 /// and restarted with its current task.

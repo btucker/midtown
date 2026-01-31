@@ -111,14 +111,39 @@ impl Channel {
     /// Append a message to the channel
     ///
     /// Uses file locking to ensure atomic append operations.
+    /// Retries with backoff for up to 2 seconds if the lock is contended,
+    /// preventing indefinite blocking when many processes write concurrently
+    /// (e.g., multiple coworker hooks firing simultaneously).
     pub fn send(&self, message: &Message) -> Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.channel_file)?;
 
-        // Acquire exclusive lock for writing
-        file.lock_exclusive()?;
+        // Try to acquire exclusive lock with bounded retries instead of blocking
+        // indefinitely. This prevents PostToolUse hooks from stalling Claude Code
+        // when many coworkers contend on the channel file simultaneously.
+        let mut acquired = false;
+        for attempt in 0..20 {
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    acquired = true;
+                    break;
+                }
+                Err(_) if attempt < 19 => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        if !acquired {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Failed to acquire channel lock after 2s",
+            )
+            .into());
+        }
 
         // Serialize and append
         let mut json = serde_json::to_string(message)?;

@@ -505,6 +505,38 @@ pub(crate) fn decide_usage_limit_expiry(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Blank-pane zombie detection
+// ---------------------------------------------------------------------------
+
+/// Identify coworkers with blank panes that have been running long enough
+/// to rule out normal startup delays.
+///
+/// Returns the names of coworkers that should be respawned. A coworker is
+/// considered a zombie if:
+/// 1. Its pane is entirely blank (no terminal output)
+/// 2. It has been running for at least `min_age` seconds
+///
+/// The age threshold prevents false positives during the ~3-8s window after
+/// spawn where the TUI hasn't rendered yet.
+pub(crate) fn detect_blank_pane_zombies(
+    blank_pane_coworkers: &HashSet<String>,
+    coworker_start_times: &HashMap<String, DateTime<Utc>>,
+    now_utc: DateTime<Utc>,
+    min_age: chrono::Duration,
+) -> Vec<String> {
+    blank_pane_coworkers
+        .iter()
+        .filter(|name| {
+            coworker_start_times
+                .get(*name)
+                .map(|started| now_utc.signed_duration_since(*started) >= min_age)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
 /// Try to parse a duration from usage limit text.
 ///
 /// Looks for patterns like "try again in 15 minutes", "resets in 2 hours",
@@ -1830,5 +1862,53 @@ mod tests {
     fn mention_skips_at_dev_limit() {
         let action = decide_mention_action("york", "amsterdam", false, true, "hey york");
         assert!(matches!(action, MentionAction::Skip { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Blank-pane zombie detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn zombie_detection_flags_old_blank_coworker() {
+        let mut blank = HashSet::new();
+        blank.insert("york".to_string());
+
+        let mut start_times = HashMap::new();
+        let now = chrono::Utc::now();
+        // Started 30 seconds ago — older than 20s threshold
+        start_times.insert("york".to_string(), now - chrono::Duration::seconds(30));
+
+        let zombies =
+            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
+        assert_eq!(zombies, vec!["york"]);
+    }
+
+    #[test]
+    fn zombie_detection_skips_young_coworker() {
+        let mut blank = HashSet::new();
+        blank.insert("york".to_string());
+
+        let mut start_times = HashMap::new();
+        let now = chrono::Utc::now();
+        // Started 5 seconds ago — younger than 20s threshold
+        start_times.insert("york".to_string(), now - chrono::Duration::seconds(5));
+
+        let zombies =
+            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
+        assert!(zombies.is_empty());
+    }
+
+    #[test]
+    fn zombie_detection_skips_non_blank_coworker() {
+        // Empty blank set — no zombies
+        let blank = HashSet::new();
+
+        let mut start_times = HashMap::new();
+        let now = chrono::Utc::now();
+        start_times.insert("york".to_string(), now - chrono::Duration::seconds(60));
+
+        let zombies =
+            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
+        assert!(zombies.is_empty());
     }
 }

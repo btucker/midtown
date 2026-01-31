@@ -11,6 +11,27 @@ use clap::Subcommand;
 
 use super::Response;
 
+/// Append a timestamped log line to `~/.midtown/projects/<repo>/logs/hooks.log`.
+///
+/// Lightweight alternative to tracing for hooks — hooks are short-lived processes
+/// where a full tracing subscriber would add unnecessary overhead.
+fn hook_log(repo: &str, message: &str) {
+    let log_path = midtown::paths::hooks_log_file_for_repo(repo);
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&log_path)
+    {
+        use std::io::Write;
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+        let _ = writeln!(file, "{} [{}] {}", now, agent, message);
+    }
+}
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum HookCommand {
     /// Handle PostToolUse hook - parse transcript for new insights and post them
@@ -50,6 +71,10 @@ pub fn handle(cmd: &HookCommand) -> Result<Response, String> {
 }
 
 /// Handle the insight hook - parse transcript for ★ Insight blocks and post new ones.
+///
+/// This hook fires on EVERY PostToolUse event from every coworker and the Lead.
+/// With many concurrent Claude Code instances, it must be fast and non-blocking
+/// to avoid stalling the calling Claude process (hooks are synchronous).
 fn handle_insight_hook() -> Result<Response, String> {
     // Read hook input from stdin
     let mut input = String::new();
@@ -64,7 +89,7 @@ fn handle_insight_hook() -> Result<Response, String> {
         .transcript_path
         .ok_or("No transcript_path in hook input")?;
 
-    // Parse transcript for insights
+    // Parse transcript for insights — this is cheap (cursor-based, reads only new bytes)
     let insights = parse_insights_from_transcript(&transcript_path)?;
 
     if insights.is_empty() {
@@ -75,6 +100,11 @@ fn handle_insight_hook() -> Result<Response, String> {
 
     // Detect repo first - needed for both channel and insight tracking
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
+
+    hook_log(
+        &repo,
+        &format!("insight: found {} candidate(s)", insights.len()),
+    );
 
     // Get previously posted insights (tracked per-repo, not per-transcript)
     let mut posted = get_posted_insights(&repo);
@@ -101,14 +131,28 @@ fn handle_insight_hook() -> Result<Response, String> {
             continue;
         }
 
-        // Post insight to channel
+        // Post insight to channel — if the lock is contended, the send will
+        // time out after 2s rather than blocking indefinitely
         let message = midtown::Message::text(&agent, format!("💡 {}", insight));
-        if channel.send(&message).is_ok() {
-            posted_count += 1;
-            // Track in-memory for subsequent iterations
-            posted.insert(hash);
+        match channel.send(&message) {
+            Ok(()) => {
+                posted_count += 1;
+                posted.insert(hash);
+            }
+            Err(e) => {
+                // Channel lock contention — log and skip rather than blocking Claude
+                hook_log(
+                    &repo,
+                    &format!("insight: channel send failed ({}), skipping", e),
+                );
+            }
         }
     }
+
+    hook_log(
+        &repo,
+        &format!("insight: posted {} new insight(s)", posted_count),
+    );
 
     Ok(Response::Message {
         message: format!("Posted {} new insight(s)", posted_count),
@@ -120,6 +164,13 @@ fn handle_insight_hook() -> Result<Response, String> {
 fn handle_lead_stop_hook() -> Result<Response, String> {
     // Read channel messages to sync
     let new_messages = read_channel_messages().unwrap_or_default();
+
+    if let Some(ref repo) = detect_git_repo() {
+        hook_log(
+            repo,
+            &format!("lead-stop: {} new message(s)", new_messages.len()),
+        );
+    }
 
     let message = if new_messages.is_empty() {
         "Channel synced, no new messages".to_string()
@@ -187,11 +238,17 @@ fn handle_idle_hook() -> Result<Response, String> {
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "coworker".to_string());
     let personality = midtown::config::get_personality();
 
+    hook_log(&repo, &format!("idle: {} posting idle status", agent));
+
     let idle_text = midtown::daemon_messages::idle_waiting(personality);
     let message = midtown::Message::action(&agent, &idle_text);
-    channel
-        .send(&message)
-        .map_err(|e| format!("Failed to post to channel: {}", e))?;
+    if let Err(e) = channel.send(&message) {
+        // Don't fail the hook on lock contention — Claude waits for hooks synchronously
+        hook_log(
+            &repo,
+            &format!("idle: channel send failed ({}), skipping", e),
+        );
+    }
 
     Ok(Response::Message {
         message: format!("{} posted idle status", agent),
@@ -453,12 +510,19 @@ fn handle_task_hook() -> Result<Response, String> {
         }
     };
 
-    let message = midtown::Message::action(&agent, &action_message);
-    channel
-        .send(&message)
-        .map_err(|e| format!("Failed to post to channel: {}", e))?;
+    hook_log(&repo, &format!("task: {} {}", agent, action_message));
 
-    // On TaskCreate, notify daemon to immediately check for pending tasks
+    let message = midtown::Message::action(&agent, &action_message);
+    if let Err(e) = channel.send(&message) {
+        // Channel lock contention — log but don't fail the hook (which would stall Claude)
+        hook_log(
+            &repo,
+            &format!("task: channel send failed ({}), skipping", e),
+        );
+    }
+
+    // On TaskCreate, notify daemon to immediately check for pending tasks.
+    // This has a 5s timeout via DaemonClient, so it won't block indefinitely.
     if tool_name == "TaskCreate"
         && let Ok(client) = crate::client::DaemonClient::connect()
     {
@@ -499,6 +563,11 @@ fn handle_ask_hook() -> Result<Response, String> {
     } else {
         questions.join("; ")
     };
+
+    // Log before attempting RPC — useful for debugging hook contention
+    if let Some(ref repo) = detect_git_repo() {
+        hook_log(repo, &format!("ask: {} asking: {}", agent, question_text));
+    }
 
     // Try to notify daemon via RPC
     match crate::client::DaemonClient::connect() {

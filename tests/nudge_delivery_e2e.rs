@@ -450,12 +450,19 @@ fn test_chat_monitor_routes_mention() {
     let coworker_name = "lexington"; // Simulating a coworker
     let _cleanup = Cleanup(&session);
 
-    // Setup: Create session and coworker window
+    // Setup: Create session and coworker window running cat (not bash,
+    // because send_keys text would be interpreted as shell commands)
     assert!(
         create_test_session(&session),
         "Failed to create test session"
     );
-    create_test_window(&session, coworker_name);
+    let target = format!("{}:", session);
+    let status = Command::new("tmux")
+        .args(["new-window", "-t", &target, "-n", coworker_name, "cat"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(status, "Failed to create window with cat process");
     thread::sleep(Duration::from_millis(500));
 
     // Simulate what route_mentions does: format and send nudge
@@ -501,14 +508,25 @@ fn test_send_keys_vs_send_nudge() {
     let window2 = "send-nudge-test";
     let _cleanup = Cleanup(&session);
 
-    // Setup
+    // Setup: use cat so send_keys text isn't interpreted as shell commands
     assert!(
         create_test_session(&session),
         "Failed to create test session"
     );
-    create_test_window(&session, window1);
-    create_test_window(&session, window2);
-    thread::sleep(Duration::from_millis(200));
+    let target = format!("{}:", session);
+    let status1 = Command::new("tmux")
+        .args(["new-window", "-t", &target, "-n", window1, "cat"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(status1, "Failed to create window1 with cat process");
+    let status2 = Command::new("tmux")
+        .args(["new-window", "-t", &target, "-n", window2, "cat"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(status2, "Failed to create window2 with cat process");
+    thread::sleep(Duration::from_millis(500));
 
     let msg1 = format!("via-send-keys-{}", std::process::id());
     let msg2 = format!("via-send-nudge-{}", std::process::id());
