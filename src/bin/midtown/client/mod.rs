@@ -89,9 +89,24 @@ impl DaemonClient {
     }
 
     /// Send a JSON-RPC request and get the raw JSON result value.
+    ///
+    /// Uses timeouts on the Unix socket to prevent indefinite blocking when the
+    /// daemon is busy. This is critical for hook processes — without timeouts,
+    /// a slow daemon response stalls the Claude Code instance that fired the hook.
     fn send_raw(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .map_err(|e| format!("Connection failed: {}", e))?;
+
+        // Set timeouts to prevent hooks from blocking Claude Code indefinitely.
+        // PostToolUse hooks run synchronously — Claude waits for the hook to finish.
+        // Without timeouts, a busy daemon causes the hook (and Claude) to hang.
+        let timeout = Some(std::time::Duration::from_secs(5));
+        stream
+            .set_write_timeout(timeout)
+            .map_err(|e| format!("Failed to set write timeout: {}", e))?;
+        stream
+            .set_read_timeout(timeout)
+            .map_err(|e| format!("Failed to set read timeout: {}", e))?;
 
         let request = JsonRpcRequest::new(method, params);
 

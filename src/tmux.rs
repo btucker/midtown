@@ -372,8 +372,30 @@ pub fn create_window(
 }
 
 /// Kill a tmux window within the project session.
+///
+/// Sends SIGTERM to the pane process before killing the window, because
+/// Claude Code survives the SIGHUP that tmux sends on window destruction.
 pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
     let target = format!("{}:{}", session, name);
+
+    // SIGTERM the pane process first — Claude Code ignores SIGHUP
+    if let Ok(output) = Command::new("tmux")
+        .args(["list-panes", "-t", &target, "-F", "#{pane_pid}"])
+        .output()
+    {
+        let pids: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        if !pids.is_empty() {
+            let _ = Command::new("kill")
+                .args(&pids)
+                .stderr(std::process::Stdio::null())
+                .status();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
 
     let status = Command::new("tmux")
         .args(["kill-window", "-t", &target])
@@ -390,6 +412,64 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
     Ok(())
 }
 
+/// Collect PIDs of all pane processes in a session.
+///
+/// Returns (window_name, pid) pairs for every pane in the session.
+pub fn session_pane_pids(session: &str) -> Vec<(String, u32)> {
+    let output = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-s",
+            "-t",
+            session,
+            "-F",
+            "#{window_name} #{pane_pid}",
+        ])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|line| {
+                let mut parts = line.splitn(2, ' ');
+                let name = parts.next()?.to_string();
+                let pid = parts.next()?.parse().ok()?;
+                Some((name, pid))
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Send SIGTERM to all pane processes in a session.
+///
+/// Claude Code (node) installs a SIGHUP handler, so `tmux kill-session`
+/// (which sends SIGHUP) leaves orphaned processes consuming memory and
+/// potentially causing contention with other Claude instances. SIGTERM
+/// triggers a clean shutdown.
+pub fn terminate_session_processes(session: &str) {
+    let pids = session_pane_pids(session);
+    if pids.is_empty() {
+        return;
+    }
+
+    // Collect all PIDs into a single kill command
+    let pid_strings: Vec<String> = pids.iter().map(|(_, pid)| pid.to_string()).collect();
+    let _ = Command::new("kill")
+        .args(&pid_strings)
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    for (name, pid) in &pids {
+        tracing::debug!("Sent SIGTERM to {}:{} (pid {})", session, name, pid);
+    }
+
+    // Brief wait for processes to exit cleanly before tmux kill-session
+    // sends SIGHUP to anything still running
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
 /// Capture the current content of a tmux pane.
 ///
 /// Returns the pane content as a string, or None if capture fails.
@@ -404,6 +484,28 @@ pub fn capture_pane(target: &str) -> Option<String> {
     }
 
     Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Check whether a tmux pane has any visible output (non-whitespace content).
+///
+/// Calls `capture_pane()` and returns `false` if every line is empty or
+/// whitespace-only. This detects "zombie" windows where the process started
+/// but the TUI never rendered — the pane is entirely blank.
+///
+/// Used by `spawn_claude()` to detect blank-pane failures at spawn time,
+/// and by the daemon health check to find zombie coworkers.
+pub fn pane_has_output(target: &str) -> bool {
+    match capture_pane(target) {
+        Some(content) => content_has_output(&content),
+        None => false,
+    }
+}
+
+/// Pure content check: returns `true` if any line has non-whitespace characters.
+///
+/// Extracted from `pane_has_output` for unit testing without tmux.
+pub fn content_has_output(content: &str) -> bool {
+    content.lines().any(|line| !line.trim().is_empty())
 }
 
 /// Check whether the human has typed text into the Claude Code input prompt.
@@ -1007,7 +1109,81 @@ pub fn spawn_claude(
     // even if the command inside fails. `claude --continue` can take 1-2 seconds
     // to discover there's no session to resume and exit, so we poll repeatedly
     // over 3 seconds to catch failures the old 500ms check missed.
-    let window_survived = wait_for_window_stable(session, name);
+    let mut window_survived = wait_for_window_stable(session, name);
+
+    // If the window survived but the pane is blank (no terminal output),
+    // the process started but the TUI never rendered. Kill it and let the
+    // retry logic below handle respawning.
+    if window_survived {
+        let target = format!("{}:{}", session, name);
+        let mut has_output = false;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if pane_has_output(&target) {
+                has_output = true;
+                break;
+            }
+        }
+        if !has_output {
+            // Capture diagnostics before killing — helps trace root cause
+            let pane_dims = Command::new("tmux")
+                .args([
+                    "list-panes",
+                    "-t",
+                    &target,
+                    "-F",
+                    "#{pane_width}x#{pane_height} pid=#{pane_pid}",
+                ])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let other_windows = list_windows(session).unwrap_or_default().len();
+
+            let pane_pid = Command::new("tmux")
+                .args(["list-panes", "-t", &target, "-F", "#{pane_pid}"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .parse::<u32>()
+                        .ok()
+                });
+
+            let child_procs = pane_pid
+                .map(|pid| {
+                    Command::new("pgrep")
+                        .args(["-P", &pid.to_string()])
+                        .output()
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+
+            tracing::warn!(
+                "BLANK PANE DIAGNOSTIC {}:{} — resume={}, pane={}, other_windows={}, \
+                 pane_pid={:?}, children=[{}], raw_content={:?}",
+                session,
+                name,
+                resume,
+                pane_dims,
+                other_windows,
+                pane_pid,
+                child_procs,
+                capture_pane(&target)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>(),
+            );
+
+            let _ = kill_window(session, name);
+            window_survived = false;
+        }
+    }
 
     if !window_survived {
         if resume {
@@ -1265,12 +1441,56 @@ pub fn setup_chat_pane(session: &str) {
     };
 
     if use_split {
-        if let Err(e) = create_chat_split(session, &bin_command) {
+        // Check if lead window already has a chat split pane (pane .1).
+        // Without this guard, each call to ensure_lead_has_settings creates
+        // an additional split, progressively shrinking the lead pane until
+        // the TUI can't render.
+        if lead_has_chat_pane(session) {
+            respawn_chat_split(session, &bin_command);
+        } else if let Err(e) = create_chat_split(session, &bin_command) {
             eprintln!("Warning: Failed to create chat split: {}", e);
         }
+    } else if window_exists(session, "chat").unwrap_or(false) {
+        respawn_chat_window(session, &bin_command);
     } else if let Err(e) = create_chat_window(session, &bin_command) {
         eprintln!("Warning: Failed to create chat window: {}", e);
     }
+}
+
+/// Check if the lead window already has a chat split pane (more than 1 pane).
+fn lead_has_chat_pane(session: &str) -> bool {
+    let target = format!("{}:lead", session);
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", &target, "-F", "#{pane_index}"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let count = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .count();
+            count > 1
+        }
+        _ => false,
+    }
+}
+
+/// Respawn the existing chat split pane (lead.1) with fresh chat command.
+fn respawn_chat_split(session: &str, bin_command: &str) {
+    let chat_pane = format!("{}:lead.1", session);
+    let chat_cmd = format!("{} chat", bin_command);
+    let _ = Command::new("tmux")
+        .args(["respawn-pane", "-k", "-t", &chat_pane, &chat_cmd])
+        .status();
+}
+
+/// Respawn the existing chat window with fresh chat command.
+fn respawn_chat_window(session: &str, bin_command: &str) {
+    let chat_target = format!("{}:chat", session);
+    let chat_cmd = format!("{} chat", bin_command);
+    let _ = Command::new("tmux")
+        .args(["respawn-pane", "-k", "-t", &chat_target, &chat_cmd])
+        .status();
 }
 
 /// Create a new window in the session for the chat TUI.
@@ -1708,7 +1928,11 @@ Claude is now processing the request
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--settings /tmp/settings.json"));
         assert!(cmd.contains("--append-system-prompt \"$(cat /tmp/prompt.txt)\""));
-        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; exec claude"));
+        assert!(
+            cmd.starts_with("export MIDTOWN_AGENT='lex'; exec claude"),
+            "coworker command must use exec to replace shell — without exec, \
+             the shell survives after claude exits leaving zombie panes"
+        );
         assert!(!cmd.contains("-p "));
     }
 
@@ -1800,5 +2024,20 @@ Claude is now processing the request
             None,
         );
         assert!(!cmd.contains("-p "));
+    }
+
+    #[test]
+    fn test_build_lead_command_uses_exec() {
+        let cmd = build_lead_command(
+            "test-task-list-id",
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.txt"),
+            "",
+        );
+        assert!(
+            cmd.contains("; exec claude"),
+            "lead command must use exec to replace shell — without exec, \
+             the shell survives after claude exits leaving zombie panes"
+        );
     }
 }

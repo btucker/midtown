@@ -661,6 +661,11 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     if let Ok(session) = session_name() {
         // Stop tmux session (unless --keep-session)
         if !keep_session && session_exists(&session) {
+            // SIGTERM all pane processes first — Claude Code survives SIGHUP
+            // (which is what tmux kill-session sends), leaving orphaned processes
+            // that consume memory and cause contention with other instances.
+            midtown::tmux::terminate_session_processes(&session);
+
             let status = Command::new("tmux")
                 .args(["kill-session", "-t", &session])
                 .status()

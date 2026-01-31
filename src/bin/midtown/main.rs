@@ -128,6 +128,24 @@ enum Commands {
         #[command(subcommand)]
         command: HookCommand,
     },
+    /// View daemon or hook logs
+    Log {
+        /// Show hooks log instead of daemon log
+        #[arg(long)]
+        hooks: bool,
+
+        /// Print the log file path instead of tailing
+        #[arg(long)]
+        path: bool,
+
+        /// Follow log output (default: true)
+        #[arg(short, long, default_value = "true")]
+        follow: bool,
+
+        /// Number of lines to show initially
+        #[arg(short = 'n', long, default_value = "50")]
+        lines: u32,
+    },
     /// Standalone multi-project webserver
     Webserver {
         #[command(subcommand)]
@@ -409,6 +427,43 @@ fn main() {
         return;
     }
 
+    // Log command (no daemon required - just tails log files)
+    if let Commands::Log {
+        hooks,
+        path,
+        follow,
+        lines,
+    } = &command
+    {
+        let log_path = if *hooks {
+            midtown::paths::hooks_log_file()
+        } else {
+            midtown::paths::daemon_log_file()
+        };
+
+        if *path {
+            println!("{}", log_path.display());
+            return;
+        }
+
+        if !log_path.exists() {
+            eprintln!("Log file not found: {}", log_path.display());
+            eprintln!("Is the daemon running? Try: midtown start");
+            std::process::exit(1);
+        }
+
+        // exec into tail — replaces this process so the user gets proper signal handling
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("tail");
+        if *follow {
+            cmd.arg("-f");
+        }
+        cmd.arg("-n").arg(lines.to_string()).arg(&log_path);
+        let err = cmd.exec();
+        eprintln!("Failed to exec tail: {}", err);
+        std::process::exit(1);
+    }
+
     // Webserver commands (standalone, no daemon required)
     if let Commands::Webserver { command: ws_cmd } = &command {
         match ws_cmd {
@@ -567,6 +622,7 @@ fn main() {
         | Commands::Project { .. }
         | Commands::Chat
         | Commands::Hook { .. }
+        | Commands::Log { .. }
         | Commands::Webserver { .. } => unreachable!(),
     };
 

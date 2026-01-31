@@ -46,7 +46,16 @@ jobs:
           MIDTOWN_CHAT_MONITOR: "0"
 
       - name: Run tmux e2e tests
-        run: cargo test --release --all-features --test tmux_rename_e2e -- --ignored
+        run: cargo test --release --all-features --test tmux_e2e -- --ignored
+
+      - name: Run nudge e2e tests
+        run: cargo test --release --all-features --test nudge_e2e -- --ignored
+
+      - name: Run nudge delivery e2e tests
+        run: cargo test --release --all-features --test nudge_delivery_e2e -- --ignored
+
+      - name: Run chat e2e tests
+        run: cargo test --release --all-features --test chat_e2e -- --ignored
 
   clippy:
     name: Clippy

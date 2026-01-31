@@ -303,6 +303,38 @@ pub fn daemon_log_dir() -> PathBuf {
     daemon_log_dir_for_repo(&repo)
 }
 
+/// Get the daemon log file path for a specific repository.
+///
+/// Returns `~/.midtown/projects/<repo>/logs/daemon.log`.
+/// This is where tracing output is written (via `tracing_subscriber`).
+pub fn daemon_log_file_for_repo(repo: &str) -> PathBuf {
+    daemon_log_dir_for_repo(repo).join("daemon.log")
+}
+
+/// Get the daemon log file path for the current repository.
+///
+/// Returns `~/.midtown/projects/<repo>/logs/daemon.log`.
+pub fn daemon_log_file() -> PathBuf {
+    let repo = detect_repo_name().unwrap_or_else(|| "default".to_string());
+    daemon_log_file_for_repo(&repo)
+}
+
+/// Get the hooks log file path for a specific repository.
+///
+/// Returns `~/.midtown/projects/<repo>/logs/hooks.log`.
+/// Hook handlers append timestamped lines here for debugging.
+pub fn hooks_log_file_for_repo(repo: &str) -> PathBuf {
+    daemon_log_dir_for_repo(repo).join("hooks.log")
+}
+
+/// Get the hooks log file path for the current repository.
+///
+/// Returns `~/.midtown/projects/<repo>/logs/hooks.log`.
+pub fn hooks_log_file() -> PathBuf {
+    let repo = detect_repo_name().unwrap_or_else(|| "default".to_string());
+    hooks_log_file_for_repo(&repo)
+}
+
 /// Migrate data from the old directory structure to the new one.
 ///
 /// Old structure: `~/.midtown/<repo>/...`

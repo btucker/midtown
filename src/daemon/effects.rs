@@ -42,6 +42,8 @@ pub enum Effect {
     ClearUsageLimitNudge,
     /// Reset a task back to pending (e.g. when a coworker can't be respawned).
     ResetTaskToPending { task_id: String, repo_name: String },
+    /// Kill a zombie coworker (blank pane) and respawn with --continue.
+    RespawnZombieCoworker { name: String },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -129,6 +131,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::ResetTaskToPending { task_id, repo_name } => {
                 if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {
                     warn!("Failed to reset task #{} to pending: {}", task_id, e);
+                }
+            }
+            Effect::RespawnZombieCoworker { name } => {
+                let session = state.coworkers.session_name();
+                // Kill the blank window first
+                if let Err(e) = crate::tmux::kill_window(session, &name) {
+                    warn!("Failed to kill zombie window {}: {}", name, e);
+                }
+                // Brief delay to let tmux clean up
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                // Respawn with --continue to resume the coworker's conversation
+                match state
+                    .coworkers
+                    .spawn_with_name(&name, true, None, false, None)
+                {
+                    Ok(_) => {
+                        info!("Respawned zombie coworker {} successfully", name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to respawn zombie coworker {}: {}", name, e);
+                    }
                 }
             }
         }
