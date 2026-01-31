@@ -396,6 +396,36 @@ impl DaemonState {
         self.coworkers.list().len() >= dev_cap
     }
 
+    /// Check if a PR has a review comment from a Claude coworker.
+    ///
+    /// Uses `github_state` as the single source of truth. First checks the
+    /// persistent cache; if not found, makes GitHub API calls and caches
+    /// positive results permanently (review status is monotonic).
+    async fn is_pr_reviewed(&self, pr_number: u64) -> bool {
+        // Fast path: check github_state cache (single source of truth)
+        {
+            let github_state = self.github_state.lock().await;
+            if github_state.has_cached_review(pr_number) {
+                debug!(
+                    "PR #{} has cached Claude review (skipping API call)",
+                    pr_number
+                );
+                return true;
+            }
+        }
+
+        // Slow path: check via API calls
+        let has_review = pr_has_claude_review_uncached(pr_number);
+
+        // Cache positive results (review status is monotonic)
+        if has_review {
+            let mut github_state = self.github_state.lock().await;
+            github_state.mark_reviewed_pr(pr_number);
+        }
+
+        has_review
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         socket_path: PathBuf,
@@ -1153,11 +1183,15 @@ async fn check_lead_typing(state: &DaemonState) {
 
     let now = Instant::now();
 
-    // Single lock for all lead typing state
+    // Single lock for all lead typing state — `working` is derived, not stored
     let (is_working, prev_working) = {
         let mut lt = state.lead_typing.lock().unwrap();
         let pane_changed = lt.pane_hash != 0 && new_hash != lt.pane_hash;
         lt.pane_hash = new_hash;
+
+        // Derive previous working state from old last_activity (before update)
+        let prev_working =
+            determine_lead_working(false, lt.last_activity, now, LEAD_TYPING_GRACE_PERIOD);
 
         if pane_changed {
             lt.last_activity = Some(now);
@@ -1170,9 +1204,7 @@ async fn check_lead_typing(state: &DaemonState) {
             LEAD_TYPING_GRACE_PERIOD,
         );
 
-        let prev = lt.working;
-        lt.working = is_working;
-        (is_working, prev)
+        (is_working, prev_working)
     };
 
     if is_working != prev_working {
@@ -1321,7 +1353,7 @@ async fn check_and_shutdown_idle_coworkers(
             match pr_number {
                 Some(pr) => {
                     // Check if review was actually posted
-                    if pr_has_claude_review(pr, state).await {
+                    if state.is_pr_reviewed(pr).await {
                         info!(
                             "Sending reviewer {} on a break (review verified for PR #{})",
                             name, pr
@@ -2851,7 +2883,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // are detected even when a reviewer is still tracked as assigned
         // (e.g., after a daemon restart or when the reviewer posted a comment
         // instead of a formal GitHub review).
-        if pr_has_claude_review(pr_number, state).await {
+        if state.is_pr_reviewed(pr_number).await {
             debug!("PR #{} already has a Claude review", pr_number);
 
             // Before cleaning up the assignment, check if the reviewer is still running.
@@ -3178,40 +3210,6 @@ async fn process_pending_review_spawns(state: &DaemonState) {
         // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
         spawn_reviewers_for_prs(state, &[pr]).await;
     }
-}
-
-/// Check if a PR has a review comment from a Claude coworker.
-///
-/// Checks `github_state.reviewed_prs` first (populated from persistent state on startup
-/// and updated by webhooks). If not found, makes API calls to verify, then caches
-/// positive results in `github_state` (review status is monotonic).
-///
-/// Checks both formal reviews (`.reviews[].body`) and comments (`.comments[].body`)
-/// since coworkers use comments for reviews (they share one GitHub user and can't
-/// approve their own PRs).
-async fn pr_has_claude_review(pr_number: u64, state: &DaemonState) -> bool {
-    // Fast path: check persistent state
-    {
-        let github_state = state.github_state.lock().await;
-        if github_state.has_cached_review(pr_number) {
-            debug!(
-                "PR #{} has cached Claude review (skipping API call)",
-                pr_number
-            );
-            return true;
-        }
-    }
-
-    // Slow path: check via API calls
-    let has_review = pr_has_claude_review_uncached(pr_number);
-
-    // Cache positive results (review status is monotonic)
-    if has_review {
-        let mut github_state = state.github_state.lock().await;
-        github_state.mark_reviewed_pr(pr_number);
-    }
-
-    has_review
 }
 
 /// Uncached check for Claude review on a PR (makes GitHub API calls).
