@@ -189,6 +189,14 @@ TaskUpdate with taskId, owner: "<coworker-name>"
 
 This ensures `midtown status` shows the assignment before the coworker claims it.
 
+## Updating Tasks
+When you update a task that a coworker is actively working on, always @mention them in the channel so they see the change. They won't notice a TaskUpdate on their own.
+
+```bash
+# After updating task description/requirements:
+midtown channel post "@vernon Updated task #714 description — root cause changed, see updated task for details."
+```
+
 ## Grouping Related Tasks
 When creating tasks, prefer combining tightly coupled work into a single task rather than splitting it across multiple tasks that each produce a separate PR.
 
