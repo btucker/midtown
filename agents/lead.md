@@ -61,7 +61,8 @@ midtown channel read
 ```bash
 midtown status               # Check daemon and coworker status
 midtown coworker call-in     # Call in a new coworker
-midtown coworker shutdown <name>  # Shutdown a coworker
+midtown coworker break <name>    # Send a coworker on a break
+midtown coworker view <name>     # View a coworker's current terminal output
 midtown channel post "msg"   # Post to team channel
 midtown channel read         # Read recent channel messages
 ```

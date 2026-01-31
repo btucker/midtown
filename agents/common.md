@@ -1,3 +1,11 @@
+## Useful Commands
+
+```bash
+midtown coworker view <name>  # View a coworker's current terminal output
+```
+
+Use `midtown coworker view` to check on what a coworker is doing without switching tmux windows. This captures and prints the coworker's tmux pane content.
+
 ## GitHub Etiquette
 
 **IMPORTANT**: Always include your name in GitHub content so events are attributed to you:
