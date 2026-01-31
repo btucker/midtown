@@ -70,9 +70,12 @@ midtown channel post "@lead yes, the auth module exports a validate function"
 
 # Another coworker asked something → @mention them
 midtown channel post "@columbus the endpoint is at /api/v1/auth"
+
+# The user (human) asked you something → @mention them
+midtown channel post "@user yes, the test suite covers that case"
 ```
 
-Without the @mention, the daemon cannot route your reply and the other person may never see it.
+Without the @mention, the daemon cannot route your reply and the other person may never see it. Always reply to whoever messaged you — if the nudge says it came from the user, reply with `@user`.
 
 ### Idle Status (No Feedback Needed)
 When you become idle, post your status in your own voice without requesting feedback. Include the keyword `idle`, `waiting`, or `blocked` for status parsing:
