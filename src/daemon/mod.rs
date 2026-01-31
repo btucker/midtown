@@ -287,6 +287,8 @@ pub(crate) struct DaemonState {
     pr_review_tracker: Mutex<PrReviewTracker>,
     /// Repository name (primary repo)
     repo_name: String,
+    /// Default branch name (detected at startup, e.g. "main" or "master")
+    default_branch: String,
     /// Paths to all repos in the project (primary + additional)
     all_repo_paths: Vec<PathBuf>,
     /// Unified cooldown tracker for orphan spawning and task nudge rate limiting.
@@ -359,6 +361,7 @@ impl DaemonState {
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
         max_coworkers: usize,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
+        default_branch: String,
     ) -> crate::Result<Self> {
         // Load persistent GitHub state
         let github_state =
@@ -387,6 +390,7 @@ impl DaemonState {
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
+            default_branch,
             all_repo_paths,
             cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),
             warned_orphans: std::sync::RwLock::new(HashSet::new()),
@@ -684,6 +688,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         paths
     };
 
+    // Detect the default branch early so it's available for both the webhook server and daemon state
+    let default_branch = all_repo_paths
+        .first()
+        .and_then(|path| crate::worktree::detect_default_branch(path))
+        .unwrap_or_else(|| "main".to_string());
+    info!("Detected default branch: {}", default_branch);
+
     if let Some(port) = config.webhook_port {
         let webhook_config = WebhookConfig {
             port,
@@ -694,6 +705,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             webhook_config,
             Some(coworker_manager.clone()),
             all_repo_paths.clone(),
+            default_branch.clone(),
         )
         .await
         {
@@ -731,6 +743,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         web_updates_tx,
         config.max_coworkers,
         shared_push_manager,
+        default_branch,
     )?);
     info!(
         "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",
@@ -849,8 +862,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     let nudge_msg = Message::text(
                         "system",
                         format!(
-                            "@lead PR #{} merged into main. Run `git pull` to stay current.",
-                            pr_number
+                            "@lead PR #{} merged into {}. Run `git pull` to stay current.",
+                            pr_number, state.default_branch
                         ),
                     );
                     if let Err(e) = state.send_and_broadcast(&nudge_msg) {

@@ -28,7 +28,7 @@ pub enum WorktreeError {
     #[error("Git command failed: {0}")]
     GitError(String),
 
-    #[error("Branch {0} exists but is not merged to main")]
+    #[error("Branch {0} exists but is not merged to the default branch")]
     UnmergedBranch(String),
 
     #[error("IO error: {0}")]
@@ -225,7 +225,7 @@ impl WorktreeManager {
 
     /// Check if a coworker's worktree branch has commits beyond the base (detached HEAD).
     ///
-    /// Returns `true` if the branch has unique commits that are not on the main branch.
+    /// Returns `true` if the branch has unique commits that are not on the default branch.
     /// Returns `false` if the branch has no commits beyond the base, or if the
     /// worktree is in detached HEAD state with no branch.
     pub fn has_commits_beyond_base(&self, coworker_name: &str) -> bool {
@@ -466,7 +466,7 @@ fn repo_name_from_path(repo_path: &Path) -> WorktreeResult<String> {
 }
 
 /// Detect the default branch (main or master) for a repository.
-fn detect_default_branch(repo_root: &Path) -> Option<String> {
+pub fn detect_default_branch(repo_root: &Path) -> Option<String> {
     // Try origin/HEAD first
     let output = Command::new("git")
         .current_dir(repo_root)

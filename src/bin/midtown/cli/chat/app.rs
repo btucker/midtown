@@ -1028,6 +1028,27 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
     Some((prs, merged_prs, repos))
 }
 
+/// Detect the default branch for a repository.
+///
+/// Uses `gh api` to query the default branch from GitHub. Falls back to "main".
+fn detect_default_branch_for_repo(repo_full_name: Option<&str>) -> String {
+    let api_path = match repo_full_name {
+        Some(name) => format!("repos/{}", name),
+        None => "repos/{owner}/{repo}".to_string(),
+    };
+    if let Ok(output) = std::process::Command::new("gh")
+        .args(["api", &api_path, "--jq", ".default_branch"])
+        .output()
+        && output.status.success()
+    {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return branch;
+        }
+    }
+    "main".to_string()
+}
+
 /// Fetch repository status (commit, CI status, release) from GitHub using gh CLI.
 ///
 /// If `repo_full_name` is provided (e.g., "btucker/midtown"), uses explicit API paths.
@@ -1035,16 +1056,25 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
 fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
     let mut status = RepoStatus::default();
 
+    // Detect the default branch for CI status queries
+    let default_branch = detect_default_branch_for_repo(repo_full_name);
+
     // Build API path prefix: explicit repo or gh template variable
     let (commits_path, actions_path, releases_path) = match repo_full_name {
         Some(name) => (
             format!("repos/{}/commits/HEAD", name),
-            format!("repos/{}/actions/runs?branch=main&per_page=1", name),
+            format!(
+                "repos/{}/actions/runs?branch={}&per_page=1",
+                name, default_branch
+            ),
             format!("repos/{}/releases/latest", name),
         ),
         None => (
             "repos/{owner}/{repo}/commits/{branch}".to_string(),
-            "repos/{owner}/{repo}/actions/runs?branch=main&per_page=1".to_string(),
+            format!(
+                "repos/{{owner}}/{{repo}}/actions/runs?branch={}&per_page=1",
+                default_branch
+            ),
             "repos/{owner}/{repo}/releases/latest".to_string(),
         ),
     };
