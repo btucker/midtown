@@ -139,6 +139,7 @@ function updateKanbanData(data) {
       status: pr.status,
       reviewer: pr.reviewer,
       reviewer_assigned_at: pr.reviewer_assigned_at,
+      review_posted: pr.review_posted || false,
       created_at: pr.created_at,
       repo: pr.repo || null,
     })),

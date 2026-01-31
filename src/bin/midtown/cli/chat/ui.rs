@@ -405,7 +405,11 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
             let line2 = format!("  A: {} {}", pr.author, author_duration);
             let line3 = match (&pr.reviewer, &pr.reviewed_at) {
                 (Some(reviewer), Some(at)) => {
-                    format!("  R: {} {}", reviewer, format_duration_minutes(*at))
+                    if pr.review_posted {
+                        format!("  R: {} (done)", reviewer)
+                    } else {
+                        format!("  R: {} {}", reviewer, format_duration_minutes(*at))
+                    }
                 }
                 (Some(reviewer), None) => format!("  R: {}", reviewer),
                 _ => "  R: pending".to_string(),

@@ -80,8 +80,10 @@ pub struct KanbanPr {
     pub ci_status: CiStatus,
     /// Reviewer name (extracted from review comment frontmatter)
     pub reviewer: Option<String>,
-    /// When the review comment was posted
+    /// When the reviewer was assigned or the review comment was posted
     pub reviewed_at: Option<DateTime<Utc>>,
+    /// Whether the review has been posted (true) vs reviewer is still working (false)
+    pub review_posted: bool,
     /// Repository name (for multi-repo projects)
     pub repo: Option<String>,
 }
@@ -733,6 +735,7 @@ fn fetch_prs() -> Vec<KanbanPr> {
                 );
 
                 if number > 0 {
+                    let review_posted = reviewer.is_some();
                     prs.push(KanbanPr {
                         number,
                         title,
@@ -741,6 +744,7 @@ fn fetch_prs() -> Vec<KanbanPr> {
                         ci_status,
                         reviewer,
                         reviewed_at,
+                        review_posted,
                         repo: None,
                     });
                 }
@@ -979,6 +983,11 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc));
 
+            let review_posted = pr
+                .get("review_posted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
             let repo = pr
                 .get("repo")
                 .and_then(|v| v.as_str())
@@ -992,6 +1001,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
                 ci_status,
                 reviewer,
                 reviewed_at,
+                review_posted,
                 repo,
             })
         })

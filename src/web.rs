@@ -335,6 +335,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             let assignment = github_state.pr_reviewers.get(&pr_number);
             let reviewer = assignment.map(|a| a.reviewer.as_str());
             let reviewer_assigned_at = assignment.map(|a| a.assigned_at.to_rfc3339());
+            let review_posted = github_state.reviewed_prs.contains(&pr_number);
             serde_json::json!({
                 "number": pr_number,
                 "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
@@ -342,6 +343,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "status": status,
                 "reviewer": reviewer,
                 "reviewer_assigned_at": reviewer_assigned_at,
+                "review_posted": review_posted,
                 "created_at": pr.get("createdAt").and_then(|c| c.as_str()),
             })
         })

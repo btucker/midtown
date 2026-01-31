@@ -4304,18 +4304,19 @@ fn fetch_kanban_all_prs(
                     let (comment_reviewer, reviewed_at) =
                         extract_reviewer_from_pr_comments(&comments);
 
-                    // Use comment reviewer, or fall back to assigned reviewer
-                    let (reviewer, reviewer_assigned_at) = if let Some(reviewer) = comment_reviewer
-                    {
-                        (Some(reviewer), reviewed_at)
-                    } else if let Some((name, instant)) = reviewer_assignments.get(&number) {
-                        let elapsed = instant.elapsed();
-                        let assigned_at = chrono::Utc::now()
-                            - chrono::Duration::seconds(elapsed.as_secs() as i64);
-                        (Some(name.clone()), Some(assigned_at.to_rfc3339()))
-                    } else {
-                        (None, None)
-                    };
+                    // Use comment reviewer, or fall back to assigned reviewer.
+                    // Track whether the review was actually posted (vs just assigned).
+                    let (reviewer, reviewer_assigned_at, review_posted) =
+                        if let Some(reviewer) = comment_reviewer {
+                            (Some(reviewer), reviewed_at, true)
+                        } else if let Some((name, instant)) = reviewer_assignments.get(&number) {
+                            let elapsed = instant.elapsed();
+                            let assigned_at = chrono::Utc::now()
+                                - chrono::Duration::seconds(elapsed.as_secs() as i64);
+                            (Some(name.clone()), Some(assigned_at.to_rfc3339()), false)
+                        } else {
+                            (None, None, false)
+                        };
 
                     Some(serde_json::json!({
                         "number": number,
@@ -4325,6 +4326,7 @@ fn fetch_kanban_all_prs(
                         "ci_status": ci_status,
                         "reviewer": reviewer,
                         "reviewed_at": reviewer_assigned_at,
+                        "review_posted": review_posted,
                         "repo": repo_label,
                     }))
                 })
