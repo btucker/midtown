@@ -251,6 +251,10 @@ pub struct ProjectConfig {
     /// Personality variant for agent voice in channel/GitHub (normal, fun, wild)
     #[serde(default)]
     pub personality: Option<Personality>,
+
+    /// User display name shown in chat and @mentions (default: "user")
+    #[serde(default)]
+    pub user_display_name: Option<String>,
 }
 
 impl ProjectConfig {
@@ -265,6 +269,10 @@ impl ProjectConfig {
             chat_min_width: other.chat_min_width.or(self.chat_min_width),
             max_coworkers: other.max_coworkers.or(self.max_coworkers),
             personality: other.personality.or(self.personality),
+            user_display_name: other
+                .user_display_name
+                .clone()
+                .or_else(|| self.user_display_name.clone()),
         }
     }
 
@@ -293,6 +301,11 @@ impl ProjectConfig {
     /// Get personality with fallback to Normal.
     pub fn personality(&self) -> Personality {
         self.personality.unwrap_or_default()
+    }
+
+    /// Get user display name, or None if not configured (falls back to "user").
+    pub fn user_display_name(&self) -> Option<&str> {
+        self.user_display_name.as_deref()
     }
 }
 
@@ -426,6 +439,9 @@ impl GlobalConfig {
 
 # Personality for coworker messages: "normal", "fun", or "wild"
 # personality = "normal"
+
+# Your display name shown in chat and @mentions (default: "user")
+# user_display_name = "Ben"
 
 [plugins]
 # Required plugins to install for all projects
@@ -669,6 +685,26 @@ pub fn get_personality() -> Personality {
     config.personality()
 }
 
+/// Get the user display name for the current project, if configured.
+pub fn get_user_display_name() -> Option<String> {
+    let project_name = get_project_name().unwrap_or_default();
+
+    let config = if project_name.is_empty() {
+        GlobalConfig::load().default
+    } else {
+        get_project_config(&project_name)
+    };
+
+    config.user_display_name().map(|s| s.to_string())
+}
+
+/// Get the user display name for a specific project, if configured.
+pub fn get_user_display_name_for_project(project_name: &str) -> Option<String> {
+    get_project_config(project_name)
+        .user_display_name()
+        .map(|s| s.to_string())
+}
+
 /// Get the current project name from git repo root directory.
 fn get_project_name() -> Option<String> {
     crate::paths::detect_repo_name()
@@ -741,6 +777,7 @@ bin_command = "custom-command"
             chat_min_width: Some(160),
             max_coworkers: Some(8),
             personality: Some(Personality::Fun),
+            user_display_name: None,
         };
 
         let project = ProjectConfig {
@@ -749,6 +786,7 @@ bin_command = "custom-command"
             chat_min_width: Some(200),
             max_coworkers: None, // Not overridden
             personality: None,   // Not overridden
+            user_display_name: None,
         };
 
         let merged = global.merge(&project);
@@ -768,6 +806,7 @@ bin_command = "custom-command"
             chat_min_width: None,
             max_coworkers: Some(8),
             personality: None,
+            user_display_name: None,
         };
 
         let project = ProjectConfig {
@@ -776,6 +815,7 @@ bin_command = "custom-command"
             chat_min_width: None,
             max_coworkers: Some(4),
             personality: None,
+            user_display_name: None,
         };
 
         let merged = global.merge(&project);
@@ -1037,6 +1077,7 @@ personality = "normal"
             chat_min_width: None,
             max_coworkers: None,
             personality: Some(Personality::Normal),
+            user_display_name: None,
         };
         let project = ProjectConfig {
             bin_command: None,
@@ -1044,9 +1085,50 @@ personality = "normal"
             chat_min_width: None,
             max_coworkers: None,
             personality: Some(Personality::Wild),
+            user_display_name: None,
         };
         let merged = global.merge(&project);
         assert_eq!(merged.personality(), Personality::Wild);
+    }
+
+    #[test]
+    fn test_user_display_name_merge() {
+        // Global sets display name, project doesn't override
+        let global = ProjectConfig {
+            user_display_name: Some("Ben".to_string()),
+            ..ProjectConfig::default()
+        };
+        let project = ProjectConfig::default();
+        let merged = global.merge(&project);
+        assert_eq!(merged.user_display_name(), Some("Ben"));
+
+        // Project overrides global
+        let project = ProjectConfig {
+            user_display_name: Some("Alice".to_string()),
+            ..ProjectConfig::default()
+        };
+        let merged = global.merge(&project);
+        assert_eq!(merged.user_display_name(), Some("Alice"));
+
+        // Neither sets it
+        let global = ProjectConfig::default();
+        let project = ProjectConfig::default();
+        let merged = global.merge(&project);
+        assert_eq!(merged.user_display_name(), None);
+    }
+
+    #[test]
+    fn test_user_display_name_deserialization() {
+        let toml_str = r#"
+            user_display_name = "Ben"
+        "#;
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.user_display_name(), Some("Ben"));
+
+        // Missing field should be None
+        let toml_str = "";
+        let config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.user_display_name(), None);
     }
 
     #[test]

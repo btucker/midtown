@@ -149,6 +149,8 @@ pub struct App {
     pub input_text: String,
     /// Cursor position within input_text
     pub input_cursor: usize,
+    /// User display name from config (None = "user")
+    pub user_display_name: Option<String>,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -195,6 +197,7 @@ impl App {
             input_mode: false,
             input_text: String::new(),
             input_cursor: 0,
+            user_display_name: midtown::config::get_user_display_name(),
         };
 
         // Initial load
@@ -467,12 +470,13 @@ impl App {
             return;
         }
 
+        let sender = self.user_display_name.as_deref().unwrap_or("user");
         let sent = if let Some(ref client) = self.daemon_client {
             // Route through daemon so it can nudge the Lead
-            client.channel_post_as(&text, "user").is_ok()
+            client.channel_post_as(&text, sender).is_ok()
         } else if let Some(ref channel) = self.channel {
             // Fallback: direct write (won't trigger Lead nudge)
-            let message = Message::text("user", &text);
+            let message = Message::text(sender, &text);
             channel.send(&message).is_ok()
         } else {
             false
@@ -1298,6 +1302,7 @@ mod tests {
             input_mode: false,
             input_text: String::new(),
             input_cursor: 0,
+            user_display_name: None,
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -1346,6 +1351,7 @@ mod tests {
             input_mode: false,
             input_text: String::new(),
             input_cursor: 0,
+            user_display_name: None,
         };
 
         let visible = app.visible_messages();

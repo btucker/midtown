@@ -346,6 +346,9 @@ pub(crate) struct DaemonState {
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a daemon session, so we cache indefinitely.
     repo_name_cache: std::sync::RwLock<HashMap<PathBuf, String>>,
+    /// User display name from config (e.g. "Ben"). Used to recognize user @mentions
+    /// and identify user-sent messages when the display name differs from "user".
+    user_display_name: Option<String>,
 }
 
 impl DaemonState {
@@ -423,6 +426,8 @@ impl DaemonState {
                 crate::reminders::ReminderState::default()
             });
 
+        let user_display_name = config::get_user_display_name_for_project(&repo_name);
+
         Ok(Self {
             coworkers,
             channel,
@@ -446,6 +451,7 @@ impl DaemonState {
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
+            user_display_name,
         })
     }
 
@@ -469,6 +475,15 @@ impl DaemonState {
             crate::rules::CoworkerLifecycle::new_spawn(),
         );
         Ok(())
+    }
+
+    /// Check if a sender name represents the user (either "user" or the configured display name).
+    fn is_user_sender(&self, from: &str) -> bool {
+        from.eq_ignore_ascii_case("user")
+            || self
+                .user_display_name
+                .as_ref()
+                .is_some_and(|dn| dn.eq_ignore_ascii_case(from))
     }
 
     /// Send a message to the channel and broadcast it to WebSocket clients.
@@ -1000,9 +1015,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             } => {
                 let content = &mobile_post.content;
+                let sender = state.user_display_name.as_deref().unwrap_or("user");
                 handle_channel_post(
                     RequestId::Null,
-                    "user",
+                    sender,
                     content,
                     &state,
                 ).await;
@@ -2046,13 +2062,15 @@ async fn chat_monitor_loop(
                             Ok(msg) => {
                                 // Skip messages from protected senders (loop protection),
                                 // but first check for @lead mentions that need nudging.
-                                if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from)) {
+                                if SKIP_SENDERS.iter().any(|&s| s.eq_ignore_ascii_case(&msg.from))
+                                    || state.is_user_sender(&msg.from)
+                                {
                                     // System/daemon messages may contain @lead that still
                                     // needs to trigger a nudge (e.g., orphaned worktree
                                     // warnings). Route @lead before skipping.
-                                    // Exclude "user" — user messages with @lead are already
-                                    // handled in handle_channel_post to avoid double-nudging.
-                                    if !msg.from.eq_ignore_ascii_case("user")
+                                    // Exclude user messages — already handled in
+                                    // handle_channel_post to avoid double-nudging.
+                                    if !state.is_user_sender(&msg.from)
                                         && msg.content.to_lowercase().contains("@lead")
                                     {
                                         let nudge_text = format!("{}: {}", msg.from, msg.content);
@@ -3740,7 +3758,7 @@ async fn handle_channel_post(
             }
 
             // Nudge lead when user messages arrive (from web UI or TUI input)
-            if from == "user" {
+            if state.is_user_sender(from) {
                 // Check if user is @mentioning specific coworkers or @all
                 let has_coworker_mentions =
                     !extract_mentions(&content).is_empty() || contains_at_all(&content);
@@ -3807,17 +3825,28 @@ async fn handle_channel_post(
             }
 
             // Send bell notification and push notification for @user mentions
-            if content_lower.contains("@user") && from != "user" {
+            // Also recognize @<display_name> if configured (e.g., @Ben)
+            let has_user_mention = content_lower.contains("@user")
+                || state
+                    .user_display_name
+                    .as_ref()
+                    .is_some_and(|dn| content_lower.contains(&format!("@{}", dn.to_lowercase())));
+            if has_user_mention && !state.is_user_sender(from) {
                 info!("Bell notification: @user mentioned by {}", from);
                 if let Err(e) = state.coworkers.notify_user() {
                     warn!("Failed to send bell notification for @user mention: {}", e);
                 }
+                let display = state.user_display_name.as_deref().unwrap_or("user");
                 let summary = if content.len() > 100 {
                     format!("{}...", &content[..97])
                 } else {
                     content.clone()
                 };
-                state.send_push_notification(&format!("@user from {}", from), &summary, "mention");
+                state.send_push_notification(
+                    &format!("@{} from {}", display, from),
+                    &summary,
+                    "mention",
+                );
             }
 
             Response::success(
