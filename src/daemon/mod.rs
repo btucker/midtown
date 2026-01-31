@@ -276,9 +276,10 @@ pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
-    /// Per-coworker lifecycle phase (idle, interrupted, prompted).
-    /// Replaces separate `idle_since`, `interrupted_since`, `prompted_nudged` maps.
-    coworker_phases: RwLock<HashMap<String, crate::rules::CoworkerPhase>>,
+    /// Consolidated per-coworker lifecycle state (phase + last activity).
+    /// Bundles what was previously `coworker_phases` and `last_coworker_activity`
+    /// into a single map. Entries are created on spawn and cleared on shutdown.
+    coworker_lifecycles: RwLock<HashMap<String, crate::rules::CoworkerLifecycle>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Repository name (primary repo)
@@ -324,9 +325,6 @@ pub(crate) struct DaemonState {
     cached_merged_pr_coworkers: std::sync::RwLock<HashSet<String>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
-    /// Tracks when each coworker last posted to the channel (for silent coworker detection).
-    /// Shared with `CoworkerManager` so stale entries are cleared on spawn.
-    last_coworker_activity: Arc<std::sync::RwLock<HashMap<String, Instant>>>,
     /// Per-coworker pane content hash and last-changed timestamp (for stuck detection).
     /// Maps coworker name → (last_hash, last_changed_at).
     coworker_pane_hashes: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
@@ -386,7 +384,7 @@ impl DaemonState {
     #[allow(clippy::too_many_arguments)]
     fn new(
         socket_path: PathBuf,
-        mut coworkers: CoworkerManager,
+        coworkers: CoworkerManager,
         repo_name: String,
         all_repo_paths: Vec<PathBuf>,
         channel: Channel,
@@ -413,16 +411,11 @@ impl DaemonState {
                 crate::reminders::ReminderState::default()
             });
 
-        // Share the activity map with CoworkerManager so it can clear stale
-        // timestamps inside spawn_with_name() rather than at every call site.
-        let last_coworker_activity = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        coworkers.set_activity_map(last_coworker_activity.clone());
-
         Ok(Self {
             coworkers,
             channel,
             socket_path,
-            coworker_phases: RwLock::new(HashMap::new()),
+            coworker_lifecycles: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             repo_name,
             default_branch,
@@ -441,10 +434,31 @@ impl DaemonState {
             cached_open_pr_branches: std::sync::RwLock::new(Vec::new()),
             cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
-            last_coworker_activity,
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
         })
+    }
+
+    /// Spawn a coworker and initialize its lifecycle state.
+    ///
+    /// Wraps `CoworkerManager::spawn_with_name` and inserts a fresh
+    /// `CoworkerLifecycle` entry on success, ensuring stale timestamps
+    /// from any previous incarnation are replaced.
+    async fn spawn_coworker(
+        &self,
+        name: &str,
+        unique: bool,
+        prompt: Option<&str>,
+        isolated: bool,
+    ) -> crate::Result<()> {
+        self.coworkers
+            .spawn_with_name(name, unique, prompt, isolated)?;
+        let mut lc = self.coworker_lifecycles.write().await;
+        lc.insert(
+            name.to_string(),
+            crate::rules::CoworkerLifecycle::new_spawn(),
+        );
+        Ok(())
     }
 
     /// Send a message to the channel and broadcast it to WebSocket clients.
@@ -926,7 +940,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     if let Err(e) = state.send_and_broadcast(&nudge_msg) {
                         warn!("Failed to post merge nudge for PR #{}: {}", pr_number, e);
                     }
-                    route_mentions(&state, &nudge_msg);
+                    route_mentions(&state, &nudge_msg).await;
                 }
 
                 // Nudge lead when a CI check fails on the default branch
@@ -955,7 +969,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
                 // Route @mentions in webhook messages directly (chat monitor skips
                 // "github" sender for loop protection, so we handle it here)
-                route_mentions(&state, &webhook_event.message);
+                route_mentions(&state, &webhook_event.message).await;
             }
 
             // Process user channel posts through the daemon (handles nudge, etc.)
@@ -971,7 +985,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     "user",
                     content,
                     &state,
-                );
+                ).await;
             }
 
             // Periodically check for idle coworkers and shut them down
@@ -1253,7 +1267,7 @@ async fn check_and_shutdown_idle_coworkers(
 
     // Pure decision: who should be shut down?
     let to_shutdown = {
-        let mut phases = state.coworker_phases.write().await;
+        let mut phases = state.coworker_lifecycles.write().await;
         crate::rules::decide_idle_shutdowns(
             &snap.coworker_snapshots,
             &snap.busy_coworkers,
@@ -1392,7 +1406,7 @@ async fn check_and_nudge_interrupted_coworkers(
 
     // Pure decision: who should be nudged?
     let to_nudge = {
-        let mut phases = state.coworker_phases.write().await;
+        let mut phases = state.coworker_lifecycles.write().await;
         crate::rules::decide_interrupt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
@@ -1440,7 +1454,7 @@ async fn check_and_nudge_prompted_coworkers(
 
     // Pure decision: which coworkers need lead attention?
     let to_nudge = {
-        let mut phases = state.coworker_phases.write().await;
+        let mut phases = state.coworker_lifecycles.write().await;
         crate::rules::decide_prompt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
@@ -2037,7 +2051,7 @@ async fn chat_monitor_loop(
                                     continue;
                                 }
                                 // Route any @mentions in the message
-                                route_mentions(&state, &msg);
+                                route_mentions(&state, &msg).await;
                             }
                             Err(e) => {
                                 debug!("Failed to parse channel message: {} (line: {})", e, line);
@@ -2071,7 +2085,7 @@ async fn chat_monitor_loop(
 /// - Nudge them with the message context
 ///
 /// Also supports @all to broadcast to every active coworker and the lead.
-fn route_mentions(state: &DaemonState, msg: &Message) {
+async fn route_mentions(state: &DaemonState, msg: &Message) {
     // Check for @all broadcast first
     if contains_at_all(&msg.content) {
         route_at_all(state, msg);
@@ -2120,10 +2134,7 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                 message: ref m,
             } => {
                 info!("Spawning mentioned coworker {} (not currently running)", n);
-                match state
-                    .coworkers
-                    .spawn_with_name(n, true, Some(m.as_str()), false)
-                {
+                match state.spawn_coworker(n, true, Some(m.as_str()), false).await {
                     Ok(_) => {
                         info!("Spawned coworker {} via @mention", n);
                         let spawn_msg = Message::text(
@@ -2444,8 +2455,8 @@ async fn poll_prs_for_issues(
                         pr_number, o, issue_type
                     );
                     match state
-                        .coworkers
-                        .spawn_with_name(o, true, Some(msg.as_str()), false)
+                        .spawn_coworker(o, true, Some(msg.as_str()), false)
+                        .await
                     {
                         Ok(_) => {
                             info!(
@@ -2640,10 +2651,12 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
     // --- Scenario 4: Silent coworker (claimed task, no channel activity) ---
     {
         let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
-        let activity = state.last_coworker_activity.read().unwrap();
+        let lifecycles = state.coworker_lifecycles.read().await;
 
         for name in &busy_coworkers {
-            let last_activity = activity.get(name.as_str());
+            let last_activity: Option<Instant> = lifecycles
+                .get(name.as_str())
+                .and_then(|lc| lc.last_activity);
             let is_silent = match last_activity {
                 Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
                 // No activity recorded — coworker hasn't posted to channel yet.
@@ -2922,12 +2935,10 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                 "PR #{} owner {} is idle/on a break, spawning to address completed review",
                                 pr_number, o
                             );
-                            match state.coworkers.spawn_with_name(
-                                o,
-                                true,
-                                Some(msg.as_str()),
-                                false,
-                            ) {
+                            match state
+                                .spawn_coworker(o, true, Some(msg.as_str()), false)
+                                .await
+                            {
                                 Ok(_) => {
                                     info!(
                                         "Spawned {} to address completed review on PR #{}",
@@ -3398,7 +3409,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .unwrap_or("lead");
 
             match message {
-                Some(msg) => handle_channel_post(request.id, from, msg, state),
+                Some(msg) => handle_channel_post(request.id, from, msg, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -3448,7 +3459,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         "daemon.check-pending" => {
             info!("Check-pending triggered via RPC");
             let snap = snapshot::collect_world_snapshot(state).await;
-            let pending_effects = spawn_for_pending_tasks(&snap, state);
+            let pending_effects = spawn_for_pending_tasks(&snap, state).await;
             effects::execute_effects(pending_effects, state).await;
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
@@ -3662,7 +3673,12 @@ fn unescape_shell_artifacts(s: &str) -> String {
 /// For coworkers, the action text is also reflected in their tmux tab name.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
-fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonState) -> Response {
+async fn handle_channel_post(
+    id: RequestId,
+    from: &str,
+    message: &str,
+    state: &DaemonState,
+) -> Response {
     // Clean up shell escaping artifacts (e.g. "\!" from bash history expansion escaping)
     let message = unescape_shell_artifacts(message);
 
@@ -3681,8 +3697,14 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
 
             // Track last activity time for coworker (used for silent coworker detection)
             if is_coworker_sender(from) {
-                let mut activity = state.last_coworker_activity.write().unwrap();
-                activity.insert(from.to_string(), Instant::now());
+                let mut lifecycles = state.coworker_lifecycles.write().await;
+                lifecycles
+                    .entry(from.to_string())
+                    .or_insert_with(|| crate::rules::CoworkerLifecycle {
+                        phase: None,
+                        last_activity: None,
+                    })
+                    .last_activity = Some(Instant::now());
             }
 
             // Update tmux tab for coworkers when they post /me actions
@@ -3701,7 +3723,7 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
                 let has_lead_mention = content.to_lowercase().contains("@lead");
 
                 // Route @mentions in user messages directly to coworkers
-                route_mentions(state, &msg);
+                route_mentions(state, &msg).await;
 
                 // Only nudge lead if there are no coworker @mentions (regular
                 // message for the lead) or if the user also @mentioned the lead.
@@ -4683,8 +4705,8 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
                 pr_number, o
             );
             match state
-                .coworkers
-                .spawn_with_name(o, true, Some(msg.as_str()), false)
+                .spawn_coworker(o, true, Some(msg.as_str()), false)
+                .await
             {
                 Ok(_) => {
                     info!(
@@ -4751,7 +4773,7 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-fn check_and_recover_orphans(
+async fn check_and_recover_orphans(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
@@ -4805,8 +4827,8 @@ fn check_and_recover_orphans(
     // retain their worktree and branch. This is the same path as normal task
     // assignment, just reusing the previous coworker name.
     match state
-        .coworkers
-        .spawn_with_name(&recovery.owner, false, Some(&prompt), false)
+        .spawn_coworker(&recovery.owner, false, Some(&prompt), false)
+        .await
     {
         Ok(_) => {
             info!("Respawned coworker {} successfully", recovery.owner);
@@ -5138,7 +5160,7 @@ fn cleanup_orphaned_worktrees(state: &DaemonState) {
 /// Handles two cases:
 /// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
 /// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
-fn spawn_for_pending_tasks(
+async fn spawn_for_pending_tasks(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
@@ -5196,10 +5218,7 @@ fn spawn_for_pending_tasks(
                 );
                 // Spawn inline — post-spawn effects depend on spawn result
                 let prompt = format!("You've been assigned task #{}: {}. Get started!", tid, subj);
-                match state
-                    .coworkers
-                    .spawn_with_name(o, true, Some(&prompt), false)
-                {
+                match state.spawn_coworker(o, true, Some(&prompt), false).await {
                     Ok(_) => {
                         info!("Spawned coworker {} for pending task #{}", o, tid);
                         effects.push(Effect::BroadcastCoworkerUpdate {
@@ -5372,8 +5391,8 @@ fn spawn_for_pending_tasks(
             // Step 3b: Spawn a new coworker with the pre-assigned name and prompt
             // Spawn inline — post-spawn effects depend on spawn result
             match state
-                .coworkers
-                .spawn_with_name(&coworker_name, false, Some(&prompt), false)
+                .spawn_coworker(&coworker_name, false, Some(&prompt), false)
+                .await
             {
                 Ok(_) => {
                     info!(

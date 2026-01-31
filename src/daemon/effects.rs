@@ -55,8 +55,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 isolated,
             } => {
                 match state
-                    .coworkers
-                    .spawn_with_name(&name, true, Some(&prompt), isolated)
+                    .spawn_coworker(&name, true, Some(&prompt), isolated)
+                    .await
                 {
                     Ok(_) => {
                         info!("Respawned coworker {} successfully", name);
@@ -75,6 +75,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 if let Err(e) = state.coworkers.shutdown(&name) {
                     warn!("Failed to shut down coworker {}: {}", name, e);
+                }
+                // Clean up lifecycle state for the shut-down coworker
+                {
+                    let mut lc = state.coworker_lifecycles.write().await;
+                    lc.remove(&name);
                 }
             }
             Effect::NudgeCoworker { name, message } => {
