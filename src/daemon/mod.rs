@@ -6667,15 +6667,14 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
 
     #[test]
     fn test_usage_limit_detected_in_pane() {
-        let panes = vec![
-            ("park".to_string(), "Working on task...\n".to_string()),
-            (
-                "broadway".to_string(),
-                "Usage limit reached. Try again in 15 minutes.\n".to_string(),
-            ),
-        ];
+        let mut panes = std::collections::HashMap::new();
+        panes.insert("park".to_string(), "Working on task...\n".to_string());
+        panes.insert(
+            "broadway".to_string(),
+            "Usage limit reached. Try again in 15 minutes.\n".to_string(),
+        );
 
-        let decision = decide_usage_limit_detection(&panes, false);
+        let decision = decide_usage_limit_detection(&panes);
         assert_eq!(
             decision,
             UsageLimitDecision::Detected {
@@ -6685,24 +6684,15 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
     }
 
     #[test]
-    fn test_usage_limit_already_scheduled() {
-        let panes = vec![("park".to_string(), "Usage limit reached.\n".to_string())];
-
-        let decision = decide_usage_limit_detection(&panes, true);
-        assert_eq!(decision, UsageLimitDecision::AlreadyScheduled);
-    }
-
-    #[test]
     fn test_usage_limit_none_detected() {
-        let panes = vec![
-            (
-                "park".to_string(),
-                "Running tests... all pass\n".to_string(),
-            ),
-            ("broadway".to_string(), "Editing src/main.rs\n".to_string()),
-        ];
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(
+            "park".to_string(),
+            "Running tests... all pass\n".to_string(),
+        );
+        panes.insert("broadway".to_string(), "Editing src/main.rs\n".to_string());
 
-        let decision = decide_usage_limit_detection(&panes, false);
+        let decision = decide_usage_limit_detection(&panes);
         assert_eq!(decision, UsageLimitDecision::NoneDetected);
     }
 
