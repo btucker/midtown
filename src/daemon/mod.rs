@@ -2557,7 +2557,7 @@ async fn poll_prs_for_issues(
                     match state
                         .spawn_coworker(
                             o,
-                            saved_session.is_some(),
+                            true,
                             Some(msg.as_str()),
                             false,
                             saved_session.as_deref(),
@@ -3056,7 +3056,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                             match state
                                 .spawn_coworker(
                                     o,
-                                    saved_session.is_some(),
+                                    true,
                                     Some(msg.as_str()),
                                     false,
                                     saved_session.as_deref(),
@@ -4862,13 +4862,7 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
                 info!("Resuming saved PR break session for {}", o);
             }
             match state
-                .spawn_coworker(
-                    o,
-                    saved_session.is_some(),
-                    Some(msg.as_str()),
-                    false,
-                    saved_session.as_deref(),
-                )
+                .spawn_coworker(o, true, Some(msg.as_str()), false, saved_session.as_deref())
                 .await
             {
                 Ok(_) => {
