@@ -47,6 +47,8 @@ jobs:
 
       - name: Run tmux e2e tests
         run: cargo test --release --all-features --test tmux_e2e -- --ignored
+        env:
+          MIDTOWN_LEAD_COMMAND: "sleep 300"
 
       - name: Run nudge e2e tests
         run: cargo test --release --all-features --test nudge_e2e -- --ignored

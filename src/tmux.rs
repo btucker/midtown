@@ -1300,7 +1300,12 @@ pub fn spawn_lead(
         .map(|d| format!(" --add-dir {}", d))
         .collect();
 
-    let command = build_lead_command(&task_list_id, &settings_file, &prompt_file, &add_dir_flags);
+    // Allow tests/CI to override the lead command (claude isn't available in CI)
+    let command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
+        test_cmd
+    } else {
+        build_lead_command(&task_list_id, &settings_file, &prompt_file, &add_dir_flags)
+    };
 
     create_window(session, "lead", working_dir, Some(&command))?;
     set_window_color(session, "lead")?;
