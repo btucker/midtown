@@ -125,6 +125,7 @@ pub async fn start_webhook_server(
     config: WebhookConfig,
     coworker_manager: Option<CoworkerManager>,
     all_repo_paths: Vec<std::path::PathBuf>,
+    default_branch: String,
 ) -> crate::Result<(
     mpsc::Receiver<WebhookEvent>,
     broadcast::Sender<WebUpdate>,
@@ -164,6 +165,7 @@ pub async fn start_webhook_server(
         channel_post_tx: mobile_tx,
         push_manager: push_manager.clone(),
         all_repo_paths,
+        default_branch,
     });
 
     // CORS layer for development (allows requests from Vite dev server)
@@ -820,7 +822,12 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
             .is_none();
 
     let ci_failed_on_default_branch = if is_failure && is_on_default_branch {
-        let default_branch = branch.unwrap_or("main");
+        let default_branch = event
+            .repository
+            .default_branch
+            .as_deref()
+            .or(branch)
+            .unwrap_or("main");
         Some(format!(
             "@lead CI check '{}' failed on {} — investigate ASAP",
             event.check_run.name, default_branch,

@@ -59,6 +59,8 @@ pub struct WebState {
     pub push_manager: Option<Arc<PushManager>>,
     /// Paths to all repos in the project (for multi-repo PR URL resolution)
     pub all_repo_paths: Vec<std::path::PathBuf>,
+    /// Default branch name (e.g. "main" or "master")
+    pub default_branch: String,
 }
 
 /// Types of real-time updates sent to clients
@@ -184,7 +186,7 @@ pub struct RepoStatus {
 }
 
 /// Fetch repository status via gh CLI
-fn fetch_repo_status() -> RepoStatus {
+fn fetch_repo_status(default_branch: &str) -> RepoStatus {
     let mut status = RepoStatus::default();
 
     // Fetch latest commit on default branch
@@ -209,11 +211,15 @@ fn fetch_repo_status() -> RepoStatus {
         }
     }
 
-    // Fetch CI status from latest workflow run on main branch
+    // Fetch CI status from latest workflow run on default branch
+    let actions_url = format!(
+        "repos/{{owner}}/{{repo}}/actions/runs?branch={}&per_page=1",
+        default_branch
+    );
     if let Ok(output) = std::process::Command::new("gh")
         .args([
             "api",
-            "repos/{owner}/{repo}/actions/runs?branch=main&per_page=1",
+            &actions_url,
             "--jq",
             ".workflow_runs[0] | {status: .status, conclusion: .conclusion}",
         ])
@@ -402,7 +408,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         .unwrap_or_default();
 
     // Fetch repo status (blocking I/O)
-    let repo_status = tokio::task::spawn_blocking(fetch_repo_status)
+    let default_branch = state.default_branch.clone();
+    let repo_status = tokio::task::spawn_blocking(move || fetch_repo_status(&default_branch))
         .await
         .unwrap_or_default();
 
@@ -774,6 +781,7 @@ mod tests {
             channel_post_tx,
             push_manager: None,
             all_repo_paths: Vec::new(),
+            default_branch: "main".to_string(),
         });
 
         let json = r#"{"type": "send_message", "content": "hello from mobile"}"#;
