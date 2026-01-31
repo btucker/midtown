@@ -769,6 +769,24 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
     }))
 }
 
+/// Poll a tmux window to see if it survives startup.
+///
+/// Checks every 500ms for up to 3 seconds. Returns `true` if the window
+/// is still alive at the end. This catches commands that fail shortly after
+/// launch (e.g., `claude --continue` with no session to resume, which can
+/// take 1-2 seconds to exit).
+fn wait_for_window_stable(session: &str, name: &str) -> bool {
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        match window_exists(session, name) {
+            Ok(true) => {}             // still alive, keep checking
+            Ok(false) => return false, // died
+            Err(_) => return false,
+        }
+    }
+    true // survived 3 seconds of polling
+}
+
 /// Read plugins from user's ~/.claude/settings.json
 fn read_user_plugins() -> Option<serde_json::Value> {
     let home = std::env::var("HOME").ok()?;
@@ -869,7 +887,7 @@ fn build_claude_command(
     prompt_file: &std::path::Path,
 ) -> String {
     format!(
-        "{}; claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
+        "{}; exec claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"",
         env_vars,
         session_flag,
         add_dir_flags,
@@ -950,13 +968,13 @@ pub fn spawn_claude(
     // Set window tab color to match chat TUI team panel
     set_window_color(session, name)?;
 
-    // Brief delay to let the window start up and potentially fail
-    // This is necessary because tmux new-window returns success immediately,
-    // even if the command inside fails and the window closes right away
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Poll for window survival. tmux new-window returns success immediately
+    // even if the command inside fails. `claude --continue` can take 1-2 seconds
+    // to discover there's no session to resume and exit, so we poll repeatedly
+    // over 3 seconds to catch failures the old 500ms check missed.
+    let window_survived = wait_for_window_stable(session, name);
 
-    // Verify the window actually exists (it may have died if the command failed)
-    if !window_exists(session, name)? {
+    if !window_survived {
         if resume {
             // --continue failed (likely no conversation to resume) — retry with fresh session
             tracing::warn!(
@@ -977,9 +995,8 @@ pub fn spawn_claude(
 
             create_window(session, name, working_dir, Some(&fresh_command))?;
             set_window_color(session, name)?;
-            std::thread::sleep(std::time::Duration::from_millis(500));
 
-            if !window_exists(session, name)? {
+            if !wait_for_window_stable(session, name) {
                 return Err(Error::Rpc {
                     code: -32603,
                     message: format!(
@@ -1002,6 +1019,105 @@ pub fn spawn_claude(
     }
 
     Ok(coworker_session_id)
+}
+
+/// Build the shell command string for launching the lead Claude instance.
+fn build_lead_command(
+    task_list_id: &str,
+    settings_file: &std::path::Path,
+    prompt_file: &std::path::Path,
+    add_dir_flags: &str,
+) -> String {
+    format!(
+        "export CLAUDE_CODE_TASK_LIST_ID='{}'; exec claude --dangerously-skip-permissions --settings {} --append-system-prompt \"$(cat {})\"{}",
+        task_list_id,
+        settings_file.display(),
+        prompt_file.display(),
+        add_dir_flags,
+    )
+}
+
+/// Write the Lead system prompt to a file and return the path.
+fn write_lead_prompt_file() -> crate::Result<PathBuf> {
+    let dir = state_dir();
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+
+    let path = dir.join("lead-prompt.md");
+    std::fs::write(&path, crate::agents::lead_system_prompt()).map_err(Error::Io)?;
+
+    Ok(path)
+}
+
+/// Generate Lead settings JSON with hooks for channel sync, insights, and orphan detection.
+fn lead_settings_json() -> serde_json::Value {
+    let bin_command = crate::config::get_bin_command();
+    serde_json::json!({
+        "hooks": {
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} hook lead-stop", bin_command)
+                }]
+            }],
+            "PostToolUse": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} hook insight", bin_command)
+                }]
+            }]
+        }
+    })
+}
+
+/// Write Lead settings to a file and return the path.
+fn write_lead_settings_file() -> crate::Result<PathBuf> {
+    let dir = state_dir();
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+
+    let path = dir.join("lead-settings.json");
+    let settings = lead_settings_json();
+    std::fs::write(&path, settings.to_string()).map_err(Error::Io)?;
+
+    Ok(path)
+}
+
+/// Spawn the Lead Claude Code instance in a tmux window.
+///
+/// Creates (or recreates) the `lead` window in the given tmux session.
+/// Always starts a fresh session — users can `/resume` interactively if desired.
+pub fn spawn_lead(
+    session: &str,
+    working_dir: &str,
+    project_name: &str,
+    additional_dirs: &[PathBuf],
+) -> crate::Result<()> {
+    let task_list_id = crate::paths::task_list_id_for_repo(project_name);
+
+    let prompt_file = write_lead_prompt_file()?;
+    let settings_file = write_lead_settings_file()?;
+
+    let add_dir_flags: String = additional_dirs
+        .iter()
+        .filter_map(|d| d.to_str())
+        .map(|d| format!(" --add-dir {}", d))
+        .collect();
+
+    let command = build_lead_command(&task_list_id, &settings_file, &prompt_file, &add_dir_flags);
+
+    create_window(session, "lead", working_dir, Some(&command))?;
+    set_window_color(session, "lead")?;
+
+    if !wait_for_window_stable(session, "lead") {
+        return Err(Error::Rpc {
+            code: -32603,
+            message: format!(
+                "Lead window {}:lead was created but immediately closed (command likely failed)",
+                session,
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 // Legacy functions for backward compatibility during transition
@@ -1496,7 +1612,7 @@ Claude is now processing the request
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--settings /tmp/settings.json"));
         assert!(cmd.contains("--append-system-prompt \"$(cat /tmp/prompt.txt)\""));
-        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; claude"));
+        assert!(cmd.starts_with("export MIDTOWN_AGENT='lex'; exec claude"));
     }
 
     #[test]

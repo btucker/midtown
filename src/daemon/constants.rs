@@ -59,6 +59,9 @@ pub(super) const CHANNEL_ROTATION_MAX_AGE_HOURS: u64 = 24;
 /// How many minutes of recent messages to retain after rotation (60 minutes)
 pub(super) const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
 
+/// How often to check if the lead window is still alive (10 seconds)
+pub(super) const LEAD_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+
 /// Interval for checking orphaned tasks (5 seconds)
 pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 
@@ -72,6 +75,17 @@ pub(super) const INTERRUPTED_NUDGE_DURATION: Duration = Duration::from_secs(60);
 /// Cooldown between orphan recovery spawns (5 seconds)
 /// Only spawn one coworker per tick, with a minimum gap between spawns.
 pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// Cooldown after a coworker spawn failure before retrying (2 minutes).
+/// Prevents infinite respawn loops when a coworker's environment is broken
+/// (missing worktree, bad session, etc.). The task is reset to pending so
+/// other coworkers can pick it up.
+pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(120);
+
+/// How long a coworker's pane can remain unchanged before considering it stuck (5 minutes).
+/// If the tmux pane content hash hasn't changed for this duration, the coworker is killed
+/// and restarted with its current task.
+pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(300);
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.

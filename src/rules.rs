@@ -1567,6 +1567,44 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // CooldownTracker spawn failure tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn spawn_failure_cooldown_blocks_retry() {
+        let mut tracker = CooldownTracker::new();
+        let cooldown = Duration::from_secs(120);
+
+        // Before any failure, check passes
+        assert!(tracker.check("spawn_failure", "park", cooldown));
+
+        // Record a spawn failure
+        tracker.record("spawn_failure", "park");
+
+        // Now the cooldown blocks retries for "park"
+        assert!(!tracker.check("spawn_failure", "park", cooldown));
+
+        // But other coworkers are not affected
+        assert!(tracker.check("spawn_failure", "broadway", cooldown));
+    }
+
+    #[test]
+    fn spawn_failure_cooldown_expires() {
+        let mut tracker = CooldownTracker::new();
+
+        // Record a failure, then manually insert an old timestamp
+        tracker.record("spawn_failure", "park");
+
+        // Overwrite with an old instant (3 minutes ago > 120s cooldown)
+        tracker.entries.insert(
+            ("spawn_failure".to_string(), "park".to_string()),
+            Instant::now() - Duration::from_secs(180),
+        );
+
+        assert!(tracker.check("spawn_failure", "park", Duration::from_secs(120)));
+    }
+
+    // -----------------------------------------------------------------------
     // decide_mention_action tests
     // -----------------------------------------------------------------------
 
