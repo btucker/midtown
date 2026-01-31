@@ -424,6 +424,7 @@ impl CoworkerManager {
             resume,
             isolated_tasks,
             &additional_dirs,
+            prompt,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -448,11 +449,6 @@ impl CoworkerManager {
             isolated_tasks,
             resume,
         );
-
-        // If a prompt was provided, wait for initialization and send it
-        if let Some(prompt_text) = prompt {
-            self.send_initial_prompt(&name, prompt_text);
-        }
 
         Ok(name)
     }
@@ -674,23 +670,6 @@ impl CoworkerManager {
         tmux::send_keys(&self.session_name, name, message)
     }
 
-    /// Wait for a coworker to initialize and send an initial prompt.
-    ///
-    /// This is a helper method used by `spawn()` and `spawn_with_name()` to avoid
-    /// code duplication. It waits 2 seconds for the coworker to initialize, then
-    /// sends the prompt as a nudge.
-    fn send_initial_prompt(&self, name: &str, prompt: &str) {
-        // Wait for coworker to initialize before sending prompt
-        std::thread::sleep(std::time::Duration::from_secs(2));
-
-        // Send the initial prompt as a nudge
-        if let Err(e) = self.nudge(name, prompt) {
-            tracing::warn!("Failed to send initial prompt to {}: {}", name, e);
-        } else {
-            tracing::info!("Sent initial prompt to {}", name);
-        }
-    }
-
     /// Send a nudge (input) to the Lead session.
     ///
     /// The nudge is queued and delivered by a background thread that waits for
@@ -875,6 +854,7 @@ impl CoworkerManager {
             resume,
             isolated_tasks,
             &additional_dirs,
+            prompt,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -899,11 +879,6 @@ impl CoworkerManager {
             isolated_tasks,
             resume,
         );
-
-        // If a prompt was provided, wait for initialization and send it
-        if let Some(prompt_text) = prompt {
-            self.send_initial_prompt(name, prompt_text);
-        }
 
         Ok(name.to_string())
     }
@@ -970,6 +945,7 @@ impl CoworkerManager {
             true,
             false,
             &additional_dirs,
+            None,
         )?;
 
         // Record the coworker with their session ID for symlink management
