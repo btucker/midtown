@@ -16,7 +16,8 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
@@ -25,6 +26,50 @@ use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::push::PushManager;
 use crate::tmux;
+
+/// TTL for cached API responses (30 seconds).
+const CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Thread-safe TTL cache for expensive API responses.
+///
+/// Stores a timestamped value behind a mutex. Callers check staleness
+/// and refresh only when the cached entry has expired.
+struct TtlCache<T> {
+    inner: Mutex<Option<(Instant, T)>>,
+}
+
+impl<T: Clone> TtlCache<T> {
+    const fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
+        }
+    }
+
+    /// Return cached value if it exists and is younger than `ttl`.
+    fn get(&self, ttl: Duration) -> Option<T> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .as_ref()
+            .filter(|(ts, _)| ts.elapsed() < ttl)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Store a new value with the current timestamp.
+    fn set(&self, value: T) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some((Instant::now(), value));
+        }
+    }
+}
+
+/// Cached repo status (commit, CI, release).
+static REPO_STATUS_CACHE: TtlCache<RepoStatus> = TtlCache::new();
+
+/// Cached open PR list.
+static OPEN_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
+
+/// Cached merged PR list.
+static MERGED_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 
 /// Configuration for the web server
 #[derive(Debug, Clone)]
@@ -188,6 +233,40 @@ pub struct RepoStatus {
     pub release_time: Option<String>,
 }
 
+/// Fetch kanban data (PRs + merged PRs) from the daemon via RPC.
+///
+/// Connects to the daemon's Unix socket and calls `kanban.data`, which uses
+/// a single batched GraphQL query internally. Returns `None` if the daemon
+/// is unreachable or the response is unexpected.
+fn fetch_kanban_via_rpc(repo: &str) -> Option<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let socket = crate::paths::daemon_socket_for_repo(repo);
+    let mut stream = UnixStream::connect(&socket).ok()?;
+    // Set a timeout so we don't block forever if daemon is busy
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "kanban.data",
+        "id": 1
+    });
+    writeln!(stream, "{}", request).ok()?;
+    stream.flush().ok()?;
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+
+    let resp: serde_json::Value = serde_json::from_str(&line).ok()?;
+    let result = resp.get("result")?;
+
+    let prs = result.get("prs")?.as_array()?.clone();
+    let merged = result.get("merged_prs")?.as_array()?.clone();
+    Some((prs, merged))
+}
+
 /// Fetch repository status via gh CLI
 fn fetch_repo_status(default_branch: &str) -> RepoStatus {
     let mut status = RepoStatus::default();
@@ -269,9 +348,12 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
     status
 }
 
-/// Get daemon/coworker status including tasks and PRs for kanban board
+/// Get daemon/coworker status including tasks and PRs for kanban board.
+///
+/// Uses TTL caches (30 s) and the daemon's `kanban.data` RPC to avoid
+/// redundant GitHub API calls on every poll.
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
-    // Read tasks directly from Claude Code task storage
+    // Read tasks directly from Claude Code task storage (local file, cheap)
     let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
         .into_iter()
         .map(|task| {
@@ -289,93 +371,108 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         })
         .collect();
 
-    // Load GitHub state to get reviewer assignments
+    // Load GitHub state to get reviewer assignments (local file, cheap)
     let github_state =
         crate::github_state::load_state_for_repo(&state.config.repo).unwrap_or_default();
 
-    // Get open PRs via gh CLI (spawn blocking to avoid blocking async runtime)
-    let raw_prs = tokio::task::spawn_blocking(|| {
-        let output = std::process::Command::new("gh")
-            .args([
-                "pr",
-                "list",
-                "--json",
-                "number,title,author,state,isDraft,reviewDecision,createdAt",
-            ])
-            .output();
-        match output {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
-            }
-            _ => Vec::new(),
+    // --- PR data: prefer daemon RPC, fall back to cached gh CLI calls ---
+    let repo_name = state.config.repo.clone();
+    let (pull_requests, merged_prs) = tokio::task::spawn_blocking(move || {
+        // Try daemon RPC first (single GraphQL call inside the daemon)
+        if let Some((rpc_prs, rpc_merged)) = fetch_kanban_via_rpc(&repo_name) {
+            return (rpc_prs, rpc_merged);
         }
+        // Fall back to cached gh CLI calls
+        let open = OPEN_PRS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
+            let prs = fetch_open_prs_via_cli();
+            OPEN_PRS_CACHE.set(prs.clone());
+            prs
+        });
+        let merged = MERGED_PRS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
+            let prs = fetch_merged_prs_via_cli();
+            MERGED_PRS_CACHE.set(prs.clone());
+            prs
+        });
+        (open, merged)
     })
     .await
     .unwrap_or_default();
 
-    // Transform PRs and add reviewer info
-    let pull_requests: Vec<serde_json::Value> = raw_prs
+    // Transform open PRs: enrich with reviewer info from persistent state
+    let pull_requests: Vec<serde_json::Value> = pull_requests
         .into_iter()
         .map(|pr| {
             let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-            let status = if is_draft {
-                "draft"
+            // RPC returns "ci_status" / "reviewer" / "reviewed_at"; gh CLI returns
+            // "isDraft" / "reviewDecision". Handle both shapes.
+            // Look up reviewer from persistent state (covers both RPC and CLI shapes)
+            let assignment = github_state.pr_reviewers.get(&pr_number);
+            let reviewer = pr
+                .get("reviewer")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| assignment.map(|a| a.reviewer.clone()));
+            let reviewer_assigned_at = assignment.map(|a| a.assigned_at.to_rfc3339());
+            // Prefer review_posted from RPC response (computed from actual PR comments),
+            // fall back to persistent local state for the CLI path
+            let review_posted = pr
+                .get("review_posted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| github_state.reviewed_prs.contains(&pr_number));
+            let status = if pr.get("ci_status").is_some() {
+                // RPC shape: derive review status from review_posted and reviewer
+                if review_posted {
+                    "reviewed"
+                } else if reviewer.is_some() {
+                    "awaiting review"
+                } else {
+                    "open"
+                }
             } else {
-                match pr
-                    .get("reviewDecision")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("")
-                {
-                    "APPROVED" => "approved",
-                    "CHANGES_REQUESTED" => "changes requested",
-                    "REVIEW_REQUIRED" => "awaiting review",
-                    _ => "open",
+                // gh CLI shape: use isDraft and reviewDecision fields
+                let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+                if is_draft {
+                    "draft"
+                } else {
+                    match pr
+                        .get("reviewDecision")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("")
+                    {
+                        "APPROVED" => "approved",
+                        "CHANGES_REQUESTED" => "changes requested",
+                        "REVIEW_REQUIRED" => "awaiting review",
+                        _ => "open",
+                    }
                 }
             };
-            // Look up reviewer assignment from persistent state
-            let assignment = github_state.pr_reviewers.get(&pr_number);
-            let reviewer = assignment.map(|a| a.reviewer.as_str());
-            let reviewer_assigned_at = assignment.map(|a| a.assigned_at.to_rfc3339());
-            let review_posted = github_state.reviewed_prs.contains(&pr_number);
+            // Extract author: RPC uses flat "author" string, CLI uses {"login": ...}
+            let author = pr
+                .get("author")
+                .and_then(|a| {
+                    a.as_str().map(|s| s.to_string()).or_else(|| {
+                        a.get("login")
+                            .and_then(|l| l.as_str())
+                            .map(|s| s.to_string())
+                    })
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            let created_at = pr
+                .get("createdAt")
+                .or_else(|| pr.get("created_at"))
+                .and_then(|c| c.as_str());
             serde_json::json!({
                 "number": pr_number,
                 "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
-                "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                "author": author,
                 "status": status,
                 "reviewer": reviewer,
                 "reviewer_assigned_at": reviewer_assigned_at,
                 "review_posted": review_posted,
-                "created_at": pr.get("createdAt").and_then(|c| c.as_str()),
+                "created_at": created_at,
             })
         })
         .collect();
-
-    // Get merged PRs via gh CLI
-    let merged_prs = tokio::task::spawn_blocking(|| {
-        let output = std::process::Command::new("gh")
-            .args([
-                "pr",
-                "list",
-                "--state",
-                "merged",
-                "--limit",
-                "10",
-                "--json",
-                "number,title,mergedAt",
-            ])
-            .output();
-        match output {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
-            }
-            _ => Vec::new(),
-        }
-    })
-    .await
-    .unwrap_or_default();
 
     // Build a map of coworker name -> current task subject from in_progress tasks
     let coworker_tasks: std::collections::HashMap<String, String> = tasks
@@ -412,13 +509,20 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         })
         .unwrap_or_default();
 
-    // Fetch repo status (blocking I/O)
+    // Fetch repo status with TTL cache (blocking I/O)
     let default_branch = state.default_branch.clone();
-    let repo_status = tokio::task::spawn_blocking(move || fetch_repo_status(&default_branch))
-        .await
-        .unwrap_or_default();
+    let repo_status = tokio::task::spawn_blocking(move || {
+        REPO_STATUS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
+            let status = fetch_repo_status(&default_branch);
+            REPO_STATUS_CACHE.set(status.clone());
+            status
+        })
+    })
+    .await
+    .unwrap_or_default();
 
     // Build repo metadata for multi-repo PR URL resolution
+    // Uses repo_name_cache on WebState for permanent repo name caching
     let repo_statuses: Vec<serde_json::Value> = if state.all_repo_paths.len() > 1 {
         state
             .all_repo_paths
@@ -479,6 +583,48 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     });
 
     Ok(axum::Json(status))
+}
+
+/// Fetch open PRs via gh CLI (used as fallback when daemon RPC is unavailable).
+fn fetch_open_prs_via_cli() -> Vec<serde_json::Value> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--json",
+            "number,title,author,state,isDraft,reviewDecision,createdAt",
+        ])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            serde_json::from_str(&stdout).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Fetch recently merged PRs via gh CLI (used as fallback when daemon RPC is unavailable).
+fn fetch_merged_prs_via_cli() -> Vec<serde_json::Value> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--limit",
+            "10",
+            "--json",
+            "number,title,mergedAt",
+        ])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            serde_json::from_str(&stdout).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
 }
 /// Get the lead's tmux pane content
 ///
