@@ -227,68 +227,6 @@ fn repo_root() -> Result<PathBuf, String> {
     Ok(PathBuf::from(path))
 }
 
-/// Get the state directory for midtown.
-fn state_dir() -> PathBuf {
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("state")
-        });
-    state_dir.join("midtown")
-}
-
-/// Write the Lead system prompt to a file and return the path.
-fn write_lead_prompt_file() -> Result<PathBuf, String> {
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create state directory: {}", e))?;
-
-    let path = dir.join("lead-prompt.md");
-    std::fs::write(&path, midtown::agents::lead_system_prompt())
-        .map_err(|e| format!("Failed to write lead prompt file: {}", e))?;
-
-    Ok(path)
-}
-
-/// Generate Lead settings JSON with hooks for channel sync, insights, and orphan detection.
-fn lead_settings_json() -> serde_json::Value {
-    let bin_command = midtown::config::get_bin_command();
-    serde_json::json!({
-        "hooks": {
-            "Stop": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("{} hook lead-stop", bin_command)
-                }]
-            }],
-            "PostToolUse": [{
-                // No matcher = runs on every tool use for insight posting
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("{} hook insight", bin_command)
-                }]
-            }]
-        }
-    })
-}
-
-/// Write Lead settings to a file and return the path.
-fn write_lead_settings_file() -> Result<PathBuf, String> {
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create state directory: {}", e))?;
-
-    let path = dir.join("lead-settings.json");
-    let settings = lead_settings_json();
-    std::fs::write(&path, settings.to_string())
-        .map_err(|e| format!("Failed to write lead settings file: {}", e))?;
-
-    Ok(path)
-}
-
 /// Get the path to the Lead session ID file for a project.
 fn lead_session_file(repo: &Path) -> PathBuf {
     let repo_name = repo
@@ -372,8 +310,8 @@ fn build_lead_claude_command(
     task_list_id: &str,
     additional_repos: &[PathBuf],
 ) -> Result<String, String> {
-    let prompt_file = write_lead_prompt_file()?;
-    let settings_file = write_lead_settings_file()?;
+    let prompt_file = midtown::tmux::write_lead_prompt_file().map_err(|e| format!("{}", e))?;
+    let settings_file = midtown::tmux::write_lead_settings_file().map_err(|e| format!("{}", e))?;
 
     // Build --add-dir flags for additional repos
     let add_dir_flags: String = additional_repos
@@ -1303,14 +1241,6 @@ mod tests {
         assert!(path.to_string_lossy().contains("midtown"));
         assert!(path.to_string_lossy().ends_with("daemon.sock"));
     }
-
-    #[test]
-    fn test_state_dir_format() {
-        let dir = state_dir();
-        assert!(dir.to_string_lossy().contains("midtown"));
-    }
-
-    // Note: lead_system_prompt tests moved to src/agents.rs
 
     #[test]
     fn test_session_exists_nonexistent() {

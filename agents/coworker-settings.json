@@ -1,0 +1,36 @@
+{
+  "editorMode": "normal",
+  "hooks": {
+    "PostToolUse": [{
+      "matcher": "TaskUpdate",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook task"
+      }]
+    }, {
+      "matcher": "TaskCreate",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook task"
+      }]
+    }, {
+      "matcher": "AskUserQuestion",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook ask"
+      }]
+    }, {
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook insight"
+      }]
+    }],
+    "Notification": [{
+      "matcher": "idle_prompt",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook idle"
+      }]
+    }]
+  }
+}
