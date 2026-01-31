@@ -17,6 +17,8 @@ pub enum Effect {
         name: String,
         prompt: String,
         isolated: bool,
+        /// If set, resume a specific Claude session by ID (for PR break-and-resume).
+        resume_session_id: Option<String>,
     },
     /// Shut down a running coworker with a message.
     ShutdownCoworker { name: String, message: String },
@@ -53,9 +55,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 name,
                 prompt,
                 isolated,
+                resume_session_id,
             } => {
                 match state
-                    .spawn_coworker(&name, true, Some(&prompt), isolated)
+                    .spawn_coworker(
+                        &name,
+                        resume_session_id.is_some(),
+                        Some(&prompt),
+                        isolated,
+                        resume_session_id.as_deref(),
+                    )
                     .await
                 {
                     Ok(_) => {

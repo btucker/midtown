@@ -165,6 +165,9 @@ pub(crate) fn clear_phase(lifecycles: &mut HashMap<String, CoworkerLifecycle>, n
 pub(crate) struct ShutdownDecision {
     pub name: String,
     pub is_isolated: bool,
+    /// When true, the daemon should save the coworker's session ID before shutdown
+    /// so it can be resumed later (e.g., PR break-and-resume when CI passes).
+    pub save_session: bool,
 }
 
 /// Decision to nudge an interrupted coworker.
@@ -195,6 +198,7 @@ pub(crate) fn decide_idle_shutdowns(
     coworkers_with_open_prs: &HashSet<String>,
     active_reviewers: &HashSet<String>,
     coworkers_with_unblocked_deps: &HashSet<String>,
+    ci_passed_pr_coworkers: &HashSet<String>,
     lifecycles: &mut HashMap<String, CoworkerLifecycle>,
     now: Instant,
     now_utc: DateTime<Utc>,
@@ -230,8 +234,18 @@ pub(crate) fn decide_idle_shutdowns(
         let has_unblocked_deps = coworkers_with_unblocked_deps
             .iter()
             .any(|d| d.eq_ignore_ascii_case(coworker));
+        let has_ci_passed_pr = ci_passed_pr_coworkers
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(coworker));
 
-        if is_busy || has_open_pr || is_reviewing || has_unblocked_deps {
+        // PR owners with passing CI are eligible for break (save_session=true)
+        if has_open_pr && has_ci_passed_pr && !is_busy && !is_reviewing && !has_unblocked_deps {
+            to_shutdown.push(ShutdownDecision {
+                name: coworker.clone(),
+                is_isolated: cw.isolated_tasks,
+                save_session: true,
+            });
+        } else if is_busy || has_open_pr || is_reviewing || has_unblocked_deps {
             if matches!(
                 get_phase(lifecycles, coworker),
                 Some(CoworkerPhase::Idle { .. })
@@ -243,6 +257,7 @@ pub(crate) fn decide_idle_shutdowns(
             to_shutdown.push(ShutdownDecision {
                 name: coworker.clone(),
                 is_isolated: true,
+                save_session: false,
             });
         } else {
             match get_phase(lifecycles, coworker) {
@@ -251,6 +266,7 @@ pub(crate) fn decide_idle_shutdowns(
                         to_shutdown.push(ShutdownDecision {
                             name: coworker.clone(),
                             is_isolated: false,
+                            save_session: false,
                         });
                     }
                 }
@@ -1014,6 +1030,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]),
             &mut phases,
             Instant::now(),
             Utc::now(),
@@ -1024,6 +1041,7 @@ mod tests {
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "york");
         assert!(!decisions[0].is_isolated);
+        assert!(!decisions[0].save_session);
         assert!(get_phase(&phases, "york").is_none());
     }
 
@@ -1040,6 +1058,7 @@ mod tests {
         let decisions = decide_idle_shutdowns(
             &coworkers,
             &set(&["york"]),
+            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]),
@@ -1071,6 +1090,7 @@ mod tests {
             &set(&["york"]),
             &set(&[]),
             &set(&[]),
+            &set(&[]),
             &mut phases,
             Instant::now(),
             Utc::now(),
@@ -1096,6 +1116,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&["york"]),
+            &set(&[]),
             &set(&[]),
             &mut phases,
             Instant::now(),
@@ -1123,6 +1144,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&["york"]),
+            &set(&[]),
             &mut phases,
             Instant::now(),
             Utc::now(),
@@ -1151,6 +1173,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]),
             &mut phases,
             Instant::now(),
             Utc::now(),
@@ -1170,6 +1193,7 @@ mod tests {
 
         let decisions = decide_idle_shutdowns(
             &coworkers,
+            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]),
@@ -1197,6 +1221,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]),
             &mut phases,
             Instant::now(),
             Utc::now(),
@@ -1207,6 +1232,92 @@ mod tests {
         // No shutdown yet — just started tracking
         assert!(decisions.is_empty());
         assert!(get_phase(&phases, "york").is_some());
+    }
+
+    #[test]
+    fn idle_shutdown_pr_break_with_ci_passed() {
+        let coworkers = vec![cw("york", 10)];
+        let mut phases = lifecycle_with(
+            "york",
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // york has an open PR AND CI is passing — should trigger PR break (save_session=true)
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&["york"]),
+            &set(&[]),
+            &set(&[]),
+            &set(&["york"]),
+            &mut phases,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].name, "york");
+        assert!(decisions[0].save_session);
+    }
+
+    #[test]
+    fn idle_shutdown_pr_break_not_triggered_without_ci() {
+        let coworkers = vec![cw("york", 10)];
+        let mut phases = lifecycle_with(
+            "york",
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // york has an open PR but CI has NOT passed — should NOT shutdown (protected by open PR)
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&["york"]),
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &mut phases,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn idle_shutdown_pr_break_not_triggered_if_busy() {
+        let coworkers = vec![cw("york", 10)];
+        let mut phases = lifecycle_with(
+            "york",
+            CoworkerPhase::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // york has open PR, CI passed, but is busy — should NOT trigger break
+        let decisions = decide_idle_shutdowns(
+            &coworkers,
+            &set(&["york"]),
+            &set(&["york"]),
+            &set(&[]),
+            &set(&[]),
+            &set(&["york"]),
+            &mut phases,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+        );
+
+        assert!(decisions.is_empty());
     }
 
     // -----------------------------------------------------------------------

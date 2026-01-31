@@ -283,6 +283,9 @@ struct PrCoworkerCache {
     /// Coworker names from recently merged PR branch names.
     /// Updated every `MERGED_PRS_FETCH_INTERVAL_SECS` (5 minutes via CooldownTracker).
     merged_pr_owners: HashSet<String>,
+    /// Coworker names whose open PR has all CI checks passing.
+    /// Used by snapshot to determine PR break eligibility.
+    ci_passed_pr_owners: HashSet<String>,
 }
 
 impl PrCoworkerCache {
@@ -290,6 +293,7 @@ impl PrCoworkerCache {
         Self {
             open_pr_owners: HashSet::new(),
             merged_pr_owners: HashSet::new(),
+            ci_passed_pr_owners: HashSet::new(),
         }
     }
 }
@@ -336,8 +340,13 @@ pub(crate) struct DaemonState {
     /// This doesn't reduce API calls, but avoids redundant lock acquisition and issue detection
     /// when the PR state hasn't changed between poll cycles.
     last_pr_poll_hash: Mutex<u64>,
-    /// Unified cache for PR-to-coworker mappings (open + merged).
+    /// Unified cache for PR-to-coworker mappings (open + merged + CI status).
     pr_coworker_cache: std::sync::RwLock<PrCoworkerCache>,
+    /// Saved session IDs for coworkers on PR break, keyed by coworker name.
+    /// When a coworker is shut down for PR break (CI passing, idle), we save their
+    /// session ID here so they can be resumed with `--resume <id>` when PR activity
+    /// (review comments, CI failure, etc.) requires them back.
+    pr_break_sessions: std::sync::RwLock<HashMap<String, String>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
     /// Per-coworker pane content hash and last-changed timestamp (for stuck detection).
@@ -478,6 +487,7 @@ impl DaemonState {
             reminder_state: std::sync::Mutex::new(reminder_state),
             last_pr_poll_hash: Mutex::new(0),
             pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::new()),
+            pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
@@ -496,9 +506,10 @@ impl DaemonState {
         unique: bool,
         prompt: Option<&str>,
         isolated: bool,
+        resume_session_id: Option<&str>,
     ) -> crate::Result<()> {
         self.coworkers
-            .spawn_with_name(name, unique, prompt, isolated)?;
+            .spawn_with_name(name, unique, prompt, isolated, resume_session_id)?;
         let mut lc = self.coworker_lifecycles.write().await;
         lc.insert(
             name.to_string(),
@@ -1344,6 +1355,7 @@ async fn check_and_shutdown_idle_coworkers(
             &snap.coworkers_with_open_prs,
             &snap.active_reviewers,
             &snap.coworkers_with_unblocked_deps,
+            &snap.ci_passed_pr_coworkers,
             &mut phases,
             snap.now,
             snap.now_utc,
@@ -1357,6 +1369,37 @@ async fn check_and_shutdown_idle_coworkers(
     // Determine effects for idle coworkers
     for decision in to_shutdown {
         let name = &decision.name;
+
+        // PR break-and-resume: save session ID before shutdown so coworker can resume later
+        if decision.save_session {
+            // Look up the coworker's session ID before shutting down
+            if let Some(cw) = state.coworkers.get(name)
+                && let Some(ref session_id) = cw.session_id
+            {
+                let mut sessions = state.pr_break_sessions.write().unwrap();
+                sessions.insert(name.clone(), session_id.clone());
+                info!(
+                    "Saved session {} for {} (PR break with CI passing)",
+                    session_id, name
+                );
+            }
+
+            let shutdown_msg = daemon_messages::break_pr_ci_passed(name, config::get_personality());
+            effects.push(Effect::PostToChannel {
+                sender: "system".to_string(),
+                message: shutdown_msg,
+            });
+            effects.push(Effect::BroadcastCoworkerUpdate {
+                name: name.clone(),
+                status: "stopped".to_string(),
+                current_task: None,
+            });
+            effects.push(Effect::ShutdownCoworker {
+                name: name.clone(),
+                message: String::new(),
+            });
+            continue;
+        }
 
         // For isolated coworkers (reviewers), verify the review was actually posted
         let (should_shutdown, shutdown_msg) = if decision.is_isolated {
@@ -1632,6 +1675,7 @@ fn check_and_restart_stuck_coworkers(
             name: name.clone(),
             prompt,
             isolated: false,
+            resume_session_id: None,
         });
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -2203,7 +2247,10 @@ async fn route_mentions(state: &DaemonState, msg: &Message) {
                 message: ref m,
             } => {
                 info!("Spawning mentioned coworker {} (not currently running)", n);
-                match state.spawn_coworker(n, true, Some(m.as_str()), false).await {
+                match state
+                    .spawn_coworker(n, true, Some(m.as_str()), false, None)
+                    .await
+                {
                     Ok(_) => {
                         info!("Spawned coworker {} via @mention", n);
                         let spawn_msg = Message::text(
@@ -2422,6 +2469,43 @@ async fn poll_prs_for_issues(
         cache.open_pr_owners = owners;
     }
 
+    // Cache coworker names whose PRs have all CI checks passing (for PR break decisions)
+    {
+        let ci_passed: HashSet<String> = prs
+            .iter()
+            .filter(|pr| all_ci_checks_passed(pr))
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(coworker_from_branch)
+            })
+            .collect();
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.ci_passed_pr_owners = ci_passed;
+    }
+
+    // Cleanup saved PR break sessions for coworkers whose PRs are no longer open
+    {
+        let active_pr_coworkers: HashSet<String> = prs
+            .iter()
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(coworker_from_branch)
+            })
+            .collect();
+        let mut sessions = state.pr_break_sessions.write().unwrap();
+        let before = sessions.len();
+        sessions.retain(|name, _| active_pr_coworkers.contains(name));
+        let removed = before - sessions.len();
+        if removed > 0 {
+            info!(
+                "Cleaned up {} stale PR break session(s) (PR closed/merged)",
+                removed
+            );
+        }
+    }
+
     // Clean up persistent reviewer assignments for PRs that are no longer open
     {
         let open_pr_numbers: Vec<u64> = prs
@@ -2512,11 +2596,30 @@ async fn poll_prs_for_issues(
                         "PR #{} owner {} is not active, spawning to address {}",
                         pr_number, o, issue_type
                     );
+                    // Look up saved session from PR break for resume
+                    let saved_session = {
+                        let sessions = state.pr_break_sessions.read().unwrap();
+                        sessions.get(o).cloned()
+                    };
+                    if saved_session.is_some() {
+                        info!("Resuming saved PR break session for {}", o);
+                    }
                     match state
-                        .spawn_coworker(o, true, Some(msg.as_str()), false)
+                        .spawn_coworker(
+                            o,
+                            true,
+                            Some(msg.as_str()),
+                            false,
+                            saved_session.as_deref(),
+                        )
                         .await
                     {
                         Ok(_) => {
+                            // Clear saved session after successful resume
+                            if saved_session.is_some() {
+                                let mut sessions = state.pr_break_sessions.write().unwrap();
+                                sessions.remove(o);
+                            }
                             info!(
                                 "Spawned {} to address {} on PR #{}",
                                 o, issue_type, pr_number
@@ -2993,11 +3096,28 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                 "PR #{} owner {} is idle/on a break, spawning to address completed review",
                                 pr_number, o
                             );
+                            let saved_session = {
+                                let sessions = state.pr_break_sessions.read().unwrap();
+                                sessions.get(o).cloned()
+                            };
+                            if saved_session.is_some() {
+                                info!("Resuming saved PR break session for {}", o);
+                            }
                             match state
-                                .spawn_coworker(o, true, Some(msg.as_str()), false)
+                                .spawn_coworker(
+                                    o,
+                                    true,
+                                    Some(msg.as_str()),
+                                    false,
+                                    saved_session.as_deref(),
+                                )
                                 .await
                             {
                                 Ok(_) => {
+                                    if saved_session.is_some() {
+                                        let mut sessions = state.pr_break_sessions.write().unwrap();
+                                        sessions.remove(o);
+                                    }
                                     info!(
                                         "Spawned {} to address completed review on PR #{}",
                                         o, pr_number
@@ -3099,7 +3219,10 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             pr_number, pr_number, pr_number
         );
 
-        match state.coworkers.spawn(false, Some(&review_prompt), true) {
+        match state
+            .coworkers
+            .spawn(false, Some(&review_prompt), true, None)
+        {
             Ok(new_coworker) => {
                 state.broadcast_coworker_update(&new_coworker, "running", None);
 
@@ -3535,7 +3658,10 @@ fn handle_coworker_spawn(
 
     // Pass prompt to spawn() - it handles waiting and nudging internally
     // Use shared task list (not isolated) for manual spawns
-    match state.coworkers.spawn(resume, prompt.as_deref(), false) {
+    match state
+        .coworkers
+        .spawn(resume, prompt.as_deref(), false, None)
+    {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
             state.broadcast_coworker_update(&name, "running", None);
@@ -4755,11 +4881,22 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
                 "PR #{} owner {} is not active, spawning to address review feedback",
                 pr_number, o
             );
+            let saved_session = {
+                let sessions = state.pr_break_sessions.read().unwrap();
+                sessions.get(o).cloned()
+            };
+            if saved_session.is_some() {
+                info!("Resuming saved PR break session for {}", o);
+            }
             match state
-                .spawn_coworker(o, true, Some(msg.as_str()), false)
+                .spawn_coworker(o, true, Some(msg.as_str()), false, saved_session.as_deref())
                 .await
             {
                 Ok(_) => {
+                    if saved_session.is_some() {
+                        let mut sessions = state.pr_break_sessions.write().unwrap();
+                        sessions.remove(o);
+                    }
                     info!(
                         "Spawned {} to address review feedback on PR #{}",
                         o, pr_number
@@ -4878,7 +5015,7 @@ async fn check_and_recover_orphans(
     // retain their worktree and branch. This is the same path as normal task
     // assignment, just reusing the previous coworker name.
     match state
-        .spawn_coworker(&recovery.owner, false, Some(&prompt), false)
+        .spawn_coworker(&recovery.owner, false, Some(&prompt), false, None)
         .await
     {
         Ok(_) => {
@@ -5269,7 +5406,10 @@ async fn spawn_for_pending_tasks(
                 );
                 // Spawn inline — post-spawn effects depend on spawn result
                 let prompt = format!("You've been assigned task #{}: {}. Get started!", tid, subj);
-                match state.spawn_coworker(o, true, Some(&prompt), false).await {
+                match state
+                    .spawn_coworker(o, true, Some(&prompt), false, None)
+                    .await
+                {
                     Ok(_) => {
                         info!("Spawned coworker {} for pending task #{}", o, tid);
                         effects.push(Effect::BroadcastCoworkerUpdate {
@@ -5442,7 +5582,7 @@ async fn spawn_for_pending_tasks(
             // Step 3b: Spawn a new coworker with the pre-assigned name and prompt
             // Spawn inline — post-spawn effects depend on spawn result
             match state
-                .spawn_coworker(&coworker_name, false, Some(&prompt), false)
+                .spawn_coworker(&coworker_name, false, Some(&prompt), false, None)
                 .await
             {
                 Ok(_) => {

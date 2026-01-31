@@ -184,6 +184,33 @@ pub(super) fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
     true
 }
 
+/// Check if a PR has all CI checks passing (no failures, no pending).
+///
+/// Returns true if there are checks and all have completed successfully,
+/// or if there are no checks at all (no CI configured).
+pub(super) fn all_ci_checks_passed(pr: &serde_json::Value) -> bool {
+    if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
+        if checks.is_empty() {
+            return true;
+        }
+        for check in checks {
+            let conclusion = check
+                .get("conclusion")
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            if conclusion == "FAILURE" || conclusion == "CANCELLED" || conclusion == "TIMED_OUT" {
+                return false;
+            }
+            if conclusion.is_empty() || conclusion == "PENDING" {
+                return false; // Still running
+            }
+        }
+        true
+    } else {
+        true // No checks configured
+    }
+}
+
 /// Get action text for a PR issue type.
 pub(super) fn get_issue_action(issue_type: PrIssueType) -> &'static str {
     match issue_type {
