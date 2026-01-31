@@ -147,9 +147,11 @@ impl std::fmt::Display for StuckConditionType {
 /// Uses a cooldown to avoid spamming the lead with the same stuck condition.
 #[derive(Debug, Default)]
 pub struct StuckConditionTracker {
-    /// Map of (identifier, condition_type) -> (first_detected, last_nudged)
-    /// identifier is PR number (as string) or coworker name
-    conditions: HashMap<(String, StuckConditionType), (Instant, Option<Instant>)>,
+    /// Map of (identifier, condition_type) -> (first_detected, last_nudged, nudge_count)
+    /// identifier is PR number (as string) or coworker name.
+    /// nudge_count tracks how many times we've nudged for this condition,
+    /// enabling escalation (e.g., nudge coworker first, then lead).
+    conditions: HashMap<(String, StuckConditionType), (Instant, Option<Instant>, u32)>,
 }
 
 impl StuckConditionTracker {
@@ -162,25 +164,35 @@ impl StuckConditionTracker {
         let now = Instant::now();
         self.conditions
             .entry((id.to_string(), condition))
-            .or_insert((now, None))
+            .or_insert((now, None, 0))
             .0
     }
 
-    /// Check if we should nudge the lead about this condition (past cooldown).
+    /// Check if we should nudge about this condition (past cooldown).
     pub fn should_nudge(&self, id: &str, condition: StuckConditionType) -> bool {
         match self.conditions.get(&(id.to_string(), condition)) {
-            Some((_, Some(last_nudged))) => {
+            Some((_, Some(last_nudged), _)) => {
                 last_nudged.elapsed() >= Duration::from_secs(STUCK_NUDGE_COOLDOWN_SECS)
             }
-            Some((_, None)) => true, // Never nudged
-            None => false,           // Not tracked yet
+            Some((_, None, _)) => true, // Never nudged
+            None => false,              // Not tracked yet
         }
     }
 
-    /// Record that we nudged the lead about this condition.
+    /// Get the number of times this condition has been nudged.
+    /// Used for escalation logic (e.g., nudge coworker first, then lead).
+    pub fn nudge_count(&self, id: &str, condition: StuckConditionType) -> u32 {
+        self.conditions
+            .get(&(id.to_string(), condition))
+            .map(|(_, _, count)| *count)
+            .unwrap_or(0)
+    }
+
+    /// Record that we nudged about this condition.
     pub fn record_nudge(&mut self, id: &str, condition: StuckConditionType) {
         if let Some(entry) = self.conditions.get_mut(&(id.to_string(), condition)) {
             entry.1 = Some(Instant::now());
+            entry.2 += 1;
         }
     }
 
@@ -193,6 +205,6 @@ impl StuckConditionTracker {
     pub fn cleanup(&mut self) {
         let cutoff = Duration::from_secs(STUCK_NUDGE_COOLDOWN_SECS * 2);
         self.conditions
-            .retain(|_, (first_detected, _)| first_detected.elapsed() < cutoff);
+            .retain(|_, (first_detected, _, _)| first_detected.elapsed() < cutoff);
     }
 }
