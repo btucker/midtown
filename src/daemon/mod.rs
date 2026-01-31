@@ -20,9 +20,7 @@ pub use constants::{
 };
 use effects::Effect;
 use helpers::*;
-pub use trackers::{
-    PrIssueTracker, PrIssueType, PrReviewTracker, StuckConditionTracker, StuckConditionType,
-};
+pub use trackers::{PrIssueTracker, PrIssueType, StuckConditionTracker, StuckConditionType};
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -283,8 +281,6 @@ pub(crate) struct DaemonState {
     coworker_phases: RwLock<HashMap<String, crate::rules::CoworkerPhase>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
-    /// Tracker for PRs assigned for review
-    pr_review_tracker: Mutex<PrReviewTracker>,
     /// Repository name (primary repo)
     repo_name: String,
     /// Default branch name (detected at startup, e.g. "main" or "master")
@@ -299,12 +295,8 @@ pub(crate) struct DaemonState {
     github_state: Mutex<crate::github_state::GitHubState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
-    /// Hash of last captured lead pane content (for typing indicator change detection)
-    last_lead_pane_hash: std::sync::Mutex<u64>,
-    /// Whether the lead is currently working (for typing indicator dedup)
-    lead_working: std::sync::Mutex<bool>,
-    /// When the lead's pane last showed activity (for typing grace period)
-    last_lead_activity: std::sync::Mutex<Option<Instant>>,
+    /// Consolidated lead typing indicator state (pane hash, working flag, last activity).
+    lead_typing: std::sync::Mutex<trackers::LeadTypingState>,
     /// Maximum number of concurrent coworkers
     max_coworkers: usize,
     /// Web Push notification manager for sending notifications to PWA clients
@@ -429,7 +421,6 @@ impl DaemonState {
             nudged_messages: std::sync::RwLock::new(HashSet::new()),
             coworker_phases: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
-            pr_review_tracker: Mutex::new(PrReviewTracker::new()),
             repo_name,
             default_branch,
             all_repo_paths,
@@ -440,9 +431,7 @@ impl DaemonState {
             max_coworkers,
             push_manager,
             usage_limit_nudge_at: Mutex::new(None),
-            last_lead_pane_hash: std::sync::Mutex::new(0),
-            lead_working: std::sync::Mutex::new(false),
-            last_lead_activity: std::sync::Mutex::new(None),
+            lead_typing: std::sync::Mutex::new(trackers::LeadTypingState::default()),
             reminder_state: std::sync::Mutex::new(reminder_state),
             last_pr_poll_hash: Mutex::new(0),
             reviewed_prs_cache: std::sync::RwLock::new(reviewed_prs_cache),
@@ -1124,36 +1113,28 @@ async fn check_lead_typing(state: &DaemonState) {
     content.hash(&mut hasher);
     let new_hash = hasher.finish();
 
-    let prev_hash = {
-        let mut h = state.last_lead_pane_hash.lock().unwrap();
-        let prev = *h;
-        *h = new_hash;
-        prev
-    };
-
-    let pane_changed = prev_hash != 0 && new_hash != prev_hash;
     let now = Instant::now();
 
-    // Update last-activity timestamp when pane content changes
-    if pane_changed {
-        *state.last_lead_activity.lock().unwrap() = Some(now);
-    }
+    // Single lock for all lead typing state
+    let (is_working, prev_working) = {
+        let mut lt = state.lead_typing.lock().unwrap();
+        let pane_changed = lt.pane_hash != 0 && new_hash != lt.pane_hash;
+        lt.pane_hash = new_hash;
 
-    // Determine working state using grace period: stay "working" until
-    // no pane changes have occurred for LEAD_TYPING_GRACE_PERIOD.
-    let is_working = determine_lead_working(
-        pane_changed,
-        *state.last_lead_activity.lock().unwrap(),
-        now,
-        LEAD_TYPING_GRACE_PERIOD,
-    );
+        if pane_changed {
+            lt.last_activity = Some(now);
+        }
 
-    // Only broadcast on state transitions
-    let prev_working = {
-        let mut w = state.lead_working.lock().unwrap();
-        let prev = *w;
-        *w = is_working;
-        prev
+        let is_working = determine_lead_working(
+            pane_changed,
+            lt.last_activity,
+            now,
+            LEAD_TYPING_GRACE_PERIOD,
+        );
+
+        let prev = lt.working;
+        lt.working = is_working;
+        (is_working, prev)
     };
 
     if is_working != prev_working {
@@ -1292,21 +1273,11 @@ async fn check_and_shutdown_idle_coworkers(
         let name = &decision.name;
 
         // For isolated coworkers (reviewers), verify the review was actually posted
-        // (pr_review_tracker and github_state are mutable async state — kept on DaemonState)
         let (should_shutdown, shutdown_msg) = if decision.is_isolated {
             // Look up the PR this reviewer was assigned to
-            // Try in-memory tracker first
             let pr_number = {
-                let tracker = state.pr_review_tracker.lock().await;
-                tracker.pr_for_coworker(name)
-            };
-            let pr_number = match pr_number {
-                Some(pr) => Some(pr),
-                None => {
-                    // Fall back to persistent state
-                    let github_state = state.github_state.lock().await;
-                    github_state.pr_for_reviewer(name)
-                }
+                let github_state = state.github_state.lock().await;
+                github_state.pr_for_reviewer(name)
             };
 
             match pr_number {
@@ -2336,8 +2307,8 @@ async fn poll_prs_for_issues(
         tracker.cleanup();
     }
     {
-        let mut review_tracker = state.pr_review_tracker.lock().await;
-        review_tracker.cleanup_preserving(&active_coworker_names);
+        let mut github_state = state.github_state.lock().await;
+        github_state.cleanup_expired_preserving(&active_coworker_names);
     }
 
     // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
@@ -2588,8 +2559,8 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
         if review_decision.is_empty() && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs() {
             // Check if a reviewer is assigned (daemon tried to self-heal)
             let is_assigned = {
-                let review_tracker = state.pr_review_tracker.lock().await;
-                review_tracker.is_assigned(pr_number)
+                let github_state = state.github_state.lock().await;
+                github_state.is_assigned(pr_number)
             };
 
             tracker.track(&pr_id, StuckConditionType::NoReview);
@@ -2725,8 +2696,8 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
             .count();
 
         let current_review_count = {
-            let review_tracker = state.pr_review_tracker.lock().await;
-            review_tracker.active_count()
+            let github_state = state.github_state.lock().await;
+            github_state.active_count()
         };
 
         // Backlog exists when more PRs need review than we can handle
@@ -2784,8 +2755,8 @@ fn nudge_lead_stuck(state: &DaemonState, message: &str) {
 async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value]) {
     // Check rate limit
     let current_review_count = {
-        let tracker = state.pr_review_tracker.lock().await;
-        tracker.active_count()
+        let github_state = state.github_state.lock().await;
+        github_state.active_count()
     };
 
     if current_review_count >= MAX_CONCURRENT_REVIEWS {
@@ -2839,17 +2810,11 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             // If so, leave the assignment in place so the idle shutdown path can
             // properly send them off with break_review_complete() instead of break_no_pr().
             let reviewer_still_running = {
-                let tracker = state.pr_review_tracker.lock().await;
-                if let Some(reviewer_name) = tracker.get_reviewer(pr_number) {
+                let github_state = state.github_state.lock().await;
+                if let Some(reviewer_name) = github_state.get_reviewer(pr_number) {
                     state.coworkers.get(reviewer_name).is_some()
                 } else {
-                    // Check persistent state too
-                    let github_state = state.github_state.lock().await;
-                    if let Some(reviewer_name) = github_state.get_reviewer(pr_number) {
-                        state.coworkers.get(reviewer_name).is_some()
-                    } else {
-                        false
-                    }
+                    false
                 }
             };
 
@@ -2860,31 +2825,14 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                 );
             } else {
                 // Free the tracker slot — the review completed and the reviewer is gone
-                {
-                    let mut tracker = state.pr_review_tracker.lock().await;
-                    if tracker.is_assigned(pr_number) {
-                        debug!(
-                            "PR #{} review completed, freeing tracker slot (in-memory)",
-                            pr_number
-                        );
-                        tracker.mark_reviewed(pr_number);
-                    }
-                }
-                // Also clean up persistent state
-                {
-                    let mut github_state = state.github_state.lock().await;
-                    if github_state.is_assigned(pr_number) {
-                        debug!(
-                            "PR #{} review completed, freeing tracker slot (persistent)",
-                            pr_number
-                        );
-                        github_state.remove_assignment(pr_number);
-                        if let Err(e) = crate::github_state::save_state_for_repo(
-                            &state.repo_name,
-                            &github_state,
-                        ) {
-                            warn!("Failed to save github-state.json: {}", e);
-                        }
+                let mut github_state = state.github_state.lock().await;
+                if github_state.is_assigned(pr_number) {
+                    debug!("PR #{} review completed, freeing tracker slot", pr_number);
+                    github_state.remove_assignment(pr_number);
+                    if let Err(e) =
+                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+                    {
+                        warn!("Failed to save github-state.json: {}", e);
                     }
                 }
             }
@@ -3012,20 +2960,13 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             continue;
         }
 
-        // Check if already assigned for review (check both in-memory and persistent state).
+        // Check if already assigned for review.
         // This runs AFTER review detection so completed reviews are always detected,
         // but prevents spawning duplicate reviewers for PRs already under review.
         {
-            let tracker = state.pr_review_tracker.lock().await;
-            if tracker.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review (in-memory)", pr_number);
-                continue;
-            }
-        }
-        {
             let github_state = state.github_state.lock().await;
             if github_state.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review (persistent)", pr_number);
+                debug!("PR #{} already assigned for review", pr_number);
                 continue;
             }
         }
@@ -3066,13 +3007,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             Ok(new_coworker) => {
                 state.broadcast_coworker_update(&new_coworker, "running", None);
 
-                // Record the assignment (in-memory)
-                {
-                    let mut tracker = state.pr_review_tracker.lock().await;
-                    tracker.assign(pr_number, &new_coworker);
-                }
-
-                // Persist the assignment to github-state.json
+                // Record the assignment in persistent state
                 {
                     let mut github_state = state.github_state.lock().await;
                     github_state.assign_reviewer(pr_number, &new_coworker);
@@ -4127,11 +4062,11 @@ fn get_all_tasks() -> Vec<serde_json::Value> {
 /// Returns open PRs with author, reviewer, CI status, and timestamps,
 /// plus recently merged PRs for the Done column.
 fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
-    // Get reviewer assignments from PrReviewTracker (best-effort via try_lock)
-    let reviewer_assignments: HashMap<u64, (String, Instant)> = state
-        .pr_review_tracker
+    // Get reviewer assignments from GitHubState (best-effort via try_lock)
+    let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
+        .github_state
         .try_lock()
-        .map(|tracker| tracker.active_assignments())
+        .map(|gs| gs.active_assignments())
         .unwrap_or_default();
 
     // Fetch PRs and repo metadata from all repos in the project.
@@ -4236,7 +4171,7 @@ query($owner: String!, $repo: String!) {
 /// Returns `(open_prs, merged_prs)` formatted for the kanban board.
 /// Falls back to empty vectors on failure.
 fn fetch_kanban_all_prs(
-    reviewer_assignments: &HashMap<u64, (String, Instant)>,
+    reviewer_assignments: &HashMap<u64, crate::github_state::PrReviewerAssignment>,
     name_with_owner: &str,
     repo_path: &std::path::Path,
     repo_label: Option<&str>,
@@ -4340,11 +4275,12 @@ fn fetch_kanban_all_prs(
                     let (reviewer, reviewer_assigned_at, review_posted) =
                         if let Some(reviewer) = comment_reviewer {
                             (Some(reviewer), reviewed_at, true)
-                        } else if let Some((name, instant)) = reviewer_assignments.get(&number) {
-                            let elapsed = instant.elapsed();
-                            let assigned_at = chrono::Utc::now()
-                                - chrono::Duration::seconds(elapsed.as_secs() as i64);
-                            (Some(name.clone()), Some(assigned_at.to_rfc3339()), false)
+                        } else if let Some(assignment) = reviewer_assignments.get(&number) {
+                            (
+                                Some(assignment.reviewer.clone()),
+                                Some(assignment.assigned_at.to_rfc3339()),
+                                false,
+                            )
                         } else {
                             (None, None, false)
                         };
@@ -5857,168 +5793,6 @@ mod tests {
         assert_eq!(truncate_str("hello", 10), "hello");
         assert_eq!(truncate_str("hello world", 8), "hello...");
         assert_eq!(truncate_str("hi", 2), "hi");
-    }
-
-    // PrReviewTracker tests
-    #[test]
-    fn test_pr_review_tracker_new() {
-        let tracker = PrReviewTracker::new();
-        assert_eq!(tracker.active_count(), 0);
-        assert!(!tracker.is_assigned(42));
-    }
-
-    #[test]
-    fn test_pr_review_tracker_assign() {
-        let mut tracker = PrReviewTracker::new();
-        tracker.assign(42, "lexington");
-
-        assert!(tracker.is_assigned(42));
-        assert!(!tracker.is_assigned(43));
-        assert_eq!(tracker.active_count(), 1);
-    }
-
-    #[test]
-    fn test_pr_review_tracker_mark_reviewed() {
-        let mut tracker = PrReviewTracker::new();
-        tracker.assign(42, "lexington");
-        assert!(tracker.is_assigned(42));
-
-        tracker.mark_reviewed(42);
-        assert!(!tracker.is_assigned(42));
-        assert_eq!(tracker.active_count(), 0);
-    }
-
-    #[test]
-    fn test_pr_review_tracker_multiple_assignments() {
-        let mut tracker = PrReviewTracker::new();
-        tracker.assign(42, "lexington");
-        tracker.assign(43, "park");
-
-        assert!(tracker.is_assigned(42));
-        assert!(tracker.is_assigned(43));
-        assert_eq!(tracker.active_count(), 2);
-    }
-
-    #[test]
-    fn test_pr_review_tracker_pr_for_coworker() {
-        let mut tracker = PrReviewTracker::new();
-        tracker.assign(42, "lexington");
-        tracker.assign(43, "park");
-
-        assert_eq!(tracker.pr_for_coworker("lexington"), Some(42));
-        assert_eq!(tracker.pr_for_coworker("park"), Some(43));
-        assert_eq!(tracker.pr_for_coworker("york"), None);
-
-        // After marking reviewed, should return None
-        tracker.mark_reviewed(42);
-        assert_eq!(tracker.pr_for_coworker("lexington"), None);
-    }
-
-    #[test]
-    fn test_pr_review_tracker_active_reviewers() {
-        let mut tracker = PrReviewTracker::new();
-        tracker.assign(42, "lexington");
-        tracker.assign(43, "park");
-        tracker.assign(44, "lexington"); // duplicate reviewer
-
-        let reviewers = tracker.active_reviewers();
-        assert!(reviewers.contains("lexington"));
-        assert!(reviewers.contains("park"));
-        // Should deduplicate
-        assert_eq!(reviewers.len(), 2);
-    }
-
-    #[test]
-    fn test_pr_review_tracker_active_reviewers_after_mark_reviewed() {
-        let mut tracker = PrReviewTracker::new();
-        tracker.assign(42, "lexington");
-        tracker.assign(43, "park");
-
-        // Mark lexington's review as done
-        tracker.mark_reviewed(42);
-
-        let reviewers = tracker.active_reviewers();
-        assert!(!reviewers.contains("lexington"));
-        assert!(reviewers.contains("park"));
-        assert_eq!(reviewers.len(), 1);
-    }
-
-    #[test]
-    fn test_pr_review_tracker_get_reviewer() {
-        let mut tracker = PrReviewTracker::new();
-        tracker.assign(42, "lexington");
-        tracker.assign(43, "park");
-
-        assert_eq!(tracker.get_reviewer(42), Some("lexington"));
-        assert_eq!(tracker.get_reviewer(43), Some("park"));
-        assert_eq!(tracker.get_reviewer(99), None);
-
-        // get_reviewer should return the name even after mark_reviewed removes it
-        tracker.mark_reviewed(42);
-        assert_eq!(tracker.get_reviewer(42), None);
-    }
-
-    #[test]
-    fn test_pr_review_tracker_get_reviewer_ignores_timeout() {
-        let mut tracker = PrReviewTracker::new();
-        // Simulate an expired assignment (> 10 minutes old)
-        tracker.assign_at(
-            42,
-            "broadway",
-            Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
-        );
-
-        // is_assigned should return false (expired)
-        assert!(!tracker.is_assigned(42));
-        // get_reviewer should still return the name (ignores timeout)
-        assert_eq!(tracker.get_reviewer(42), Some("broadway"));
-    }
-
-    #[test]
-    fn test_cleanup_preserves_active_coworkers() {
-        let mut tracker = PrReviewTracker::new();
-
-        // Simulate an expired assignment (> 10 minutes old) for an active coworker
-        tracker.assign_at(
-            42,
-            "broadway",
-            Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
-        );
-        // And a fresh assignment for another coworker
-        tracker.assign(43, "park");
-
-        // broadway is still active (running as a coworker)
-        let active: HashSet<String> = ["broadway".to_string()].into_iter().collect();
-
-        // cleanup_preserving should keep broadway's assignment alive
-        tracker.cleanup_preserving(&active);
-
-        // broadway's assignment should be preserved because they're still active
-        assert_eq!(tracker.pr_for_coworker("broadway"), Some(42));
-        assert!(tracker.active_reviewers().contains("broadway"));
-
-        // park's fresh assignment should also still be there
-        assert_eq!(tracker.pr_for_coworker("park"), Some(43));
-    }
-
-    #[test]
-    fn test_cleanup_removes_expired_inactive_coworkers() {
-        let mut tracker = PrReviewTracker::new();
-
-        // Simulate an expired assignment for an inactive coworker
-        tracker.assign_at(
-            42,
-            "broadway",
-            Instant::now() - Duration::from_secs(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + 60),
-        );
-
-        // broadway is NOT active
-        let active: HashSet<String> = HashSet::new();
-
-        tracker.cleanup_preserving(&active);
-
-        // broadway's assignment should be removed
-        assert_eq!(tracker.pr_for_coworker("broadway"), None);
     }
 
     // Stuck condition tracker tests
