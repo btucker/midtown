@@ -195,6 +195,38 @@ impl GitHubState {
         self.reviewed_prs.insert(pr_number);
     }
 
+    /// Count active (non-expired) review assignments.
+    pub fn active_count(&self) -> usize {
+        let now = Utc::now();
+        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+        self.pr_reviewers
+            .values()
+            .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
+            .count()
+    }
+
+    /// Get the set of coworker names with active (non-expired) review assignments.
+    pub fn active_reviewers(&self) -> std::collections::HashSet<String> {
+        let now = Utc::now();
+        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+        self.pr_reviewers
+            .values()
+            .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
+            .map(|a| a.reviewer.clone())
+            .collect()
+    }
+
+    /// Get all active (non-expired) review assignments.
+    pub fn active_assignments(&self) -> HashMap<u64, PrReviewerAssignment> {
+        let now = Utc::now();
+        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+        self.pr_reviewers
+            .iter()
+            .filter(|(_, a)| now.signed_duration_since(a.assigned_at) < timeout)
+            .map(|(pr, a)| (*pr, a.clone()))
+            .collect()
+    }
+
     /// Clean up review cache entries for PRs that are no longer open.
     fn cleanup_closed_review_cache(&mut self, open_pr_numbers: &[u64]) {
         let open_set: std::collections::HashSet<_> = open_pr_numbers.iter().collect();
@@ -429,5 +461,69 @@ mod tests {
 
         // Should be removed (expired + inactive)
         assert!(!state.pr_reviewers.contains_key(&42));
+    }
+
+    #[test]
+    fn test_active_count() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(43, "park");
+
+        assert_eq!(state.active_count(), 2);
+
+        // Expire one assignment
+        if let Some(a) = state.pr_reviewers.get_mut(&42) {
+            a.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        assert_eq!(state.active_count(), 1);
+    }
+
+    #[test]
+    fn test_active_reviewers() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(43, "park");
+        state.assign_reviewer(44, "lexington"); // duplicate reviewer name
+
+        let reviewers = state.active_reviewers();
+        assert!(reviewers.contains("lexington"));
+        assert!(reviewers.contains("park"));
+        assert_eq!(reviewers.len(), 2); // deduped
+
+        // Expire lexington's assignment on PR 44
+        if let Some(a) = state.pr_reviewers.get_mut(&44) {
+            a.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        // lexington still has PR 42 (fresh)
+        let reviewers = state.active_reviewers();
+        assert!(reviewers.contains("lexington"));
+        assert!(reviewers.contains("park"));
+    }
+
+    #[test]
+    fn test_active_assignments() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(43, "park");
+
+        let assignments = state.active_assignments();
+        assert_eq!(assignments.len(), 2);
+        assert_eq!(assignments[&42].reviewer, "lexington");
+        assert_eq!(assignments[&43].reviewer, "park");
+
+        // Expire one
+        if let Some(a) = state.pr_reviewers.get_mut(&42) {
+            a.assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        let assignments = state.active_assignments();
+        assert_eq!(assignments.len(), 1);
+        assert!(!assignments.contains_key(&42));
+        assert!(assignments.contains_key(&43));
     }
 }

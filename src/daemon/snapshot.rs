@@ -142,13 +142,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 
     // ── Reviewer state ──────────────────────────────────────────────────
     let active_reviewers = {
-        let tracker = state.pr_review_tracker.lock().await;
-        let mut reviewers = tracker.active_reviewers();
         let github_state = state.github_state.lock().await;
-        for reviewer_name in github_state.assigned_reviewers() {
-            reviewers.insert(reviewer_name.to_string());
-        }
-        reviewers
+        github_state.active_reviewers()
     };
 
     // ── Dependency state ──────────────────────────────────────────────────
