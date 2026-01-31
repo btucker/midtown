@@ -36,7 +36,7 @@ pub enum DaemonEvent {
 /// effects. The caller executes all returned effects via `execute_effects`.
 ///
 /// Some check functions still take `&DaemonState` for mutable tracker state
-/// (coworker_phases, cooldowns, etc.) and inline spawns that cannot yet be
+/// (coworker_lifecycles, cooldowns, etc.) and inline spawns that cannot yet be
 /// expressed as pure effects (spawn success/failure determines follow-up effects).
 pub async fn evaluate_tick(
     event: &DaemonEvent,
@@ -60,8 +60,8 @@ pub async fn evaluate_tick(
         DaemonEvent::OrphanCheckTick => {
             let mut effects = Vec::new();
             effects.extend(super::check_for_duplicate_task_workers(snap));
-            effects.extend(super::check_and_recover_orphans(snap, state));
-            effects.extend(super::spawn_for_pending_tasks(snap, state));
+            effects.extend(super::check_and_recover_orphans(snap, state).await);
+            effects.extend(super::spawn_for_pending_tasks(snap, state).await);
             effects.extend(super::check_and_fire_reminders(snap, state));
             effects
         }
