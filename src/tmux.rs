@@ -934,6 +934,7 @@ pub fn spawn_claude(
     isolated_tasks: bool,
     additional_dirs: &[PathBuf],
     initial_prompt: Option<&str>,
+    resume_session_id: Option<&str>,
 ) -> crate::Result<String> {
     // Build the claude command with settings for channel synchronization
     // and a system prompt for coworker identity and instructions
@@ -950,8 +951,10 @@ pub fn spawn_claude(
     // Use file paths for settings and prompt to avoid shell quoting issues
     // Set MIDTOWN_AGENT env var so the coworker's name appears in messages
     // Use --setting-sources project,local (plugins are now in --settings file)
-    // Add --continue flag if resuming a previous session
-    let session_flag = if resume {
+    // Priority: resume_session_id (specific session) > resume (--continue) > fresh session
+    let session_flag = if let Some(sid) = resume_session_id {
+        format!(" --resume {}", sid)
+    } else if resume {
         " --continue".to_string()
     } else {
         format!(" --session-id {}", coworker_session_id)

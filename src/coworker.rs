@@ -314,6 +314,7 @@ impl CoworkerManager {
         resume: bool,
         prompt: Option<&str>,
         isolated_tasks: bool,
+        resume_session_id: Option<&str>,
     ) -> crate::Result<String> {
         let name = self
             .next_available_name()
@@ -425,6 +426,7 @@ impl CoworkerManager {
             isolated_tasks,
             &additional_dirs,
             prompt,
+            resume_session_id,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -763,6 +765,7 @@ impl CoworkerManager {
         resume: bool,
         prompt: Option<&str>,
         isolated_tasks: bool,
+        resume_session_id: Option<&str>,
     ) -> crate::Result<String> {
         // Check if already running
         {
@@ -855,6 +858,7 @@ impl CoworkerManager {
             isolated_tasks,
             &additional_dirs,
             prompt,
+            resume_session_id,
         )?;
 
         // Record the coworker with their session ID for symlink management
@@ -945,6 +949,7 @@ impl CoworkerManager {
             true,
             false,
             &additional_dirs,
+            None,
             None,
         )?;
 
@@ -1256,12 +1261,12 @@ mod tests {
         }
 
         // spawn_with_name should fail if coworker is already running
-        let result = manager.spawn_with_name("lexington", false, None, false);
+        let result = manager.spawn_with_name("lexington", false, None, false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
 
         // Also test with resume=true
-        let result = manager.spawn_with_name("lexington", true, None, false);
+        let result = manager.spawn_with_name("lexington", true, None, false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
     }

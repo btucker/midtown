@@ -58,6 +58,8 @@ pub struct WorldSnapshot {
     pub coworkers_with_open_prs: HashSet<String>,
     /// Coworkers whose PR was recently merged.
     pub coworkers_with_merged_prs: HashSet<String>,
+    /// Coworkers whose open PR has all CI checks passing (eligible for PR break).
+    pub ci_passed_pr_coworkers: HashSet<String>,
 
     // ── Reviewer state ──────────────────────────────────────────────────
     /// Currently active reviewers (from both in-memory tracker and persistent state).
@@ -139,6 +141,10 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .into_iter()
         .collect();
     let coworkers_with_merged_prs: HashSet<String> = super::get_coworkers_with_merged_prs(state);
+    let ci_passed_pr_coworkers: HashSet<String> = {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        cache.ci_passed_pr_owners.clone()
+    };
 
     // ── Reviewer state ──────────────────────────────────────────────────
     let active_reviewers = {
@@ -176,6 +182,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         pending_tasks_without_owners,
         coworkers_with_open_prs,
         coworkers_with_merged_prs,
+        ci_passed_pr_coworkers,
         active_reviewers,
         coworkers_with_unblocked_deps,
         usage_limit_nudge_scheduled,

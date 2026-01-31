@@ -167,6 +167,18 @@ pub fn break_work_merged(name: &str, personality: Personality) -> String {
     pick(templates, personality).replace("{name}", name)
 }
 
+/// Letting {name} take a break (PR CI passed — session saved for resume).
+pub fn break_pr_ci_passed(name: &str, personality: Personality) -> String {
+    let templates: &[&str] = &[
+        "☕ Letting {name} take a break (CI is green, will resume if needed)",
+        "✅ {name}'s CI passed — saving session and stepping out",
+        "🟢 {name}'s checks are green, parking session for later",
+        "💾 {name}'s PR looks good — saving context for when review lands",
+        "🌿 {name} is taking a break (CI passed, session saved)",
+    ];
+    pick(templates, personality).replace("{name}", name)
+}
+
 /// Letting {name} take a break (generic idle).
 pub fn break_idle(name: &str, personality: Personality) -> String {
     let templates: &[&str] = &[
