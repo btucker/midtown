@@ -166,6 +166,7 @@ pub async fn start_webhook_server(
         push_manager: push_manager.clone(),
         all_repo_paths,
         default_branch,
+        repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
     // CORS layer for development (allows requests from Vite dev server)

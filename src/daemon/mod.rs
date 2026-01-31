@@ -339,9 +339,47 @@ pub(crate) struct DaemonState {
     /// Per-coworker pane content hash and last-changed timestamp (for stuck detection).
     /// Maps coworker name → (last_hash, last_changed_at).
     coworker_pane_hashes: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
+    /// Cached GitHub repo full names (owner/repo) by repo path.
+    /// Repo names never change during a daemon session, so we cache indefinitely.
+    repo_name_cache: std::sync::RwLock<HashMap<PathBuf, String>>,
 }
 
 impl DaemonState {
+    /// Get the GitHub full name (owner/repo) for a repo path, using cache.
+    ///
+    /// On first call for a given path, runs `gh repo view --json nameWithOwner`.
+    /// Subsequent calls return the cached value without any API call.
+    fn get_repo_full_name(&self, repo_path: &std::path::Path) -> String {
+        // Fast path: check cache
+        {
+            let cache = self.repo_name_cache.read().unwrap();
+            if let Some(name) = cache.get(repo_path) {
+                return name.clone();
+            }
+        }
+
+        // Slow path: fetch from GitHub API and cache
+        let full_name = std::process::Command::new("gh")
+            .current_dir(repo_path)
+            .args([
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".nameWithOwner",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        let mut cache = self.repo_name_cache.write().unwrap();
+        cache.insert(repo_path.to_path_buf(), full_name.clone());
+        full_name
+    }
+
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
     fn is_at_coworker_limit(&self) -> bool {
         self.coworkers.list().len() >= self.max_coworkers
@@ -414,6 +452,7 @@ impl DaemonState {
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             last_coworker_activity: std::sync::RwLock::new(HashMap::new()),
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
+            repo_name_cache: std::sync::RwLock::new(HashMap::new()),
         })
     }
 
@@ -3179,50 +3218,56 @@ fn pr_has_claude_review(pr_number: u64, state: &DaemonState) -> bool {
 }
 
 /// Uncached check for Claude review on a PR (makes GitHub API calls).
+///
+/// Fetches both reviews and comments in a single API call to reduce GitHub API usage.
 fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
-    // Check formal reviews first
-    let reviews_output = std::process::Command::new("gh")
+    let output = std::process::Command::new("gh")
         .args([
             "pr",
             "view",
             &pr_number.to_string(),
             "--json",
-            "reviews",
-            "-q",
-            ".reviews[].body",
+            "reviews,comments",
         ])
         .output();
 
-    if let Ok(output) = reviews_output
-        && output.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if text_contains_review_signature(&stdout) {
-            return true;
-        }
-    }
-
-    // Check comments (where coworkers post their reviews)
-    let comments_output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "comments",
-            "-q",
-            ".comments[].body",
-        ])
-        .output();
-
-    match comments_output {
+    match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            text_contains_review_signature(&stdout)
+            let json: serde_json::Value = match serde_json::from_str(&stdout) {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!("Failed to parse review JSON for PR #{}: {}", pr_number, e);
+                    return false;
+                }
+            };
+
+            // Check formal reviews
+            if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
+                for review in reviews {
+                    if let Some(body) = review.get("body").and_then(|b| b.as_str())
+                        && text_contains_review_signature(body)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            // Check comments (where coworkers post their reviews)
+            if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
+                for comment in comments {
+                    if let Some(body) = comment.get("body").and_then(|b| b.as_str())
+                        && text_contains_review_signature(body)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            false
         }
         _ => {
-            debug!("Failed to check comments for PR #{}", pr_number);
-            // Assume no review on error (will try again later)
+            debug!("Failed to fetch reviews/comments for PR #{}", pr_number);
             false
         }
     }
@@ -4103,22 +4148,8 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
             None
         };
 
-        // Resolve owner/name once — used by both the GraphQL query and repo metadata
-        let full_name = std::process::Command::new("gh")
-            .current_dir(repo_path)
-            .args([
-                "repo",
-                "view",
-                "--json",
-                "nameWithOwner",
-                "--jq",
-                ".nameWithOwner",
-            ])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
+        // Resolve owner/name via cache (only hits API on first call per repo path)
+        let full_name = state.get_repo_full_name(repo_path);
 
         let label = repo_path
             .file_name()
