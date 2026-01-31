@@ -71,7 +71,6 @@ static OPEN_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 /// Cached merged PR list.
 static MERGED_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 
-
 /// Configuration for the web server
 #[derive(Debug, Clone)]
 pub struct WebConfig {
