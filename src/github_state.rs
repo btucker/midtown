@@ -28,6 +28,23 @@ pub struct GitHubState {
     /// This cache eliminates redundant `gh pr view` calls on every poll cycle.
     #[serde(default)]
     pub reviewed_prs: std::collections::HashSet<u64>,
+
+    /// Pending reviewer spawns from webhook events, waiting for the delay to expire.
+    /// Persisted so they survive daemon restarts (unlike the previous tokio::sleep approach).
+    #[serde(default)]
+    pub pending_review_spawns: Vec<PendingReviewSpawn>,
+}
+
+/// A pending reviewer spawn triggered by a webhook event.
+///
+/// Instead of using `tokio::time::sleep` in a detached task (which is lost on restart),
+/// pending spawns are persisted here and checked each tick.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingReviewSpawn {
+    /// PR number that needs a reviewer.
+    pub pr_number: u64,
+    /// Wall-clock time after which the reviewer should be spawned.
+    pub spawn_after: DateTime<Utc>,
 }
 
 /// A PR reviewer assignment record.
@@ -183,6 +200,32 @@ impl GitHubState {
                 assignment.assigned_at = now;
             }
         }
+    }
+
+    /// Add a pending review spawn for a PR.
+    pub fn add_pending_review_spawn(&mut self, pr_number: u64, spawn_after: DateTime<Utc>) {
+        // Don't add duplicates for the same PR
+        if !self
+            .pending_review_spawns
+            .iter()
+            .any(|p| p.pr_number == pr_number)
+        {
+            self.pending_review_spawns.push(PendingReviewSpawn {
+                pr_number,
+                spawn_after,
+            });
+        }
+    }
+
+    /// Drain pending review spawns that are ready (spawn_after <= now).
+    pub fn drain_ready_review_spawns(&mut self) -> Vec<u64> {
+        let now = Utc::now();
+        let (ready, remaining): (Vec<_>, Vec<_>) = self
+            .pending_review_spawns
+            .drain(..)
+            .partition(|p| p.spawn_after <= now);
+        self.pending_review_spawns = remaining;
+        ready.into_iter().map(|p| p.pr_number).collect()
     }
 
     /// Check if a PR has a cached Claude review result.
@@ -525,5 +568,60 @@ mod tests {
         assert_eq!(assignments.len(), 1);
         assert!(!assignments.contains_key(&42));
         assert!(assignments.contains_key(&43));
+    }
+
+    #[test]
+    fn test_add_pending_review_spawn() {
+        let mut state = GitHubState::default();
+        let future = Utc::now() + chrono::Duration::seconds(60);
+
+        state.add_pending_review_spawn(42, future);
+        assert_eq!(state.pending_review_spawns.len(), 1);
+        assert_eq!(state.pending_review_spawns[0].pr_number, 42);
+
+        // Duplicate should be ignored
+        state.add_pending_review_spawn(42, future);
+        assert_eq!(state.pending_review_spawns.len(), 1);
+
+        // Different PR should be added
+        state.add_pending_review_spawn(43, future);
+        assert_eq!(state.pending_review_spawns.len(), 2);
+    }
+
+    #[test]
+    fn test_drain_ready_review_spawns() {
+        let mut state = GitHubState::default();
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let future = Utc::now() + chrono::Duration::seconds(60);
+
+        state.add_pending_review_spawn(42, past);
+        state.add_pending_review_spawn(43, future);
+        state.add_pending_review_spawn(44, past);
+
+        let ready = state.drain_ready_review_spawns();
+        assert_eq!(ready.len(), 2);
+        assert!(ready.contains(&42));
+        assert!(ready.contains(&44));
+
+        // Only the future spawn should remain
+        assert_eq!(state.pending_review_spawns.len(), 1);
+        assert_eq!(state.pending_review_spawns[0].pr_number, 43);
+    }
+
+    #[test]
+    fn test_pending_review_spawns_persist() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("github-state.json");
+
+        let mut state = GitHubState::default();
+        let future = Utc::now() + chrono::Duration::seconds(60);
+        state.add_pending_review_spawn(42, future);
+        state.add_pending_review_spawn(43, future);
+        state.save(&path).unwrap();
+
+        let loaded = GitHubState::load(&path).unwrap();
+        assert_eq!(loaded.pending_review_spawns.len(), 2);
+        assert_eq!(loaded.pending_review_spawns[0].pr_number, 42);
+        assert_eq!(loaded.pending_review_spawns[1].pr_number, 43);
     }
 }
