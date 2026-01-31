@@ -60,6 +60,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 {
                     Ok(_) => {
                         info!("Respawned coworker {} successfully", name);
+                        // Reset lifecycle state for the (re)spawned coworker
+                        {
+                            let mut lc = state.coworker_lifecycles.write().await;
+                            lc.insert(name.clone(), crate::rules::CoworkerLifecycle::new_spawn());
+                        }
                     }
                     Err(e) => {
                         warn!("Failed to spawn coworker {}: {}", name, e);
@@ -75,6 +80,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 if let Err(e) = state.coworkers.shutdown(&name) {
                     warn!("Failed to shut down coworker {}: {}", name, e);
+                }
+                // Clean up lifecycle state for the shut-down coworker
+                {
+                    let mut lc = state.coworker_lifecycles.write().await;
+                    lc.remove(&name);
                 }
             }
             Effect::NudgeCoworker { name, message } => {

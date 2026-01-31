@@ -276,9 +276,10 @@ pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
-    /// Per-coworker lifecycle phase (idle, interrupted, prompted).
-    /// Replaces separate `idle_since`, `interrupted_since`, `prompted_nudged` maps.
-    coworker_phases: RwLock<HashMap<String, crate::rules::CoworkerPhase>>,
+    /// Consolidated per-coworker lifecycle state (phase + last activity).
+    /// Bundles what was previously `coworker_phases` and `last_coworker_activity`
+    /// into a single map. Entries are created on spawn and cleared on shutdown.
+    coworker_lifecycles: RwLock<HashMap<String, crate::rules::CoworkerLifecycle>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Repository name (primary repo)
@@ -324,9 +325,6 @@ pub(crate) struct DaemonState {
     cached_merged_pr_coworkers: std::sync::RwLock<HashSet<String>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
-    /// Tracks when each coworker last posted to the channel (for silent coworker detection).
-    /// Shared with `CoworkerManager` so stale entries are cleared on spawn.
-    last_coworker_activity: Arc<std::sync::RwLock<HashMap<String, Instant>>>,
     /// Per-coworker pane content hash and last-changed timestamp (for stuck detection).
     /// Maps coworker name → (last_hash, last_changed_at).
     coworker_pane_hashes: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
@@ -415,14 +413,11 @@ impl DaemonState {
 
         // Share the activity map with CoworkerManager so it can clear stale
         // timestamps inside spawn_with_name() rather than at every call site.
-        let last_coworker_activity = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        coworkers.set_activity_map(last_coworker_activity.clone());
-
         Ok(Self {
             coworkers,
             channel,
             socket_path,
-            coworker_phases: RwLock::new(HashMap::new()),
+            coworker_lifecycles: RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             repo_name,
             default_branch,
@@ -441,7 +436,6 @@ impl DaemonState {
             cached_open_pr_branches: std::sync::RwLock::new(Vec::new()),
             cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
-            last_coworker_activity,
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
         })
@@ -1253,7 +1247,7 @@ async fn check_and_shutdown_idle_coworkers(
 
     // Pure decision: who should be shut down?
     let to_shutdown = {
-        let mut phases = state.coworker_phases.write().await;
+        let mut phases = state.coworker_lifecycles.write().await;
         crate::rules::decide_idle_shutdowns(
             &snap.coworker_snapshots,
             &snap.busy_coworkers,
@@ -1392,7 +1386,7 @@ async fn check_and_nudge_interrupted_coworkers(
 
     // Pure decision: who should be nudged?
     let to_nudge = {
-        let mut phases = state.coworker_phases.write().await;
+        let mut phases = state.coworker_lifecycles.write().await;
         crate::rules::decide_interrupt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
@@ -1440,7 +1434,7 @@ async fn check_and_nudge_prompted_coworkers(
 
     // Pure decision: which coworkers need lead attention?
     let to_nudge = {
-        let mut phases = state.coworker_phases.write().await;
+        let mut phases = state.coworker_lifecycles.write().await;
         crate::rules::decide_prompt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
@@ -2640,10 +2634,12 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
     // --- Scenario 4: Silent coworker (claimed task, no channel activity) ---
     {
         let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
-        let activity = state.last_coworker_activity.read().unwrap();
+        let lifecycles = state.coworker_lifecycles.read().await;
 
         for name in &busy_coworkers {
-            let last_activity = activity.get(name.as_str());
+            let last_activity: Option<Instant> = lifecycles
+                .get(name.as_str())
+                .and_then(|lc| lc.last_activity);
             let is_silent = match last_activity {
                 Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
                 // No activity recorded — coworker hasn't posted to channel yet.
@@ -3681,8 +3677,14 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
 
             // Track last activity time for coworker (used for silent coworker detection)
             if is_coworker_sender(from) {
-                let mut activity = state.last_coworker_activity.write().unwrap();
-                activity.insert(from.to_string(), Instant::now());
+                let mut lifecycles = state.coworker_lifecycles.blocking_write();
+                lifecycles
+                    .entry(from.to_string())
+                    .or_insert_with(|| crate::rules::CoworkerLifecycle {
+                        phase: None,
+                        last_activity: None,
+                    })
+                    .last_activity = Some(Instant::now());
             }
 
             // Update tmux tab for coworkers when they post /me actions

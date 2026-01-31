@@ -36,7 +36,7 @@ pub enum DaemonEvent {
 /// effects. The caller executes all returned effects via `execute_effects`.
 ///
 /// Some check functions still take `&DaemonState` for mutable tracker state
-/// (coworker_phases, cooldowns, etc.) and inline spawns that cannot yet be
+/// (coworker_lifecycles, cooldowns, etc.) and inline spawns that cannot yet be
 /// expressed as pure effects (spawn success/failure determines follow-up effects).
 pub async fn evaluate_tick(
     event: &DaemonEvent,
