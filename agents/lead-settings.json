@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook lead-stop"
+      }]
+    }],
+    "PostToolUse": [{
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook insight"
+      }]
+    }]
+  }
+}
