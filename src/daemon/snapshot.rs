@@ -117,11 +117,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     }
 
     // ── Task state ──────────────────────────────────────────────────────
-    let in_progress_tasks = super::get_in_progress_tasks_with_owners();
-    let busy_coworkers: HashSet<String> = super::get_busy_coworkers(&state.repo_name)
-        .into_iter()
-        .map(|n| n.to_lowercase())
-        .collect();
+    let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+    let busy_coworkers: HashSet<String> =
+        crate::tasks::get_busy_coworkers_for_repo(&state.repo_name)
+            .into_iter()
+            .map(|n| n.to_lowercase())
+            .collect();
 
     // ── PR / GitHub state ───────────────────────────────────────────────
     let coworkers_with_open_prs: HashSet<String> = super::get_coworkers_with_open_prs(state)

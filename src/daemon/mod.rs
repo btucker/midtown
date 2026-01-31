@@ -18,6 +18,7 @@ pub use constants::{
     DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, MAX_CONCURRENT_REVIEWS, PR_NUDGE_COOLDOWN_SECS,
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
+use effects::Effect;
 use helpers::*;
 pub use trackers::{
     PrIssueTracker, PrIssueType, PrReviewTracker, StuckConditionTracker, StuckConditionType,
@@ -1105,8 +1106,6 @@ async fn check_and_shutdown_idle_coworkers(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     if snap.active_coworkers.is_empty() {
         return vec![];
     }
@@ -1281,8 +1280,6 @@ async fn check_and_nudge_interrupted_coworkers(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     if snap.active_coworkers.is_empty() {
         return vec![];
     }
@@ -1331,8 +1328,6 @@ async fn check_and_nudge_prompted_coworkers(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     if snap.active_coworkers.is_empty() {
         return vec![];
     }
@@ -1379,8 +1374,6 @@ async fn check_and_nudge_prompted_coworkers(
 /// will be stuck. We detect it from any coworker, parse the expiry, and
 /// schedule a single nudge time for everyone.
 fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     // If we already have a nudge scheduled, don't re-detect
     if snap.usage_limit_nudge_scheduled {
         return vec![];
@@ -1390,18 +1383,8 @@ fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect
         return vec![];
     }
 
-    // Convert snapshot pane contents to the Vec<(String, String)> format expected by rules
-    let pane_contents: Vec<(String, String)> = snap
-        .pane_contents
-        .iter()
-        .map(|(name, content)| (name.clone(), content.clone()))
-        .collect();
-
     // Pure decision: detect usage limit
-    let decision = crate::rules::decide_usage_limit_detection(
-        &pane_contents,
-        snap.usage_limit_nudge_scheduled,
-    );
+    let decision = crate::rules::decide_usage_limit_detection(&snap.pane_contents);
 
     let detected_coworker = match decision {
         crate::rules::UsageLimitDecision::Detected { coworker } => coworker,
@@ -1447,8 +1430,6 @@ fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all active coworkers.
 fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     // Pure decision: should we nudge?
     let decision = crate::rules::decide_usage_limit_expiry(
         snap.usage_limit_nudge_at,
@@ -1487,14 +1468,6 @@ fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<effects
     }
 
     effects
-}
-
-/// Get list of coworker names who have in_progress tasks.
-///
-/// Takes the repo name explicitly to avoid relying on git detection,
-/// which may fail in daemon background processes.
-fn get_busy_coworkers(repo_name: &str) -> Vec<String> {
-    crate::tasks::get_busy_coworkers_for_repo(repo_name)
 }
 
 /// Get list of coworker names who have open PRs.
@@ -3729,8 +3702,6 @@ fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     // Convert snapshot HashSet to Vec for evaluate_trigger compatibility
     let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
 
@@ -4596,8 +4567,6 @@ fn check_and_recover_orphans(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     // Check cooldown - skip if we spawned too recently
     {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -4705,7 +4674,7 @@ async fn nudge_discovered_coworkers(state: &DaemonState) {
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
     // Get in_progress tasks with owners
-    let in_progress = get_in_progress_tasks_with_owners();
+    let in_progress = crate::tasks::get_in_progress_tasks_with_subjects();
 
     // Build a map of owner -> (task_id, task_subject)
     let mut owner_tasks: std::collections::HashMap<String, (String, String)> =
@@ -4813,8 +4782,6 @@ async fn nudge_discovered_coworkers(state: &DaemonState) {
 /// 3. For tasks with multiple workers, keeps the one that started earliest
 /// 4. Shuts down the duplicate workers with an explanatory message
 fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     if snap.in_progress_tasks.is_empty() {
         return vec![];
     }
@@ -4910,11 +4877,6 @@ fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<effec
     effects
 }
 
-/// Get list of in_progress tasks with their owners and subjects.
-fn get_in_progress_tasks_with_owners() -> Vec<(String, String, String)> {
-    crate::tasks::get_in_progress_tasks_with_subjects()
-}
-
 // ============================================================================
 // Pending task auto-spawn
 // ============================================================================
@@ -4976,8 +4938,6 @@ fn spawn_for_pending_tasks(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    use effects::Effect;
-
     debug!(
         "Task assignment state: active={}",
         snap.running_coworkers.len()
