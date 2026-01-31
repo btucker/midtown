@@ -104,6 +104,10 @@ pub struct CoworkerManager {
     /// Queue for lead nudges. A background thread waits for the lead's input to
     /// be empty before delivering each nudge, so the daemon loop is never blocked.
     lead_nudge_tx: mpsc::Sender<String>,
+    /// Shared activity map — cleared on spawn to prevent stale timestamps from
+    /// previous incarnations triggering false "silent coworker" warnings.
+    /// Set by the daemon after construction via `set_activity_map()`.
+    activity_map: Option<Arc<std::sync::RwLock<HashMap<String, std::time::Instant>>>>,
 }
 
 impl CoworkerManager {
@@ -151,6 +155,7 @@ impl CoworkerManager {
             session_name: session,
             discovered_on_startup: Arc::new(RwLock::new(Vec::new())),
             lead_nudge_tx,
+            activity_map: None,
         };
 
         // Discover existing coworkers from tmux on startup
@@ -169,6 +174,17 @@ impl CoworkerManager {
     /// Returns the tmux session name (e.g., "midtown-projectname").
     pub fn session_name(&self) -> &str {
         &self.session_name
+    }
+
+    /// Set the shared activity map for clearing stale entries on spawn.
+    ///
+    /// Called by the daemon after constructing `DaemonState` to share the
+    /// `last_coworker_activity` map with the coworker manager.
+    pub fn set_activity_map(
+        &mut self,
+        map: Arc<std::sync::RwLock<HashMap<String, std::time::Instant>>>,
+    ) {
+        self.activity_map = Some(map);
     }
 
     /// Take the list of coworker names discovered from tmux on startup.
@@ -871,6 +887,13 @@ impl CoworkerManager {
         {
             let mut coworkers = self.coworkers.write().unwrap();
             coworkers.insert(name.to_string(), coworker);
+        }
+
+        // Clear stale activity timestamps from any previous incarnation
+        // to prevent false "silent coworker" warnings.
+        if let Some(ref activity_map) = self.activity_map {
+            let mut activity = activity_map.write().unwrap();
+            activity.remove(name);
         }
 
         tracing::info!(

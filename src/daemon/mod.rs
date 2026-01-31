@@ -334,8 +334,9 @@ pub(crate) struct DaemonState {
     cached_merged_pr_coworkers: std::sync::RwLock<HashSet<String>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
-    /// Tracks when each coworker last posted to the channel (for silent coworker detection)
-    last_coworker_activity: std::sync::RwLock<HashMap<String, Instant>>,
+    /// Tracks when each coworker last posted to the channel (for silent coworker detection).
+    /// Shared with `CoworkerManager` so stale entries are cleared on spawn.
+    last_coworker_activity: Arc<std::sync::RwLock<HashMap<String, Instant>>>,
     /// Per-coworker pane content hash and last-changed timestamp (for stuck detection).
     /// Maps coworker name → (last_hash, last_changed_at).
     coworker_pane_hashes: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
@@ -357,7 +358,7 @@ impl DaemonState {
     #[allow(clippy::too_many_arguments)]
     fn new(
         socket_path: PathBuf,
-        coworkers: CoworkerManager,
+        mut coworkers: CoworkerManager,
         repo_name: String,
         all_repo_paths: Vec<PathBuf>,
         channel: Channel,
@@ -383,6 +384,11 @@ impl DaemonState {
                 warn!("Failed to load reminders.json: {}, using defaults", e);
                 crate::reminders::ReminderState::default()
             });
+
+        // Share the activity map with CoworkerManager so it can clear stale
+        // timestamps inside spawn_with_name() rather than at every call site.
+        let last_coworker_activity = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        coworkers.set_activity_map(last_coworker_activity.clone());
 
         Ok(Self {
             coworkers,
@@ -412,18 +418,9 @@ impl DaemonState {
             last_merged_prs_fetch: std::sync::Mutex::new(None),
             cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
-            last_coworker_activity: std::sync::RwLock::new(HashMap::new()),
+            last_coworker_activity,
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
         })
-    }
-
-    /// Clear stale coworker activity tracking for a given name.
-    ///
-    /// Called when a coworker is spawned/respawned to prevent the silent-coworker
-    /// detector from using timestamps from a previous incarnation.
-    fn clear_coworker_activity(&self, name: &str) {
-        let mut activity = self.last_coworker_activity.write().unwrap();
-        activity.remove(name);
     }
 
     /// Send a message to the channel and broadcast it to WebSocket clients.
@@ -2122,7 +2119,6 @@ fn route_mentions(state: &DaemonState, msg: &Message) {
                 {
                     Ok(_) => {
                         info!("Spawned coworker {} via @mention", n);
-                        state.clear_coworker_activity(n);
                         let spawn_msg = Message::text(
                             "midtown",
                             format!("🚀 Called in {} in response to @mention", n),
@@ -2445,7 +2441,6 @@ async fn poll_prs_for_issues(
                                 "Spawned {} to address {} on PR #{}",
                                 o, issue_type, pr_number
                             );
-                            state.clear_coworker_activity(o);
                             state.broadcast_coworker_update(o, "running", None);
                             let call_msg = Message::text(
                                 "midtown",
@@ -2950,7 +2945,6 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                                         "Spawned {} to address completed review on PR #{}",
                                         o, pr_number
                                     );
-                                    state.clear_coworker_activity(o);
                                     state.broadcast_coworker_update(o, "running", None);
                                     let call_msg = Message::text(
                                         "midtown",
@@ -4727,7 +4721,6 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
                         "Spawned {} to address review feedback on PR #{}",
                         o, pr_number
                     );
-                    state.clear_coworker_activity(o);
                     let call_msg = Message::text(
                         "daemon",
                         format!(
@@ -4847,7 +4840,6 @@ fn check_and_recover_orphans(
     {
         Ok(_) => {
             info!("Respawned coworker {} successfully", recovery.owner);
-            state.clear_coworker_activity(&recovery.owner);
             vec![
                 Effect::BroadcastCoworkerUpdate {
                     name: recovery.owner.clone(),
@@ -5245,7 +5237,6 @@ fn spawn_for_pending_tasks(
                 {
                     Ok(_) => {
                         info!("Spawned coworker {} for pending task #{}", o, tid);
-                        state.clear_coworker_activity(o);
                         effects.push(Effect::BroadcastCoworkerUpdate {
                             name: o.clone(),
                             status: "running".to_string(),
@@ -5424,7 +5415,6 @@ fn spawn_for_pending_tasks(
                         "Spawned coworker {} for pre-assigned task #{}",
                         coworker_name, task.id
                     );
-                    state.clear_coworker_activity(&coworker_name);
                     effects.push(Effect::BroadcastCoworkerUpdate {
                         name: coworker_name.clone(),
                         status: "running".to_string(),
