@@ -384,7 +384,7 @@ impl DaemonState {
     #[allow(clippy::too_many_arguments)]
     fn new(
         socket_path: PathBuf,
-        mut coworkers: CoworkerManager,
+        coworkers: CoworkerManager,
         repo_name: String,
         all_repo_paths: Vec<PathBuf>,
         channel: Channel,
@@ -965,7 +965,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     "user",
                     content,
                     &state,
-                );
+                ).await;
             }
 
             // Periodically check for idle coworkers and shut them down
@@ -3394,7 +3394,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .unwrap_or("lead");
 
             match message {
-                Some(msg) => handle_channel_post(request.id, from, msg, state),
+                Some(msg) => handle_channel_post(request.id, from, msg, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -3658,7 +3658,12 @@ fn unescape_shell_artifacts(s: &str) -> String {
 /// For coworkers, the action text is also reflected in their tmux tab name.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
-fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonState) -> Response {
+async fn handle_channel_post(
+    id: RequestId,
+    from: &str,
+    message: &str,
+    state: &DaemonState,
+) -> Response {
     // Clean up shell escaping artifacts (e.g. "\!" from bash history expansion escaping)
     let message = unescape_shell_artifacts(message);
 
@@ -3677,7 +3682,7 @@ fn handle_channel_post(id: RequestId, from: &str, message: &str, state: &DaemonS
 
             // Track last activity time for coworker (used for silent coworker detection)
             if is_coworker_sender(from) {
-                let mut lifecycles = state.coworker_lifecycles.blocking_write();
+                let mut lifecycles = state.coworker_lifecycles.write().await;
                 lifecycles
                     .entry(from.to_string())
                     .or_insert_with(|| crate::rules::CoworkerLifecycle {
