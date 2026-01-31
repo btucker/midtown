@@ -114,9 +114,37 @@ impl WorktreeManager {
             .output()?;
 
         if !output.status.success() {
-            return Err(WorktreeError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            // If the directory was deleted externally but git still tracks the
+            // worktree, prune stale references and retry once.
+            if !worktree_path.exists() {
+                tracing::warn!(
+                    "git worktree add failed ({}), pruning stale references and retrying",
+                    stderr.trim()
+                );
+                let _ = self.prune();
+
+                let retry = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args([
+                        "worktree",
+                        "add",
+                        "--detach",
+                        worktree_path.to_str().unwrap(),
+                    ])
+                    .output()?;
+
+                if !retry.status.success() {
+                    return Err(WorktreeError::GitError(
+                        String::from_utf8_lossy(&retry.stderr).to_string(),
+                    ));
+                }
+
+                return Ok(worktree_path);
+            }
+
+            return Err(WorktreeError::GitError(stderr));
         }
 
         Ok(worktree_path)
@@ -831,5 +859,28 @@ branch refs/heads/bob/work
             default.is_some(),
             "Should detect a default branch (main or master)"
         );
+    }
+
+    #[test]
+    fn test_create_worktree_after_directory_deleted() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+        assert!(wt_path.exists());
+
+        // Externally delete the worktree directory (simulates OS cleanup, user rm -rf, etc.)
+        std::fs::remove_dir_all(&wt_path).expect("delete worktree dir");
+        assert!(!wt_path.exists());
+
+        // Attempting to create the same worktree again should succeed
+        // because create() prunes stale git refs and retries
+        let result = manager.create("testworker");
+        assert!(
+            result.is_ok(),
+            "create should succeed after directory deleted, got: {:?}",
+            result.err()
+        );
+        assert!(wt_path.exists(), "worktree should be recreated on disk");
     }
 }

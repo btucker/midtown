@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -336,6 +336,9 @@ pub(crate) struct DaemonState {
     stuck_tracker: Mutex<StuckConditionTracker>,
     /// Tracks when each coworker last posted to the channel (for silent coworker detection)
     last_coworker_activity: std::sync::RwLock<HashMap<String, Instant>>,
+    /// Per-coworker pane content hash and last-changed timestamp (for stuck detection).
+    /// Maps coworker name → (last_hash, last_changed_at).
+    coworker_pane_hashes: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
 }
 
 impl DaemonState {
@@ -410,6 +413,7 @@ impl DaemonState {
             cached_merged_pr_coworkers: std::sync::RwLock::new(HashSet::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             last_coworker_activity: std::sync::RwLock::new(HashMap::new()),
+            coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -652,6 +656,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Create worktree manager and coworker manager early so they can be
     // shared with the web server (for the /api/status endpoint)
     let session_name = format!("midtown-{}", project_name);
+
+    // Capture lead-specific values for health monitoring in the main loop.
+    // These are cloned here because session_name is moved into CoworkerManager.
+    let lead_session_name = session_name.clone();
+    let lead_workdir = config.workdir.clone();
+    let lead_project_name = project_name.clone();
+    let lead_additional_dirs: Vec<PathBuf> = {
+        if let Some(full_config) = crate::config::load_full_project_config(&project_name) {
+            full_config
+                .project
+                .repos()
+                .into_iter()
+                .map(PathBuf::from)
+                .filter(|p| *p != config.workdir)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+
     let worktree_manager =
         WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
             code: -32603,
@@ -762,6 +786,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Set up lead typing indicator check interval
     let mut lead_typing_interval = interval(LEAD_TYPING_CHECK_INTERVAL);
+
+    // Set up lead health check interval (recreates lead window if killed)
+    let mut lead_health_interval = interval(LEAD_HEALTH_CHECK_INTERVAL);
 
     // Start PR polling background task
     let (pr_poll_shutdown_tx, pr_poll_shutdown_rx) = watch::channel(false);
@@ -931,11 +958,23 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     &state,
                 ).await;
                 effects::execute_effects(tick_effects, &state).await;
+
             }
 
             // Check lead pane activity for typing indicator
             _ = lead_typing_interval.tick() => {
                 check_lead_typing(&state).await;
+            }
+
+            // Check if lead window is still alive; recreate if killed
+            _ = lead_health_interval.tick() => {
+                let session = lead_session_name.clone();
+                let workdir = lead_workdir.clone();
+                let project = lead_project_name.clone();
+                let additional = lead_additional_dirs.clone();
+                tokio::task::spawn_blocking(move || {
+                    check_and_respawn_lead(&session, &workdir, &project, &additional);
+                }).await.ok();
             }
 
             // Periodic orphan check, duplicate detection, and worktree cleanup
@@ -1080,6 +1119,48 @@ async fn check_lead_typing(state: &DaemonState) {
 
     if is_working != prev_working {
         web::broadcast_lead_typing(tx, is_working);
+    }
+}
+
+/// Check if the lead tmux window is still alive and respawn it if not.
+///
+/// This runs on a blocking thread since it calls tmux commands.
+/// If the tmux session still exists but the lead window is gone, recreates
+/// the lead window using `spawn_lead` (which handles --resume fallback).
+fn check_and_respawn_lead(
+    session: &str,
+    workdir: &Path,
+    project_name: &str,
+    additional_dirs: &[PathBuf],
+) {
+    // First check if the tmux session itself exists. If the entire session
+    // is gone (e.g., user killed it), don't try to recreate — that's intentional.
+    let session_check = std::process::Command::new("tmux")
+        .args(["has-session", "-t", session])
+        .output();
+    match session_check {
+        Ok(o) if o.status.success() => {}
+        _ => return, // session gone entirely, don't interfere
+    }
+
+    // Session exists — check if the lead window is present
+    match crate::tmux::window_exists(session, "lead") {
+        Ok(true) => {} // lead is alive, nothing to do
+        Ok(false) => {
+            warn!("Lead window missing in session {}, respawning...", session);
+            match crate::tmux::spawn_lead(
+                session,
+                &workdir.to_string_lossy(),
+                project_name,
+                additional_dirs,
+            ) {
+                Ok(()) => info!("Successfully respawned lead window"),
+                Err(e) => error!("Failed to respawn lead window: {}", e),
+            }
+        }
+        Err(e) => {
+            warn!("Failed to check lead window status: {}", e);
+        }
     }
 }
 
@@ -1374,6 +1455,104 @@ async fn check_and_nudge_prompted_coworkers(
             ),
         });
     }
+
+    effects
+}
+
+/// Detect coworkers whose tmux pane content has not changed for `COWORKER_STUCK_DURATION`,
+/// kill them, and respawn with their current task prompt.
+///
+/// Uses the same pane-hashing approach as lead typing detection. Each tick we hash
+/// every coworker's captured pane content and compare to the previous hash. If the
+/// hash has been unchanged for 5 minutes, the coworker is assumed stuck (hung process,
+/// infinite loop, etc.) and is restarted.
+fn check_and_restart_stuck_coworkers(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
+    use effects::Effect;
+    use std::hash::{Hash, Hasher};
+
+    if snap.active_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let now = snap.now;
+    let mut effects = Vec::new();
+    let mut hashes = state.coworker_pane_hashes.lock().unwrap();
+
+    for (name, content) in &snap.pane_contents {
+        // Hash the pane content for cheap comparison
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        let new_hash = hasher.finish();
+
+        let entry = hashes.entry(name.clone()).or_insert((new_hash, now));
+
+        if entry.0 != new_hash {
+            // Pane changed — update hash and timestamp
+            entry.0 = new_hash;
+            entry.1 = now;
+            continue;
+        }
+
+        // Hash unchanged — check if stuck long enough
+        if now.duration_since(entry.1) < COWORKER_STUCK_DURATION {
+            continue;
+        }
+
+        // Find the coworker's in-progress task
+        let task = snap
+            .in_progress_tasks
+            .iter()
+            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name));
+
+        let Some((task_id, task_subject, _owner)) = task else {
+            debug!(
+                "Coworker {} pane stuck but no in-progress task found — skipping",
+                name
+            );
+            continue;
+        };
+
+        info!(
+            "Coworker {} pane unchanged for {}s — restarting for task #{}",
+            name,
+            COWORKER_STUCK_DURATION.as_secs(),
+            task_id
+        );
+
+        let prompt = format!(
+            "You've been assigned task #{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.",
+            task_id, task_subject
+        );
+
+        // Shutdown existing session, then spawn fresh
+        effects.push(Effect::ShutdownCoworker {
+            name: name.clone(),
+            message: String::new(),
+        });
+        effects.push(Effect::SpawnCoworker {
+            name: name.clone(),
+            prompt,
+            isolated: false,
+        });
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🔄 Restarted stuck coworker {} (pane unchanged for {}s) — resuming task #{}",
+                name,
+                COWORKER_STUCK_DURATION.as_secs(),
+                task_id
+            ),
+        });
+
+        // Reset the hash tracker so we don't immediately re-trigger
+        entry.1 = now;
+    }
+
+    // Clean up entries for coworkers no longer in the snapshot
+    hashes.retain(|name, _| snap.pane_contents.contains_key(name));
 
     effects
 }
@@ -4604,22 +4783,34 @@ fn check_and_recover_orphans(
         return vec![];
     };
 
+    // Check per-coworker spawn failure cooldown to prevent infinite retry loops
+    {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        if !cooldowns.check("spawn_failure", &recovery.owner, SPAWN_FAILURE_COOLDOWN) {
+            debug!(
+                "Spawn failure cooldown active for {} — skipping orphan recovery for task #{}",
+                recovery.owner, recovery.task_id
+            );
+            return vec![];
+        }
+    }
+
     info!(
         "Detected orphaned task #{} owned by {} - attempting recovery",
         recovery.task_id, recovery.owner
     );
 
     let prompt = format!(
-        "Resume task #{}: {}. You were working on this task before your session was interrupted. Check your git status and continue where you left off.",
+        "You've been assigned task #{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!",
         recovery.task_id, recovery.task_subject
     );
 
-    // Try spawn inline — the result determines which effects we return.
-    // (A future phase will make this fully pure by modeling spawn as an effect
-    // with success/failure continuations.)
+    // Spawn fresh (no --continue) — the coworker keeps the same name so they
+    // retain their worktree and branch. This is the same path as normal task
+    // assignment, just reusing the previous coworker name.
     match state
         .coworkers
-        .spawn_with_name(&recovery.owner, true, Some(&prompt), false)
+        .spawn_with_name(&recovery.owner, false, Some(&prompt), false)
     {
         Ok(_) => {
             info!("Respawned coworker {} successfully", recovery.owner);
@@ -4644,10 +4835,17 @@ fn check_and_recover_orphans(
         }
         Err(e) => {
             warn!(
-                "Could not respawn {} for orphaned task #{}: {} - resetting task to pending",
-                recovery.owner, recovery.task_id, e
+                "Could not respawn {} for orphaned task #{}: {} - resetting task to pending (cooldown {}s)",
+                recovery.owner,
+                recovery.task_id,
+                e,
+                SPAWN_FAILURE_COOLDOWN.as_secs()
             );
             vec![
+                Effect::RecordCooldown {
+                    category: "spawn_failure".to_string(),
+                    key: recovery.owner.clone(),
+                },
                 Effect::ResetTaskToPending {
                     task_id: recovery.task_id.clone(),
                     repo_name: snap.repo_name.clone(),
@@ -4655,8 +4853,10 @@ fn check_and_recover_orphans(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!(
-                        "🔄 Task #{} reset to pending - {} could not be called back in",
-                        recovery.task_id, recovery.owner
+                        "🔄 Task #{} reset to pending - {} could not be respawned (backing off for {}s)",
+                        recovery.task_id,
+                        recovery.owner,
+                        SPAWN_FAILURE_COOLDOWN.as_secs()
                     ),
                 },
             ]
@@ -5420,69 +5620,6 @@ mod decisions {
             Some(_) => UsageLimitExpiryDecision::NotYet,
             None => UsageLimitExpiryDecision::NoNudge,
         }
-    }
-
-    // ─── Orphan Recovery Decision ──────────────────────────────────────
-
-    /// Decision output for orphan recovery.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum OrphanDecision {
-        /// Found an orphaned task — should spawn coworker to recover it.
-        Recover {
-            task_id: String,
-            task_subject: String,
-            owner: String,
-        },
-        /// Cooldown is active — skip this tick.
-        CooldownActive,
-        /// At dev limit — can't spawn more coworkers.
-        AtDevLimit,
-        /// No orphaned tasks found.
-        NoOrphans,
-    }
-
-    /// Decide whether any in_progress task needs orphan recovery.
-    ///
-    /// An orphaned task is one whose owner is not in the active coworker list.
-    /// Rate-limited: only one recovery per tick.
-    pub fn decide_orphan_recovery(
-        in_progress_tasks: &[(String, String, String)], // (task_id, subject, owner)
-        active_coworker_names: &std::collections::HashSet<String>,
-        last_orphan_spawn: Option<Instant>,
-        now: Instant,
-        at_dev_limit: bool,
-    ) -> OrphanDecision {
-        // Check cooldown
-        if let Some(last) = last_orphan_spawn
-            && now.duration_since(last) < super::ORPHAN_SPAWN_COOLDOWN
-        {
-            return OrphanDecision::CooldownActive;
-        }
-
-        if in_progress_tasks.is_empty() {
-            return OrphanDecision::NoOrphans;
-        }
-
-        if at_dev_limit {
-            return OrphanDecision::AtDevLimit;
-        }
-
-        // Find first orphaned task
-        for (task_id, subject, owner) in in_progress_tasks {
-            let owner = owner.trim().trim_matches('"');
-            if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
-                continue;
-            }
-            if !active_coworker_names.contains(&owner.to_lowercase()) {
-                return OrphanDecision::Recover {
-                    task_id: task_id.clone(),
-                    task_subject: subject.clone(),
-                    owner: owner.to_string(),
-                };
-            }
-        }
-
-        OrphanDecision::NoOrphans
     }
 
     // ─── Duplicate Worker Decision ─────────────────────────────────────
@@ -7255,89 +7392,6 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
 
         let decision = decide_usage_limit_expiry(None, now);
         assert_eq!(decision, UsageLimitExpiryDecision::NoNudge);
-    }
-
-    // ─── Orphan Recovery Tests ─────────────────────────────────────────
-
-    #[test]
-    fn test_orphan_recovery_inactive_owner() {
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix auth bug".to_string(),
-            "park".to_string(),
-        )];
-        let active: std::collections::HashSet<String> =
-            ["broadway".to_string()].into_iter().collect();
-        let now = Instant::now();
-
-        let decision = decide_orphan_recovery(&tasks, &active, None, now, false);
-        assert_eq!(
-            decision,
-            OrphanDecision::Recover {
-                task_id: "42".to_string(),
-                task_subject: "Fix auth bug".to_string(),
-                owner: "park".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn test_orphan_recovery_cooldown_active() {
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix auth bug".to_string(),
-            "park".to_string(),
-        )];
-        let active: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let now = Instant::now();
-        // Last spawn was 2 seconds ago (under 5s cooldown)
-        let last_spawn = Some(now - Duration::from_secs(2));
-
-        let decision = decide_orphan_recovery(&tasks, &active, last_spawn, now, false);
-        assert_eq!(decision, OrphanDecision::CooldownActive);
-    }
-
-    #[test]
-    fn test_orphan_recovery_active_owner_no_orphan() {
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix auth bug".to_string(),
-            "park".to_string(),
-        )];
-        // park IS active, so the task is not orphaned
-        let active: std::collections::HashSet<String> = ["park".to_string()].into_iter().collect();
-        let now = Instant::now();
-
-        let decision = decide_orphan_recovery(&tasks, &active, None, now, false);
-        assert_eq!(decision, OrphanDecision::NoOrphans);
-    }
-
-    #[test]
-    fn test_orphan_recovery_at_dev_limit() {
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix auth bug".to_string(),
-            "park".to_string(),
-        )];
-        let active: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let now = Instant::now();
-
-        let decision = decide_orphan_recovery(&tasks, &active, None, now, true);
-        assert_eq!(decision, OrphanDecision::AtDevLimit);
-    }
-
-    #[test]
-    fn test_orphan_recovery_skips_lead_owner() {
-        let tasks = vec![(
-            "42".to_string(),
-            "Lead's task".to_string(),
-            "lead".to_string(),
-        )];
-        let active: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let now = Instant::now();
-
-        let decision = decide_orphan_recovery(&tasks, &active, None, now, false);
-        assert_eq!(decision, OrphanDecision::NoOrphans);
     }
 
     // ─── Duplicate Worker Tests ────────────────────────────────────────
