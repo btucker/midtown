@@ -5159,8 +5159,8 @@ fn spawn_for_pending_tasks(
     let mut effects = Vec::new();
 
     // Case 1: Pending tasks with owners assigned but coworker not running
-    let pending_with_owners = crate::tasks::get_pending_tasks_with_owners();
-    for (task_id, task_subject, owner) in pending_with_owners {
+    let pending_with_owners = &snap.pending_tasks_with_owners;
+    for (task_id, task_subject, owner) in pending_with_owners.iter() {
         // Check nudge cooldown for this task
         let task_key = format!("pending-{}", task_id);
         let on_nudge_cooldown = {
@@ -5170,9 +5170,9 @@ fn spawn_for_pending_tasks(
 
         // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
-            &task_id.to_string(),
-            &task_subject,
-            &owner,
+            task_id,
+            task_subject,
+            owner,
             &snap.active_names,
             snap.is_at_dev_limit,
             on_nudge_cooldown,
@@ -5237,9 +5237,9 @@ fn spawn_for_pending_tasks(
     }
 
     // Case 2: Pending tasks without owners - assign ownership atomically, then spawn
-    let pending_unowned = crate::tasks::get_pending_tasks_without_owners();
-    // Read all tasks once for relationship lookups (blockedBy, PR owner search)
-    let all_tasks = crate::tasks::read_tasks();
+    let pending_unowned = &snap.pending_tasks_without_owners;
+    // All tasks from snapshot for relationship lookups (blockedBy, PR owner search)
+    let all_tasks = &snap.all_tasks;
     // Track PR# → coworker and task_id → coworker assignments made during this loop iteration.
     // This prevents assigning different coworkers to sub-tasks of the same PR review
     // when multiple sub-tasks are processed in the same tick.
@@ -5247,7 +5247,7 @@ fn spawn_for_pending_tasks(
         std::collections::HashMap::new();
     let mut task_coworker_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for task in pending_unowned {
+    for task in pending_unowned.iter() {
         // Check dev coworkers limit before spawning (reserve slots for reviewers)
         if snap.is_at_dev_limit {
             debug!(
@@ -5262,7 +5262,7 @@ fn spawn_for_pending_tasks(
         //           blockedBy relationship → new coworker name
         let grouped_name: Option<String> = 'resolve: {
             // Strategy A: Extract PR number from subject or description
-            if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(&task) {
+            if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
                 // Check in-memory map first (handles same-tick assignments)
                 if let Some(name) = pr_coworker_map.get(&pr_num) {
                     info!(
@@ -5273,7 +5273,7 @@ fn spawn_for_pending_tasks(
                 }
                 // Check disk for previously assigned PR tasks
                 if let Some(existing_owner) =
-                    crate::tasks::find_pr_owner_in_tasks(&pr_num, &all_tasks)
+                    crate::tasks::find_pr_owner_in_tasks(&pr_num, all_tasks)
                 {
                     info!(
                         "Task #{} references PR #{} - assigning to existing owner {}",
@@ -5295,7 +5295,7 @@ fn spawn_for_pending_tasks(
                 }
             }
             // Check disk for blockedBy owners
-            if let Some(owner) = crate::tasks::find_owner_via_blocked_by(&task, &all_tasks) {
+            if let Some(owner) = crate::tasks::find_owner_via_blocked_by(task, all_tasks) {
                 info!(
                     "Task #{} blocked by owned task - assigning to {}",
                     task.id, owner
@@ -5341,7 +5341,7 @@ fn spawn_for_pending_tasks(
 
         // Record this assignment in in-memory maps for same-tick grouping
         task_coworker_map.insert(task.id.clone(), coworker_name.clone());
-        if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(&task) {
+        if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
             pr_coworker_map.insert(pr_num, coworker_name.clone());
         }
 
