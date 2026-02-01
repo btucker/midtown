@@ -5394,12 +5394,37 @@ fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<effec
 
 /// Spawn coworkers for pending tasks.
 ///
+/// Filter out worktrees whose branches have open PRs.
+///
+/// A worktree with an open PR is not orphaned — it's just waiting for review/merge.
+/// Pure function for testability.
+fn filter_orphans_with_open_prs(
+    flagged: Vec<String>,
+    open_pr_owners: &HashSet<String>,
+) -> Vec<String> {
+    flagged
+        .into_iter()
+        .filter(|name| !open_pr_owners.contains(name))
+        .collect()
+}
+
 /// Clean up orphaned worktrees that have no active coworker.
 ///
 /// Worktrees with no commits beyond the base branch are deleted.
 /// Worktrees with unmerged commits are flagged to the Lead via channel.
+/// Worktrees whose branches have open PRs are skipped — they're tracked work.
 fn cleanup_orphaned_worktrees(state: &DaemonState) {
     let flagged = state.coworkers.cleanup_orphaned_worktrees();
+
+    // Filter out worktrees whose branches have open PRs
+    let open_pr_owners = {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        cache.open_pr_owners.clone()
+    };
+    let flagged = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+    for name in &flagged {
+        debug!("Orphan worktree flagged (no open PR): {}", name);
+    }
 
     let mut tracker = state.orphan_tracker.write().unwrap();
 
@@ -6998,5 +7023,44 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
             now,
             grace
         ));
+    }
+
+    #[test]
+    fn test_filter_orphans_with_open_prs() {
+        let flagged = vec![
+            "amsterdam".to_string(),
+            "riverside".to_string(),
+            "park".to_string(),
+        ];
+        let open_pr_owners: HashSet<String> = ["riverside".to_string()].into_iter().collect();
+
+        let result = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+
+        // riverside has an open PR, so it should be excluded
+        assert_eq!(result, vec!["amsterdam", "park"]);
+    }
+
+    #[test]
+    fn test_filter_orphans_all_have_open_prs() {
+        let flagged = vec!["amsterdam".to_string(), "riverside".to_string()];
+        let open_pr_owners: HashSet<String> = ["amsterdam".to_string(), "riverside".to_string()]
+            .into_iter()
+            .collect();
+
+        let result = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+
+        // All flagged worktrees have open PRs — none should be reported
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_orphans_none_have_open_prs() {
+        let flagged = vec!["amsterdam".to_string(), "park".to_string()];
+        let open_pr_owners: HashSet<String> = HashSet::new();
+
+        let result = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+
+        // No open PRs — all should remain flagged
+        assert_eq!(result, vec!["amsterdam", "park"]);
     }
 }
