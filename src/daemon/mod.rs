@@ -1636,70 +1636,47 @@ fn check_and_restart_stuck_coworkers(
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
     use effects::Effect;
-    use std::hash::{Hash, Hasher};
 
     if snap.active_coworkers.is_empty() {
         return vec![];
     }
 
-    let now = snap.now;
-    let mut effects = Vec::new();
+    // Read current hash state, run pure decision, then write back updated state
     let mut hashes = state.coworker_pane_hashes.lock().unwrap();
+    let result = crate::rules::decide_stuck_coworker_restarts(
+        &hashes,
+        &snap.pane_contents,
+        &snap.in_progress_tasks,
+        snap.now,
+        COWORKER_STUCK_DURATION,
+    );
 
-    for (name, content) in &snap.pane_contents {
-        // Hash the pane content for cheap comparison
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        content.hash(&mut hasher);
-        let new_hash = hasher.finish();
+    // Apply updated hash state
+    *hashes = result.updated_hashes;
+    drop(hashes);
 
-        let entry = hashes.entry(name.clone()).or_insert((new_hash, now));
-
-        if entry.0 != new_hash {
-            // Pane changed — update hash and timestamp
-            entry.0 = new_hash;
-            entry.1 = now;
-            continue;
-        }
-
-        // Hash unchanged — check if stuck long enough
-        if now.duration_since(entry.1) < COWORKER_STUCK_DURATION {
-            continue;
-        }
-
-        // Find the coworker's in-progress task
-        let task = snap
-            .in_progress_tasks
-            .iter()
-            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name));
-
-        let Some((task_id, task_subject, _owner)) = task else {
-            debug!(
-                "Coworker {} pane stuck but no in-progress task found — skipping",
-                name
-            );
-            continue;
-        };
-
+    // Generate effects from pure decisions
+    let mut effects = Vec::new();
+    for restart in result.restarts {
         info!(
             "Coworker {} pane unchanged for {}s — restarting for task #{}",
-            name,
+            restart.name,
             COWORKER_STUCK_DURATION.as_secs(),
-            task_id
+            restart.task_id
         );
 
         let prompt = format!(
             "You've been assigned task #{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.",
-            task_id, task_subject
+            restart.task_id, restart.task_subject
         );
 
-        // Shutdown existing session, then spawn fresh
         effects.push(Effect::ShutdownCoworker {
-            name: name.clone(),
+            name: restart.name.clone(),
             message: String::new(),
         });
         effects.push(Effect::SpawnCoworker(
             crate::tmux::ClaudeLaunchConfig::coworker(
-                name.clone(),
+                restart.name.clone(),
                 state.repo_name.clone(),
                 crate::tmux::SessionMode::Fresh,
                 Some(prompt),
@@ -1709,18 +1686,12 @@ fn check_and_restart_stuck_coworkers(
             sender: "midtown".to_string(),
             message: format!(
                 "🔄 Restarted stuck coworker {} (pane unchanged for {}s) — resuming task #{}",
-                name,
+                restart.name,
                 COWORKER_STUCK_DURATION.as_secs(),
-                task_id
+                restart.task_id
             ),
         });
-
-        // Reset the hash tracker so we don't immediately re-trigger
-        entry.1 = now;
     }
-
-    // Clean up entries for coworkers no longer in the snapshot
-    hashes.retain(|name, _| snap.pane_contents.contains_key(name));
 
     effects
 }

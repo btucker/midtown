@@ -559,6 +559,93 @@ pub(crate) fn decide_usage_limit_expiry(
 }
 
 // ---------------------------------------------------------------------------
+// Stuck coworker detection
+// ---------------------------------------------------------------------------
+
+/// A coworker detected as stuck (pane unchanged for the stuck duration).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StuckCoworkerRestart {
+    pub name: String,
+    pub task_id: String,
+    pub task_subject: String,
+}
+
+/// Result of stuck coworker detection: restart decisions and updated hash state.
+pub(crate) struct StuckDetectionResult {
+    /// Coworkers that should be restarted.
+    pub restarts: Vec<StuckCoworkerRestart>,
+    /// Updated pane hash entries to replace the current state.
+    pub updated_hashes: HashMap<String, (u64, Instant)>,
+}
+
+/// Detect coworkers whose pane content hasn't changed for `stuck_duration`.
+///
+/// Pure function: takes the current pane hash state and pane contents,
+/// returns restart decisions and the updated hash state. The caller is
+/// responsible for applying the hash updates to persistent state.
+pub(crate) fn decide_stuck_coworker_restarts(
+    pane_hashes: &HashMap<String, (u64, Instant)>,
+    pane_contents: &HashMap<String, String>,
+    in_progress_tasks: &[(String, String, String)],
+    now: Instant,
+    stuck_duration: Duration,
+) -> StuckDetectionResult {
+    use std::hash::{Hash, Hasher};
+
+    let mut restarts = Vec::new();
+    let mut updated_hashes = pane_hashes.clone();
+
+    for (name, content) in pane_contents {
+        // Hash the pane content for cheap comparison
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        let new_hash = hasher.finish();
+
+        let entry = updated_hashes
+            .entry(name.clone())
+            .or_insert((new_hash, now));
+
+        if entry.0 != new_hash {
+            // Pane changed — update hash and timestamp
+            entry.0 = new_hash;
+            entry.1 = now;
+            continue;
+        }
+
+        // Hash unchanged — check if stuck long enough
+        if now.duration_since(entry.1) < stuck_duration {
+            continue;
+        }
+
+        // Find the coworker's in-progress task
+        let task = in_progress_tasks
+            .iter()
+            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name));
+
+        let Some((task_id, task_subject, _owner)) = task else {
+            continue;
+        };
+
+        restarts.push(StuckCoworkerRestart {
+            name: name.clone(),
+            task_id: task_id.clone(),
+            task_subject: task_subject.clone(),
+        });
+
+        // Reset the hash tracker so we don't immediately re-trigger
+        entry.1 = now;
+    }
+
+    // Clean up entries for coworkers no longer in the snapshot
+    updated_hashes.retain(|name, _| pane_contents.contains_key(name));
+
+    StuckDetectionResult {
+        restarts,
+        updated_hashes,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Blank-pane zombie detection
 // ---------------------------------------------------------------------------
 
