@@ -3759,7 +3759,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         "daemon.check-pending" => {
             info!("Check-pending triggered via RPC");
             let snap = snapshot::collect_world_snapshot(state).await;
-            let pending_effects = spawn_for_pending_tasks(&snap, state).await;
+            let pending_effects = spawn_for_pending_tasks(&snap, state);
             effects::execute_effects(pending_effects, state).await;
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
@@ -5360,7 +5360,7 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-async fn check_and_recover_orphans(
+fn check_and_recover_orphans(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
@@ -5419,57 +5419,48 @@ async fn check_and_recover_orphans(
         crate::tmux::SessionMode::Fresh,
         Some(prompt),
     );
-    match state.spawn_coworker(&config).await {
-        Ok(_) => {
-            info!("Respawned coworker {} successfully", recovery.owner);
-            vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: recovery.owner.clone(),
-                    status: "running".to_string(),
-                    current_task: None,
-                },
-                Effect::RecordCooldown {
-                    category: "orphan_spawn".to_string(),
-                    key: "global".to_string(),
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "♻️ Recovered coworker {} for orphaned task #{}",
-                        recovery.owner, recovery.task_id
-                    ),
-                },
-            ]
-        }
-        Err(e) => {
-            warn!(
-                "Could not respawn {} for orphaned task #{}: {} - resetting task to pending (cooldown {}s)",
-                recovery.owner,
-                recovery.task_id,
-                e,
-                SPAWN_FAILURE_COOLDOWN.as_secs()
-            );
-            vec![
-                Effect::RecordCooldown {
-                    category: "spawn_failure".to_string(),
-                    key: recovery.owner.clone(),
-                },
-                Effect::ResetTaskToPending {
-                    task_id: recovery.task_id.clone(),
-                    repo_name: snap.repo_name.clone(),
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "🔄 Task #{} reset to pending - {} could not be respawned (backing off for {}s)",
-                        recovery.task_id,
-                        recovery.owner,
-                        SPAWN_FAILURE_COOLDOWN.as_secs()
-                    ),
-                },
-            ]
-        }
-    }
+
+    // Return spawn effect with success/failure callbacks
+    vec![Effect::SpawnCoworkerWithCallbacks {
+        config,
+        on_success: vec![
+            Effect::BroadcastCoworkerUpdate {
+                name: recovery.owner.clone(),
+                status: "running".to_string(),
+                current_task: None,
+            },
+            Effect::RecordCooldown {
+                category: "orphan_spawn".to_string(),
+                key: "global".to_string(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "♻️ Recovered coworker {} for orphaned task #{}",
+                    recovery.owner, recovery.task_id
+                ),
+            },
+        ],
+        on_failure: vec![
+            Effect::RecordCooldown {
+                category: "spawn_failure".to_string(),
+                key: recovery.owner.clone(),
+            },
+            Effect::ResetTaskToPending {
+                task_id: recovery.task_id.clone(),
+                repo_name: snap.repo_name.clone(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "🔄 Task #{} reset to pending - {} could not be respawned (backing off for {}s)",
+                    recovery.task_id,
+                    recovery.owner,
+                    SPAWN_FAILURE_COOLDOWN.as_secs()
+                ),
+            },
+        ],
+    }]
 }
 
 /// Nudge coworkers that were discovered from tmux on daemon startup.
@@ -5769,7 +5760,7 @@ fn cleanup_orphaned_worktrees(state: &DaemonState) {
 /// Handles two cases:
 /// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
 /// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
-async fn spawn_for_pending_tasks(
+fn spawn_for_pending_tasks(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
@@ -5806,15 +5797,15 @@ async fn spawn_for_pending_tasks(
                 task_id: ref tid,
                 task_subject: ref subj,
             } => {
-                // Nudge inline — cooldown recording depends on nudge success
                 let nudge_msg = format!("You have pending task #{}: {}. Get started!", tid, subj);
-                if let Err(e) = state.coworkers.nudge(o, &nudge_msg) {
-                    debug!("Failed to nudge {} about pending task #{}: {}", o, tid, e);
-                } else {
-                    info!("Nudged {} about pending task #{}", o, tid);
-                    let mut cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.record("task_nudge", &task_key);
-                }
+                effects.push(Effect::NudgeCoworkerWithCallbacks {
+                    name: o.clone(),
+                    message: nudge_msg,
+                    on_success: vec![Effect::RecordCooldown {
+                        category: "task_nudge".to_string(),
+                        key: task_key.clone(),
+                    }],
+                });
             }
             crate::rules::PendingTaskAction::SpawnOwner {
                 owner: ref o,
@@ -5825,7 +5816,6 @@ async fn spawn_for_pending_tasks(
                     "Pending task #{} is assigned to {} but coworker not running - spawning",
                     tid, o
                 );
-                // Spawn inline — post-spawn effects depend on spawn result
                 let prompt = format!("You've been assigned task #{}: {}. Get started!", tid, subj);
                 let config = crate::tmux::ClaudeLaunchConfig::coworker(
                     o.clone(),
@@ -5833,27 +5823,25 @@ async fn spawn_for_pending_tasks(
                     crate::tmux::SessionMode::Resume,
                     Some(prompt),
                 );
-                match state.spawn_coworker(&config).await {
-                    Ok(_) => {
-                        info!("Spawned coworker {} for pending task #{}", o, tid);
-                        effects.push(Effect::BroadcastCoworkerUpdate {
+                effects.push(Effect::SpawnCoworkerWithCallbacks {
+                    config,
+                    on_success: vec![
+                        Effect::BroadcastCoworkerUpdate {
                             name: o.clone(),
                             status: "running".to_string(),
                             current_task: None,
-                        });
-                        effects.push(Effect::PostToChannel {
+                        },
+                        Effect::PostToChannel {
                             sender: "midtown".to_string(),
                             message: daemon_messages::called_in_pending_task(
                                 o,
                                 &tid.to_string(),
                                 config::get_personality(),
                             ),
-                        });
-                    }
-                    Err(e) => {
-                        debug!("Could not spawn {} for pending task #{}: {}", o, tid, e);
-                    }
-                }
+                        },
+                    ],
+                    on_failure: vec![],
+                });
             }
             crate::rules::PendingTaskAction::Skip { ref reason } => {
                 debug!("{}", reason);
@@ -5978,69 +5966,49 @@ async fn spawn_for_pending_tasks(
 
         if already_running {
             // Step 3a: Coworker is already running (grouped task) — nudge about new assignment
-            // Nudge inline — channel post depends on nudge success
-            match state.coworkers.nudge(&coworker_name, &prompt) {
-                Ok(()) => {
-                    info!(
-                        "Nudged running coworker {} with grouped task #{}",
-                        coworker_name, task.id
-                    );
-                    effects.push(Effect::PostToChannel {
-                        sender: "midtown".to_string(),
-                        message: daemon_messages::called_in_assigned_task(
-                            &coworker_name,
-                            &task.id.to_string(),
-                            &task.subject,
-                            config::get_personality(),
-                        ),
-                    });
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to nudge idle coworker {} for task #{}: {}",
-                        coworker_name, task.id, e
-                    );
-                }
-            }
+            let channel_msg = daemon_messages::called_in_assigned_task(
+                &coworker_name,
+                &task.id.to_string(),
+                &task.subject,
+                config::get_personality(),
+            );
+            effects.push(Effect::NudgeCoworkerWithCallbacks {
+                name: coworker_name.clone(),
+                message: prompt,
+                on_success: vec![Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: channel_msg,
+                }],
+            });
         } else {
             // Step 3b: Spawn a new coworker with the pre-assigned name and prompt
-            // Spawn inline — post-spawn effects depend on spawn result
             let config = crate::tmux::ClaudeLaunchConfig::coworker(
                 coworker_name.clone(),
                 state.repo_name.clone(),
                 crate::tmux::SessionMode::Fresh,
                 Some(prompt.clone()),
             );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    info!(
-                        "Spawned coworker {} for pre-assigned task #{}",
-                        coworker_name, task.id
-                    );
-                    effects.push(Effect::BroadcastCoworkerUpdate {
+            let channel_msg = daemon_messages::called_in_assigned_task(
+                &coworker_name,
+                &task.id.to_string(),
+                &task.subject,
+                config::get_personality(),
+            );
+            effects.push(Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success: vec![
+                    Effect::BroadcastCoworkerUpdate {
                         name: coworker_name.clone(),
                         status: "running".to_string(),
                         current_task: None,
-                    });
-                    effects.push(Effect::PostToChannel {
+                    },
+                    Effect::PostToChannel {
                         sender: "midtown".to_string(),
-                        message: daemon_messages::called_in_assigned_task(
-                            &coworker_name,
-                            &task.id.to_string(),
-                            &task.subject,
-                            config::get_personality(),
-                        ),
-                    });
-                }
-                Err(e) => {
-                    // Spawn failed but task is already assigned - that's okay,
-                    // the next daemon tick will see the assigned task and try to spawn again
-                    warn!(
-                        "Failed to spawn {} for pre-assigned task #{}: {}",
-                        coworker_name, task.id, e
-                    );
-                }
-            }
+                        message: channel_msg,
+                    },
+                ],
+                on_failure: vec![],
+            });
         }
     }
 

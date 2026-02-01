@@ -38,6 +38,26 @@ pub enum Effect {
     ResetTaskToPending { task_id: String, repo_name: String },
     /// Kill a zombie coworker (blank pane) and respawn with --continue.
     RespawnZombieCoworker { name: String },
+    /// Spawn a coworker with conditional follow-up effects.
+    ///
+    /// On success, `on_success` effects are executed. On failure, `on_failure`
+    /// effects are executed. This allows decision functions to express
+    /// spawn-dependent branching as data without calling spawn inline.
+    SpawnCoworkerWithCallbacks {
+        config: crate::tmux::ClaudeLaunchConfig,
+        on_success: Vec<Effect>,
+        on_failure: Vec<Effect>,
+    },
+    /// Nudge a coworker with conditional follow-up effects on success.
+    ///
+    /// On success, `on_success` effects are executed. On failure, nothing extra
+    /// happens (the nudge failure is logged). This allows decision functions to
+    /// record cooldowns only when nudges succeed.
+    NudgeCoworkerWithCallbacks {
+        name: String,
+        message: String,
+        on_success: Vec<Effect>,
+    },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -146,6 +166,38 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
+            Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success,
+                on_failure,
+            } => {
+                let name = config.name.clone();
+                match state.spawn_coworker(&config).await {
+                    Ok(_) => {
+                        info!("Spawned coworker {} successfully", name);
+                        // Recursively execute success follow-ups
+                        Box::pin(execute_effects(on_success, state)).await;
+                    }
+                    Err(e) => {
+                        warn!("Failed to spawn coworker {}: {}", name, e);
+                        // Recursively execute failure follow-ups
+                        Box::pin(execute_effects(on_failure, state)).await;
+                    }
+                }
+            }
+            Effect::NudgeCoworkerWithCallbacks {
+                name,
+                message,
+                on_success,
+            } => match state.coworkers.nudge(&name, &message) {
+                Ok(()) => {
+                    info!("Nudged coworker {} successfully", name);
+                    Box::pin(execute_effects(on_success, state)).await;
+                }
+                Err(e) => {
+                    warn!("Failed to nudge coworker {}: {}", name, e);
+                }
+            },
         }
     }
 }
