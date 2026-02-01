@@ -1186,48 +1186,41 @@ pub fn spawn_claude(
     }
 
     if !window_survived {
-        if resume {
-            // --continue failed (likely no conversation to resume) — retry with fresh session
-            tracing::warn!(
-                "Tmux window {}:{} died with --continue, retrying with fresh session",
-                session,
-                name
-            );
+        // First attempt failed — always retry with a fresh session.
+        // This handles both --continue/--resume failures (stale session) and
+        // intermittent blank-pane TUI init failures on fresh sessions.
+        tracing::warn!(
+            "Tmux window {}:{} failed on first attempt (resume={}), retrying with fresh session",
+            session,
+            name,
+            resume,
+        );
 
-            let fresh_session_id = uuid::Uuid::new_v4().to_string();
-            let fresh_session_flag = format!(" --session-id {}", fresh_session_id);
-            let fresh_command = build_claude_command(
-                &env_vars,
-                &fresh_session_flag,
-                &add_dir_flags,
-                &settings_file,
-                &prompt_file,
-                initial_prompt_file.as_deref(),
-            );
+        let fresh_session_id = uuid::Uuid::new_v4().to_string();
+        let fresh_session_flag = format!(" --session-id {}", fresh_session_id);
+        let fresh_command = build_claude_command(
+            &env_vars,
+            &fresh_session_flag,
+            &add_dir_flags,
+            &settings_file,
+            &prompt_file,
+            initial_prompt_file.as_deref(),
+        );
 
-            create_window(session, name, working_dir, Some(&fresh_command))?;
-            set_window_color(session, name)?;
+        create_window(session, name, working_dir, Some(&fresh_command))?;
+        set_window_color(session, name)?;
 
-            if !wait_for_window_stable(session, name) {
-                return Err(Error::Rpc {
-                    code: -32603,
-                    message: format!(
-                        "Tmux window {}:{} was created but immediately closed (retry without --continue also failed)",
-                        session, name
-                    ),
-                });
-            }
-
-            return Ok(fresh_session_id);
+        if !wait_for_window_stable(session, name) {
+            return Err(Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "Tmux window {}:{} was created but immediately closed (retry also failed)",
+                    session, name
+                ),
+            });
         }
 
-        return Err(Error::Rpc {
-            code: -32603,
-            message: format!(
-                "Tmux window {}:{} was created but immediately closed (command likely failed)",
-                session, name
-            ),
-        });
+        return Ok(fresh_session_id);
     }
 
     Ok(coworker_session_id)
