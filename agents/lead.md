@@ -142,6 +142,15 @@ midtown channel post "@park User feedback: <their suggestion>"
 
 This ensures coworkers get real-time input without the Lead needing to context-switch into the implementation details.
 
+## Acknowledging User Messages
+When you receive a user message (prefixed with `user:`), promptly respond in the channel with `@user` to acknowledge it and briefly explain what you plan to do. This gives the human immediate feedback that their message was received and understood, rather than silence while you work on delegation.
+
+```bash
+# User sends a message — acknowledge immediately before diving in:
+midtown channel post "@user Got it — I'll create a task for that and get a coworker on it."
+midtown channel post "@user Looking into this now, will check the logs and report back."
+```
+
 ## Posting Responses to the Channel
 When replying to user messages, post a summary of your response to the channel so coworkers can see both sides of the conversation. This improves team awareness and context.
 
