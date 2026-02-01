@@ -1372,19 +1372,21 @@ async fn check_and_shutdown_idle_coworkers(
     // Pure decision: who should be shut down?
     let to_shutdown = {
         let mut phases = state.coworker_lifecycles.write().await;
-        crate::rules::decide_idle_shutdowns(
+        let (decisions, transitions) = crate::rules::decide_idle_shutdowns(
             &snap.coworker_snapshots,
             &snap.busy_coworkers,
             &snap.coworkers_with_open_prs,
             &snap.active_reviewers,
             &snap.coworkers_with_unblocked_deps,
             &snap.ci_passed_pr_coworkers,
-            &mut phases,
+            &phases,
             snap.now,
             snap.now_utc,
             IDLE_BREAK_DURATION,
             MINIMUM_COWORKER_LIFETIME,
-        )
+        );
+        crate::rules::apply_phase_transitions(&mut phases, transitions);
+        decisions
     };
 
     let mut effects = Vec::new();
@@ -1543,13 +1545,15 @@ async fn check_and_nudge_interrupted_coworkers(
     // Pure decision: who should be nudged?
     let to_nudge = {
         let mut phases = state.coworker_lifecycles.write().await;
-        crate::rules::decide_interrupt_nudges(
+        let (decisions, transitions) = crate::rules::decide_interrupt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
-            &mut phases,
+            &phases,
             snap.now,
             INTERRUPTED_NUDGE_DURATION,
-        )
+        );
+        crate::rules::apply_phase_transitions(&mut phases, transitions);
+        decisions
     };
 
     let mut effects = Vec::new();
@@ -1591,11 +1595,13 @@ async fn check_and_nudge_prompted_coworkers(
     // Pure decision: which coworkers need lead attention?
     let to_nudge = {
         let mut phases = state.coworker_lifecycles.write().await;
-        crate::rules::decide_prompt_nudges(
+        let (decisions, transitions) = crate::rules::decide_prompt_nudges(
             &snap.coworker_snapshots,
             &snap.pane_contents,
-            &mut phases,
-        )
+            &phases,
+        );
+        crate::rules::apply_phase_transitions(&mut phases, transitions);
+        decisions
     };
 
     let mut effects = Vec::new();
