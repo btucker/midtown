@@ -3225,18 +3225,7 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // approach of spawning without a prompt and nudging via tmux send-keys,
         // which could fail if the Enter key didn't register.
         // Isolated review coworkers are sent on a break when they go idle (no 5-minute wait).
-        let review_prompt = format!(
-            "First, post a /me status update: `midtown channel post \"/me reviewing PR #{}\"` — then run: /code-review:code-review {}\n\n\
-             IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. \
-             If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), \
-             post a comment yourself using `gh pr comment {} --body` with the \"no issues found\" format from the skill.\n\n\
-             REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. \
-             When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, \
-             parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. \
-             If you spot this, mention it in your review comment and post to the channel: \
-             `midtown channel post \"@lead PR #{} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach).\"`",
-            pr_number, pr_number, pr_number, pr_number
-        );
+        let review_prompt = crate::agents::reviewer_prompt(pr_number);
 
         let reviewer_name = match state.coworkers.next_available_name() {
             Some(name) => name,
@@ -5267,18 +5256,7 @@ async fn nudge_discovered_coworkers(state: &DaemonState) {
             }
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
             // Coworker was assigned to review a PR
-            let prompt = format!(
-                "Resume reviewing PR #{}. The daemon was restarted and discovered you still running. Continue your code review where you left off.\n\n\
-                 IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. \
-                 If the code-review skill finishes without posting a comment, \
-                 post a comment yourself using `gh pr comment {} --body` with the \"no issues found\" format from the skill.\n\n\
-                 REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. \
-                 When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, \
-                 parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. \
-                 If you spot this, mention it in your review comment and post to the channel: \
-                 `midtown channel post \"@lead PR #{} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach).\"`",
-                pr_number, pr_number, pr_number
-            );
+            let prompt = crate::agents::reviewer_resume_prompt(*pr_number);
 
             info!(
                 "Nudging discovered coworker {} to resume review of PR #{}",
