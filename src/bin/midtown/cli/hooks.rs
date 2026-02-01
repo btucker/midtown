@@ -521,6 +521,40 @@ fn handle_task_hook() -> Result<Response, String> {
         );
     }
 
+    // Safety-net: write structured state for TaskUpdate operations.
+    // The primary mechanism is `midtown state`, but this catches transitions
+    // if the coworker forgets to call it explicitly.
+    if tool_name == "TaskUpdate" && agent != "lead" {
+        let task_id_num = tool_input["taskId"]
+            .as_str()
+            .or_else(|| tool_input["task_id"].as_str())
+            .and_then(|s| s.parse::<u32>().ok());
+
+        let phase = tool_input["status"]
+            .as_str()
+            .and_then(|status| {
+                use midtown::coworker_state::WorkflowPhase;
+                match status {
+                    "in_progress" => Some(WorkflowPhase::Developing),
+                    "completed" => Some(WorkflowPhase::Completed),
+                    _ => None,
+                }
+            })
+            .or_else(|| {
+                // Owner-only update (no status change) → Claiming
+                if tool_input.get("owner").is_some() {
+                    Some(midtown::coworker_state::WorkflowPhase::Claiming)
+                } else {
+                    None
+                }
+            });
+
+        if let Some(phase) = phase {
+            let report = midtown::coworker_state::CoworkerStateReport::new(phase, task_id_num);
+            let _ = midtown::coworker_state::write_state(&repo, &agent, &report);
+        }
+    }
+
     // Notify daemon for follow-up actions. Uses a 5s timeout via DaemonClient,
     // so it won't block indefinitely.
     if let Ok(client) = crate::client::DaemonClient::connect() {

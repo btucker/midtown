@@ -68,6 +68,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if let Err(e) = state.coworkers.shutdown(&name) {
                     warn!("Failed to shut down coworker {}: {}", name, e);
                 }
+                // Clear state file so next session doesn't read stale phase
+                crate::coworker_state::clear_state(&state.repo_name, &name);
                 // Clean up lifecycle state for the shut-down coworker
                 {
                     let mut lc = state.coworker_lifecycles.write().await;
@@ -119,6 +121,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if let Err(e) = state.coworkers.shutdown(&name) {
                     warn!("Failed to shutdown zombie coworker {}: {}", name, e);
                 }
+                // Clear state file so respawned session doesn't read stale phase
+                crate::coworker_state::clear_state(&state.repo_name, &name);
                 // Clean up lifecycle state so respawn starts fresh
                 {
                     let mut lc = state.coworker_lifecycles.write().await;
