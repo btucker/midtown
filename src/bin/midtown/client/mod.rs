@@ -277,6 +277,13 @@ impl DaemonClient {
         self.send("daemon.check-pending", None)
     }
 
+    pub fn task_updated(&self, task_id: &str, updater: &str) -> Result<Response, String> {
+        self.send(
+            "task.updated",
+            Some(serde_json::json!({ "task_id": task_id, "updater": updater })),
+        )
+    }
+
     // Kanban commands
 
     pub fn kanban_data(&self) -> Result<Value, String> {

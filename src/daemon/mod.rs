@@ -3654,6 +3654,23 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
 
+        "task.updated" => {
+            let params = request.params.as_ref();
+            let task_id = params
+                .and_then(|p| p.get("task_id"))
+                .and_then(|v| v.as_str());
+            let updater = params
+                .and_then(|p| p.get("updater"))
+                .and_then(|v| v.as_str());
+
+            match (task_id, updater) {
+                (Some(task_id), Some(updater)) => {
+                    handle_task_updated(request.id, task_id, updater, state)
+                }
+                _ => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
@@ -3856,6 +3873,81 @@ fn handle_coworker_asking(
         serde_json::json!({
             "success": true,
             "message": format!("Notified Lead about question from {}", name),
+        }),
+    )
+}
+
+/// Handle task.updated RPC — nudge the task owner when someone else updates their task.
+///
+/// Looks up the task by ID, checks the owner, and if the updater differs from
+/// the owner, sends a nudge so the owner sees the change immediately.
+fn handle_task_updated(
+    id: RequestId,
+    task_id: &str,
+    updater: &str,
+    state: &DaemonState,
+) -> Response {
+    let tasks = crate::tasks::read_tasks();
+    let task = tasks.iter().find(|t| t.id == task_id);
+
+    let Some(task) = task else {
+        info!("task.updated: task {} not found, skipping nudge", task_id);
+        return Response::success(
+            id,
+            serde_json::json!({
+                "nudged": false,
+                "reason": "task not found",
+            }),
+        );
+    };
+
+    let Some(ref owner) = task.owner else {
+        info!(
+            "task.updated: task {} has no owner, skipping nudge",
+            task_id
+        );
+        return Response::success(
+            id,
+            serde_json::json!({
+                "nudged": false,
+                "reason": "task has no owner",
+            }),
+        );
+    };
+
+    if owner == updater {
+        debug!(
+            "task.updated: task {} updated by its owner ({}), no nudge needed",
+            task_id, updater
+        );
+        return Response::success(
+            id,
+            serde_json::json!({
+                "nudged": false,
+                "reason": "updater is owner",
+            }),
+        );
+    }
+
+    let nudge_message = format!(
+        "Your task #{} ({}) was updated by {} — check the latest changes",
+        task_id, task.subject, updater
+    );
+
+    // Nudge the owner (could be a coworker or Lead)
+    if let Err(e) = state.coworkers.nudge(owner, &nudge_message) {
+        debug!("Failed to nudge {} for task update: {}", owner, e);
+    }
+
+    info!(
+        "task.updated: nudged {} about task {} (updated by {})",
+        owner, task_id, updater
+    );
+    Response::success(
+        id,
+        serde_json::json!({
+            "nudged": true,
+            "owner": owner,
         }),
     )
 }
