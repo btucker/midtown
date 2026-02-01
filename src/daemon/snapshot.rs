@@ -66,6 +66,11 @@ pub struct WorldSnapshot {
     // ── Reviewer state ──────────────────────────────────────────────────
     /// Currently active reviewers (from both in-memory tracker and persistent state).
     pub active_reviewers: HashSet<String>,
+    /// Reviewer → assigned PR number mapping (from github-state.json).
+    pub reviewer_pr_assignments: HashMap<String, u64>,
+    /// PRs that have been verified as reviewed (Claude review comment exists).
+    /// Pre-collected during snapshot so decision logic doesn't need API calls.
+    pub reviewed_prs: HashSet<u64>,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -161,9 +166,31 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
-    let active_reviewers = {
+    let (active_reviewers, reviewer_pr_assignments) = {
         let github_state = state.github_state.lock().await;
-        github_state.active_reviewers()
+        let reviewers = github_state.active_reviewers();
+        // Collect reviewer → PR assignments for all active coworkers
+        let assignments: HashMap<String, u64> = active_coworkers
+            .iter()
+            .filter_map(|cw| {
+                github_state
+                    .pr_for_reviewer(&cw.name)
+                    .map(|pr| (cw.name.clone(), pr))
+            })
+            .collect();
+        (reviewers, assignments)
+    };
+
+    // Pre-check review status for all assigned PRs so decision logic doesn't need API calls
+    let reviewed_prs = {
+        let pr_numbers: Vec<u64> = reviewer_pr_assignments.values().copied().collect();
+        let mut reviewed = HashSet::new();
+        for pr in pr_numbers {
+            if state.is_pr_reviewed(pr).await {
+                reviewed.insert(pr);
+            }
+        }
+        reviewed
     };
 
     // ── Dependency state ──────────────────────────────────────────────────
@@ -199,6 +226,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         coworkers_with_merged_prs,
         ci_passed_pr_coworkers,
         active_reviewers,
+        reviewer_pr_assignments,
+        reviewed_prs,
         coworkers_with_unblocked_deps,
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
