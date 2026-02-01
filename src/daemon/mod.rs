@@ -3237,11 +3237,20 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             pr_number, pr_number, pr_number, pr_number
         );
 
+        let reviewer_name = match state.coworkers.next_available_name() {
+            Some(name) => name,
+            None => {
+                warn!("No available coworker slots for reviewer");
+                continue;
+            }
+        };
+
         match state
-            .coworkers
-            .spawn(false, Some(&review_prompt), true, None)
+            .spawn_coworker(&reviewer_name, false, Some(&review_prompt), true, None)
+            .await
         {
-            Ok(new_coworker) => {
+            Ok(()) => {
+                let new_coworker = reviewer_name;
                 state.broadcast_coworker_update(&new_coworker, "running", None);
 
                 // Record the assignment in persistent state
