@@ -714,6 +714,29 @@ pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::
         _ => name.to_string(),
     };
 
+    rename_window_raw(session, name, &new_name)
+}
+
+/// Set a tmux window name directly without parsing through `parse_status()`.
+///
+/// Used when the caller already has a formatted status string (e.g., from
+/// a structured state file that produces "dev#42" directly).
+pub fn rename_window_formatted(
+    session: &str,
+    name: &str,
+    formatted_status: &str,
+) -> crate::Result<()> {
+    let new_name = if formatted_status.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}:{}", name, formatted_status)
+    };
+
+    rename_window_raw(session, name, &new_name)
+}
+
+/// Internal: set the tmux window name to `new_name`.
+fn rename_window_raw(session: &str, name: &str, new_name: &str) -> crate::Result<()> {
     // Find the window by base name, since it may already have a status suffix
     // (e.g., "york:dev#3" instead of "york")
     let target = match find_window_target(session, name) {
@@ -725,7 +748,7 @@ pub fn rename_window(session: &str, name: &str, status: Option<&str>) -> crate::
     };
 
     let status = Command::new("tmux")
-        .args(["rename-window", "-t", &target, &new_name])
+        .args(["rename-window", "-t", &target, new_name])
         .status()
         .map_err(Error::Io)?;
 

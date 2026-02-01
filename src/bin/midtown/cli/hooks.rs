@@ -41,6 +41,7 @@ pub enum HookCommand {
     /// Handle Lead stop hook - read channel messages for the Lead
     LeadStop,
     /// Handle PostToolUse hook for TaskUpdate/TaskCreate - posts task activity to channel
+    /// and writes structured coworker state
     Task,
     /// Handle PostToolUse hook for AskUserQuestion - notifies daemon to nudge Lead
     Ask,
@@ -239,6 +240,17 @@ fn handle_idle_hook() -> Result<Response, String> {
     let personality = midtown::config::get_personality();
 
     hook_log(&repo, &format!("idle: {} posting idle status", agent));
+
+    // Write structured idle state to state file
+    if agent != "lead" {
+        let report = midtown::coworker_state::CoworkerStateReport::new(
+            midtown::coworker_state::WorkflowPhase::Idle,
+            None,
+        );
+        if let Err(e) = midtown::coworker_state::write_state(&repo, &agent, &report) {
+            hook_log(&repo, &format!("idle: state write failed: {}", e));
+        }
+    }
 
     let idle_text = midtown::daemon_messages::idle_waiting(personality);
     let message = midtown::Message::action(&agent, &idle_text);
@@ -453,7 +465,8 @@ fn hash_insight(insight: &str) -> String {
 /// Handle the PostToolUse hook for task operations (TaskUpdate/TaskCreate).
 ///
 /// Reads tool use context from stdin (JSON), parses the task operation,
-/// and posts appropriate action message to channel.
+/// posts appropriate action message to channel, and writes structured
+/// coworker state to the state file.
 fn handle_task_hook() -> Result<Response, String> {
     let mut input = String::new();
     std::io::stdin()
@@ -519,6 +532,46 @@ fn handle_task_hook() -> Result<Response, String> {
             &repo,
             &format!("task: channel send failed ({}), skipping", e),
         );
+    }
+
+    // Write structured coworker state for TaskUpdate operations.
+    // This replaces freeform /me message parsing — the daemon reads this
+    // state file directly instead of keyword-matching channel messages.
+    if tool_name == "TaskUpdate" && agent != "lead" {
+        let task_id_num = tool_input["taskId"]
+            .as_str()
+            .or_else(|| tool_input["task_id"].as_str())
+            .and_then(|s| s.parse::<u32>().ok());
+
+        let phase = tool_input["status"].as_str().and_then(|status| {
+            use midtown::coworker_state::WorkflowPhase;
+            match status {
+                "in_progress" => {
+                    if tool_input.get("owner").is_some() {
+                        Some(WorkflowPhase::Claiming)
+                    } else {
+                        Some(WorkflowPhase::Developing)
+                    }
+                }
+                "completed" => Some(WorkflowPhase::Completed),
+                _ => None,
+            }
+        });
+
+        if let Some(phase) = phase {
+            let report = midtown::coworker_state::CoworkerStateReport::new(phase, task_id_num);
+            if let Err(e) = midtown::coworker_state::write_state(&repo, &agent, &report) {
+                hook_log(
+                    &repo,
+                    &format!("task: state write failed for {}: {}", agent, e),
+                );
+            } else {
+                hook_log(
+                    &repo,
+                    &format!("task: {} state → {}", agent, report.display_status()),
+                );
+            }
+        }
     }
 
     // Notify daemon for follow-up actions. Uses a 5s timeout via DaemonClient,
