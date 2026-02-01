@@ -64,7 +64,7 @@ Event sources (timer ticks, webhooks, RPC, signals)
 
 ### Nudge System
 
-`src/nudge/` — Delivers messages to coworkers via tmux `send-keys`. Handles deduplication (fingerprint-based), cooldowns per coworker, and phase tracking (Idle → Prompted → Interrupted).
+Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`, which calls `tmux::send_keys()` in `src/tmux.rs`.
 
 ### GitHub Integration
 

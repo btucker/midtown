@@ -16,8 +16,6 @@ pub enum Response {
     Tasks { tasks: Vec<TaskInfo> },
     /// List of PRs
     PullRequests { pull_requests: Vec<PrInfo> },
-    /// Nudge configuration
-    NudgeConfig(NudgeConfigResponse),
 }
 
 /// Basic status response (legacy)
@@ -94,13 +92,6 @@ pub struct PrInfo {
     pub title: String,
     pub author: String,
     pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NudgeConfigResponse {
-    pub enabled: bool,
-    pub interval_secs: u64,
-    pub message_template: String,
 }
 
 impl Response {
@@ -266,18 +257,6 @@ impl Response {
                     ));
                 }
                 out.trim_end().to_string()
-            }
-            Response::NudgeConfig(config) => {
-                format!(
-                    "Nudge Configuration\n\
-                     ─────────────────────────────\n\
-                     Enabled:  {}\n\
-                     Interval: {} seconds\n\
-                     Template: {}",
-                    if config.enabled { "yes" } else { "no" },
-                    config.interval_secs,
-                    config.message_template
-                )
             }
         }
     }
