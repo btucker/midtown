@@ -90,6 +90,12 @@ pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
 /// Avoids false positives during normal startup when the TUI hasn't rendered yet.
 pub(super) const ZOMBIE_MIN_AGE_SECS: i64 = 20;
 
+/// Maximum zombie respawn attempts before giving up (3 attempts).
+/// After this many failed respawns, the coworker is shut down and an alert
+/// is posted to the channel. Prevents infinite respawn loops when the
+/// underlying cause persists (e.g., broken worktree, bad prompt).
+pub(super) const MAX_ZOMBIE_RESPAWN_ATTEMPTS: u32 = 3;
+
 /// How long a coworker's pane can remain unchanged before considering it stuck (5 minutes).
 /// If the tmux pane content hash hasn't changed for this duration, the coworker is killed
 /// and restarted with its current task.
