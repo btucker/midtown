@@ -238,7 +238,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         "daemon.check-pending" => {
             info!("Check-pending triggered via RPC");
             let snap = snapshot::collect_world_snapshot(state).await;
-            let pending_effects = super::spawn_for_pending_tasks(&snap, state);
+            let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
             effects::execute_effects(pending_effects, state).await;
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
