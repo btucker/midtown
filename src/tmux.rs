@@ -1757,11 +1757,23 @@ mod tests {
 
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
         assert!(post_tool_hooks.is_array());
+        // Lead has TaskUpdate, TaskCreate, and catch-all insight hooks
+        assert_eq!(
+            post_tool_hooks[0]["matcher"].as_str().unwrap(),
+            "TaskUpdate",
+            "first PostToolUse hook should match TaskUpdate"
+        );
+        assert_eq!(
+            post_tool_hooks[1]["matcher"].as_str().unwrap(),
+            "TaskCreate",
+            "second PostToolUse hook should match TaskCreate"
+        );
         assert!(
-            post_tool_hooks[0]["hooks"][0]["command"]
+            post_tool_hooks[2]["hooks"][0]["command"]
                 .as_str()
                 .unwrap()
-                .ends_with("hook insight")
+                .ends_with("hook insight"),
+            "last PostToolUse hook should be the catch-all insight hook"
         );
 
         // Verify {bin} placeholders were replaced

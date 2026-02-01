@@ -521,12 +521,25 @@ fn handle_task_hook() -> Result<Response, String> {
         );
     }
 
-    // On TaskCreate, notify daemon to immediately check for pending tasks.
-    // This has a 5s timeout via DaemonClient, so it won't block indefinitely.
-    if tool_name == "TaskCreate"
-        && let Ok(client) = crate::client::DaemonClient::connect()
-    {
-        let _ = client.check_pending();
+    // Notify daemon for follow-up actions. Uses a 5s timeout via DaemonClient,
+    // so it won't block indefinitely.
+    if let Ok(client) = crate::client::DaemonClient::connect() {
+        match tool_name {
+            "TaskCreate" => {
+                let _ = client.check_pending();
+            }
+            "TaskUpdate" => {
+                // Nudge the task owner if someone else updated their task
+                let task_id = tool_input["taskId"]
+                    .as_str()
+                    .or_else(|| tool_input["task_id"].as_str())
+                    .unwrap_or("");
+                if !task_id.is_empty() {
+                    let _ = client.task_updated(task_id, &agent);
+                }
+            }
+            _ => {}
+        }
     }
 
     Ok(Response::Message {
