@@ -912,8 +912,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Set up lead typing indicator check interval
     let mut lead_typing_interval = interval(LEAD_TYPING_CHECK_INTERVAL);
 
-    // Set up lead health check interval (recreates lead window if killed)
+    // Set up lead health check interval (recreates lead window if killed).
+    // Track daemon start time so we can skip health checks during the startup
+    // grace period, preventing races with `midtown restart` where the daemon
+    // tries to respawn a lead window before the tmux session is fully settled.
     let mut lead_health_interval = interval(LEAD_HEALTH_CHECK_INTERVAL);
+    let daemon_start_instant = tokio::time::Instant::now();
 
     // Start PR polling background task
     let (pr_poll_shutdown_tx, pr_poll_shutdown_rx) = watch::channel(false);
@@ -1102,15 +1106,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 check_lead_typing(&state).await;
             }
 
-            // Check if lead window is still alive; recreate if killed
+            // Check if lead window is still alive; recreate if killed.
+            // Skip during the startup grace period to avoid races with
+            // `midtown restart` where the lead window is still settling.
             _ = lead_health_interval.tick() => {
-                let session = lead_session_name.clone();
-                let workdir = lead_workdir.clone();
-                let project = lead_project_name.clone();
-                let additional = lead_additional_dirs.clone();
-                tokio::task::spawn_blocking(move || {
-                    check_and_respawn_lead(&session, &workdir, &project, &additional);
-                }).await.ok();
+                if daemon_start_instant.elapsed() >= LEAD_HEALTH_CHECK_STARTUP_GRACE {
+                    let session = lead_session_name.clone();
+                    let workdir = lead_workdir.clone();
+                    let project = lead_project_name.clone();
+                    let additional = lead_additional_dirs.clone();
+                    tokio::task::spawn_blocking(move || {
+                        check_and_respawn_lead(&session, &workdir, &project, &additional);
+                    }).await.ok();
+                }
             }
 
             // Periodic orphan check, duplicate detection, and worktree cleanup
