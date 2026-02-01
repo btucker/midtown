@@ -528,6 +528,11 @@ pub(crate) fn detect_blank_pane_zombies(
     blank_pane_coworkers
         .iter()
         .filter(|name| {
+            // The lead window has its own health check (check_and_respawn_lead)
+            // and must never be treated as a zombie coworker.
+            if *name == "lead" {
+                return false;
+            }
             coworker_start_times
                 .get(*name)
                 .map(|started| now_utc.signed_duration_since(*started) >= min_age)
@@ -1910,5 +1915,23 @@ mod tests {
         let zombies =
             detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
         assert!(zombies.is_empty());
+    }
+
+    #[test]
+    fn zombie_detection_skips_lead_window() {
+        let mut blank = HashSet::new();
+        blank.insert("lead".to_string());
+
+        let mut start_times = HashMap::new();
+        let now = chrono::Utc::now();
+        // Lead has been running long enough to pass the age threshold
+        start_times.insert("lead".to_string(), now - chrono::Duration::seconds(60));
+
+        let zombies =
+            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
+        assert!(
+            zombies.is_empty(),
+            "lead window must never be treated as a zombie"
+        );
     }
 }
