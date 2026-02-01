@@ -1123,17 +1123,15 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
 
     // Spawn claude with an initial prompt — this is the code path that was
     // broken when -p (--print mode) was used instead of a positional arg.
-    let result = midtown::tmux::spawn_claude(
-        &session,
-        "test-coworker",
-        &dir,
-        None,  // repo_name
-        false, // resume
-        true,  // isolated_tasks (don't pollute shared task list)
-        &[],   // additional_dirs
-        Some("Say hello and wait for instructions."),
-        None, // resume_session_id
-    );
+    let config = midtown::tmux::ClaudeLaunchConfig {
+        name: "test-coworker".to_string(),
+        session_mode: midtown::tmux::SessionMode::Fresh,
+        task_mode: midtown::tmux::TaskMode::Isolated,
+        initial_prompt: Some("Say hello and wait for instructions.".to_string()),
+        additional_dirs: vec![],
+        restrict_setting_sources: true,
+    };
+    let result = midtown::tmux::spawn_claude(&session, &dir, &config);
 
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
 

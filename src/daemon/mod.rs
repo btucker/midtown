@@ -500,19 +500,11 @@ impl DaemonState {
     /// Wraps `CoworkerManager::spawn_with_name` and inserts a fresh
     /// `CoworkerLifecycle` entry on success, ensuring stale timestamps
     /// from any previous incarnation are replaced.
-    async fn spawn_coworker(
-        &self,
-        name: &str,
-        unique: bool,
-        prompt: Option<&str>,
-        isolated: bool,
-        resume_session_id: Option<&str>,
-    ) -> crate::Result<()> {
-        self.coworkers
-            .spawn_with_name(name, unique, prompt, isolated, resume_session_id)?;
+    async fn spawn_coworker(&self, config: &crate::tmux::ClaudeLaunchConfig) -> crate::Result<()> {
+        self.coworkers.spawn_with_name(config)?;
         let mut lc = self.coworker_lifecycles.write().await;
         lc.insert(
-            name.to_string(),
+            config.name.clone(),
             crate::rules::CoworkerLifecycle::new_spawn(),
         );
         Ok(())
@@ -1684,12 +1676,14 @@ fn check_and_restart_stuck_coworkers(
             name: name.clone(),
             message: String::new(),
         });
-        effects.push(Effect::SpawnCoworker {
-            name: name.clone(),
-            prompt,
-            isolated: false,
-            resume_session_id: None,
-        });
+        effects.push(Effect::SpawnCoworker(
+            crate::tmux::ClaudeLaunchConfig::coworker(
+                name.clone(),
+                state.repo_name.clone(),
+                crate::tmux::SessionMode::Fresh,
+                Some(prompt),
+            ),
+        ));
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
@@ -2260,10 +2254,13 @@ async fn route_mentions(state: &DaemonState, msg: &Message) {
                 message: ref m,
             } => {
                 info!("Spawning mentioned coworker {} (not currently running)", n);
-                match state
-                    .spawn_coworker(n, true, Some(m.as_str()), false, None)
-                    .await
-                {
+                let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                    n.clone(),
+                    state.repo_name.clone(),
+                    crate::tmux::SessionMode::Resume,
+                    Some(m.clone()),
+                );
+                match state.spawn_coworker(&config).await {
                     Ok(_) => {
                         info!("Spawned coworker {} via @mention", n);
                         let spawn_msg = Message::text(
@@ -2617,16 +2614,17 @@ async fn poll_prs_for_issues(
                     if saved_session.is_some() {
                         info!("Resuming saved PR break session for {}", o);
                     }
-                    match state
-                        .spawn_coworker(
-                            o,
-                            true,
-                            Some(msg.as_str()),
-                            false,
-                            saved_session.as_deref(),
-                        )
-                        .await
-                    {
+                    let session_mode = match saved_session.as_deref() {
+                        Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
+                        None => crate::tmux::SessionMode::Resume,
+                    };
+                    let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                        o.clone(),
+                        state.repo_name.clone(),
+                        session_mode,
+                        Some(msg.clone()),
+                    );
+                    match state.spawn_coworker(&config).await {
                         Ok(_) => {
                             // Clear saved session after successful resume
                             if saved_session.is_some() {
@@ -3116,16 +3114,19 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                             if saved_session.is_some() {
                                 info!("Resuming saved PR break session for {}", o);
                             }
-                            match state
-                                .spawn_coworker(
-                                    o,
-                                    true,
-                                    Some(msg.as_str()),
-                                    false,
-                                    saved_session.as_deref(),
-                                )
-                                .await
-                            {
+                            let session_mode = match saved_session.as_deref() {
+                                Some(sid) => {
+                                    crate::tmux::SessionMode::ResumeSession(sid.to_string())
+                                }
+                                None => crate::tmux::SessionMode::Resume,
+                            };
+                            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                                o.clone(),
+                                state.repo_name.clone(),
+                                session_mode,
+                                Some(msg.clone()),
+                            );
+                            match state.spawn_coworker(&config).await {
                                 Ok(_) => {
                                     if saved_session.is_some() {
                                         let mut sessions = state.pr_break_sessions.write().unwrap();
@@ -3245,10 +3246,9 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             }
         };
 
-        match state
-            .spawn_coworker(&reviewer_name, false, Some(&review_prompt), true, None)
-            .await
-        {
+        let config =
+            crate::tmux::ClaudeLaunchConfig::reviewer(reviewer_name.clone(), review_prompt);
+        match state.spawn_coworker(&config).await {
             Ok(()) => {
                 let new_coworker = reviewer_name;
                 state.broadcast_coworker_update(&new_coworker, "running", None);
@@ -3685,10 +3685,21 @@ fn handle_coworker_spawn(
 
     // Pass prompt to spawn() - it handles waiting and nudging internally
     // Use shared task list (not isolated) for manual spawns
-    match state
-        .coworkers
-        .spawn(resume, prompt.as_deref(), false, None)
-    {
+    let config = crate::tmux::ClaudeLaunchConfig {
+        name: String::new(), // spawn() picks a name
+        session_mode: if resume {
+            crate::tmux::SessionMode::Resume
+        } else {
+            crate::tmux::SessionMode::Fresh
+        },
+        task_mode: crate::tmux::TaskMode::Shared {
+            repo_name: state.repo_name.clone(),
+        },
+        initial_prompt: prompt,
+        additional_dirs: vec![],
+        restrict_setting_sources: true,
+    };
+    match state.coworkers.spawn(&config) {
         Ok(name) => {
             info!("Spawned coworker: {}", name);
             state.broadcast_coworker_update(&name, "running", None);
@@ -4984,10 +4995,17 @@ async fn handle_pr_comment_nudge(state: &DaemonState, activity: crate::webhook::
             if saved_session.is_some() {
                 info!("Resuming saved PR break session for {}", o);
             }
-            match state
-                .spawn_coworker(o, true, Some(msg.as_str()), false, saved_session.as_deref())
-                .await
-            {
+            let session_mode = match saved_session.as_deref() {
+                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::tmux::SessionMode::Resume,
+            };
+            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                o.clone(),
+                state.repo_name.clone(),
+                session_mode,
+                Some(msg.clone()),
+            );
+            match state.spawn_coworker(&config).await {
                 Ok(_) => {
                     if saved_session.is_some() {
                         let mut sessions = state.pr_break_sessions.write().unwrap();
@@ -5110,10 +5128,13 @@ async fn check_and_recover_orphans(
     // Spawn fresh (no --continue) — the coworker keeps the same name so they
     // retain their worktree and branch. This is the same path as normal task
     // assignment, just reusing the previous coworker name.
-    match state
-        .spawn_coworker(&recovery.owner, false, Some(&prompt), false, None)
-        .await
-    {
+    let config = crate::tmux::ClaudeLaunchConfig::coworker(
+        recovery.owner.clone(),
+        state.repo_name.clone(),
+        crate::tmux::SessionMode::Fresh,
+        Some(prompt),
+    );
+    match state.spawn_coworker(&config).await {
         Ok(_) => {
             info!("Respawned coworker {} successfully", recovery.owner);
             vec![
@@ -5507,10 +5528,13 @@ async fn spawn_for_pending_tasks(
                 );
                 // Spawn inline — post-spawn effects depend on spawn result
                 let prompt = format!("You've been assigned task #{}: {}. Get started!", tid, subj);
-                match state
-                    .spawn_coworker(o, true, Some(&prompt), false, None)
-                    .await
-                {
+                let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                    o.clone(),
+                    state.repo_name.clone(),
+                    crate::tmux::SessionMode::Resume,
+                    Some(prompt),
+                );
+                match state.spawn_coworker(&config).await {
                     Ok(_) => {
                         info!("Spawned coworker {} for pending task #{}", o, tid);
                         effects.push(Effect::BroadcastCoworkerUpdate {
@@ -5682,10 +5706,13 @@ async fn spawn_for_pending_tasks(
         } else {
             // Step 3b: Spawn a new coworker with the pre-assigned name and prompt
             // Spawn inline — post-spawn effects depend on spawn result
-            match state
-                .spawn_coworker(&coworker_name, false, Some(&prompt), false, None)
-                .await
-            {
+            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                coworker_name.clone(),
+                state.repo_name.clone(),
+                crate::tmux::SessionMode::Fresh,
+                Some(prompt.clone()),
+            );
+            match state.spawn_coworker(&config).await {
                 Ok(_) => {
                     info!(
                         "Spawned coworker {} for pre-assigned task #{}",

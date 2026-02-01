@@ -309,21 +309,8 @@ impl CoworkerManager {
     /// If `isolated_tasks` is true, the coworker gets its own task list (no shared
     /// CLAUDE_CODE_TASK_LIST_ID). This is used for review coworkers whose sub-tasks
     /// should not pollute the shared task list.
-    pub fn spawn(
-        &self,
-        resume: bool,
-        prompt: Option<&str>,
-        isolated_tasks: bool,
-        resume_session_id: Option<&str>,
-    ) -> crate::Result<String> {
-        let name = self
-            .next_available_name()
-            .ok_or_else(|| crate::Error::Rpc {
-                code: -32603,
-                message: "No available coworker slots (all avenue names in use)".to_string(),
-            })?;
-
-        self.spawn_with_name(&name, resume, prompt, isolated_tasks, resume_session_id)
+    pub fn spawn(&self, config: &tmux::ClaudeLaunchConfig) -> crate::Result<String> {
+        self.spawn_with_name(config)
     }
 
     /// Create worktrees for a coworker in all additional repos (multi-repo projects).
@@ -614,34 +601,27 @@ impl CoworkerManager {
         tmux::send_bell(&self.session_name, "lead.0")
     }
 
-    /// Spawn a coworker with a specific name.
+    /// Spawn a coworker with a specific name using a `ClaudeLaunchConfig`.
     ///
     /// Unlike `spawn()` which picks a random available name, this takes an explicit
-    /// name parameter. This is useful for:
+    /// config with the name already set. This is useful for:
     /// - @mention routing where the mentioned coworker name is known
     /// - Orphan task recovery where the task owner's name is known
+    /// - Reviewer spawns with isolated task lists
     ///
     /// Creates a new worktree if one doesn't exist, or reuses an existing one.
-    /// If `resume` is true, passes `--continue` to claude to resume the previous
-    /// session from this worktree (preserving context).
-    ///
-    /// If `prompt` is provided, waits for the coworker to initialize and sends the
-    /// prompt as the initial nudge. This is the preferred way to send initial
-    /// instructions as it avoids the race condition of spawning then nudging separately.
+    /// The `additional_dirs` field in the config is augmented with worktree paths
+    /// created for multi-repo projects.
     ///
     /// Returns the coworker name on success.
-    pub fn spawn_with_name(
-        &self,
-        name: &str,
-        resume: bool,
-        prompt: Option<&str>,
-        isolated_tasks: bool,
-        resume_session_id: Option<&str>,
-    ) -> crate::Result<String> {
+    pub fn spawn_with_name(&self, config: &tmux::ClaudeLaunchConfig) -> crate::Result<String> {
+        let name = &config.name;
+        let isolated_tasks = matches!(config.task_mode, tmux::TaskMode::Isolated);
+
         // Check if already running
         {
             let coworkers = self.coworkers.read().unwrap();
-            if coworkers.contains_key(name) {
+            if coworkers.contains_key(name.as_str()) {
                 return Err(crate::Error::Rpc {
                     code: -32603,
                     message: format!("Coworker {} is already running", name),
@@ -739,29 +719,11 @@ impl CoworkerManager {
         // Create worktrees in additional repos (multi-repo projects)
         let additional_dirs = self.create_additional_worktrees(name);
 
-        // Create the tmux window and spawn claude in the worktree
-        let repo_name = self.worktree_manager.repo_name();
-        let config = tmux::ClaudeLaunchConfig {
-            name: name.to_string(),
-            session_mode: if let Some(sid) = resume_session_id {
-                tmux::SessionMode::ResumeSession(sid.to_string())
-            } else if resume {
-                tmux::SessionMode::Resume
-            } else {
-                tmux::SessionMode::Fresh
-            },
-            task_mode: if isolated_tasks {
-                tmux::TaskMode::Isolated
-            } else {
-                tmux::TaskMode::Shared {
-                    repo_name: repo_name.to_string(),
-                }
-            },
-            initial_prompt: prompt.map(|s| s.to_string()),
-            additional_dirs,
-            restrict_setting_sources: true,
-        };
-        let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &config)?;
+        // Augment the config with the additional dirs from worktree creation
+        let mut launch_config = config.clone();
+        launch_config.additional_dirs.extend(additional_dirs);
+
+        let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &launch_config)?;
 
         // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
@@ -780,18 +742,15 @@ impl CoworkerManager {
         }
 
         tracing::info!(
-            "Spawned coworker {} (isolated={}, resume={})",
+            "Spawned coworker {} (isolated={}, session_mode={:?})",
             name,
             isolated_tasks,
-            resume,
+            config.session_mode,
         );
 
         Ok(name.to_string())
     }
 
-    /// Respawn a coworker with a specific name.
-    ///
-    /// This is used to recover orphaned coworkers whose tmux windows died but
     /// Sync state with actual tmux windows.
     ///
     /// Removes coworkers whose tmux windows no longer exist.
@@ -1036,12 +995,24 @@ mod tests {
         }
 
         // spawn_with_name should fail if coworker is already running
-        let result = manager.spawn_with_name("lexington", false, None, false, None);
+        let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            "lexington",
+            "test-repo",
+            crate::tmux::SessionMode::Fresh,
+            None,
+        );
+        let result = manager.spawn_with_name(&config);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
 
         // Also test with resume=true
-        let result = manager.spawn_with_name("lexington", true, None, false, None);
+        let resume_config = crate::tmux::ClaudeLaunchConfig::coworker(
+            "lexington",
+            "test-repo",
+            crate::tmux::SessionMode::Resume,
+            None,
+        );
+        let result = manager.spawn_with_name(&resume_config);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already running"));
     }

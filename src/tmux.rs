@@ -1037,6 +1037,40 @@ pub struct LaunchCommand {
 }
 
 impl ClaudeLaunchConfig {
+    /// Create a config for a standard shared-task coworker.
+    ///
+    /// This covers the common case: a named coworker with shared task list,
+    /// restricted setting sources, and no additional directories.
+    pub fn coworker(
+        name: impl Into<String>,
+        repo_name: impl Into<String>,
+        session_mode: SessionMode,
+        initial_prompt: Option<String>,
+    ) -> Self {
+        ClaudeLaunchConfig {
+            name: name.into(),
+            session_mode,
+            task_mode: TaskMode::Shared {
+                repo_name: repo_name.into(),
+            },
+            initial_prompt,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        }
+    }
+
+    /// Create a config for an isolated reviewer coworker.
+    pub fn reviewer(name: impl Into<String>, initial_prompt: String) -> Self {
+        ClaudeLaunchConfig {
+            name: name.into(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: Some(initial_prompt),
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        }
+    }
+
     /// Build the full shell command string for launching Claude in a tmux pane.
     ///
     /// `settings_file` and `prompt_file` are pre-written files containing the

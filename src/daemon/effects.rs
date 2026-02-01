@@ -12,14 +12,8 @@ use crate::message::Message;
 #[derive(Debug)]
 #[allow(dead_code)] // SpawnCoworker defined for when inline spawns are fully extracted
 pub enum Effect {
-    /// Spawn a coworker (or respawn an existing one).
-    SpawnCoworker {
-        name: String,
-        prompt: String,
-        isolated: bool,
-        /// If set, resume a specific Claude session by ID (for PR break-and-resume).
-        resume_session_id: Option<String>,
-    },
+    /// Spawn a coworker using a typed launch configuration.
+    SpawnCoworker(crate::tmux::ClaudeLaunchConfig),
     /// Shut down a running coworker with a message.
     ShutdownCoworker { name: String, message: String },
     /// Nudge a coworker by sending a message to their tmux pane.
@@ -53,24 +47,11 @@ pub enum Effect {
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     for effect in effects {
         match effect {
-            Effect::SpawnCoworker {
-                name,
-                prompt,
-                isolated,
-                resume_session_id,
-            } => {
-                match state
-                    .spawn_coworker(
-                        &name,
-                        resume_session_id.is_some(),
-                        Some(&prompt),
-                        isolated,
-                        resume_session_id.as_deref(),
-                    )
-                    .await
-                {
+            Effect::SpawnCoworker(config) => {
+                let name = config.name.clone();
+                match state.spawn_coworker(&config).await {
                     Ok(_) => {
-                        info!("Respawned coworker {} successfully", name);
+                        info!("Spawned coworker {} successfully", name);
                     }
                     Err(e) => {
                         warn!("Failed to spawn coworker {}: {}", name, e);
@@ -146,7 +127,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Brief delay to let tmux clean up
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 // Respawn with --continue to resume the coworker's conversation
-                match state.spawn_coworker(&name, true, None, false, None).await {
+                let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                    name.clone(),
+                    state.repo_name.clone(),
+                    crate::tmux::SessionMode::Resume,
+                    None,
+                );
+                match state.spawn_coworker(&config).await {
                     Ok(_) => {
                         info!("Respawned zombie coworker {} successfully", name);
                     }
