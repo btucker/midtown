@@ -1,0 +1,1530 @@
+//! PR management — polling, auto-merge, reviewer spawning, comment nudging.
+//!
+//! This module runs in the background to:
+//! - Poll open PRs for merge conflicts, CI failures, and review status
+//! - Auto-merge approved PRs with all checks passing
+//! - Spawn reviewer coworkers for unreviewed PRs
+//! - Process pending review spawns from webhook-triggered delays
+//! - Nudge PR owners when their PR receives comments
+
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::sync::watch;
+use tracing::{debug, info, warn};
+
+use crate::message::{Message, MessageType};
+use crate::{config, daemon_messages};
+
+use super::DaemonState;
+use super::constants::*;
+use super::helpers::*;
+use super::trackers::{PrIssueType, StuckConditionType};
+
+/// Get list of coworker names who have open PRs.
+///
+/// A coworker is considered to have an open PR if the PR's branch name
+/// starts with the coworker's name (e.g., "lexington/fix-auth").
+/// Coworkers with open PRs should NEVER be sent on a break.
+/// Get coworker names that have open PRs (branch name starts with coworker name).
+///
+/// Uses cached data from the latest `poll_prs_for_issues` call when available,
+/// avoiding a separate `gh pr list` API call.
+pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
+    let cache = state.pr_coworker_cache.read().unwrap();
+    if !cache.open_pr_owners.is_empty() {
+        return cache.open_pr_owners.iter().cloned().collect();
+    }
+    drop(cache);
+
+    // Fallback to API call if cache is empty (e.g., first tick before poll runs)
+    let output = std::process::Command::new("gh")
+        .args(["pr", "list", "--json", "headRefName"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                return prs
+                    .iter()
+                    .filter_map(|pr| {
+                        pr.get("headRefName")
+                            .and_then(|r| r.as_str())
+                            .and_then(coworker_from_branch)
+                    })
+                    .collect();
+            }
+            Vec::new()
+        }
+        _ => {
+            debug!("Failed to get PRs from gh CLI for idle check");
+            Vec::new()
+        }
+    }
+}
+
+/// How often to re-fetch merged PRs (5 minutes). Merges aren't urgent so
+/// polling less frequently saves significant API calls.
+const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
+
+/// Get coworker names that have recently merged PRs (branch name starts with coworker name).
+///
+/// Uses a time-based cache to reduce API calls. Merged PR status is only refreshed
+/// every 5 minutes since merge events aren't time-critical.
+pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
+    // Check if we need to refresh (uses CooldownTracker instead of standalone timestamp)
+    let needs_refresh = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.check(
+            "merged_pr_fetch",
+            "global",
+            Duration::from_secs(MERGED_PRS_FETCH_INTERVAL_SECS),
+        )
+    };
+
+    if !needs_refresh {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        return cache.merged_pr_owners.clone();
+    }
+
+    // Fetch from API
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--limit",
+            "20",
+            "--json",
+            "headRefName",
+        ])
+        .output();
+
+    let result = match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                prs.iter()
+                    .filter_map(|pr| {
+                        pr.get("headRefName")
+                            .and_then(|r| r.as_str())
+                            .and_then(coworker_from_branch)
+                    })
+                    .collect()
+            } else {
+                HashSet::new()
+            }
+        }
+        _ => {
+            debug!("Failed to get merged PRs from gh CLI for idle check");
+            HashSet::new()
+        }
+    };
+
+    // Update cache
+    {
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.merged_pr_owners = result.clone();
+    }
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.record("merged_pr_fetch", "global");
+    }
+
+    result
+}
+
+/// Background task that polls PRs for actionable issues.
+///
+/// Checks all open PRs on an adaptive interval:
+/// - **Webhooks healthy** (recent event within [`WEBHOOK_HEALTH_TIMEOUT`]): polls every
+///   [`RELAXED_PR_POLL_INTERVAL_SECS`] (2 min) — polling is only a backstop.
+/// - **Webhooks degraded** (no recent events): polls every `aggressive_interval_secs`
+///   (default 30s) to compensate for missing real-time events.
+///
+/// Detects:
+/// - Merge conflicts
+/// - CI failures
+/// - Changes requested
+/// - Approved and ready to merge
+///
+/// Nudges the PR owner (extracted from branch prefix) or an idle coworker.
+pub(super) async fn pr_poll_task(
+    state: Arc<DaemonState>,
+    aggressive_interval_secs: u64,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    let aggressive = Duration::from_secs(aggressive_interval_secs);
+    let relaxed = Duration::from_secs(RELAXED_PR_POLL_INTERVAL_SECS);
+
+    loop {
+        // Determine interval based on webhook health
+        let interval = {
+            let last_event = state.last_webhook_event_at.lock().await;
+            match *last_event {
+                Some(ts) if ts.elapsed() < WEBHOOK_HEALTH_TIMEOUT => {
+                    debug!(
+                        "PR poll: webhooks healthy (last event {:.0?} ago), using relaxed interval ({}s)",
+                        ts.elapsed(),
+                        RELAXED_PR_POLL_INTERVAL_SECS
+                    );
+                    relaxed
+                }
+                _ => {
+                    debug!(
+                        "PR poll: webhooks degraded or no events yet, using aggressive interval ({}s)",
+                        aggressive_interval_secs
+                    );
+                    aggressive
+                }
+            }
+        };
+
+        // Wait for the interval or shutdown signal
+        let delay = tokio::time::sleep(interval);
+
+        tokio::select! {
+            _ = delay => {
+                // Time to poll PRs
+                if let Err(e) = poll_prs_for_issues(&state).await {
+                    warn!("PR poll error: {}", e);
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("PR poll task received shutdown signal");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+
+/// Auto-merge a PR using `gh pr merge --squash`.
+///
+/// Posts a channel message on success or failure.
+async fn auto_merge_pr(
+    state: &DaemonState,
+    pr_number: u64,
+    title: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let output = tokio::process::Command::new("gh")
+        .args(["pr", "merge", &pr_number.to_string(), "--squash", "--auto"])
+        .output()
+        .await?;
+
+    if output.status.success() {
+        info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
+                pr_number,
+                truncate_str(title, 40)
+            ),
+            MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge message: {}", e);
+        }
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err_msg = format!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
+        warn!("{}", err_msg);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "⚠️ Auto-merge failed for PR #{} ({}) — {}",
+                pr_number,
+                truncate_str(title, 40),
+                truncate_str(stderr.trim(), 80)
+            ),
+            MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge failure message: {}", e);
+        }
+        Err(err_msg.into())
+    }
+}
+
+/// Poll all open PRs and nudge for actionable issues.
+async fn poll_prs_for_issues(
+    state: &DaemonState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    debug!("Polling PRs for actionable issues...");
+
+    // Get list of active coworkers
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    // Run gh pr list command (include createdAt and isDraft for review filtering)
+    // Include state field to filter out merged/closed PRs after restart
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr list failed: {}", stderr).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Hash the response to detect changes. If the PR data hasn't changed since the last poll,
+    // skip the expensive lock acquisition, issue detection, and nudge logic.
+    let response_hash = {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        stdout.hash(&mut hasher);
+        hasher.finish()
+    };
+    {
+        let mut last_hash = state.last_pr_poll_hash.lock().await;
+        if *last_hash == response_hash && response_hash != 0 {
+            debug!("PR poll: data unchanged, skipping processing");
+            return Ok(());
+        }
+        *last_hash = response_hash;
+    }
+
+    let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
+
+    // Cleanup old tracking entries, but preserve assignments for active coworkers
+    // so reviewers don't lose their PR tracking while still running
+    let active_coworker_names: HashSet<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|cw| cw.name.clone())
+        .collect();
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.cleanup();
+    }
+    {
+        let mut github_state = state.github_state.lock().await;
+        github_state.cleanup_expired_preserving(&active_coworker_names);
+    }
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.cleanup(Duration::from_secs(7200)); // 2 hours
+    }
+
+    // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
+    // open PRs, but verify via the state field to guard against stale/cached results)
+    let prs: Vec<serde_json::Value> = prs
+        .into_iter()
+        .filter(|pr| {
+            let state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("OPEN");
+            state == "OPEN"
+        })
+        .collect();
+
+    // Cache open PR owners for reuse by get_coworkers_with_open_prs
+    {
+        let owners: HashSet<String> = prs
+            .iter()
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(coworker_from_branch)
+            })
+            .collect();
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.open_pr_owners = owners;
+    }
+
+    // Cache coworker names whose PRs have all CI checks passing (for PR break decisions)
+    {
+        let ci_passed: HashSet<String> = prs
+            .iter()
+            .filter(|pr| all_ci_checks_passed(pr))
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(coworker_from_branch)
+            })
+            .collect();
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.ci_passed_pr_owners = ci_passed;
+    }
+
+    // Cleanup saved PR break sessions for coworkers whose PRs are no longer open
+    {
+        let active_pr_coworkers: HashSet<String> = prs
+            .iter()
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(coworker_from_branch)
+            })
+            .collect();
+        let mut sessions = state.pr_break_sessions.write().unwrap();
+        let before = sessions.len();
+        sessions.retain(|name, _| active_pr_coworkers.contains(name));
+        let removed = before - sessions.len();
+        if removed > 0 {
+            info!(
+                "Cleaned up {} stale PR break session(s) (PR closed/merged)",
+                removed
+            );
+        }
+    }
+
+    // Clean up persistent reviewer assignments for PRs that are no longer open
+    {
+        let open_pr_numbers: Vec<u64> = prs
+            .iter()
+            .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+            .collect();
+        let mut github_state = state.github_state.lock().await;
+        github_state.cleanup_closed_prs(&open_pr_numbers);
+        github_state.cleanup_expired_preserving(&active_coworker_names);
+        if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
+            warn!("Failed to save github-state.json after cleanup: {}", e);
+        }
+    }
+
+    for pr in &prs {
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+
+        // Extract owner from branch prefix (e.g., "amsterdam/feature" -> "amsterdam")
+        let owner = head_ref.split('/').next().unwrap_or("");
+
+        // Check for actionable issues
+        let issues = detect_pr_issues(pr);
+
+        for issue_type in issues {
+            // Check if we should nudge for this issue
+            let should_nudge = {
+                let tracker = state.pr_issue_tracker.lock().await;
+                tracker.should_nudge(pr_number, issue_type)
+            };
+
+            if !should_nudge {
+                continue;
+            }
+
+            // For approved PRs with all checks passing, auto-merge instead of nudging
+            use crate::rules::{PrAction, decide_pr_issue_action};
+            if issue_type == PrIssueType::Approved && is_auto_mergeable(pr) {
+                info!(
+                    "PR #{} ({}) is approved with all checks passing — auto-merging",
+                    pr_number, title
+                );
+                if let Err(e) = auto_merge_pr(state, pr_number, title).await {
+                    warn!("Auto-merge failed for PR #{}: {}", pr_number, e);
+                }
+                // Always record the cooldown, even on failure, to prevent
+                // retrying every poll interval (30s) for persistent failures.
+                {
+                    let mut tracker = state.pr_issue_tracker.lock().await;
+                    tracker.record_nudge(pr_number, issue_type);
+                }
+                continue;
+            }
+
+            // Format the nudge message
+            let message = format!(
+                "PR #{} ({}) - {}: {}",
+                pr_number,
+                truncate_str(title, 40),
+                issue_type,
+                get_issue_action(issue_type)
+            );
+
+            // Decide action using pure decision function
+            let action =
+                decide_pr_issue_action(owner, &active_coworkers, state.is_at_dev_limit(), &message);
+
+            let nudged = match action {
+                PrAction::NudgeOwner {
+                    owner: ref o,
+                    message: ref msg,
+                } => match state.coworkers.nudge(o, msg) {
+                    Ok(()) => {
+                        info!("Nudged {} about PR #{}: {}", o, pr_number, issue_type);
+                        true
+                    }
+                    Err(e) => {
+                        warn!("Failed to nudge {}: {}", o, e);
+                        false
+                    }
+                },
+                PrAction::SpawnOwner {
+                    owner: ref o,
+                    message: ref msg,
+                } => {
+                    info!(
+                        "PR #{} owner {} is not active, spawning to address {}",
+                        pr_number, o, issue_type
+                    );
+                    // Look up saved session from PR break for resume
+                    let saved_session = {
+                        let sessions = state.pr_break_sessions.read().unwrap();
+                        sessions.get(o).cloned()
+                    };
+                    if saved_session.is_some() {
+                        info!("Resuming saved PR break session for {}", o);
+                    }
+                    let session_mode = match saved_session.as_deref() {
+                        Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
+                        None => crate::tmux::SessionMode::Resume,
+                    };
+                    let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                        o.clone(),
+                        state.repo_name.clone(),
+                        session_mode,
+                        Some(msg.clone()),
+                    );
+                    match state.spawn_coworker(&config).await {
+                        Ok(_) => {
+                            // Clear saved session after successful resume
+                            if saved_session.is_some() {
+                                let mut sessions = state.pr_break_sessions.write().unwrap();
+                                sessions.remove(o);
+                            }
+                            info!(
+                                "Spawned {} to address {} on PR #{}",
+                                o, issue_type, pr_number
+                            );
+                            state.broadcast_coworker_update(o, "running", None);
+                            let call_msg = Message::text(
+                                "midtown",
+                                daemon_messages::called_in_pr_issue(
+                                    o,
+                                    &issue_type.to_string(),
+                                    pr_number,
+                                    config::get_personality(),
+                                ),
+                            );
+                            if let Err(e) = state.send_and_broadcast(&call_msg) {
+                                warn!("Failed to post call-in message: {}", e);
+                            }
+                            true
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to spawn {} for PR #{} {}: {}",
+                                o, pr_number, issue_type, e
+                            );
+                            let channel_message = format!(
+                                "PR #{} ({}) owned by {} - {}: {} (call-in failed)",
+                                pr_number,
+                                truncate_str(title, 40),
+                                o,
+                                issue_type,
+                                get_issue_action(issue_type)
+                            );
+                            let fallback =
+                                Message::new("midtown", channel_message, MessageType::Text);
+                            if let Err(e) = state.send_and_broadcast(&fallback) {
+                                warn!("Failed to post PR issue to channel: {}", e);
+                            }
+                            true
+                        }
+                    }
+                }
+                PrAction::PostToChannel { message: ref msg } => {
+                    let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
+                    if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                        warn!("Failed to post PR issue to channel: {}", e);
+                    }
+                    info!(
+                        "Posted PR #{} issue to channel (no owner): {}",
+                        pr_number, issue_type
+                    );
+                    true
+                }
+                PrAction::Skip { ref reason } => {
+                    debug!("{}", reason);
+                    false
+                }
+            };
+
+            // Record the nudge
+            if nudged {
+                let mut tracker = state.pr_issue_tracker.lock().await;
+                tracker.record_nudge(pr_number, issue_type);
+            }
+        }
+    }
+
+    // Auto-spawn reviewers for PRs that need review
+    spawn_reviewers_for_prs(state, &prs).await;
+
+    // Check for stuck conditions and nudge lead if self-healing has failed
+    check_for_stuck_conditions(state, &prs).await;
+
+    Ok(())
+}
+
+/// Check for stuck conditions and nudge the lead when the daemon can't self-heal.
+///
+/// This function runs during each PR poll cycle and checks for:
+/// 1. PRs open with no review for too long
+/// 2. PRs with unresolved feedback for too long
+/// 3. PRs that are approved + CI green but not merging
+/// 4. Coworkers who are silent (no channel activity) for too long
+/// 5. Review backlog (more PRs need review than slots available)
+///
+/// Each condition has a cooldown to avoid spamming the lead.
+async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Value]) {
+    let mut tracker = state.stuck_tracker.lock().await;
+    tracker.cleanup();
+
+    let now = Instant::now();
+
+    // Track how many nudges we send this cycle (for logging)
+    let mut nudge_count = 0;
+
+    // --- Scenario 1: PR open with no review for N minutes ---
+    for pr in prs {
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        if pr_number == 0 {
+            continue;
+        }
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+        if is_draft {
+            continue;
+        }
+
+        let review_decision = pr
+            .get("reviewDecision")
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+
+        let age_secs = get_pr_age_secs(pr).unwrap_or(0);
+        let pr_id = pr_number.to_string();
+
+        // No review decision at all and PR is old enough
+        if review_decision.is_empty() && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs() {
+            // Check if a reviewer is assigned (daemon tried to self-heal)
+            let is_assigned = {
+                let github_state = state.github_state.lock().await;
+                github_state.is_assigned(pr_number)
+            };
+
+            tracker.track(&pr_id, StuckConditionType::NoReview);
+            if tracker.should_nudge(&pr_id, StuckConditionType::NoReview) {
+                let context = if is_assigned {
+                    "I assigned a reviewer but no review has been posted yet"
+                } else {
+                    "I couldn't assign a reviewer"
+                };
+                let nudge = format!(
+                    "@lead PR #{} ({}) has been open for {} minutes with no review — {}",
+                    pr_number,
+                    truncate_str(title, 40),
+                    age_secs / 60,
+                    context,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge(&pr_id, StuckConditionType::NoReview);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear(&pr_id, StuckConditionType::NoReview);
+        }
+
+        // --- Scenario 2: Unresolved feedback (changes requested) for N minutes ---
+        if review_decision == "CHANGES_REQUESTED" {
+            let first_detected = tracker.track(&pr_id, StuckConditionType::UnresolvedFeedback);
+            let stuck_duration = now.duration_since(first_detected);
+
+            if stuck_duration >= STUCK_UNRESOLVED_FEEDBACK_DURATION
+                && tracker.should_nudge(&pr_id, StuckConditionType::UnresolvedFeedback)
+            {
+                let nudge = format!(
+                    "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
+                    pr_number,
+                    truncate_str(title, 40),
+                    stuck_duration.as_secs() / 60,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge(&pr_id, StuckConditionType::UnresolvedFeedback);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear(&pr_id, StuckConditionType::UnresolvedFeedback);
+        }
+
+        // --- Scenario 3: Approved + CI green but not merging ---
+        if is_auto_mergeable(pr) {
+            let first_detected = tracker.track(&pr_id, StuckConditionType::MergeReady);
+            let stuck_duration = now.duration_since(first_detected);
+
+            if stuck_duration >= STUCK_MERGE_READY_DURATION
+                && tracker.should_nudge(&pr_id, StuckConditionType::MergeReady)
+            {
+                let nudge = format!(
+                    "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — auto-merge may have failed",
+                    pr_number,
+                    truncate_str(title, 40),
+                    stuck_duration.as_secs() / 60,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge(&pr_id, StuckConditionType::MergeReady);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear(&pr_id, StuckConditionType::MergeReady);
+        }
+    }
+
+    // --- Scenario 4: Silent coworker (claimed task, no channel activity) ---
+    {
+        let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+        let lifecycles = state.coworker_lifecycles.read().await;
+
+        for name in &busy_coworkers {
+            let last_activity: Option<Instant> = lifecycles
+                .get(name.as_str())
+                .and_then(|lc| lc.last_activity);
+            let is_silent = match last_activity {
+                Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
+                // No activity recorded — coworker hasn't posted to channel yet.
+                // They're still initializing (loading plugins, restoring session, etc.).
+                // Only start the silence clock after their first channel message.
+                None => false,
+            };
+
+            if is_silent {
+                tracker.track(name, StuckConditionType::SilentCoworker);
+                if tracker.should_nudge(name, StuckConditionType::SilentCoworker) {
+                    let task_info = crate::tasks::get_in_progress_tasks_with_subjects()
+                        .into_iter()
+                        .find(|(_, _, owner)| owner.eq_ignore_ascii_case(name))
+                        .map(|(id, subject, _)| {
+                            format!("task #{} ({})", id, truncate_str(&subject, 30))
+                        })
+                        .unwrap_or_else(|| "their task".to_string());
+
+                    let prior_nudges =
+                        tracker.nudge_count(name, StuckConditionType::SilentCoworker);
+
+                    if prior_nudges == 0 {
+                        // First nudge: ask the coworker directly before escalating
+                        let nudge_msg = format!(
+                            "Status check — you've been quiet on {} for over {} minutes. \
+                             Are you stuck or still working?",
+                            task_info,
+                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                        );
+                        if let Err(e) = state.coworkers.nudge(name, &nudge_msg) {
+                            warn!("Failed to nudge silent coworker {}: {}", name, e);
+                        }
+                        // Post to channel so it's visible
+                        let channel_msg = Message::system(format!(
+                            "⚠️ Nudging {} — silent on {} for over {} minutes",
+                            name,
+                            task_info,
+                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                        ));
+                        if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                            warn!("Failed to post silent coworker nudge to channel: {}", e);
+                        }
+                    } else {
+                        // Escalation: coworker didn't respond, notify lead
+                        let nudge = format!(
+                            "@lead {} has been silent on {} for over {} minutes \
+                             (nudged {} previously with no response)",
+                            name,
+                            task_info,
+                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                            name,
+                        );
+                        nudge_lead_stuck(state, &nudge);
+                    }
+                    tracker.record_nudge(name, StuckConditionType::SilentCoworker);
+                    nudge_count += 1;
+                }
+            } else {
+                tracker.clear(name, StuckConditionType::SilentCoworker);
+            }
+        }
+    }
+
+    // --- Scenario 5: Review backlog ---
+    {
+        let prs_needing_review: usize = prs
+            .iter()
+            .filter(|pr| {
+                let review_decision = pr
+                    .get("reviewDecision")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+                !is_draft && review_decision.is_empty()
+            })
+            .count();
+
+        let current_review_count = {
+            let github_state = state.github_state.lock().await;
+            github_state.active_count()
+        };
+
+        // Backlog exists when more PRs need review than we can handle
+        if prs_needing_review > MAX_CONCURRENT_REVIEWS
+            && current_review_count >= MAX_CONCURRENT_REVIEWS
+        {
+            tracker.track("backlog", StuckConditionType::ReviewBacklog);
+            if tracker.should_nudge("backlog", StuckConditionType::ReviewBacklog) {
+                let nudge = format!(
+                    "@lead {} PRs need review but I'm at the max concurrent review limit ({}/{}) — some PRs may wait longer than usual",
+                    prs_needing_review, current_review_count, MAX_CONCURRENT_REVIEWS,
+                );
+                nudge_lead_stuck(state, &nudge);
+                tracker.record_nudge("backlog", StuckConditionType::ReviewBacklog);
+                nudge_count += 1;
+            }
+        } else {
+            tracker.clear("backlog", StuckConditionType::ReviewBacklog);
+        }
+    }
+
+    if nudge_count > 0 {
+        info!(
+            "Stuck condition check: nudged lead about {} issue(s)",
+            nudge_count
+        );
+    }
+}
+
+/// Helper to nudge the lead about a stuck condition and post to channel.
+fn nudge_lead_stuck(state: &DaemonState, message: &str) {
+    // Post to channel so it's visible in the log
+    let msg = Message::system(format!("⚠️ {}", message));
+    if let Err(e) = state.send_and_broadcast(&msg) {
+        warn!("Failed to post stuck condition to channel: {}", e);
+    }
+
+    // Nudge the lead directly
+    if let Err(e) = state.coworkers.nudge_lead(message) {
+        warn!("Failed to nudge lead about stuck condition: {}", e);
+    }
+}
+
+/// Spawn reviewers for PRs that need code review.
+///
+/// This function identifies PRs that:
+/// - Are not drafts
+/// - Are old enough (past the review delay)
+/// - Don't have a Claude review comment yet
+/// - Haven't been assigned for review recently
+///
+/// For each eligible PR, spawns a fresh coworker with an isolated task list
+/// and nudges them to run `/code-review:code-review <pr-number>`. The isolated
+/// task list ensures review sub-tasks don't pollute the shared task list.
+async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value]) {
+    // Check rate limit
+    let current_review_count = {
+        let github_state = state.github_state.lock().await;
+        github_state.active_count()
+    };
+
+    if current_review_count >= MAX_CONCURRENT_REVIEWS {
+        debug!(
+            "At max concurrent reviews ({}/{}), skipping auto-review spawn",
+            current_review_count, MAX_CONCURRENT_REVIEWS
+        );
+        return;
+    }
+
+    let reviews_available = MAX_CONCURRENT_REVIEWS - current_review_count;
+    let mut reviews_spawned = 0;
+
+    for pr in prs {
+        if reviews_spawned >= reviews_available {
+            break;
+        }
+
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        if pr_number == 0 {
+            continue;
+        }
+
+        // Skip draft PRs
+        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+        if is_draft {
+            debug!("PR #{} is a draft, skipping auto-review", pr_number);
+            continue;
+        }
+
+        // Check if PR is old enough (enforce review delay)
+        if let Some(age_secs) = get_pr_age_secs(pr)
+            && age_secs < PR_REVIEW_DELAY_SECS
+        {
+            debug!(
+                "PR #{} is too new ({}s < {}s), skipping auto-review",
+                pr_number, age_secs, PR_REVIEW_DELAY_SECS
+            );
+            continue;
+        }
+
+        // Check if PR already has a Claude review.
+        // This runs BEFORE the is_assigned check so that completed reviews
+        // are detected even when a reviewer is still tracked as assigned
+        // (e.g., after a daemon restart or when the reviewer posted a comment
+        // instead of a formal GitHub review).
+        if state.is_pr_reviewed(pr_number).await {
+            debug!("PR #{} already has a Claude review", pr_number);
+
+            // Before cleaning up the assignment, check if the reviewer is still running.
+            // If so, leave the assignment in place so the idle shutdown path can
+            // properly send them off with break_review_complete() instead of break_no_pr().
+            let reviewer_still_running = {
+                let github_state = state.github_state.lock().await;
+                if let Some(reviewer_name) = github_state.get_reviewer(pr_number) {
+                    state.coworkers.get(reviewer_name).is_some()
+                } else {
+                    false
+                }
+            };
+
+            if reviewer_still_running {
+                debug!(
+                    "PR #{} has Claude review but reviewer is still running — keeping assignment",
+                    pr_number
+                );
+            } else {
+                // Free the tracker slot — the review completed and the reviewer is gone
+                let mut github_state = state.github_state.lock().await;
+                if github_state.is_assigned(pr_number) {
+                    debug!("PR #{} review completed, freeing tracker slot", pr_number);
+                    github_state.remove_assignment(pr_number);
+                    if let Err(e) =
+                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+                    {
+                        warn!("Failed to save github-state.json: {}", e);
+                    }
+                }
+            }
+
+            // Nudge the PR author — review is complete but PR is still open,
+            // so the author needs to address feedback and/or merge.
+            let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+            let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+            let owner = head_ref.split('/').next().unwrap_or("");
+
+            if !owner.is_empty() {
+                // Check cooldown to avoid spamming
+                let should_nudge = {
+                    let tracker = state.pr_issue_tracker.lock().await;
+                    tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
+                };
+
+                if should_nudge {
+                    let nudge_msg = format!(
+                        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.",
+                        pr_number,
+                        truncate_str(title, 40)
+                    );
+
+                    let active_coworkers: Vec<String> = state
+                        .coworkers
+                        .list()
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .collect();
+
+                    // Decide action using pure decision function
+                    let action = crate::rules::decide_review_complete_action(
+                        owner,
+                        &active_coworkers,
+                        state.is_at_dev_limit(),
+                        &nudge_msg,
+                    );
+
+                    match action {
+                        crate::rules::PrAction::NudgeOwner {
+                            owner: ref o,
+                            message: ref msg,
+                        } => match state.coworkers.nudge(o, msg) {
+                            Ok(()) => {
+                                info!("Nudged {} about completed review on PR #{}", o, pr_number);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to nudge {} about completed review on PR #{}: {}",
+                                    o, pr_number, e
+                                );
+                            }
+                        },
+                        crate::rules::PrAction::SpawnOwner {
+                            owner: ref o,
+                            message: ref msg,
+                        } => {
+                            info!(
+                                "PR #{} owner {} is idle/on a break, spawning to address completed review",
+                                pr_number, o
+                            );
+                            let saved_session = {
+                                let sessions = state.pr_break_sessions.read().unwrap();
+                                sessions.get(o).cloned()
+                            };
+                            if saved_session.is_some() {
+                                info!("Resuming saved PR break session for {}", o);
+                            }
+                            let session_mode = match saved_session.as_deref() {
+                                Some(sid) => {
+                                    crate::tmux::SessionMode::ResumeSession(sid.to_string())
+                                }
+                                None => crate::tmux::SessionMode::Resume,
+                            };
+                            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                                o.clone(),
+                                state.repo_name.clone(),
+                                session_mode,
+                                Some(msg.clone()),
+                            );
+                            match state.spawn_coworker(&config).await {
+                                Ok(_) => {
+                                    if saved_session.is_some() {
+                                        let mut sessions = state.pr_break_sessions.write().unwrap();
+                                        sessions.remove(o);
+                                    }
+                                    info!(
+                                        "Spawned {} to address completed review on PR #{}",
+                                        o, pr_number
+                                    );
+                                    state.broadcast_coworker_update(o, "running", None);
+                                    let call_msg = Message::text(
+                                        "midtown",
+                                        daemon_messages::called_in_review_feedback(
+                                            o,
+                                            pr_number,
+                                            config::get_personality(),
+                                        ),
+                                    );
+                                    if let Err(e) = state.send_and_broadcast(&call_msg) {
+                                        warn!("Failed to post call-in message: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to spawn {} for PR #{} review complete: {}",
+                                        o, pr_number, e
+                                    );
+                                    let channel_message = format!(
+                                        "PR #{} ({}) owned by {} - review complete: {} (call-in failed)",
+                                        pr_number,
+                                        truncate_str(title, 40),
+                                        o,
+                                        get_issue_action(PrIssueType::ReviewComplete)
+                                    );
+                                    let fallback =
+                                        Message::new("midtown", channel_message, MessageType::Text);
+                                    if let Err(e) = state.send_and_broadcast(&fallback) {
+                                        warn!("Failed to post PR issue to channel: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        crate::rules::PrAction::Skip { ref reason } => {
+                            debug!("{}", reason);
+                        }
+                        crate::rules::PrAction::PostToChannel { message: ref msg } => {
+                            let channel_msg =
+                                Message::new("midtown", msg.clone(), MessageType::Text);
+                            if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                                warn!("Failed to post review complete to channel: {}", e);
+                            }
+                        }
+                    }
+
+                    // Record the nudge to prevent spamming
+                    let mut tracker = state.pr_issue_tracker.lock().await;
+                    tracker.record_nudge(pr_number, PrIssueType::ReviewComplete);
+                }
+            }
+
+            continue;
+        }
+
+        // Check if already assigned for review.
+        // This runs AFTER review detection so completed reviews are always detected,
+        // but prevents spawning duplicate reviewers for PRs already under review.
+        {
+            let github_state = state.github_state.lock().await;
+            if github_state.is_assigned(pr_number) {
+                debug!("PR #{} already assigned for review", pr_number);
+                continue;
+            }
+        }
+
+        // Always spawn a fresh coworker for reviews with an isolated task list.
+        // This ensures review sub-tasks don't pollute the shared task list and
+        // can't be accidentally claimed by other coworkers.
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        debug!(
+            "Spawning isolated coworker to review PR #{}: {}",
+            pr_number,
+            truncate_str(title, 40)
+        );
+
+        // Check max coworkers limit before spawning
+        if state.is_at_coworker_limit() {
+            debug!(
+                "Max coworkers limit ({}) reached, cannot spawn reviewer for PR #{}",
+                state.max_coworkers, pr_number
+            );
+            continue;
+        }
+
+        // Spawn with isolated task list and the review prompt included at launch.
+        // Passing the prompt directly to spawn() is more reliable than the old
+        // approach of spawning without a prompt and nudging via tmux send-keys,
+        // which could fail if the Enter key didn't register.
+        // Isolated review coworkers are sent on a break when they go idle (no 5-minute wait).
+        let review_prompt = crate::agents::reviewer_prompt(pr_number);
+
+        let reviewer_name = match state.coworkers.next_available_name() {
+            Some(name) => name,
+            None => {
+                warn!("No available coworker slots for reviewer");
+                continue;
+            }
+        };
+
+        let config =
+            crate::tmux::ClaudeLaunchConfig::reviewer(reviewer_name.clone(), review_prompt);
+        match state.spawn_coworker(&config).await {
+            Ok(()) => {
+                let new_coworker = reviewer_name;
+                state.broadcast_coworker_update(&new_coworker, "running", None);
+
+                // Record the assignment in persistent state
+                {
+                    let mut github_state = state.github_state.lock().await;
+                    github_state.assign_reviewer(pr_number, &new_coworker);
+                    if let Err(e) =
+                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+                    {
+                        warn!("Failed to save github-state.json: {}", e);
+                    }
+                }
+
+                info!(
+                    "Spawned {} to review PR #{}: {}",
+                    new_coworker,
+                    pr_number,
+                    truncate_str(title, 40)
+                );
+
+                // Post to channel (the coworker's /me status update will set
+                // the tmux tab name via the channel handler).
+                let channel_msg = Message::new(
+                    "midtown",
+                    daemon_messages::called_in_reviewer(
+                        &new_coworker,
+                        pr_number,
+                        config::get_personality(),
+                    ),
+                    MessageType::Text,
+                );
+                if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                    warn!("Failed to post call-in message to channel: {}", e);
+                }
+
+                reviews_spawned += 1;
+            }
+            Err(e) => {
+                warn!("Could not spawn reviewer for PR #{}: {}", pr_number, e);
+                let fail_msg = Message::new(
+                    "midtown",
+                    format!(
+                        "⚠️ Failed to spawn reviewer for PR #{} ({}): {}",
+                        pr_number,
+                        truncate_str(title, 40),
+                        e
+                    ),
+                    MessageType::Text,
+                );
+                if let Err(e) = state.send_and_broadcast(&fail_msg) {
+                    warn!("Failed to post reviewer spawn failure to channel: {}", e);
+                }
+            }
+        }
+    }
+
+    if reviews_spawned > 0 {
+        info!(
+            "Spawned {} reviewers for PRs needing review",
+            reviews_spawned
+        );
+    }
+}
+
+/// Process pending webhook-triggered reviewer spawns whose delay has expired.
+///
+/// Drains ready entries from the persisted `pending_review_spawns` queue,
+/// fetches each PR's current data, and spawns a reviewer if eligible.
+/// Unlike the previous `tokio::time::sleep` approach, these survive daemon restarts.
+pub(super) async fn process_pending_review_spawns(state: &DaemonState) {
+    // Drain ready spawns from persistent state
+    let ready_prs = {
+        let mut github_state = state.github_state.lock().await;
+        let ready = github_state.drain_ready_review_spawns();
+        if !ready.is_empty()
+            && let Err(e) =
+                crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+        {
+            warn!("Failed to persist review spawn drain: {}", e);
+        }
+        ready
+    };
+
+    if ready_prs.is_empty() {
+        return;
+    }
+
+    for pr_number in ready_prs {
+        info!("Processing pending review spawn for PR #{}", pr_number);
+
+        // Fetch this specific PR's data
+        let output = match tokio::process::Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
+            ])
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            Err(e) => {
+                warn!(
+                    "Webhook: Failed to fetch PR #{} for review spawn: {}",
+                    pr_number, e
+                );
+                continue;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Webhook: gh pr view #{} failed: {}", pr_number, stderr);
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let pr: serde_json::Value = match serde_json::from_str(&stdout) {
+            Ok(pr) => pr,
+            Err(e) => {
+                warn!("Webhook: Failed to parse PR #{} JSON: {}", pr_number, e);
+                continue;
+            }
+        };
+
+        // Check the PR is still open
+        let pr_state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("");
+        if pr_state != "OPEN" {
+            debug!(
+                "Webhook: PR #{} is no longer open (state={}), skipping review",
+                pr_number, pr_state
+            );
+            continue;
+        }
+
+        // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
+        spawn_reviewers_for_prs(state, &[pr]).await;
+    }
+}
+
+/// Uncached check for Claude review on a PR (makes GitHub API calls).
+///
+/// Fetches both reviews and comments in a single API call to reduce GitHub API usage.
+pub(super) fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "reviews,comments",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let json: serde_json::Value = match serde_json::from_str(&stdout) {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!("Failed to parse review JSON for PR #{}: {}", pr_number, e);
+                    return false;
+                }
+            };
+
+            // Check formal reviews
+            if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
+                for review in reviews {
+                    if let Some(body) = review.get("body").and_then(|b| b.as_str())
+                        && text_contains_review_signature(body)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            // Check comments (where coworkers post their reviews)
+            if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
+                for comment in comments {
+                    if let Some(body) = comment.get("body").and_then(|b| b.as_str())
+                        && text_contains_review_signature(body)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            false
+        }
+        _ => {
+            debug!("Failed to fetch reviews/comments for PR #{}", pr_number);
+            false
+        }
+    }
+}
+// Auto-nudge helpers for PR activity
+// ============================================================================
+
+/// Add an eyes reaction to a GitHub comment to indicate it was received.
+///
+/// Uses the GitHub Reactions API via `gh api` to add a 👀 reaction to the
+/// comment that triggered a coworker nudge or spawn.
+async fn add_eyes_reaction(repo_full_name: &str, comment_node: &crate::webhook::CommentNode) {
+    let endpoint = match comment_node {
+        crate::webhook::CommentNode::IssueComment(id) => {
+            format!("/repos/{}/issues/comments/{}/reactions", repo_full_name, id)
+        }
+        crate::webhook::CommentNode::ReviewComment(id) => {
+            format!("/repos/{}/pulls/comments/{}/reactions", repo_full_name, id)
+        }
+        crate::webhook::CommentNode::Review { .. } => {
+            // GitHub API does not support reactions on pull request reviews
+            // (only on issue comments and review comments).
+            debug!("Skipping eyes reaction: GitHub API does not support reactions on reviews");
+            return;
+        }
+    };
+
+    let result = tokio::process::Command::new("gh")
+        .args(["api", &endpoint, "-f", "content=eyes", "--silent"])
+        .output()
+        .await;
+
+    match result {
+        Ok(output) if output.status.success() => {
+            debug!("Added eyes reaction to {}", endpoint);
+        }
+        Ok(output) => {
+            debug!(
+                "Failed to add eyes reaction to {}: {}",
+                endpoint,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            debug!("Failed to run gh api for eyes reaction: {}", e);
+        }
+    }
+}
+
+/// Async version of `get_pr_owner_coworker` that doesn't block the Tokio runtime.
+async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "headRefName",
+            "-q",
+            ".headRefName",
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    coworker_from_branch(&branch)
+}
+
+/// Handle nudging a PR owner when a comment/review is posted on their PR.
+///
+/// This is called from the webhook event loop when a `PrActivity` is present.
+/// It resolves the PR owner (from webhook data or async lookup), checks cooldowns,
+/// and either nudges an active coworker or spawns an inactive one.
+pub(super) async fn handle_pr_comment_nudge(
+    state: &DaemonState,
+    activity: crate::webhook::PrActivity,
+) {
+    let pr_number = activity.pr_number;
+
+    // Resolve the PR owner: use webhook data if available, otherwise look up async
+    let owner = match activity.owner_coworker {
+        Some(ref o) => Some(o.clone()),
+        None => get_pr_owner_coworker_async(pr_number).await,
+    };
+
+    let Some(owner) = owner else {
+        debug!("PR #{} has no coworker owner, skipping nudge", pr_number);
+        return;
+    };
+
+    // Check cooldown to avoid spamming
+    {
+        let tracker = state.pr_issue_tracker.lock().await;
+        if !tracker.should_nudge(pr_number, PrIssueType::ReviewComment) {
+            debug!(
+                "PR #{} review comment nudge on cooldown, skipping",
+                pr_number
+            );
+            return;
+        }
+    }
+
+    let nudge_msg = format!(
+        "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.",
+        pr_number, activity.actor
+    );
+
+    // Decide action using pure decision function
+    let is_active = state.coworkers.get(&owner).is_some();
+    let action = crate::rules::decide_pr_comment_action(
+        &owner,
+        &activity.actor,
+        is_active,
+        state.is_at_dev_limit(),
+        &nudge_msg,
+    );
+
+    let success = match action {
+        crate::rules::PrAction::NudgeOwner {
+            owner: ref o,
+            message: ref msg,
+        } => match state.coworkers.nudge(o, msg) {
+            Ok(()) => {
+                info!(
+                    "Nudged {} about review comment on PR #{} from {}",
+                    o, pr_number, activity.actor
+                );
+                true
+            }
+            Err(e) => {
+                warn!("Failed to nudge {} about PR #{}: {}", o, pr_number, e);
+                false
+            }
+        },
+        crate::rules::PrAction::SpawnOwner {
+            owner: ref o,
+            message: ref msg,
+        } => {
+            info!(
+                "PR #{} owner {} is not active, spawning to address review feedback",
+                pr_number, o
+            );
+            let saved_session = {
+                let sessions = state.pr_break_sessions.read().unwrap();
+                sessions.get(o).cloned()
+            };
+            if saved_session.is_some() {
+                info!("Resuming saved PR break session for {}", o);
+            }
+            let session_mode = match saved_session.as_deref() {
+                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::tmux::SessionMode::Resume,
+            };
+            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                o.clone(),
+                state.repo_name.clone(),
+                session_mode,
+                Some(msg.clone()),
+            );
+            match state.spawn_coworker(&config).await {
+                Ok(_) => {
+                    if saved_session.is_some() {
+                        let mut sessions = state.pr_break_sessions.write().unwrap();
+                        sessions.remove(o);
+                    }
+                    info!(
+                        "Spawned {} to address review feedback on PR #{}",
+                        o, pr_number
+                    );
+                    let call_msg = Message::text(
+                        "daemon",
+                        format!(
+                            "Called in {} to address review feedback on PR #{}",
+                            o, pr_number
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&call_msg) {
+                        warn!("Failed to post call-in message: {}", e);
+                    }
+                    true
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to spawn {} for PR #{} review feedback: {}",
+                        o, pr_number, e
+                    );
+                    false
+                }
+            }
+        }
+        crate::rules::PrAction::PostToChannel { message: ref msg } => {
+            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
+            if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                warn!("Failed to post PR comment to channel: {}", e);
+            }
+            true
+        }
+        crate::rules::PrAction::Skip { ref reason } => {
+            debug!("{}", reason);
+            false
+        }
+    };
+
+    // Record the nudge to prevent spamming
+    if success {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
+    }
+
+    // Add eyes reaction to the comment to provide visual feedback that it was received
+    if success
+        && let (Some(ref node), Some(ref repo)) = (activity.comment_node, activity.repo_full_name)
+    {
+        add_eyes_reaction(repo, node).await;
+    }
+}
