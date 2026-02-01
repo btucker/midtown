@@ -156,10 +156,11 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
 
     // ── PR / GitHub state ───────────────────────────────────────────────
-    let coworkers_with_open_prs: HashSet<String> = super::get_coworkers_with_open_prs(state)
+    let coworkers_with_open_prs: HashSet<String> = super::pr::get_coworkers_with_open_prs(state)
         .into_iter()
         .collect();
-    let coworkers_with_merged_prs: HashSet<String> = super::get_coworkers_with_merged_prs(state);
+    let coworkers_with_merged_prs: HashSet<String> =
+        super::pr::get_coworkers_with_merged_prs(state);
     let ci_passed_pr_coworkers: HashSet<String> = {
         let cache = state.pr_coworker_cache.read().unwrap();
         cache.ci_passed_pr_owners.clone()
