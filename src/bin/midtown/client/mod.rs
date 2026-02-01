@@ -212,33 +212,6 @@ impl DaemonClient {
         )
     }
 
-    // Nudge configuration commands
-
-    pub fn nudge_config_show(&self) -> Result<Response, String> {
-        self.send("nudge.config.show", Some(serde_json::json!({})))
-    }
-
-    pub fn nudge_config_interval(&self, seconds: u64) -> Result<Response, String> {
-        self.send(
-            "nudge.config.interval",
-            Some(serde_json::json!({ "seconds": seconds })),
-        )
-    }
-
-    pub fn nudge_config_template(&self, template: &str) -> Result<Response, String> {
-        self.send(
-            "nudge.config.template",
-            Some(serde_json::json!({ "template": template })),
-        )
-    }
-
-    pub fn nudge_config_enable(&self, enabled: bool) -> Result<Response, String> {
-        self.send(
-            "nudge.config.enable",
-            Some(serde_json::json!({ "enabled": enabled })),
-        )
-    }
-
     // Task commands
 
     pub fn task_create(&self, subject: &str, description: &str) -> Result<Response, String> {

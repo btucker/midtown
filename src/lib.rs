@@ -12,7 +12,6 @@
 //! - **Worktrees**: Git worktree isolation for coworkers
 //! - **Coworkers**: Agent session management via tmux
 //! - **Tmux**: Low-level tmux session operations
-//! - **Nudge**: Periodic and event-driven nudging for coworkers
 //!
 //! ## Quick Start
 //!
@@ -71,9 +70,6 @@ pub mod web;
 
 // Standalone multi-project webserver
 pub mod webserver;
-
-// Agent nudging subsystem (dementus)
-pub mod nudge;
 
 // Project configuration
 pub mod config;
@@ -158,10 +154,6 @@ pub enum Error {
     /// Invalid message format
     #[error("Invalid message format: {0}")]
     InvalidMessage(String),
-
-    /// Nudge operation failed
-    #[error("Nudge error: {0}")]
-    Nudge(#[from] nudge::NudgeError),
 }
 
 /// Result type alias for Midtown operations.

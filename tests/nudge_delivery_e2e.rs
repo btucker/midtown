@@ -1,32 +1,10 @@
 //! End-to-end tests for daemon nudge delivery.
 //!
 //! These tests verify that nudges sent by the daemon actually reach coworker
-//! tmux windows. The daemon logs "Nudged successfully" but messages sometimes
-//! don't reach coworkers due to timing issues between spawn and nudge.
+//! tmux windows via `tmux::send_keys()` and `CoworkerManager::nudge_lead()`.
 //!
-//! ## Bug Context
-//!
-//! Symptoms observed:
-//! 1. Daemon logs: "Nudged vernon about @mention from lead"
-//! 2. Daemon logs: "Nudged coworker vernon: <message>"
-//! 3. But vernon's Claude session shows empty prompt - nudge never arrived
-//! 4. Manual `tmux send-keys` works fine
-//!
-//! ## Key Findings from Tests
-//!
-//! The basic tmux send_keys mechanism works correctly (tests pass). This suggests
-//! the bug is likely related to:
-//! - Claude Code process not being ready to accept input after spawn
-//! - The 500ms wait in spawn_claude may not be sufficient for Claude startup
-//! - Race condition specific to Claude's input handling
-//!
-//! ## Two Nudge Implementations
-//!
-//! The codebase has two different nudge functions:
-//! - `tmux::send_keys()` - Used by CoworkerManager::nudge(), no verification
-//! - `nudge::send_nudge()` - Includes message verification in pane
-//!
-//! Consider whether CoworkerManager should use the verified nudge function.
+//! The nudge delivery path: daemon `Effect::NudgeCoworker` → `CoworkerManager::nudge()`
+//! → `tmux::send_keys()`, which includes retry logic and stuck-detection.
 //!
 //! These tests require tmux to be running and are marked as ignored by default
 //! for CI environments. Run with `cargo test -- --ignored` to execute them locally.
@@ -315,51 +293,6 @@ fn test_nudge_to_window_with_process() {
     );
 }
 
-/// Test that the nudge module's send_nudge function (with verification) works.
-///
-/// Compare this with tmux::send_keys which doesn't verify delivery.
-#[test]
-#[ignore] // Requires tmux to be running
-fn test_verified_nudge_delivery() {
-    if !tmux_available() {
-        eprintln!("Skipping test: tmux not available");
-        return;
-    }
-
-    let session = test_session_name();
-    let window = "verified";
-    let _cleanup = Cleanup(&session);
-
-    // Setup
-    assert!(
-        create_test_session(&session),
-        "Failed to create test session"
-    );
-    create_test_window(&session, window);
-    thread::sleep(Duration::from_millis(200));
-
-    // Use the nudge module's send_nudge which includes verification
-    let unique_message = format!("verified-nudge-{}", std::process::id());
-    let result = midtown::nudge::send_nudge(&session, window, &unique_message);
-
-    // This should succeed and guarantee the message is visible
-    assert!(
-        result.is_ok(),
-        "Verified send_nudge should succeed: {:?}",
-        result.err()
-    );
-
-    // Double-check by capturing pane ourselves
-    let content = capture_pane(&session, window);
-    assert!(
-        content
-            .as_ref()
-            .is_some_and(|c| c.contains(&unique_message)),
-        "Pane should contain verified nudge. Content: {:?}",
-        content
-    );
-}
-
 /// Test that nudge_lead() delivers a message to the Lead window.
 ///
 /// This verifies the coworker → lead communication path used when coworkers
@@ -487,73 +420,6 @@ fn test_chat_monitor_routes_mention() {
         content.contains(&nudge_text),
         "Coworker pane should contain the routed mention message. Content: {}",
         content
-    );
-}
-
-/// Test send_keys vs send_nudge behavior difference.
-///
-/// This test documents the behavioral difference between:
-/// - tmux::send_keys (used by CoworkerManager::nudge) - no verification
-/// - nudge::send_nudge (used in other contexts) - with verification
-#[test]
-#[ignore] // Requires tmux to be running
-fn test_send_keys_vs_send_nudge() {
-    if !tmux_available() {
-        eprintln!("Skipping test: tmux not available");
-        return;
-    }
-
-    let session = test_session_name();
-    let window1 = "send-keys-test";
-    let window2 = "send-nudge-test";
-    let _cleanup = Cleanup(&session);
-
-    // Setup: use cat so send_keys text isn't interpreted as shell commands
-    assert!(
-        create_test_session(&session),
-        "Failed to create test session"
-    );
-    let target = format!("{}:", session);
-    let status1 = Command::new("tmux")
-        .args(["new-window", "-t", &target, "-n", window1, "cat"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    assert!(status1, "Failed to create window1 with cat process");
-    let status2 = Command::new("tmux")
-        .args(["new-window", "-t", &target, "-n", window2, "cat"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    assert!(status2, "Failed to create window2 with cat process");
-    thread::sleep(Duration::from_millis(500));
-
-    let msg1 = format!("via-send-keys-{}", std::process::id());
-    let msg2 = format!("via-send-nudge-{}", std::process::id());
-
-    // Test tmux::send_keys (what CoworkerManager::nudge uses)
-    let result1 = midtown::tmux::send_keys(&session, window1, &msg1);
-    assert!(result1.is_ok(), "send_keys failed: {:?}", result1.err());
-
-    // Test nudge::send_nudge (with verification)
-    let result2 = midtown::nudge::send_nudge(&session, window2, &msg2);
-    assert!(result2.is_ok(), "send_nudge failed: {:?}", result2.err());
-
-    // Both should have delivered their messages
-    thread::sleep(Duration::from_millis(200));
-
-    let content1 = capture_pane(&session, window1).unwrap_or_default();
-    let content2 = capture_pane(&session, window2).unwrap_or_default();
-
-    assert!(
-        content1.contains(&msg1),
-        "send_keys message not found. Content: {}",
-        content1
-    );
-    assert!(
-        content2.contains(&msg2),
-        "send_nudge message not found. Content: {}",
-        content2
     );
 }
 
