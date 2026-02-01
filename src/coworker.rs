@@ -414,20 +414,27 @@ impl CoworkerManager {
         let additional_dirs = self.create_additional_worktrees(&name);
 
         // Create the tmux window and spawn claude in the worktree
-        // Pass repo_name so the coworker's tasks can be symlinked to the Lead's tasks
-        // Pass isolated_tasks to control whether they get a shared or private task list
         let repo_name = self.worktree_manager.repo_name();
-        let session_id = tmux::spawn_claude(
-            &self.session_name,
-            &name,
-            &working_dir,
-            Some(repo_name),
-            resume,
-            isolated_tasks,
-            &additional_dirs,
-            prompt,
-            resume_session_id,
-        )?;
+        let config = tmux::ClaudeLaunchConfig {
+            name: name.clone(),
+            session_mode: if let Some(sid) = resume_session_id {
+                tmux::SessionMode::ResumeSession(sid.to_string())
+            } else if resume {
+                tmux::SessionMode::Resume
+            } else {
+                tmux::SessionMode::Fresh
+            },
+            task_mode: if isolated_tasks {
+                tmux::TaskMode::Isolated
+            } else {
+                tmux::TaskMode::Shared {
+                    repo_name: repo_name.to_string(),
+                }
+            },
+            initial_prompt: prompt.map(|s| s.to_string()),
+            additional_dirs,
+        };
+        let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &config)?;
 
         // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
@@ -849,17 +856,26 @@ impl CoworkerManager {
 
         // Create the tmux window and spawn claude in the worktree
         let repo_name = self.worktree_manager.repo_name();
-        let session_id = tmux::spawn_claude(
-            &self.session_name,
-            name,
-            &working_dir,
-            Some(repo_name),
-            resume,
-            isolated_tasks,
-            &additional_dirs,
-            prompt,
-            resume_session_id,
-        )?;
+        let config = tmux::ClaudeLaunchConfig {
+            name: name.to_string(),
+            session_mode: if let Some(sid) = resume_session_id {
+                tmux::SessionMode::ResumeSession(sid.to_string())
+            } else if resume {
+                tmux::SessionMode::Resume
+            } else {
+                tmux::SessionMode::Fresh
+            },
+            task_mode: if isolated_tasks {
+                tmux::TaskMode::Isolated
+            } else {
+                tmux::TaskMode::Shared {
+                    repo_name: repo_name.to_string(),
+                }
+            },
+            initial_prompt: prompt.map(|s| s.to_string()),
+            additional_dirs,
+        };
+        let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &config)?;
 
         // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
@@ -941,17 +957,16 @@ impl CoworkerManager {
         // so the coworker picks up where they left off
         // Use shared task list (not isolated) for respawned coworkers
         let repo_name = self.worktree_manager.repo_name();
-        let session_id = tmux::spawn_claude(
-            &self.session_name,
-            name,
-            &working_dir,
-            Some(repo_name),
-            true,
-            false,
-            &additional_dirs,
-            None,
-            None,
-        )?;
+        let config = tmux::ClaudeLaunchConfig {
+            name: name.to_string(),
+            session_mode: tmux::SessionMode::Resume,
+            task_mode: tmux::TaskMode::Shared {
+                repo_name: repo_name.to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs,
+        };
+        let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &config)?;
 
         // Record the coworker with their session ID for symlink management
         let coworker = Coworker {
