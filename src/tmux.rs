@@ -1012,6 +1012,9 @@ pub struct ClaudeLaunchConfig {
     pub initial_prompt: Option<String>,
     /// Additional repo directories for multi-repo projects.
     pub additional_dirs: Vec<PathBuf>,
+    /// If true, pass `--setting-sources project,local` to restrict settings.
+    /// Coworkers use this to exclude user-level settings; the lead does not.
+    pub restrict_setting_sources: bool,
 }
 
 /// Spawn Claude Code in a tmux window within the project session.
@@ -1092,9 +1095,11 @@ impl ClaudeLaunchConfig {
             }
         }
 
-        // Settings source and file
-        args.push("--setting-sources".to_string());
-        args.push("project,local".to_string());
+        // Settings source restriction (coworkers only — lead uses all sources)
+        if self.restrict_setting_sources {
+            args.push("--setting-sources".to_string());
+            args.push("project,local".to_string());
+        }
         args.push("--settings".to_string());
         args.push(settings_file.display().to_string());
 
@@ -1292,22 +1297,6 @@ pub fn spawn_claude(
     Ok(coworker_session_id)
 }
 
-/// Build the shell command string for launching the lead Claude instance.
-fn build_lead_command(
-    task_list_id: &str,
-    settings_file: &std::path::Path,
-    prompt_file: &std::path::Path,
-    add_dir_flags: &str,
-) -> String {
-    format!(
-        "export CLAUDE_CODE_TASK_LIST_ID='{}'; exec claude --dangerously-skip-permissions --settings {} --append-system-prompt \"$(cat {})\"{}",
-        task_list_id,
-        settings_file.display(),
-        prompt_file.display(),
-        add_dir_flags,
-    )
-}
-
 /// Write the Lead system prompt to a file and return the path.
 pub fn write_lead_prompt_file() -> crate::Result<PathBuf> {
     let dir = state_dir();
@@ -1348,22 +1337,27 @@ pub fn spawn_lead(
     project_name: &str,
     additional_dirs: &[PathBuf],
 ) -> crate::Result<()> {
-    let task_list_id = crate::paths::task_list_id_for_repo(project_name);
-
     let prompt_file = write_lead_prompt_file()?;
     let settings_file = write_lead_settings_file()?;
 
-    let add_dir_flags: String = additional_dirs
-        .iter()
-        .filter_map(|d| d.to_str())
-        .map(|d| format!(" --add-dir {}", d))
-        .collect();
+    let config = ClaudeLaunchConfig {
+        name: "lead".to_string(),
+        session_mode: SessionMode::Fresh,
+        task_mode: TaskMode::Shared {
+            repo_name: project_name.to_string(),
+        },
+        initial_prompt: None,
+        additional_dirs: additional_dirs.to_vec(),
+        restrict_setting_sources: false,
+    };
 
     // Allow tests/CI to override the lead command (claude isn't available in CI)
     let command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
         test_cmd
     } else {
-        build_lead_command(&task_list_id, &settings_file, &prompt_file, &add_dir_flags)
+        config
+            .to_shell_command(&settings_file, &prompt_file, None)
+            .shell_command
     };
 
     create_window(session, "lead", working_dir, Some(&command))?;
@@ -1977,22 +1971,38 @@ Claude is now processing the request
         assert!(!has_input_text(pane));
     }
 
+    // --- ClaudeLaunchConfig tests ---
+
     #[test]
-    fn test_build_lead_command_uses_exec() {
-        let cmd = build_lead_command(
-            "test-task-list-id",
+    fn test_launch_config_lead_omits_setting_sources() {
+        let config = ClaudeLaunchConfig {
+            name: "lead".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: false,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
-            "",
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
         );
         assert!(
-            cmd.contains("; exec claude"),
-            "lead command must use exec to replace shell — without exec, \
-             the shell survives after claude exits leaving zombie panes"
+            !result.shell_command.contains("--setting-sources"),
+            "lead must not restrict setting sources"
+        );
+        assert!(
+            result.shell_command.contains("exec claude"),
+            "lead must use exec"
+        );
+        assert!(
+            result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
+            "lead must have shared task list"
         );
     }
-
-    // --- ClaudeLaunchConfig tests ---
 
     #[test]
     fn test_launch_config_fresh_session_produces_session_id_flag() {
@@ -2004,6 +2014,7 @@ Claude is now processing the request
             },
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2038,6 +2049,7 @@ Claude is now processing the request
             },
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2068,6 +2080,7 @@ Claude is now processing the request
             },
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2092,6 +2105,7 @@ Claude is now processing the request
             task_mode: TaskMode::Isolated,
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2118,6 +2132,7 @@ Claude is now processing the request
             },
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2138,6 +2153,7 @@ Claude is now processing the request
             task_mode: TaskMode::Isolated,
             initial_prompt: Some("Do the thing".to_string()),
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2170,6 +2186,7 @@ Claude is now processing the request
             task_mode: TaskMode::Isolated,
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2192,6 +2209,7 @@ Claude is now processing the request
             task_mode: TaskMode::Isolated,
             initial_prompt: None,
             additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2216,6 +2234,7 @@ Claude is now processing the request
             task_mode: TaskMode::Isolated,
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2236,6 +2255,7 @@ Claude is now processing the request
             task_mode: TaskMode::Isolated,
             initial_prompt: None,
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2260,6 +2280,7 @@ Claude is now processing the request
             },
             initial_prompt: Some("task prompt".to_string()),
             additional_dirs: vec![],
+            restrict_setting_sources: true,
         };
         let retry = config.as_fresh_retry();
         assert_eq!(retry.session_mode, SessionMode::Fresh);

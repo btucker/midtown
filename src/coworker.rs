@@ -433,6 +433,7 @@ impl CoworkerManager {
             },
             initial_prompt: prompt.map(|s| s.to_string()),
             additional_dirs,
+            restrict_setting_sources: true,
         };
         let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &config)?;
 
@@ -874,6 +875,7 @@ impl CoworkerManager {
             },
             initial_prompt: prompt.map(|s| s.to_string()),
             additional_dirs,
+            restrict_setting_sources: true,
         };
         let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &config)?;
 
@@ -965,6 +967,7 @@ impl CoworkerManager {
             },
             initial_prompt: None,
             additional_dirs,
+            restrict_setting_sources: true,
         };
         let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &config)?;
 
