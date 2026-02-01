@@ -1027,6 +1027,105 @@ pub struct ClaudeLaunchConfig {
 ///
 /// Returns the generated session UUID for use in task symlink management.
 ///
+/// The shell command string and generated session ID (if fresh).
+pub struct LaunchCommand {
+    pub shell_command: String,
+    pub session_id: Option<String>,
+}
+
+impl ClaudeLaunchConfig {
+    /// Build the full shell command string for launching Claude in a tmux pane.
+    ///
+    /// `settings_file` and `prompt_file` are pre-written files containing the
+    /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
+    /// is the optional pre-written file containing the initial task/review prompt.
+    ///
+    /// Returns a `LaunchCommand` with the shell command and the session ID
+    /// (if a fresh session was created).
+    pub fn to_shell_command(
+        &self,
+        settings_file: &std::path::Path,
+        prompt_file: &std::path::Path,
+        initial_prompt_file: Option<&std::path::Path>,
+    ) -> LaunchCommand {
+        // -- Environment variables --
+        let mut env_parts = vec![
+            format!("MIDTOWN_AGENT='{}'", self.name),
+            "DISABLE_AUTOUPDATER=1".to_string(),
+        ];
+        if let TaskMode::Shared { ref repo_name } = self.task_mode {
+            let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+            env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
+        }
+        let env_export = format!("export {}", env_parts.join(" "));
+
+        // -- Claude CLI arguments (as structured Vec, not format! interpolation) --
+        let mut args: Vec<String> = vec![
+            "claude".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+
+        // Session mode — exactly one of these
+        let session_id = match &self.session_mode {
+            SessionMode::Fresh => {
+                let id = uuid::Uuid::new_v4().to_string();
+                args.push("--session-id".to_string());
+                args.push(id.clone());
+                Some(id)
+            }
+            SessionMode::Resume => {
+                args.push("--continue".to_string());
+                None
+            }
+            SessionMode::ResumeSession(id) => {
+                args.push("--resume".to_string());
+                args.push(id.clone());
+                None
+            }
+        };
+
+        // Additional directories (multi-repo)
+        for dir in &self.additional_dirs {
+            if let Some(d) = dir.to_str() {
+                args.push("--add-dir".to_string());
+                args.push(d.to_string());
+            }
+        }
+
+        // Settings source and file
+        args.push("--setting-sources".to_string());
+        args.push("project,local".to_string());
+        args.push("--settings".to_string());
+        args.push(settings_file.display().to_string());
+
+        // System prompt file
+        args.push("--append-system-prompt".to_string());
+        args.push(format!("\"$(cat {})\"", prompt_file.display()));
+
+        // Initial prompt as bare positional arg (NOT -p/--print).
+        // Written to temp file by caller; path passed in here.
+        // This MUST be the last argument. See PR #447 for why -p is forbidden.
+        if let Some(path) = initial_prompt_file {
+            args.push(format!("\"$(cat {})\"", path.display()));
+        }
+
+        let shell_command = format!("{}; exec {}", env_export, args.join(" "));
+
+        LaunchCommand {
+            shell_command,
+            session_id,
+        }
+    }
+
+    /// Create a fresh-session variant of this config (for retry after failure).
+    pub fn as_fresh_retry(&self) -> Self {
+        ClaudeLaunchConfig {
+            session_mode: SessionMode::Fresh,
+            ..self.clone()
+        }
+    }
+}
+
 /// Build the shell command string for launching a claude coworker.
 ///
 /// Returns the full command including env vars, claude flags, and file references.
@@ -2101,5 +2200,280 @@ Claude is now processing the request
             "lead command must use exec to replace shell — without exec, \
              the shell survives after claude exits leaving zombie panes"
         );
+    }
+
+    // --- ClaudeLaunchConfig tests ---
+
+    #[test]
+    fn test_launch_config_fresh_session_produces_session_id_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains("--session-id "),
+            "fresh session must use --session-id"
+        );
+        assert!(
+            !result.shell_command.contains("--continue"),
+            "fresh session must not use --continue"
+        );
+        assert!(
+            !result.shell_command.contains("--resume "),
+            "fresh session must not use --resume"
+        );
+        assert!(
+            result.session_id.is_some(),
+            "fresh session must return a session ID"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_resume_produces_continue_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Resume,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains(" --continue"),
+            "resume must use --continue"
+        );
+        assert!(
+            !result.shell_command.contains("--session-id "),
+            "resume must not use --session-id"
+        );
+        assert!(
+            result.session_id.is_none(),
+            "resume must not return a session ID"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_resume_session_produces_resume_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::ResumeSession("abc-123".to_string()),
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains("--resume abc-123"),
+            "must use --resume with session id"
+        );
+        assert!(
+            result.session_id.is_none(),
+            "resume session must not return a new session ID"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_isolated_omits_task_list_env() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID"),
+            "isolated must not set task list ID"
+        );
+        assert!(
+            result.shell_command.contains("MIDTOWN_AGENT='park'"),
+            "must always set agent name"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_shared_includes_task_list_env() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
+            "shared must set task list ID"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_initial_prompt_is_positional_not_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: Some("Do the thing".to_string()),
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            Some(std::path::Path::new("/tmp/initial-prompt.md")),
+        );
+        // PR #447 regression: must NEVER use -p or --print
+        assert!(
+            !result.shell_command.contains("-p "),
+            "must not use -p flag"
+        );
+        assert!(
+            !result.shell_command.contains("--print"),
+            "must not use --print flag"
+        );
+        // Prompt file must appear as last positional arg
+        assert!(
+            result
+                .shell_command
+                .contains("\"$(cat /tmp/initial-prompt.md)\""),
+            "prompt must be passed via $(cat file)"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_no_prompt_has_no_trailing_cat() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        // Count occurrences of $(cat — should be exactly 1 (the system prompt)
+        let cat_count = result.shell_command.matches("$(cat ").count();
+        assert_eq!(
+            cat_count, 1,
+            "without initial_prompt, only system prompt should use $(cat)"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_additional_dirs() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains("--add-dir /extra/repo1"),
+            "must include first additional dir"
+        );
+        assert!(
+            result.shell_command.contains("--add-dir /extra/repo2"),
+            "must include second additional dir"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_uses_exec() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains("exec claude"),
+            "must use exec to replace shell process"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_includes_dangerously_skip_permissions() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result
+                .shell_command
+                .contains("--dangerously-skip-permissions"),
+            "coworkers must skip permissions"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_as_fresh_retry() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Resume,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: Some("task prompt".to_string()),
+            additional_dirs: vec![],
+        };
+        let retry = config.as_fresh_retry();
+        assert_eq!(retry.session_mode, SessionMode::Fresh);
+        assert_eq!(retry.name, "park");
+        assert_eq!(retry.initial_prompt, Some("task prompt".to_string()));
     }
 }
