@@ -1371,6 +1371,16 @@ pub fn spawn_lead(
     project_name: &str,
     additional_dirs: &[PathBuf],
 ) -> crate::Result<()> {
+    // Kill any existing lead windows to prevent duplicates.
+    // This can happen if the lead health check races or a previous
+    // spawn left a stale window behind.
+    if window_exists(session, "lead").unwrap_or(false) {
+        tracing::warn!("Killing existing lead window before respawn");
+        let _ = kill_window(session, "lead");
+        // Brief pause to let tmux clean up
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
     let prompt_file = write_lead_prompt_file()?;
     let settings_file = write_lead_settings_file()?;
 
