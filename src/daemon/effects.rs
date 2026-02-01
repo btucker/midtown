@@ -134,18 +134,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::RespawnZombieCoworker { name } => {
-                let session = state.coworkers.session_name();
-                // Kill the blank window first
-                if let Err(e) = crate::tmux::kill_window(session, &name) {
-                    warn!("Failed to kill zombie window {}: {}", name, e);
+                // Shut down properly (kills window + removes from internal registry)
+                if let Err(e) = state.coworkers.shutdown(&name) {
+                    warn!("Failed to shutdown zombie coworker {}: {}", name, e);
+                }
+                // Clean up lifecycle state so respawn starts fresh
+                {
+                    let mut lc = state.coworker_lifecycles.write().await;
+                    lc.remove(&name);
                 }
                 // Brief delay to let tmux clean up
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 // Respawn with --continue to resume the coworker's conversation
-                match state
-                    .coworkers
-                    .spawn_with_name(&name, true, None, false, None)
-                {
+                match state.spawn_coworker(&name, true, None, false, None).await {
                     Ok(_) => {
                         info!("Respawned zombie coworker {} successfully", name);
                     }
