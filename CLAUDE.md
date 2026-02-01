@@ -100,6 +100,14 @@ Event sources (timer ticks, webhooks, RPC, signals)
 
 **Tmux as the process model**: All agents (Lead + Coworkers) are tmux windows. Status is communicated via `/me` channel messages which get parsed into tmux tab names. Nudges are delivered via `tmux send-keys`.
 
+## Lead Maintenance
+
+If you are the Lead, periodically pull main, rebuild the release target, and restart midtown to pick up changes from merged PRs:
+
+```bash
+git pull && cargo build --release && midtown restart
+```
+
 ## Pull Requests
 
 - When a PR includes visual changes to the web UI (`web-app/` or `web/`), include before/after screenshots in the PR description.
