@@ -789,9 +789,11 @@ pub fn handle_restart() -> Result<Response, String> {
         std::thread::sleep(poll_interval);
     }
 
-    // Start daemon and webserver (session already exists, so it will
-    // re-discover coworkers; handle_start also launches the webserver)
-    let result = handle_start(false, None, vec![])?;
+    // Start daemon and webserver only — the tmux session and lead window
+    // already exist (we kept them above). Passing daemon_only=true prevents
+    // handle_start from entering the session-creation path, which could
+    // race with check_and_respawn_lead to create duplicate lead windows.
+    let result = handle_start(true, None, vec![])?;
 
     // Restart the chat pane to pick up code changes.
     // Use respawn-pane -k to atomically kill the old process and start a new

@@ -62,6 +62,11 @@ pub(super) const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
 /// How often to check if the lead window is still alive (10 seconds)
 pub(super) const LEAD_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Grace period after daemon startup before the lead health check activates (30 seconds).
+/// Prevents races where a freshly started daemon (e.g., after `midtown restart`)
+/// tries to respawn the lead window before the tmux session is fully settled.
+pub(super) const LEAD_HEALTH_CHECK_STARTUP_GRACE: Duration = Duration::from_secs(30);
+
 /// Interval for checking orphaned tasks (5 seconds)
 pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 
