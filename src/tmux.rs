@@ -975,6 +975,48 @@ fn write_coworker_settings_file() -> crate::Result<PathBuf> {
     Ok(path)
 }
 
+/// How to establish the Claude Code session.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionMode {
+    /// Brand new session with a generated UUID.
+    Fresh,
+    /// Resume the most recent session in this worktree (`--continue`).
+    Resume,
+    /// Resume a specific saved session (`--resume <id>`).
+    ResumeSession(String),
+}
+
+/// Whether this coworker shares the team task list or is isolated.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskMode {
+    /// Shares the team task list via CLAUDE_CODE_TASK_LIST_ID env var.
+    Shared { repo_name: String },
+    /// Private task list — no shared env var (used for reviewers).
+    Isolated,
+}
+
+/// All configuration needed to launch a Claude CLI process in a tmux window.
+///
+/// This is the single source of truth for how Claude gets launched. All spawn
+/// paths (fresh coworker, resumed coworker, reviewer, lead) construct one of
+/// these and pass it to `spawn_claude()`.
+#[derive(Debug, Clone)]
+pub struct ClaudeLaunchConfig {
+    /// Coworker name (or "lead" for the lead instance).
+    pub name: String,
+    /// How to start or resume the session.
+    pub session_mode: SessionMode,
+    /// Shared vs isolated task list.
+    pub task_mode: TaskMode,
+    /// Optional prompt to pre-fill at startup (task instructions, review prompt, etc.).
+    pub initial_prompt: Option<String>,
+    /// Additional repo directories for multi-repo projects.
+    pub additional_dirs: Vec<PathBuf>,
+    /// If true, pass `--setting-sources project,local` to restrict settings.
+    /// Coworkers use this to exclude user-level settings; the lead does not.
+    pub restrict_setting_sources: bool,
+}
+
 /// Spawn Claude Code in a tmux window within the project session.
 ///
 /// This creates a window and starts `claude` in it with coworker-specific
@@ -988,134 +1030,195 @@ fn write_coworker_settings_file() -> crate::Result<PathBuf> {
 ///
 /// Returns the generated session UUID for use in task symlink management.
 ///
-/// Build the shell command string for launching a claude coworker.
-///
-/// Returns the full command including env vars, claude flags, and file references.
-/// Extracted for testability — the actual tmux interaction happens in `spawn_claude`.
-///
-/// If `initial_prompt_file` is provided, the prompt is passed as a positional
-/// argument via `$(cat file)` so Claude receives it at startup — no need to
-/// send keystrokes after the TUI initializes.
-fn build_claude_command(
-    env_vars: &str,
-    session_flag: &str,
-    add_dir_flags: &str,
-    settings_file: &std::path::Path,
-    prompt_file: &std::path::Path,
-    initial_prompt_file: Option<&std::path::Path>,
-) -> String {
-    let initial_prompt_arg = match initial_prompt_file {
-        Some(path) => format!(" \"$(cat {})\"", path.display()),
-        None => String::new(),
-    };
-
-    format!(
-        "{}; exec claude --dangerously-skip-permissions{}{} --setting-sources project,local --settings {} --append-system-prompt \"$(cat {})\"{}",
-        env_vars,
-        session_flag,
-        add_dir_flags,
-        settings_file.display(),
-        prompt_file.display(),
-        initial_prompt_arg,
-    )
+/// The shell command string and generated session ID (if fresh).
+pub struct LaunchCommand {
+    pub shell_command: String,
+    pub session_id: Option<String>,
 }
 
-/// If `resume` is true, passes `--continue` to claude to resume the previous
-/// session from this worktree, preserving context from the last session.
+impl ClaudeLaunchConfig {
+    /// Create a config for a standard shared-task coworker.
+    ///
+    /// This covers the common case: a named coworker with shared task list,
+    /// restricted setting sources, and no additional directories.
+    pub fn coworker(
+        name: impl Into<String>,
+        repo_name: impl Into<String>,
+        session_mode: SessionMode,
+        initial_prompt: Option<String>,
+    ) -> Self {
+        ClaudeLaunchConfig {
+            name: name.into(),
+            session_mode,
+            task_mode: TaskMode::Shared {
+                repo_name: repo_name.into(),
+            },
+            initial_prompt,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        }
+    }
+
+    /// Create a config for an isolated reviewer coworker.
+    pub fn reviewer(name: impl Into<String>, initial_prompt: String) -> Self {
+        ClaudeLaunchConfig {
+            name: name.into(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: Some(initial_prompt),
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        }
+    }
+
+    /// Build the full shell command string for launching Claude in a tmux pane.
+    ///
+    /// `settings_file` and `prompt_file` are pre-written files containing the
+    /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
+    /// is the optional pre-written file containing the initial task/review prompt.
+    ///
+    /// Returns a `LaunchCommand` with the shell command and the session ID
+    /// (if a fresh session was created).
+    pub fn to_shell_command(
+        &self,
+        settings_file: &std::path::Path,
+        prompt_file: &std::path::Path,
+        initial_prompt_file: Option<&std::path::Path>,
+    ) -> LaunchCommand {
+        // -- Environment variables --
+        let mut env_parts = vec![
+            format!("MIDTOWN_AGENT='{}'", self.name),
+            "DISABLE_AUTOUPDATER=1".to_string(),
+        ];
+        if let TaskMode::Shared { ref repo_name } = self.task_mode {
+            let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+            env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
+        }
+        let env_export = format!("export {}", env_parts.join(" "));
+
+        // -- Claude CLI arguments (as structured Vec, not format! interpolation) --
+        let mut args: Vec<String> = vec![
+            "claude".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+        ];
+
+        // Session mode — exactly one of these
+        let session_id = match &self.session_mode {
+            SessionMode::Fresh => {
+                let id = uuid::Uuid::new_v4().to_string();
+                args.push("--session-id".to_string());
+                args.push(id.clone());
+                Some(id)
+            }
+            SessionMode::Resume => {
+                args.push("--continue".to_string());
+                None
+            }
+            SessionMode::ResumeSession(id) => {
+                args.push("--resume".to_string());
+                args.push(id.clone());
+                None
+            }
+        };
+
+        // Additional directories (multi-repo)
+        for dir in &self.additional_dirs {
+            if let Some(d) = dir.to_str() {
+                args.push("--add-dir".to_string());
+                args.push(d.to_string());
+            }
+        }
+
+        // Settings source restriction (coworkers only — lead uses all sources)
+        if self.restrict_setting_sources {
+            args.push("--setting-sources".to_string());
+            args.push("project,local".to_string());
+        }
+        args.push("--settings".to_string());
+        args.push(settings_file.display().to_string());
+
+        // System prompt file
+        args.push("--append-system-prompt".to_string());
+        args.push(format!("\"$(cat {})\"", prompt_file.display()));
+
+        // Initial prompt as bare positional arg (NOT -p/--print).
+        // Written to temp file by caller; path passed in here.
+        // This MUST be the last argument. See PR #447 for why -p is forbidden.
+        if let Some(path) = initial_prompt_file {
+            args.push(format!("\"$(cat {})\"", path.display()));
+        }
+
+        let shell_command = format!("{}; exec {}", env_export, args.join(" "));
+
+        LaunchCommand {
+            shell_command,
+            session_id,
+        }
+    }
+
+    /// Create a fresh-session variant of this config (for retry after failure).
+    pub fn as_fresh_retry(&self) -> Self {
+        ClaudeLaunchConfig {
+            session_mode: SessionMode::Fresh,
+            ..self.clone()
+        }
+    }
+}
+
+/// Spawn a Claude Code coworker in a tmux window.
 ///
-/// If `initial_prompt` is provided, it's passed to claude as a `-p` argument
-/// so the coworker receives the task at startup without relying on tmux
-/// keystrokes (which can be lost if sent before the TUI is ready).
-#[allow(clippy::too_many_arguments)]
+/// Takes a `ClaudeLaunchConfig` that fully describes how to launch Claude,
+/// writes the system prompt and settings to files, builds the shell command,
+/// and creates the tmux window. Includes retry logic for blank-pane failures.
+///
+/// Returns the session ID for task symlink management.
 pub fn spawn_claude(
     session: &str,
-    name: &str,
     working_dir: &str,
-    repo_name: Option<&str>,
-    resume: bool,
-    isolated_tasks: bool,
-    additional_dirs: &[PathBuf],
-    initial_prompt: Option<&str>,
-    resume_session_id: Option<&str>,
+    config: &ClaudeLaunchConfig,
 ) -> crate::Result<String> {
     // Build the claude command with settings for channel synchronization
     // and a system prompt for coworker identity and instructions
-    let system_prompt = crate::agents::coworker_system_prompt(name);
+    let system_prompt = crate::agents::coworker_system_prompt(&config.name);
 
     // Write system prompt and settings to files (avoids quoting issues)
-    let prompt_file = write_coworker_prompt_file(name, &system_prompt)?;
+    let prompt_file = write_coworker_prompt_file(&config.name, &system_prompt)?;
     let settings_file = write_coworker_settings_file()?;
-
-    // Generate a unique session ID for this coworker
-    let coworker_session_id = uuid::Uuid::new_v4().to_string();
-
-    // Build the claude command with session ID for task persistence
-    // Use file paths for settings and prompt to avoid shell quoting issues
-    // Set MIDTOWN_AGENT env var so the coworker's name appears in messages
-    // Use --setting-sources project,local (plugins are now in --settings file)
-    // Priority: resume_session_id (specific session) > resume (--continue) > fresh session
-    let session_flag = if let Some(sid) = resume_session_id {
-        format!(" --resume {}", sid)
-    } else if resume {
-        " --continue".to_string()
-    } else {
-        format!(" --session-id {}", coworker_session_id)
-    };
-
-    // Build environment variables - shared task list unless isolated
-    // Isolated coworkers (e.g., reviewers) get their own task list so their
-    // sub-tasks don't pollute the shared task list
-    let env_vars = if isolated_tasks {
-        format!("export MIDTOWN_AGENT='{}' DISABLE_AUTOUPDATER=1", name)
-    } else {
-        let task_list_id = repo_name
-            .map(crate::paths::task_list_id_for_repo)
-            .unwrap_or_else(crate::paths::task_list_id);
-        format!(
-            "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}' DISABLE_AUTOUPDATER=1",
-            name, task_list_id
-        )
-    };
-
-    // Build --add-dir flags for multi-repo projects
-    let add_dir_flags: String = additional_dirs
-        .iter()
-        .filter_map(|d| d.to_str())
-        .map(|d| format!(" --add-dir {}", d))
-        .collect();
 
     // Write initial prompt to file if provided (avoids shell quoting issues
     // and eliminates the timing race of sending keystrokes after spawn)
-    let initial_prompt_file = initial_prompt
-        .map(|p| write_coworker_initial_prompt_file(name, p))
+    let initial_prompt_file = config
+        .initial_prompt
+        .as_deref()
+        .map(|p| write_coworker_initial_prompt_file(&config.name, p))
         .transpose()?;
 
-    let command = build_claude_command(
-        &env_vars,
-        &session_flag,
-        &add_dir_flags,
-        &settings_file,
-        &prompt_file,
-        initial_prompt_file.as_deref(),
-    );
+    let launch =
+        config.to_shell_command(&settings_file, &prompt_file, initial_prompt_file.as_deref());
+    let coworker_session_id = launch.session_id.unwrap_or_default();
 
     // Create window with claude command running directly
-    create_window(session, name, working_dir, Some(&command))?;
+    create_window(
+        session,
+        &config.name,
+        working_dir,
+        Some(&launch.shell_command),
+    )?;
 
     // Set window tab color to match chat TUI team panel
-    set_window_color(session, name)?;
+    set_window_color(session, &config.name)?;
 
     // Poll for window survival. tmux new-window returns success immediately
     // even if the command inside fails. `claude --continue` can take 1-2 seconds
     // to discover there's no session to resume and exit, so we poll repeatedly
     // over 3 seconds to catch failures the old 500ms check missed.
-    let mut window_survived = wait_for_window_stable(session, name);
+    let mut window_survived = wait_for_window_stable(session, &config.name);
 
     // If the window survived but the pane is blank (no terminal output),
     // the process started but the TUI never rendered. Kill it and let the
     // retry logic below handle respawning.
     if window_survived {
-        let target = format!("{}:{}", session, name);
+        let target = format!("{}:{}", session, config.name);
         let mut has_output = false;
         for _ in 0..10 {
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -1164,11 +1267,11 @@ pub fn spawn_claude(
                 .unwrap_or_default();
 
             tracing::warn!(
-                "BLANK PANE DIAGNOSTIC {}:{} — resume={}, pane={}, other_windows={}, \
+                "BLANK PANE DIAGNOSTIC {}:{} — session_mode={:?}, pane={}, other_windows={}, \
                  pane_pid={:?}, children=[{}], raw_content={:?}",
                 session,
-                name,
-                resume,
+                config.name,
+                config.session_mode,
                 pane_dims,
                 other_windows,
                 pane_pid,
@@ -1180,7 +1283,7 @@ pub fn spawn_claude(
                     .collect::<String>(),
             );
 
-            let _ = kill_window(session, name);
+            let _ = kill_window(session, &config.name);
             window_survived = false;
         }
     }
@@ -1190,32 +1293,34 @@ pub fn spawn_claude(
         // This handles both --continue/--resume failures (stale session) and
         // intermittent blank-pane TUI init failures on fresh sessions.
         tracing::warn!(
-            "Tmux window {}:{} failed on first attempt (resume={}), retrying with fresh session",
+            "Tmux window {}:{} failed on first attempt (session_mode={:?}), retrying with fresh session",
             session,
-            name,
-            resume,
+            config.name,
+            config.session_mode,
         );
 
-        let fresh_session_id = uuid::Uuid::new_v4().to_string();
-        let fresh_session_flag = format!(" --session-id {}", fresh_session_id);
-        let fresh_command = build_claude_command(
-            &env_vars,
-            &fresh_session_flag,
-            &add_dir_flags,
+        let retry_config = config.as_fresh_retry();
+        let retry_launch = retry_config.to_shell_command(
             &settings_file,
             &prompt_file,
             initial_prompt_file.as_deref(),
         );
+        let fresh_session_id = retry_launch.session_id.unwrap_or_default();
 
-        create_window(session, name, working_dir, Some(&fresh_command))?;
-        set_window_color(session, name)?;
+        create_window(
+            session,
+            &config.name,
+            working_dir,
+            Some(&retry_launch.shell_command),
+        )?;
+        set_window_color(session, &config.name)?;
 
-        if !wait_for_window_stable(session, name) {
+        if !wait_for_window_stable(session, &config.name) {
             return Err(Error::Rpc {
                 code: -32603,
                 message: format!(
                     "Tmux window {}:{} was created but immediately closed (retry also failed)",
-                    session, name
+                    session, config.name
                 ),
             });
         }
@@ -1224,22 +1329,6 @@ pub fn spawn_claude(
     }
 
     Ok(coworker_session_id)
-}
-
-/// Build the shell command string for launching the lead Claude instance.
-fn build_lead_command(
-    task_list_id: &str,
-    settings_file: &std::path::Path,
-    prompt_file: &std::path::Path,
-    add_dir_flags: &str,
-) -> String {
-    format!(
-        "export CLAUDE_CODE_TASK_LIST_ID='{}'; exec claude --dangerously-skip-permissions --settings {} --append-system-prompt \"$(cat {})\"{}",
-        task_list_id,
-        settings_file.display(),
-        prompt_file.display(),
-        add_dir_flags,
-    )
 }
 
 /// Write the Lead system prompt to a file and return the path.
@@ -1282,22 +1371,27 @@ pub fn spawn_lead(
     project_name: &str,
     additional_dirs: &[PathBuf],
 ) -> crate::Result<()> {
-    let task_list_id = crate::paths::task_list_id_for_repo(project_name);
-
     let prompt_file = write_lead_prompt_file()?;
     let settings_file = write_lead_settings_file()?;
 
-    let add_dir_flags: String = additional_dirs
-        .iter()
-        .filter_map(|d| d.to_str())
-        .map(|d| format!(" --add-dir {}", d))
-        .collect();
+    let config = ClaudeLaunchConfig {
+        name: "lead".to_string(),
+        session_mode: SessionMode::Fresh,
+        task_mode: TaskMode::Shared {
+            repo_name: project_name.to_string(),
+        },
+        initial_prompt: None,
+        additional_dirs: additional_dirs.to_vec(),
+        restrict_setting_sources: false,
+    };
 
     // Allow tests/CI to override the lead command (claude isn't available in CI)
     let command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
         test_cmd
     } else {
-        build_lead_command(&task_list_id, &settings_file, &prompt_file, &add_dir_flags)
+        config
+            .to_shell_command(&settings_file, &prompt_file, None)
+            .shell_command
     };
 
     create_window(session, "lead", working_dir, Some(&command))?;
@@ -1911,156 +2005,320 @@ Claude is now processing the request
         assert!(!has_input_text(pane));
     }
 
+    // --- ClaudeLaunchConfig tests ---
+
     #[test]
-    fn test_build_claude_command_with_session_id() {
-        let cmd = build_claude_command(
-            "export MIDTOWN_AGENT='lex'",
-            " --session-id abc-123",
-            "",
+    fn test_launch_config_lead_omits_setting_sources() {
+        let config = ClaudeLaunchConfig {
+            name: "lead".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: false,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
+            std::path::Path::new("/tmp/prompt.md"),
             None,
         );
-        assert!(cmd.contains("--session-id abc-123"));
-        assert!(!cmd.contains("--continue"));
-        assert!(cmd.contains("--dangerously-skip-permissions"));
-        assert!(cmd.contains("--settings /tmp/settings.json"));
-        assert!(cmd.contains("--append-system-prompt \"$(cat /tmp/prompt.txt)\""));
         assert!(
-            cmd.starts_with("export MIDTOWN_AGENT='lex'; exec claude"),
-            "coworker command must use exec to replace shell — without exec, \
-             the shell survives after claude exits leaving zombie panes"
+            !result.shell_command.contains("--setting-sources"),
+            "lead must not restrict setting sources"
         );
-        assert!(!cmd.contains("-p "));
+        assert!(
+            result.shell_command.contains("exec claude"),
+            "lead must use exec"
+        );
+        assert!(
+            result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
+            "lead must have shared task list"
+        );
     }
 
     #[test]
-    fn test_build_claude_command_with_continue() {
-        let cmd = build_claude_command(
-            "export MIDTOWN_AGENT='park'",
-            " --continue",
-            "",
+    fn test_launch_config_fresh_session_produces_session_id_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
+            std::path::Path::new("/tmp/prompt.md"),
             None,
         );
-        assert!(cmd.contains("--continue"));
-        assert!(!cmd.contains("--session-id"));
+        assert!(
+            result.shell_command.contains("--session-id "),
+            "fresh session must use --session-id"
+        );
+        assert!(
+            !result.shell_command.contains("--continue"),
+            "fresh session must not use --continue"
+        );
+        assert!(
+            !result.shell_command.contains("--resume "),
+            "fresh session must not use --resume"
+        );
+        assert!(
+            result.session_id.is_some(),
+            "fresh session must return a session ID"
+        );
     }
 
     #[test]
-    fn test_build_claude_command_with_add_dir_flags() {
-        let cmd = build_claude_command(
-            "export MIDTOWN_AGENT='lex'",
-            " --session-id abc",
-            " --add-dir /other/repo --add-dir /another/repo",
+    fn test_launch_config_resume_produces_continue_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Resume,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
+            std::path::Path::new("/tmp/prompt.md"),
             None,
         );
-        assert!(cmd.contains("--add-dir /other/repo"));
-        assert!(cmd.contains("--add-dir /another/repo"));
+        assert!(
+            result.shell_command.contains(" --continue"),
+            "resume must use --continue"
+        );
+        assert!(
+            !result.shell_command.contains("--session-id "),
+            "resume must not use --session-id"
+        );
+        assert!(
+            result.session_id.is_none(),
+            "resume must not return a session ID"
+        );
     }
 
     #[test]
-    fn test_build_claude_command_fresh_session_differs_from_continue() {
-        // Simulates the fallback: original command uses --continue,
-        // retry uses --session-id with a fresh UUID
-        let continue_cmd = build_claude_command(
-            "export MIDTOWN_AGENT='lex'",
-            " --continue",
-            "",
+    fn test_launch_config_resume_session_produces_resume_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::ResumeSession("abc-123".to_string()),
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
+            std::path::Path::new("/tmp/prompt.md"),
             None,
         );
-        let fresh_cmd = build_claude_command(
-            "export MIDTOWN_AGENT='lex'",
-            " --session-id fresh-uuid-here",
-            "",
-            std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
-            None,
+        assert!(
+            result.shell_command.contains("--resume abc-123"),
+            "must use --resume with session id"
         );
-
-        // The continue command should have --continue, not --session-id
-        assert!(continue_cmd.contains("--continue"));
-        assert!(!continue_cmd.contains("--session-id"));
-
-        // The fresh command should have --session-id, not --continue
-        assert!(fresh_cmd.contains("--session-id fresh-uuid-here"));
-        assert!(!fresh_cmd.contains("--continue"));
-
-        // Both should share the same structure otherwise
-        assert!(continue_cmd.contains("--setting-sources project,local"));
-        assert!(fresh_cmd.contains("--setting-sources project,local"));
+        assert!(
+            result.session_id.is_none(),
+            "resume session must not return a new session ID"
+        );
     }
 
     #[test]
-    fn test_build_claude_command_with_initial_prompt() {
-        let cmd = build_claude_command(
-            "export MIDTOWN_AGENT='lex'",
-            " --session-id abc-123",
-            "",
+    fn test_launch_config_isolated_omits_task_list_env() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID"),
+            "isolated must not set task list ID"
+        );
+        assert!(
+            result.shell_command.contains("MIDTOWN_AGENT='park'"),
+            "must always set agent name"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_shared_includes_task_list_env() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
+            "shared must set task list ID"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_initial_prompt_is_positional_not_flag() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: Some("Do the thing".to_string()),
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
             Some(std::path::Path::new("/tmp/initial-prompt.md")),
         );
-        assert!(cmd.contains("\"$(cat /tmp/initial-prompt.md)\""));
+        // PR #447 regression: must NEVER use -p or --print
         assert!(
-            !cmd.contains("-p "),
-            "must not use -p flag (that enables --print mode)"
+            !result.shell_command.contains("-p "),
+            "must not use -p flag"
         );
         assert!(
-            !cmd.contains("--print"),
-            "must not use --print flag (coworkers need interactive TUI)"
+            !result.shell_command.contains("--print"),
+            "must not use --print flag"
         );
-        // The positional prompt should come after the other flags
-        assert!(cmd.contains("--append-system-prompt"));
-
-        // The initial prompt must be a bare positional arg at the end of the
-        // command — NOT preceded by any flag like -p or --print. This ensures
-        // claude launches in interactive TUI mode with the prompt pre-filled.
-        let prompt_pos = cmd.find("\"$(cat /tmp/initial-prompt.md)\"").unwrap();
-        let before_prompt = &cmd[..prompt_pos];
+        // Prompt file must appear as last positional arg
         assert!(
-            !before_prompt.ends_with("-p "),
-            "initial prompt must be a positional arg, not a -p/--print flag value"
-        );
-        // Should be the last thing in the command
-        let after_prompt = &cmd[prompt_pos + "\"$(cat /tmp/initial-prompt.md)\"".len()..];
-        assert!(
-            after_prompt.trim().is_empty(),
-            "initial prompt should be the last argument, got trailing: {:?}",
-            after_prompt
+            result
+                .shell_command
+                .contains("\"$(cat /tmp/initial-prompt.md)\""),
+            "prompt must be passed via $(cat file)"
         );
     }
 
     #[test]
-    fn test_build_claude_command_without_initial_prompt() {
-        let cmd = build_claude_command(
-            "export MIDTOWN_AGENT='lex'",
-            " --session-id abc-123",
-            "",
+    fn test_launch_config_no_prompt_has_no_trailing_cat() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
+            std::path::Path::new("/tmp/prompt.md"),
             None,
         );
-        assert!(!cmd.contains("-p "));
+        // Count occurrences of $(cat — should be exactly 1 (the system prompt)
+        let cat_count = result.shell_command.matches("$(cat ").count();
+        assert_eq!(
+            cat_count, 1,
+            "without initial_prompt, only system prompt should use $(cat)"
+        );
     }
 
     #[test]
-    fn test_build_lead_command_uses_exec() {
-        let cmd = build_lead_command(
-            "test-task-list-id",
+    fn test_launch_config_additional_dirs() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.txt"),
-            "",
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
         );
         assert!(
-            cmd.contains("; exec claude"),
-            "lead command must use exec to replace shell — without exec, \
-             the shell survives after claude exits leaving zombie panes"
+            result.shell_command.contains("--add-dir /extra/repo1"),
+            "must include first additional dir"
         );
+        assert!(
+            result.shell_command.contains("--add-dir /extra/repo2"),
+            "must include second additional dir"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_uses_exec() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result.shell_command.contains("exec claude"),
+            "must use exec to replace shell process"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_includes_dangerously_skip_permissions() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result
+                .shell_command
+                .contains("--dangerously-skip-permissions"),
+            "coworkers must skip permissions"
+        );
+    }
+
+    #[test]
+    fn test_launch_config_as_fresh_retry() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Resume,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            initial_prompt: Some("task prompt".to_string()),
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        };
+        let retry = config.as_fresh_retry();
+        assert_eq!(retry.session_mode, SessionMode::Fresh);
+        assert_eq!(retry.name, "park");
+        assert_eq!(retry.initial_prompt, Some("task prompt".to_string()));
     }
 }
