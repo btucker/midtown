@@ -362,6 +362,10 @@ pub(crate) struct DaemonState {
     /// coworker has been respawned as a zombie without recovering. Reset when a
     /// coworker is spawned normally (non-zombie path). Used to cap respawn loops.
     zombie_respawn_counts: std::sync::Mutex<HashMap<String, u32>>,
+    /// Timestamp of the last received webhook event (monotonic).
+    /// Used by the PR poll task to determine webhook health: if recent,
+    /// polling uses a relaxed interval; if stale or absent, polling is aggressive.
+    last_webhook_event_at: Mutex<Option<tokio::time::Instant>>,
 }
 
 impl DaemonState {
@@ -497,6 +501,7 @@ impl DaemonState {
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
             user_display_name,
             zombie_respawn_counts: std::sync::Mutex::new(HashMap::new()),
+            last_webhook_event_at: Mutex::new(None),
         })
     }
 
@@ -928,8 +933,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             pr_poll_task(state, interval_secs, pr_poll_shutdown_rx).await;
         });
         info!(
-            "PR polling started (interval: {}s)",
-            config.pr_poll_interval_secs
+            "PR polling started (adaptive: {}s aggressive / {}s relaxed)",
+            config.pr_poll_interval_secs, RELAXED_PR_POLL_INTERVAL_SECS
         );
     }
 
@@ -993,6 +998,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             } => {
                 debug!("Received webhook message: {}", webhook_event.message.content);
+
+                // Record webhook event timestamp for adaptive PR polling.
+                // The PR poll task reads this to decide between relaxed/aggressive intervals.
+                {
+                    let mut ts = state.last_webhook_event_at.lock().await;
+                    *ts = Some(tokio::time::Instant::now());
+                }
+
                 if let Err(e) = state.send_and_broadcast(&webhook_event.message) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
@@ -2201,7 +2214,13 @@ fn delete_stale_github_webhooks(repo: &str) -> bool {
 
 /// Background task that polls PRs for actionable issues.
 ///
-/// Checks all open PRs every `interval_secs` seconds for:
+/// Checks all open PRs on an adaptive interval:
+/// - **Webhooks healthy** (recent event within [`WEBHOOK_HEALTH_TIMEOUT`]): polls every
+///   [`RELAXED_PR_POLL_INTERVAL_SECS`] (2 min) — polling is only a backstop.
+/// - **Webhooks degraded** (no recent events): polls every `aggressive_interval_secs`
+///   (default 30s) to compensate for missing real-time events.
+///
+/// Detects:
 /// - Merge conflicts
 /// - CI failures
 /// - Changes requested
@@ -2210,12 +2229,35 @@ fn delete_stale_github_webhooks(repo: &str) -> bool {
 /// Nudges the PR owner (extracted from branch prefix) or an idle coworker.
 async fn pr_poll_task(
     state: Arc<DaemonState>,
-    interval_secs: u64,
+    aggressive_interval_secs: u64,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    let interval = Duration::from_secs(interval_secs);
+    let aggressive = Duration::from_secs(aggressive_interval_secs);
+    let relaxed = Duration::from_secs(RELAXED_PR_POLL_INTERVAL_SECS);
 
     loop {
+        // Determine interval based on webhook health
+        let interval = {
+            let last_event = state.last_webhook_event_at.lock().await;
+            match *last_event {
+                Some(ts) if ts.elapsed() < WEBHOOK_HEALTH_TIMEOUT => {
+                    debug!(
+                        "PR poll: webhooks healthy (last event {:.0?} ago), using relaxed interval ({}s)",
+                        ts.elapsed(),
+                        RELAXED_PR_POLL_INTERVAL_SECS
+                    );
+                    relaxed
+                }
+                _ => {
+                    debug!(
+                        "PR poll: webhooks degraded or no events yet, using aggressive interval ({}s)",
+                        aggressive_interval_secs
+                    );
+                    aggressive
+                }
+            }
+        };
+
         // Wait for the interval or shutdown signal
         let delay = tokio::time::sleep(interval);
 
