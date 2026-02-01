@@ -1005,7 +1005,7 @@ fn build_claude_command(
     initial_prompt_file: Option<&std::path::Path>,
 ) -> String {
     let initial_prompt_arg = match initial_prompt_file {
-        Some(path) => format!(" -p \"$(cat {})\"", path.display()),
+        Some(path) => format!(" \"$(cat {})\"", path.display()),
         None => String::new(),
     };
 
@@ -2006,9 +2006,34 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.txt"),
             Some(std::path::Path::new("/tmp/initial-prompt.md")),
         );
-        assert!(cmd.contains("-p \"$(cat /tmp/initial-prompt.md)\""));
-        // The -p flag should come after the other flags
+        assert!(cmd.contains("\"$(cat /tmp/initial-prompt.md)\""));
+        assert!(
+            !cmd.contains("-p "),
+            "must not use -p flag (that enables --print mode)"
+        );
+        assert!(
+            !cmd.contains("--print"),
+            "must not use --print flag (coworkers need interactive TUI)"
+        );
+        // The positional prompt should come after the other flags
         assert!(cmd.contains("--append-system-prompt"));
+
+        // The initial prompt must be a bare positional arg at the end of the
+        // command — NOT preceded by any flag like -p or --print. This ensures
+        // claude launches in interactive TUI mode with the prompt pre-filled.
+        let prompt_pos = cmd.find("\"$(cat /tmp/initial-prompt.md)\"").unwrap();
+        let before_prompt = &cmd[..prompt_pos];
+        assert!(
+            !before_prompt.ends_with("-p "),
+            "initial prompt must be a positional arg, not a -p/--print flag value"
+        );
+        // Should be the last thing in the command
+        let after_prompt = &cmd[prompt_pos + "\"$(cat /tmp/initial-prompt.md)\"".len()..];
+        assert!(
+            after_prompt.trim().is_empty(),
+            "initial prompt should be the last argument, got trailing: {:?}",
+            after_prompt
+        );
     }
 
     #[test]

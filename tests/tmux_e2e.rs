@@ -1094,3 +1094,61 @@ fn test_blank_pane_content_detection() {
     // Single non-whitespace character
     assert!(midtown::tmux::content_has_output("\n.\n"));
 }
+
+// ── spawn_claude TUI visibility ─────────────────────────────────────
+
+/// Spawning claude with an initial prompt must produce a visible TUI.
+///
+/// Regression test: build_claude_command previously used `-p` to pass the
+/// initial prompt, but `-p` is `--print` mode which disables the interactive
+/// TUI and makes the pane appear blank. The prompt must be a bare positional
+/// argument so claude launches in interactive mode.
+#[test]
+#[ignore]
+#[timeout(30_000)]
+fn test_spawn_claude_with_initial_prompt_renders_tui() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_string_lossy().to_string();
+
+    // Spawn claude with an initial prompt — this is the code path that was
+    // broken when -p (--print mode) was used instead of a positional arg.
+    let result = midtown::tmux::spawn_claude(
+        &session,
+        "test-coworker",
+        &dir,
+        None,  // repo_name
+        false, // resume
+        true,  // isolated_tasks (don't pollute shared task list)
+        &[],   // additional_dirs
+        Some("Say hello and wait for instructions."),
+        None, // resume_session_id
+    );
+
+    assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
+
+    // spawn_claude already waits up to 8s for output (3s stability + 5s
+    // blank pane check). Give a bit more time for the TUI to render.
+    thread::sleep(Duration::from_secs(3));
+
+    let target = format!("{}:test-coworker", session);
+    let has_output = midtown::tmux::pane_has_output(&target);
+    assert!(
+        has_output,
+        "spawn_claude with initial_prompt must produce a visible TUI — \
+         blank pane means claude launched in --print mode instead of interactive"
+    );
+
+    // Clean up: kill the claude process
+    kill_window(&session, "test-coworker");
+}
