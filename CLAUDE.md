@@ -102,10 +102,16 @@ Event sources (timer ticks, webhooks, RPC, signals)
 
 ## Lead Maintenance
 
-If you are the Lead, periodically pull main, rebuild the release target, and restart midtown to pick up changes from merged PRs:
+If you are the Lead, whenever a PR is merged into main, pull, rebuild, and restart so the running daemon and coworkers pick up the changes:
 
 ```bash
 git pull && cargo build --release && midtown restart
+```
+
+Post to the channel when done so the team knows the new code is live:
+
+```bash
+midtown channel post "Pulled main, rebuilt release, and restarted midtown."
 ```
 
 ## Pull Requests
