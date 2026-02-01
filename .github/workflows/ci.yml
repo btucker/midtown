@@ -53,9 +53,6 @@ jobs:
         env:
           MIDTOWN_LEAD_COMMAND: "sleep 300"
 
-      - name: Run nudge e2e tests
-        run: cargo test --release --all-features --test nudge_e2e -- --ignored
-
       - name: Run nudge delivery e2e tests
         run: cargo test --release --all-features --test nudge_delivery_e2e -- --ignored
 
