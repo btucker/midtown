@@ -975,6 +975,45 @@ fn write_coworker_settings_file() -> crate::Result<PathBuf> {
     Ok(path)
 }
 
+/// How to establish the Claude Code session.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionMode {
+    /// Brand new session with a generated UUID.
+    Fresh,
+    /// Resume the most recent session in this worktree (`--continue`).
+    Resume,
+    /// Resume a specific saved session (`--resume <id>`).
+    ResumeSession(String),
+}
+
+/// Whether this coworker shares the team task list or is isolated.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskMode {
+    /// Shares the team task list via CLAUDE_CODE_TASK_LIST_ID env var.
+    Shared { repo_name: String },
+    /// Private task list — no shared env var (used for reviewers).
+    Isolated,
+}
+
+/// All configuration needed to launch a Claude CLI process in a tmux window.
+///
+/// This is the single source of truth for how Claude gets launched. All spawn
+/// paths (fresh coworker, resumed coworker, reviewer, lead) construct one of
+/// these and pass it to `spawn_claude()`.
+#[derive(Debug, Clone)]
+pub struct ClaudeLaunchConfig {
+    /// Coworker name (or "lead" for the lead instance).
+    pub name: String,
+    /// How to start or resume the session.
+    pub session_mode: SessionMode,
+    /// Shared vs isolated task list.
+    pub task_mode: TaskMode,
+    /// Optional prompt to pre-fill at startup (task instructions, review prompt, etc.).
+    pub initial_prompt: Option<String>,
+    /// Additional repo directories for multi-repo projects.
+    pub additional_dirs: Vec<PathBuf>,
+}
+
 /// Spawn Claude Code in a tmux window within the project session.
 ///
 /// This creates a window and starts `claude` in it with coworker-specific
