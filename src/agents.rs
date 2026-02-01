@@ -32,6 +32,12 @@ const DEFAULT_COMMON_PROMPT: &str = include_str!("../agents/common.md");
 /// Embedded default for personality definitions.
 const DEFAULT_PERSONALITIES: &str = include_str!("../agents/personalities.md");
 
+/// Embedded default for the reviewer launch prompt template.
+const DEFAULT_REVIEWER_PROMPT: &str = include_str!("../agents/reviewer.md");
+
+/// Embedded default for the reviewer resume prompt template.
+const DEFAULT_REVIEWER_RESUME_PROMPT: &str = include_str!("../agents/reviewer-resume.md");
+
 /// Find the git repository root directory.
 fn git_repo_root() -> Option<PathBuf> {
     let output = std::process::Command::new("git")
@@ -266,6 +272,27 @@ pub fn coworker_system_prompt(name: &str) -> String {
     }
     prompt.push_str(&personality_section(name, personality));
     prompt.replace("{name}", name)
+}
+
+/// Build the reviewer launch prompt for a given PR number.
+///
+/// Loads `agents/reviewer.md` (or the embedded default) and replaces
+/// `{pr_number}` with the actual PR number.
+pub fn reviewer_prompt(pr_number: u64) -> String {
+    let template =
+        load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
+    template.replace("{pr_number}", &pr_number.to_string())
+}
+
+/// Build the reviewer resume prompt for a given PR number.
+///
+/// Used when the daemon discovers a reviewer coworker still running after
+/// a restart. Loads `agents/reviewer-resume.md` (or the embedded default)
+/// and replaces `{pr_number}` with the actual PR number.
+pub fn reviewer_resume_prompt(pr_number: u64) -> String {
+    let template = load_prompt_file("reviewer-resume.md")
+        .unwrap_or_else(|| DEFAULT_REVIEWER_RESUME_PROMPT.to_string());
+    template.replace("{pr_number}", &pr_number.to_string())
 }
 
 #[cfg(test)]
@@ -518,6 +545,44 @@ mod tests {
         assert!(
             prompt.contains("GitHub Etiquette"),
             "Coworker prompt should include common content"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_prompt_substitutes_pr_number() {
+        let prompt = reviewer_prompt(42);
+        assert!(prompt.contains("reviewing PR #42"));
+        assert!(prompt.contains("/code-review:code-review 42"));
+        assert!(prompt.contains("gh pr comment 42 --body"));
+        assert!(prompt.contains("PR #42 repeats"));
+        assert!(
+            !prompt.contains("{pr_number}"),
+            "Reviewer prompt should not contain unreplaced {{pr_number}} placeholders"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_resume_prompt_substitutes_pr_number() {
+        let prompt = reviewer_resume_prompt(99);
+        assert!(prompt.contains("Resume reviewing PR #99"));
+        assert!(prompt.contains("gh pr comment 99 --body"));
+        assert!(prompt.contains("PR #99 repeats"));
+        assert!(
+            !prompt.contains("{pr_number}"),
+            "Reviewer resume prompt should not contain unreplaced {{pr_number}} placeholders"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_prompt_contains_required_sections() {
+        let prompt = reviewer_prompt(1);
+        assert!(
+            prompt.contains("IMPORTANT"),
+            "Reviewer prompt should contain IMPORTANT section"
+        );
+        assert!(
+            prompt.contains("REFACTOR DETECTION"),
+            "Reviewer prompt should contain REFACTOR DETECTION section"
         );
     }
 }
