@@ -78,6 +78,9 @@ pub mod nudge;
 // Project configuration
 pub mod config;
 
+// Structured coworker state reporting (replaces pane-content parsing for decisions)
+pub mod coworker_state;
+
 // Agent system prompts
 pub mod agents;
 

@@ -510,6 +510,22 @@ impl CoworkerManager {
         tmux::rename_window(&self.session_name, name, status)
     }
 
+    /// Update a coworker's tmux tab with a pre-formatted status string.
+    ///
+    /// Unlike `update_status_display` which passes text through `parse_status()`,
+    /// this method uses the formatted string directly (e.g., "dev#42" from a
+    /// structured state file).
+    pub fn update_status_formatted(&self, name: &str, formatted: &str) -> crate::Result<()> {
+        {
+            let coworkers = self.coworkers.read().unwrap();
+            if !coworkers.contains_key(name) {
+                return Ok(());
+            }
+        }
+
+        tmux::rename_window_formatted(&self.session_name, name, formatted)
+    }
+
     /// Send a nudge (input) to a coworker.
     pub fn nudge(&self, name: &str, message: &str) -> crate::Result<()> {
         // Verify coworker exists

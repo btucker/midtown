@@ -4015,10 +4015,22 @@ async fn handle_channel_post(
                     .last_activity = Some(Instant::now());
             }
 
-            // Update tmux tab for coworkers when they post /me actions
+            // Update tmux tab for coworkers when they post /me actions.
+            // Prefer structured state from state.json (written by hooks) over
+            // parsing the freeform /me message text with keyword matching.
             if msg_type == MessageType::Action {
-                // Update the coworker's tmux tab to show their status
-                if let Err(e) = state.coworkers.update_status_display(from, Some(&content)) {
+                let result = if let Some(report) =
+                    crate::coworker_state::read_state(&state.repo_name, from)
+                {
+                    // Use pre-formatted status from state file (bypasses parse_status)
+                    state
+                        .coworkers
+                        .update_status_formatted(from, &report.display_status())
+                } else {
+                    // Fallback: parse /me message text with keyword matching
+                    state.coworkers.update_status_display(from, Some(&content))
+                };
+                if let Err(e) = result {
                     debug!("Failed to update tmux tab for {}: {}", from, e);
                 }
             }
