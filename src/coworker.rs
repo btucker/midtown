@@ -293,24 +293,21 @@ impl CoworkerManager {
 
     /// Spawn a new coworker.
     ///
-    /// Creates an isolated git worktree for the coworker and spawns Claude Code in it.
-    /// Returns the name of the spawned coworker.
+    /// Spawn a new coworker, automatically selecting the next available name.
     ///
-    /// If a worktree already exists but no tmux window is running (stale worktree),
-    /// the worktree is automatically cleaned up and the spawn is retried.
-    ///
-    /// If `resume` is true, passes `--continue` to claude to resume the previous
-    /// session from this worktree (useful for recovering orphaned tasks).
-    ///
-    /// If `prompt` is provided, waits for the coworker to initialize and sends the
-    /// prompt as the initial nudge. This is the preferred way to send initial
-    /// instructions as it avoids the race condition of spawning then nudging separately.
-    ///
-    /// If `isolated_tasks` is true, the coworker gets its own task list (no shared
-    /// CLAUDE_CODE_TASK_LIST_ID). This is used for review coworkers whose sub-tasks
-    /// should not pollute the shared task list.
+    /// The `config.name` field is ignored; a name is chosen via `next_available_name()`
+    /// and injected into the config before delegating to `spawn_with_name()`.
     pub fn spawn(&self, config: &tmux::ClaudeLaunchConfig) -> crate::Result<String> {
-        self.spawn_with_name(config)
+        let name = self
+            .next_available_name()
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32603,
+                message: "No available coworker slots (all avenue names in use)".to_string(),
+            })?;
+
+        let mut config = config.clone();
+        config.name = name;
+        self.spawn_with_name(&config)
     }
 
     /// Create worktrees for a coworker in all additional repos (multi-repo projects).
@@ -676,28 +673,11 @@ impl CoworkerManager {
                             ),
                         })?
                 } else {
-                    // Valid worktree but stale (no window) - clean it up and recreate
-                    tracing::info!("Cleaning up stale worktree for {}", name);
-                    self.worktree_manager
-                        .force_cleanup(name)
-                        .map_err(|e| crate::Error::Rpc {
-                            code: -32603,
-                            message: format!(
-                                "Failed to cleanup stale worktree for {}: {}",
-                                name, e
-                            ),
-                        })?;
-
-                    // Retry creating the worktree
-                    self.worktree_manager
-                        .create(name)
-                        .map_err(|e| crate::Error::Rpc {
-                            code: -32603,
-                            message: format!(
-                                "Failed to create worktree for {} after cleanup: {}",
-                                name, e
-                            ),
-                        })?
+                    // Valid worktree but stale (no window) - reuse it so the
+                    // coworker keeps its existing branch and any uncommitted work
+                    // (important for orphan recovery and PR break-and-resume).
+                    tracing::info!("Reusing existing valid worktree for {}", name);
+                    worktree_path
                 }
             }
             Err(e) => {
