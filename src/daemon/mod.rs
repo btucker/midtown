@@ -358,6 +358,10 @@ pub(crate) struct DaemonState {
     /// User display name from config (e.g. "Ben"). Used to recognize user @mentions
     /// and identify user-sent messages when the display name differs from "user".
     user_display_name: Option<String>,
+    /// Per-coworker zombie respawn attempt counter. Tracks how many times each
+    /// coworker has been respawned as a zombie without recovering. Reset when a
+    /// coworker is spawned normally (non-zombie path). Used to cap respawn loops.
+    zombie_respawn_counts: std::sync::Mutex<HashMap<String, u32>>,
 }
 
 impl DaemonState {
@@ -492,6 +496,7 @@ impl DaemonState {
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
             user_display_name,
+            zombie_respawn_counts: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -507,6 +512,11 @@ impl DaemonState {
             config.name.clone(),
             crate::rules::CoworkerLifecycle::new_spawn(),
         );
+        // Clear zombie respawn counter on successful spawn
+        {
+            let mut counts = self.zombie_respawn_counts.lock().unwrap();
+            counts.remove(&config.name);
+        }
         Ok(())
     }
 
@@ -3289,7 +3299,20 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                 reviews_spawned += 1;
             }
             Err(e) => {
-                debug!("Could not spawn new reviewer for PR #{}: {}", pr_number, e);
+                warn!("Could not spawn reviewer for PR #{}: {}", pr_number, e);
+                let fail_msg = Message::new(
+                    "midtown",
+                    format!(
+                        "⚠️ Failed to spawn reviewer for PR #{} ({}): {}",
+                        pr_number,
+                        truncate_str(title, 40),
+                        e
+                    ),
+                    MessageType::Text,
+                );
+                if let Err(e) = state.send_and_broadcast(&fail_msg) {
+                    warn!("Failed to post reviewer spawn failure to channel: {}", e);
+                }
             }
         }
     }
@@ -4145,8 +4168,41 @@ fn check_and_respawn_zombies(
         chrono::Duration::seconds(ZOMBIE_MIN_AGE_SECS),
     );
 
+    // Build a set of isolated (reviewer) coworker names for fast lookup
+    let isolated_coworkers: HashSet<&str> = snap
+        .coworker_snapshots
+        .iter()
+        .filter(|cw| cw.isolated_tasks)
+        .map(|cw| cw.name.as_str())
+        .collect();
+
     let mut effects = Vec::new();
     for name in zombies {
+        // Skip isolated (reviewer) coworkers — they were one-shot tasks spawned
+        // with a specific review prompt. Respawning with --continue and no prompt
+        // would produce a confused coworker that joins the shared task list without
+        // knowing which PR to review. Just shut them down and alert.
+        if isolated_coworkers.contains(name.as_str()) {
+            warn!(
+                "Blank-pane zombie {} is an isolated reviewer — shutting down instead of respawning",
+                name
+            );
+            effects.push(Effect::ShutdownCoworker {
+                name: name.clone(),
+                message: String::new(),
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "⚠️ Reviewer {} crashed on startup (blank pane). \
+                     Isolated reviewers cannot be respawned — shutting down. \
+                     The PR will be picked up for review on the next poll cycle.",
+                    name
+                ),
+            });
+            continue;
+        }
+
         // Per-coworker cooldown to prevent respawn loops
         let cooldowns = state.cooldowns.lock().unwrap();
         if !cooldowns.check("zombie_respawn", &name, ZOMBIE_RESPAWN_COOLDOWN) {
@@ -4154,6 +4210,39 @@ fn check_and_respawn_zombies(
             continue;
         }
         drop(cooldowns);
+
+        // Check respawn attempt count — give up after MAX_ZOMBIE_RESPAWN_ATTEMPTS
+        let attempt_count = {
+            let mut counts = state.zombie_respawn_counts.lock().unwrap();
+            let count = counts.entry(name.clone()).or_insert(0);
+            *count += 1;
+            *count
+        };
+
+        if attempt_count > MAX_ZOMBIE_RESPAWN_ATTEMPTS {
+            warn!(
+                "Zombie {} has failed {} respawn attempts (max {}), giving up",
+                name, attempt_count, MAX_ZOMBIE_RESPAWN_ATTEMPTS
+            );
+            effects.push(Effect::ShutdownCoworker {
+                name: name.clone(),
+                message: String::new(),
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "⚠️ Coworker {} failed to start after {} attempts — giving up. \
+                     Check daemon logs for BLANK PANE DIAGNOSTIC details.",
+                    name, MAX_ZOMBIE_RESPAWN_ATTEMPTS
+                ),
+            });
+            // Clean up the counter
+            {
+                let mut counts = state.zombie_respawn_counts.lock().unwrap();
+                counts.remove(&name);
+            }
+            continue;
+        }
 
         // Capture diagnostics before respawning
         let target = format!("{}:{}", snap.session_name, name);
@@ -4181,9 +4270,11 @@ fn check_and_respawn_zombies(
             .unwrap_or(-1);
 
         warn!(
-            "BLANK PANE ZOMBIE {} — age={}s, pane_info=[{}], running_coworkers={}, raw={:?}",
+            "BLANK PANE ZOMBIE {} — age={}s, attempt={}/{}, pane_info=[{}], running_coworkers={}, raw={:?}",
             name,
             age,
+            attempt_count,
+            MAX_ZOMBIE_RESPAWN_ATTEMPTS,
             pane_pid,
             snap.running_coworkers.len(),
             raw_content,
@@ -4196,7 +4287,10 @@ fn check_and_respawn_zombies(
         });
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
-            message: format!("🧟 Detected blank-pane zombie {} — respawning", name),
+            message: format!(
+                "🧟 Detected blank-pane zombie {} — respawning (attempt {}/{})",
+                name, attempt_count, MAX_ZOMBIE_RESPAWN_ATTEMPTS
+            ),
         });
     }
 
