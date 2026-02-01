@@ -1428,16 +1428,13 @@ async fn check_and_shutdown_idle_coworkers(
 
         // For isolated coworkers (reviewers), verify the review was actually posted
         let (should_shutdown, shutdown_msg) = if decision.is_isolated {
-            // Look up the PR this reviewer was assigned to
-            let pr_number = {
-                let github_state = state.github_state.lock().await;
-                github_state.pr_for_reviewer(name)
-            };
+            // Look up the PR this reviewer was assigned to (from snapshot)
+            let pr_number = snap.reviewer_pr_assignments.get(name).copied();
 
             match pr_number {
                 Some(pr) => {
-                    // Check if review was actually posted
-                    if state.is_pr_reviewed(pr).await {
+                    // Check if review was actually posted (from snapshot, no API call)
+                    if snap.reviewed_prs.contains(&pr) {
                         info!(
                             "Sending reviewer {} on a break (review verified for PR #{})",
                             name, pr
