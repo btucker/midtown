@@ -50,12 +50,14 @@ pub async fn evaluate_tick(
             // Order matters: later calls can override phase transitions from earlier
             // calls. For example, a prompt nudge can supersede an idle shutdown
             // decision for the same coworker.
-            effects.extend(super::check_and_shutdown_idle_coworkers(snap, state).await);
-            effects.extend(super::check_and_nudge_interrupted_coworkers(snap, state).await);
-            effects.extend(super::check_and_nudge_prompted_coworkers(snap, state).await);
-            effects.extend(super::check_and_restart_stuck_coworkers(snap, state));
-            effects.extend(super::check_for_usage_limits(snap));
-            effects.extend(super::maybe_nudge_usage_limit_expiry(snap));
+            effects.extend(super::health::check_and_shutdown_idle_coworkers(snap, state).await);
+            effects.extend(super::health::check_and_nudge_interrupted_coworkers(snap, state).await);
+            effects.extend(super::health::check_and_nudge_prompted_coworkers(snap, state).await);
+            effects.extend(super::health::check_and_restart_stuck_coworkers(
+                snap, state,
+            ));
+            effects.extend(super::health::check_for_usage_limits(snap));
+            effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
             effects
         }
         DaemonEvent::TaskDispatchTick => {
@@ -63,8 +65,8 @@ pub async fn evaluate_tick(
             effects.extend(super::check_for_duplicate_task_workers(snap));
             effects.extend(super::check_and_recover_orphans(snap, state));
             effects.extend(super::spawn_for_pending_tasks(snap, state));
-            effects.extend(super::check_and_respawn_zombies(snap, state));
-            effects.extend(super::check_and_fire_reminders(snap, state));
+            effects.extend(super::health::check_and_respawn_zombies(snap, state));
+            effects.extend(super::health::check_and_fire_reminders(snap, state));
             effects
         }
     }
