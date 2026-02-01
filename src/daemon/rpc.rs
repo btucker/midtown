@@ -624,7 +624,7 @@ pub(super) async fn handle_channel_post(
                 let has_lead_mention = content.to_lowercase().contains("@lead");
 
                 // Route @mentions in user messages directly to coworkers
-                super::route_mentions(state, &msg).await;
+                super::chat::route_mentions(state, &msg).await;
 
                 // Only nudge lead if there are no coworker @mentions (regular
                 // message for the lead) or if the user also @mentioned the lead.
