@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use clap::Subcommand;
@@ -172,7 +173,11 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         );
     }
 
-    let message = if new_messages.is_empty() {
+    // Lightweight daemon health check: try connecting to the socket.
+    // If the daemon crashed, the socket file may still exist but connect() will fail.
+    let daemon_restarted = check_daemon_health();
+
+    let mut message = if new_messages.is_empty() {
         "Channel synced, no new messages".to_string()
     } else {
         let formatted = format_channel_messages(&new_messages);
@@ -184,7 +189,60 @@ fn handle_lead_stop_hook() -> Result<Response, String> {
         )
     };
 
+    if daemon_restarted {
+        message.push_str("\n⚠️ Daemon was unresponsive and has been restarted.");
+    }
+
     Ok(Response::Message { message })
+}
+
+/// Check daemon health by attempting a socket connection.
+///
+/// Returns `true` if the daemon was dead and a restart was triggered.
+/// Returns `false` if the daemon is healthy or if we're not in a git repo.
+fn check_daemon_health() -> bool {
+    let socket_path = midtown::paths::daemon_socket();
+
+    // If the socket file doesn't exist, the daemon was never started or was
+    // cleanly stopped — not our job to start it.
+    if !socket_path.exists() {
+        return false;
+    }
+
+    // Try an actual TCP-level connect to verify the daemon is listening.
+    // This is lightweight — no RPC payload, just a socket handshake.
+    match UnixStream::connect(&socket_path) {
+        Ok(_stream) => {
+            // Daemon is alive — nothing to do. The stream drops immediately.
+            false
+        }
+        Err(e) => {
+            // Socket file exists but connect failed — daemon is dead.
+            let repo = detect_git_repo();
+            if let Some(ref repo) = repo {
+                hook_log(
+                    repo,
+                    &format!("lead-stop: daemon health check failed ({}), restarting", e),
+                );
+            }
+
+            // Trigger restart — this stops the dead daemon and starts a fresh one.
+            match super::handle_restart() {
+                Ok(_) => {
+                    if let Some(ref repo) = repo {
+                        hook_log(repo, "lead-stop: daemon restarted successfully");
+                    }
+                    true
+                }
+                Err(err) => {
+                    if let Some(ref repo) = repo {
+                        hook_log(repo, &format!("lead-stop: daemon restart failed: {}", err));
+                    }
+                    false
+                }
+            }
+        }
+    }
 }
 
 /// Read channel messages and return them (for stop hook sync).
