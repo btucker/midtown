@@ -1066,13 +1066,13 @@ pub fn spawn_claude(
     // Isolated coworkers (e.g., reviewers) get their own task list so their
     // sub-tasks don't pollute the shared task list
     let env_vars = if isolated_tasks {
-        format!("export MIDTOWN_AGENT='{}'", name)
+        format!("export MIDTOWN_AGENT='{}' DISABLE_AUTOUPDATER=1", name)
     } else {
         let task_list_id = repo_name
             .map(crate::paths::task_list_id_for_repo)
             .unwrap_or_else(crate::paths::task_list_id);
         format!(
-            "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}'",
+            "export MIDTOWN_AGENT='{}' CLAUDE_CODE_TASK_LIST_ID='{}' DISABLE_AUTOUPDATER=1",
             name, task_list_id
         )
     };
