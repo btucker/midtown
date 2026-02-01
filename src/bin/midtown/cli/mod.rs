@@ -77,6 +77,27 @@ pub fn handle_chat() -> Result<(), String> {
     chat::run()
 }
 
+/// Handle `midtown state <phase> [--task <id>]` — writes structured coworker state.
+///
+/// Called explicitly by coworkers to report their workflow phase.
+/// Writes a JSON state file that the daemon reads for tmux tab display.
+pub fn handle_state(
+    phase: midtown::coworker_state::WorkflowPhase,
+    task_id: Option<u32>,
+) -> Result<Response, String> {
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+    let repo =
+        hooks::detect_git_repo_public().ok_or_else(|| "Not in a git repository".to_string())?;
+
+    let report = midtown::coworker_state::CoworkerStateReport::new(phase, task_id);
+    midtown::coworker_state::write_state(&repo, &agent, &report)
+        .map_err(|e| format!("Failed to write state: {}", e))?;
+
+    Ok(Response::Message {
+        message: format!("{} → {}", agent, report.display_status()),
+    })
+}
+
 /// Handle hook commands (insight, idle, task, ask) - no daemon required
 pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
     hooks::handle(cmd)

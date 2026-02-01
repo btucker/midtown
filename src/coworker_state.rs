@@ -32,7 +32,7 @@ pub struct CoworkerStateReport {
 ///
 /// These replace the keyword-matching in `parse_status()`. Each variant
 /// has a fixed abbreviation used for the tmux tab display.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowPhase {
     /// Claiming a task ("claim")

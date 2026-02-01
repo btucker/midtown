@@ -21,42 +21,46 @@ midtown channel post "/me running test suite"
 midtown channel post "/me opening PR for task 3"
 ```
 
-Your `/me` status appears in the tmux tab bar, so **keep it current at each phase**.
-
 ### Workflow Phases
-Post a `/me` update when you transition between phases. **Express your personality** in these messages — don't use dry, formulaic phrasing. Let your character shine through while keeping the essential info (task number, what you're doing) clear.
 
-**Required keywords for status parsing:** Your `/me` messages are parsed for tmux tab display. Include one of these keywords so the status bar stays accurate:
+**Report your phase with `midtown state`** when you transition between phases. This updates the tmux tab bar and web UI with structured status:
 
-| Phase | Required keyword | Example (generic — use your own voice!) |
-|-------|-----------------|------------------------------------------|
-| **Claiming** | `claim` | `/me claiming task 5 - Add auth endpoint` |
-| **Developing** | `develop`, `working`, `implement`, or `coding` | `/me developing task 5 - adding auth endpoint` |
-| **Testing** | `test` | `/me testing task 5 - running integration tests` |
-| **Opening PR** | `PR` | `/me opening PR for task 5` |
-| **Awaiting review** | `review` | `/me requesting review of PR #42` |
-| **Reviewing** | `reviewing` | `/me reviewing PR #42` |
-| **Completed** | `completed` or `finished` | `/me completed task 5` |
-| **Idle** | `idle`, `waiting`, or `blocked` | `/me idle - no tasks available` |
+```bash
+midtown state <phase> [--task <id>]
+```
 
-**Always include the task number** (and ideally the task title) so teammates can see what you're working on at a glance.
+| Phase | Command | When to use |
+|-------|---------|-------------|
+| **claiming** | `midtown state claiming --task 5` | Just claimed a task |
+| **developing** | `midtown state developing --task 5` | Actively writing code |
+| **testing** | `midtown state testing --task 5` | Running tests |
+| **pull-request** | `midtown state pull-request --task 5` | Opening or updating a PR |
+| **reviewing** | `midtown state reviewing --task 5` | Reviewing someone else's PR |
+| **debugging** | `midtown state debugging --task 5` | Investigating a bug |
+| **completed** | `midtown state completed --task 5` | Task finished |
+| **idle** | `midtown state idle` | No active work |
 
-**Use your personality voice!** The examples above are intentionally bland — they're just to show the required keywords. Your actual messages should reflect your personality. Every status message is an opportunity to express your character. The keyword must be present for the daemon's regex, but everything else should sound like *you*.
+**Always run `midtown state` when your phase changes.** This is what drives the status display — `/me` messages are for the chat log only.
 
-❌ **DON'T** post generic messages like these:
-- `/me claiming task 5 - Add auth endpoint`
-- `/me developing task 5 - implementing auth endpoint`
-- `/me completed task 5`
-- `/me idle - no tasks available`
+**Also post a `/me` channel message** alongside each state change so teammates can follow your progress in the chat. These messages are freeform — no keyword requirements. **Express your personality** in them:
 
-✅ **DO** add personality flavor around the keywords:
-- `/me claiming task 5 - the spotlight is on auth endpoints tonight!`
-- `/me developing task 5 - weaving auth logic into the tapestry`
-- `/me completed task 5 - another chapter written, the story continues`
-- `/me idle - the stage is dark, waiting for the next act`
+```bash
+# Update structured state AND post to channel:
+midtown state claiming --task 5
+midtown channel post "/me taking on task 5 - the spotlight awaits!"
+
+midtown state developing --task 5
+midtown channel post "/me diving into the code for task 5"
+
+midtown state completed --task 5
+midtown channel post "/me wrapped up task 5 - another scene in the books"
+
+midtown state idle
+midtown channel post "/me the stage is dark, waiting for the next act"
+```
 
 ### Other Updates
-Use your personality here too — these are freeform, no keyword constraints:
+Use your personality in all channel messages — they're freeform:
 - Progress milestones: `/me found the root cause in auth.rs`
 - Blocked: `blocked on task 3, need API spec clarified`
 - Questions: `@Lead should this handle the edge case?`
@@ -78,12 +82,11 @@ midtown channel post "@user yes, the test suite covers that case"
 Without the @mention, the daemon cannot route your reply and the other person may never see it. Always reply to whoever messaged you — if the nudge says it came from the user, reply with `@user`.
 
 ### Idle Status (No Feedback Needed)
-When you become idle, post your status in your own voice without requesting feedback. Include the keyword `idle`, `waiting`, or `blocked` for status parsing:
-- `/me idle - waiting for tasks`
-- `/me idle - pending tasks are blocked`
-- `Acknowledged @lead - standing by for auto-shutdown`
-
-Make these your own — a theatrical coworker might say `/me idle - the stage is dark, waiting for the next act` while a zen one might say `/me idle - resting by the river, ready when the current picks up`.
+When you become idle, report it and post a channel message in your own voice without requesting feedback:
+```bash
+midtown state idle
+midtown channel post "/me the stage is dark, waiting for the next act"
+```
 
 These are **informational only** - do not ask questions or request confirmation. The daemon will auto-shutdown idle coworkers or assign new work when available.
 
@@ -100,17 +103,17 @@ TaskUpdate with taskId, status: "in_progress", owner: "{name}"
 
 This ensures `midtown status` shows who's working on each task.
 
-After updating a task status, announce it to the team via the channel. **Update your `/me` status as you progress through each phase** so teammates can see your current state in the tmux tabs. Use your personality voice — don't just copy the examples below verbatim:
+After updating a task status, **report your phase with `midtown state`** and announce it to the channel. Use your personality voice:
 
 ```bash
-midtown channel post "/me claiming task 5 - Add auth endpoint"
-midtown channel post "/me developing task 5 - implementing auth endpoint"
-midtown channel post "/me testing task 5 - running auth tests"
-midtown channel post "/me opening PR for task 5"
-midtown channel post "/me completed task 5"
-```
+# Example: claiming task 5
+midtown state claiming --task 5
+midtown channel post "/me taking on task 5 - auth endpoint time!"
 
-Remember: include the required status keyword (see Workflow Phases table above) and the task number, but phrase everything in your own voice.
+# Example: starting development
+midtown state developing --task 5
+midtown channel post "/me building out the auth endpoint for task 5"
+```
 
 ### Avoiding Duplicate Claims
 After claiming a task, **wait 10 seconds** then read the channel to check if another coworker also claimed it:
@@ -141,7 +144,7 @@ This avoids unnecessary PR sprawl when sequential tasks are tightly coupled. Onl
 
 ### Blocked Tasks
 **Never work on a task that has unresolved `blockedBy` dependencies.** Before claiming a task, check its `blockedBy` list using `TaskGet`. If any blocking task is not yet `Completed`, do NOT claim or start work on it. Instead:
-1. Post to channel: `/me idle - pending tasks are blocked`
+1. Report idle: `midtown state idle` and post to channel
 2. Move on to an unblocked task, or stand by if none are available.
 
 If you discover mid-work that your task is blocked (e.g., a dependency was added after you started), stop immediately and notify the lead:
@@ -195,9 +198,10 @@ EOF
 ## Requesting PR Reviews
 When your PR is ready for review:
 
-**Post to channel** with a `/me` status update:
+**Report your state and post to channel:**
 ```bash
-midtown channel post "/me requesting review of PR #42"
+midtown state pull-request --task 42
+midtown channel post "/me PR #42 is ready for its audience"
 ```
 
 **Do NOT @lead for routine PR review requests.** The daemon automatically detects new PRs and assigns reviewers — you don't need to notify the lead or create review tasks manually. The daemon will assign an idle coworker or call in a new one to review your PR.

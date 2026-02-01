@@ -123,6 +123,16 @@ enum Commands {
     },
     /// Open IRC-style chat TUI
     Chat,
+    /// Report coworker workflow state (called by coworkers to update status)
+    State {
+        /// Workflow phase
+        #[arg(value_enum)]
+        phase: midtown::coworker_state::WorkflowPhase,
+
+        /// Task number being worked on
+        #[arg(long)]
+        task: Option<u32>,
+    },
     /// Hook handlers (insight, idle, task, ask) - called by Claude Code hooks
     Hook {
         #[command(subcommand)]
@@ -420,6 +430,13 @@ fn main() {
         return;
     }
 
+    // State command (no daemon required - writes state file directly)
+    if let Commands::State { phase, task } = &command {
+        let result = cli::handle_state(*phase, *task);
+        handle_result(format, result);
+        return;
+    }
+
     // Hook commands (no daemon required - called by Claude Code hooks)
     if let Commands::Hook { command } = &command {
         let result = cli::handle_hook(command);
@@ -621,6 +638,7 @@ fn main() {
         | Commands::Lead { .. }
         | Commands::Project { .. }
         | Commands::Chat
+        | Commands::State { .. }
         | Commands::Hook { .. }
         | Commands::Log { .. }
         | Commands::Webserver { .. } => unreachable!(),
