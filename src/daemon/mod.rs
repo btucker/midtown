@@ -1982,9 +1982,51 @@ async fn webhook_forwarder_watchdog(
 
         // Start new forwarder process
         match start_gh_webhook_forward(&gh_repo, &url) {
-            Ok(child) => {
+            Ok(mut child) => {
                 info!("Started gh webhook forward for {} to {}", gh_repo, url);
-                current_process = Some(child);
+
+                // Check if the process exits quickly (indicating an error)
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                match child.try_wait() {
+                    Ok(Some(status)) if !status.success() => {
+                        // Process exited quickly with an error — check stderr
+                        let stderr = child
+                            .stderr
+                            .take()
+                            .and_then(|mut s| {
+                                let mut buf = String::new();
+                                std::io::Read::read_to_string(&mut s, &mut buf).ok()?;
+                                Some(buf)
+                            })
+                            .unwrap_or_default();
+
+                        if stderr.contains("Hook already exists")
+                            || stderr.contains("already_exists")
+                            || stderr.contains("422")
+                        {
+                            warn!(
+                                "Webhook forwarder failed with stale hook error: {}",
+                                stderr.trim()
+                            );
+                            if delete_stale_github_webhooks(&gh_repo) {
+                                info!("Cleaned up stale webhook(s), will retry on next cycle");
+                            } else {
+                                warn!("Failed to clean up stale webhooks");
+                            }
+                        } else {
+                            warn!(
+                                "Webhook forwarder exited early with status {}: {}",
+                                status,
+                                stderr.trim()
+                            );
+                        }
+                        // Don't store — process already exited
+                    }
+                    _ => {
+                        // Process still running after 3s — healthy start
+                        current_process = Some(child);
+                    }
+                }
             }
             Err(e) => {
                 warn!("Failed to start gh webhook forward: {}", e);
@@ -2073,6 +2115,80 @@ fn start_gh_webhook_forward(repo: &str, url: &str) -> std::io::Result<std::proce
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
+}
+
+/// Delete stale GitHub CLI webhooks that cause "Hook already exists" errors.
+///
+/// Lists all webhooks on the repo and deletes any with `name: "cli"` that point
+/// to `webhook-forwarder.github.com` — these are leftover from previous
+/// `gh webhook forward` sessions that weren't cleaned up on exit.
+fn delete_stale_github_webhooks(repo: &str) -> bool {
+    let output = match std::process::Command::new("gh")
+        .args(["api", &format!("repos/{}/hooks", repo), "--paginate"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            warn!(
+                "Failed to list webhooks: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            return false;
+        }
+        Err(e) => {
+            warn!("Failed to run gh api: {}", e);
+            return false;
+        }
+    };
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let hooks: Vec<serde_json::Value> = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Failed to parse webhooks response: {}", e);
+            return false;
+        }
+    };
+
+    let mut deleted = false;
+    for hook in &hooks {
+        let name = hook["name"].as_str().unwrap_or_default();
+        let hook_url = hook["config"]["url"].as_str().unwrap_or_default();
+        let id = hook["id"].as_u64().unwrap_or_default();
+
+        if name == "cli" && hook_url.contains("webhook-forwarder.github.com") && id != 0 {
+            info!("Deleting stale CLI webhook {} (url: {})", id, hook_url);
+            match std::process::Command::new("gh")
+                .args([
+                    "api",
+                    "--method",
+                    "DELETE",
+                    &format!("repos/{}/hooks/{}", repo, id),
+                ])
+                .output()
+            {
+                Ok(o) if o.status.success() => {
+                    info!("Successfully deleted stale webhook {}", id);
+                    deleted = true;
+                }
+                Ok(o) => {
+                    warn!(
+                        "Failed to delete webhook {}: {}",
+                        id,
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to run gh api DELETE for webhook {}: {}", id, e);
+                }
+            }
+        }
+    }
+
+    if !deleted {
+        warn!("No stale CLI webhooks found to delete");
+    }
+    deleted
 }
 
 /// Background task that polls PRs for actionable issues.
