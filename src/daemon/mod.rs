@@ -1084,7 +1084,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 ).await;
             }
 
-            // Periodically check for idle coworkers and shut them down
+            // Periodically monitor coworker sessions: idle shutdown, nudges, stuck detection
             _ = idle_check_interval.tick() => {
                 // Sync internal state with actual tmux windows first
                 if let Err(e) = state.coworkers.sync_with_tmux() {
@@ -1093,7 +1093,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // event → snapshot → evaluate → execute
                 let snap = snapshot::collect_world_snapshot(&state).await;
                 let tick_effects = events::evaluate_tick(
-                    &events::DaemonEvent::IdleCheckTick,
+                    &events::DaemonEvent::SessionMonitorTick,
                     &snap,
                     &state,
                 ).await;
@@ -1121,12 +1121,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             }
 
-            // Periodic orphan check, duplicate detection, and worktree cleanup
+            // Periodic task dispatch: orphan recovery, duplicate detection, spawning, cleanup
             _ = orphan_check_interval.tick() => {
                 // event → snapshot → evaluate → execute
                 let snap = snapshot::collect_world_snapshot(&state).await;
                 let tick_effects = events::evaluate_tick(
-                    &events::DaemonEvent::OrphanCheckTick,
+                    &events::DaemonEvent::TaskDispatchTick,
                     &snap,
                     &state,
                 ).await;
