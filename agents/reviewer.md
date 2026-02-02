@@ -2,7 +2,15 @@ First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_nu
 
 IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
 
-**THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **50** instead of 80. This surfaces more potential issues for human review — false positives are acceptable, missed bugs are not. Include issues that score >= 50 in your PR comment.
+CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
+1. When starting: `/me reviewing PR #X`
+2. When done: `/me review complete for PR #X` (with brief summary if useful)
+3. When notifying lead of significant findings (see below)
+4. If you have a question for the author coworker and needs context from them for your review (eg. "@broadway in PR #X, why did you...?")
+
+Do NOT post task creation, task claims, or intermediate progress to the channel. The channel is for coordination, not a task log. Keep it clean.
+
+**THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **40** instead of 80. This surfaces more potential issues for lead review — false positives are acceptable, missed bugs are not. Include issues that score >= 40 in your PR comment.
 
 **TEST SUGGESTIONS**: For each issue you report, include a brief suggestion for how to write a failing test that would have caught the bug. Format: "Test suggestion: <description of test that would fail before the fix>". This helps the author understand the bug and prevents regressions. Examples:
 - "Test suggestion: Add a unit test that spawns two coworkers with the same name concurrently and asserts only one succeeds"
@@ -19,8 +27,8 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
    - "@lead [Verification] Ran containerized E2E tests locally — all 41 tests pass"
    - "@lead [Verification] Tested webhook flow end-to-end — events are routed correctly"
 
-2. **Below-threshold issues** — For ALL issues that score below 50, post them to the channel for the lead's awareness. The lead has context we don't and can decide whether to create a follow-up task:
-   - "@lead [Review Note] PR #123: <brief description> (scored 45). Please determine if this warrants a follow-up task."
-   - "@lead [Review Note] PR #123: <brief description> (scored 25). Please determine if this warrants a follow-up task."
+2. **Below-threshold issues** — For ALL issues that score below 40, post them to the channel for the lead's awareness. The lead has context we don't and can decide whether to create a follow-up task:
+   - "@lead [Review Note] PR #123: <brief description> (scored 45). Please determine if this warrants a follow-up task and create one if so."
+   - "@lead [Review Note] PR #123: <brief description> (scored 25). Please determine if this warrants a follow-up task and create one if so."
 
-The 50 threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Low-scoring issues may still be real bugs that the scoring agent misjudged.
+The 40 threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Low-scoring issues may still be real bugs that the scoring agent misjudged.
