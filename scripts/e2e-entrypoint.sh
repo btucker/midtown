@@ -50,7 +50,7 @@ run_coordination_tests() {
     }
 
     echo "--- task_sharing ---"
-    cargo test --release --test task_sharing -- --ignored "${test_args[@]}"
+    cargo test --release --test task_sharing -- "${test_args[@]}"
 
     echo ""
     echo "=== Coordination tests complete ==="
