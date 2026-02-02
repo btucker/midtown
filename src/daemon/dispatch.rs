@@ -540,6 +540,17 @@ pub(super) fn spawn_for_pending_tasks(
             break;
         }
 
+        // Skip tasks that already have an in-flight AssignAndSpawn effect.
+        // This prevents the race condition where a new tick sees a task as pending
+        // before the previous tick's AssignAndSpawn effect has completed its disk write.
+        if state.is_task_spawn_in_flight(&task.id) {
+            debug!(
+                "Task #{} already has in-flight spawn, skipping duplicate",
+                task.id
+            );
+            continue;
+        }
+
         // Step 1: Determine the coworker name by checking multiple grouping strategies.
         // Priority: in-memory PR map → in-memory blockedBy map → disk PR owner →
         //           blockedBy relationship → new coworker name
