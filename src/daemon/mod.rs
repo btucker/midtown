@@ -358,6 +358,20 @@ pub(crate) struct DaemonState {
     /// Used by the PR poll task to determine webhook health: if recent,
     /// polling uses a relaxed interval; if stale or absent, polling is aggressive.
     last_webhook_event_at: Mutex<Option<tokio::time::Instant>>,
+    /// Task IDs with pending `AssignAndSpawn` effects that haven't completed yet.
+    ///
+    /// Prevents the task-level spawn race condition where two ticks both see the same
+    /// pending task and generate duplicate `AssignAndSpawn` effects. The race occurs
+    /// because:
+    /// 1. Tick 1 evaluates, sees pending task, generates `AssignAndSpawn`
+    /// 2. Effects start executing (disk write + tmux spawn takes time)
+    /// 3. Tick 2 fires, collects snapshot that still shows task as pending
+    /// 4. Tick 2 generates another `AssignAndSpawn` for the same task
+    ///
+    /// Fix: After `evaluate_tick`, scan returned effects for `AssignAndSpawn` and
+    /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
+    /// already in-flight. Clear entries when effects complete (success or failure).
+    in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
 }
 
 impl DaemonState {
@@ -483,6 +497,7 @@ impl DaemonState {
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
             user_display_name,
             last_webhook_event_at: Mutex::new(None),
+            in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
         })
     }
 
@@ -508,6 +523,43 @@ impl DaemonState {
                 .user_display_name
                 .as_ref()
                 .is_some_and(|dn| dn.eq_ignore_ascii_case(from))
+    }
+
+    /// Check if a task has a pending `AssignAndSpawn` effect that hasn't completed yet.
+    ///
+    /// Used by `spawn_for_pending_tasks` to avoid generating duplicate effects.
+    pub(crate) fn is_task_spawn_in_flight(&self, task_id: &str) -> bool {
+        self.in_flight_task_spawns.lock().unwrap().contains(task_id)
+    }
+
+    /// Mark a task as having a pending `AssignAndSpawn` effect.
+    ///
+    /// Called after `evaluate_tick` returns effects, before `execute_effects`.
+    pub(crate) fn mark_task_spawn_in_flight(&self, task_id: &str) {
+        self.in_flight_task_spawns
+            .lock()
+            .unwrap()
+            .insert(task_id.to_string());
+    }
+
+    /// Clear the in-flight marker for a task after its `AssignAndSpawn` completes.
+    ///
+    /// Called from `execute_effects` when the effect succeeds or fails.
+    pub(crate) fn clear_task_spawn_in_flight(&self, task_id: &str) {
+        self.in_flight_task_spawns.lock().unwrap().remove(task_id);
+    }
+
+    /// Scan effects for `AssignAndSpawn` variants and mark their task IDs as in-flight.
+    ///
+    /// Called after `evaluate_tick` returns effects, before `execute_effects`.
+    /// This prevents the next tick from generating duplicate spawns for the same task.
+    fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
+        for effect in effects {
+            if let effects::Effect::AssignAndSpawn { task_id, .. } = effect {
+                self.mark_task_spawn_in_flight(task_id);
+                debug!("Marked task #{} as in-flight spawn", task_id);
+            }
+        }
     }
 
     /// Send a message to the channel and broadcast it to WebSocket clients.
@@ -1129,6 +1181,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     &snap,
                     &state,
                 ).await;
+                // Mark in-flight tasks BEFORE executing effects to prevent race conditions.
+                // If the next tick fires while effects are executing, it will skip these tasks.
+                state.mark_in_flight_spawns_from_effects(&tick_effects);
                 effects::execute_effects(tick_effects, &state).await;
                 // cleanup_orphaned_worktrees is not yet effect-based
                 dispatch::cleanup_orphaned_worktrees(&state);

@@ -269,6 +269,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Failed to assign task #{} to {} — skipping spawn: {}",
                         task_id, owner, e
                     );
+                    // Clear in-flight marker even on ownership failure
+                    state.clear_task_spawn_in_flight(&task_id);
                     // Don't spawn or run callbacks — ownership write failed
                     continue;
                 }
@@ -279,6 +281,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
                         info!("Spawned coworker {} successfully", name);
+                        // Clear in-flight marker on success (task is now owned)
+                        state.clear_task_spawn_in_flight(&task_id);
                         Box::pin(execute_effects(on_success, state)).await;
                     }
                     Err(e) => {
@@ -297,6 +301,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 task_id
                             );
                         }
+                        // Clear in-flight marker on failure (task was rolled back)
+                        state.clear_task_spawn_in_flight(&task_id);
                         Box::pin(execute_effects(on_failure, state)).await;
                     }
                 }
