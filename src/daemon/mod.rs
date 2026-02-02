@@ -358,6 +358,11 @@ pub(crate) struct DaemonState {
     /// User display name from config (e.g. "Ben"). Used to recognize user @mentions
     /// and identify user-sent messages when the display name differs from "user".
     user_display_name: Option<String>,
+    /// In-memory coworker state reports (phase + task), keyed by coworker name.
+    /// Replaces file-based state.json — coworkers report state via RPC, daemon
+    /// stores it here and uses it for tmux tab display and web UI updates.
+    coworker_state_reports:
+        std::sync::RwLock<HashMap<String, crate::coworker_state::CoworkerStateReport>>,
     /// Per-coworker zombie respawn attempt counter. Tracks how many times each
     /// coworker has been respawned as a zombie without recovering. Reset when a
     /// coworker is spawned normally (non-zombie path). Used to cap respawn loops.
@@ -491,6 +496,7 @@ impl DaemonState {
             coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
             user_display_name,
+            coworker_state_reports: std::sync::RwLock::new(HashMap::new()),
             zombie_respawn_counts: std::sync::Mutex::new(HashMap::new()),
             last_webhook_event_at: Mutex::new(None),
         })

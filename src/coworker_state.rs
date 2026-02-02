@@ -1,13 +1,15 @@
 //! Structured coworker state reporting.
 //!
-//! Coworkers report their workflow phase and current task via a JSON state file.
-//! The daemon reads these files to update tmux tab names and web UI status
-//! without parsing freeform `/me` channel messages.
+//! Coworkers report their workflow phase and current task via daemon RPC
+//! (`coworker.report-state`). The daemon stores state in memory and uses it
+//! to update tmux tab names and web UI status without parsing freeform `/me`
+//! channel messages.
 //!
-//! State file location: `~/.midtown/coworkers/<repo>/<name>/state.json`
+//! Legacy file-based state (`~/.midtown/coworkers/<repo>/<name>/state.json`)
+//! is retained as a fallback when the daemon is unreachable and for migration.
 //!
 //! The `/me` messages remain in the channel for human-readable history, but
-//! state decisions and display are driven by structured data in the state file.
+//! state decisions and display are driven by structured data from the daemon.
 
 use std::path::PathBuf;
 

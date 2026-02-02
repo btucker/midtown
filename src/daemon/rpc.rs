@@ -139,6 +139,23 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "coworker.list" => handle_coworker_list(request.id, state),
 
+        "coworker.report-state" => {
+            let params = request.params.as_ref();
+            let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
+            let phase = params.and_then(|p| p.get("phase")).and_then(|v| v.as_str());
+            let task_id = params
+                .and_then(|p| p.get("task_id"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+
+            match (name, phase) {
+                (Some(name), Some(phase)) => {
+                    handle_coworker_report_state(request.id, name, phase, task_id, state)
+                }
+                _ => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "coworker.nudge" => {
             let params = request.params.as_ref();
             let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
@@ -396,6 +413,63 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
     )
 }
 
+/// Handle coworker.report-state RPC method.
+///
+/// Stores the coworker's workflow phase in daemon memory and updates the
+/// tmux tab display. Replaces the previous file-based state.json approach
+/// so the daemon is the single authority for coworker state.
+fn handle_coworker_report_state(
+    id: RequestId,
+    name: &str,
+    phase_str: &str,
+    task_id: Option<u32>,
+    state: &DaemonState,
+) -> Response {
+    // Parse the phase string into a WorkflowPhase enum
+    let phase = match phase_str {
+        "claiming" => crate::coworker_state::WorkflowPhase::Claiming,
+        "developing" => crate::coworker_state::WorkflowPhase::Developing,
+        "testing" => crate::coworker_state::WorkflowPhase::Testing,
+        "pull_request" | "pull-request" => crate::coworker_state::WorkflowPhase::PullRequest,
+        "reviewing" => crate::coworker_state::WorkflowPhase::Reviewing,
+        "debugging" => crate::coworker_state::WorkflowPhase::Debugging,
+        "completed" => crate::coworker_state::WorkflowPhase::Completed,
+        "idle" => crate::coworker_state::WorkflowPhase::Idle,
+        _ => {
+            return Response::error(
+                id,
+                RpcError::new(-32602, format!("Unknown phase: {}", phase_str)),
+            );
+        }
+    };
+
+    let report = crate::coworker_state::CoworkerStateReport::new(phase, task_id);
+    let status_display = report.display_status();
+
+    // Store in daemon memory
+    {
+        let mut reports = state.coworker_state_reports.write().unwrap();
+        reports.insert(name.to_string(), report);
+    }
+
+    // Update tmux tab display
+    if let Err(e) = state
+        .coworkers
+        .update_status_formatted(name, &status_display)
+    {
+        debug!("Failed to update tmux tab for {}: {}", name, e);
+    }
+
+    info!("Coworker {} reported state: {}", name, status_display);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("{} → {}", name, status_display),
+        }),
+    )
+}
+
 /// Handle coworker.nudge RPC method.
 ///
 /// Sends the nudge directly to the coworker's tmux window without posting to the channel,
@@ -597,22 +671,28 @@ pub(super) async fn handle_channel_post(
             }
 
             // Update tmux tab for coworkers when they post /me actions.
-            // Prefer structured state from state.json (written by hooks) over
+            // Prefer structured state from daemon memory (reported via RPC) over
             // parsing the freeform /me message text with keyword matching.
             if msg_type == MessageType::Action {
-                let result = if let Some(report) =
-                    crate::coworker_state::read_state(&state.repo_name, from)
-                {
-                    // Use pre-formatted status from state file (bypasses parse_status)
-                    state
-                        .coworkers
-                        .update_status_formatted(from, &report.display_status())
-                } else {
-                    // Fallback: parse /me message text with keyword matching
-                    state.coworkers.update_status_display(from, Some(&content))
+                let has_rpc_state = {
+                    let reports = state.coworker_state_reports.read().unwrap();
+                    if let Some(report) = reports.get(from) {
+                        let display = report.display_status();
+                        drop(reports);
+                        let r = state.coworkers.update_status_formatted(from, &display);
+                        if let Err(e) = r {
+                            debug!("Failed to update tmux tab for {}: {}", from, e);
+                        }
+                        true
+                    } else {
+                        false
+                    }
                 };
-                if let Err(e) = result {
-                    debug!("Failed to update tmux tab for {}: {}", from, e);
+                if !has_rpc_state {
+                    // Fallback: parse /me message text with keyword matching
+                    if let Err(e) = state.coworkers.update_status_display(from, Some(&content)) {
+                        debug!("Failed to update tmux tab for {}: {}", from, e);
+                    }
                 }
             }
 

@@ -90,6 +90,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Clear state file so next session doesn't read stale phase
                 crate::coworker_state::clear_state(&state.repo_name, &name);
+                // Clean up in-memory state report
+                {
+                    let mut reports = state.coworker_state_reports.write().unwrap();
+                    reports.remove(&name);
+                }
                 // Clean up lifecycle state for the shut-down coworker
                 {
                     let mut lc = state.coworker_lifecycles.write().await;
@@ -143,6 +148,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Clear state file so respawned session doesn't read stale phase
                 crate::coworker_state::clear_state(&state.repo_name, &name);
+                // Clean up in-memory state report
+                {
+                    let mut reports = state.coworker_state_reports.write().unwrap();
+                    reports.remove(&name);
+                }
                 // Clean up lifecycle state so respawn starts fresh
                 {
                     let mut lc = state.coworker_lifecycles.write().await;
