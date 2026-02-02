@@ -281,6 +281,18 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "snapshot" => {
+            // Collect and return the full WorldSnapshot for debugging/testing
+            let snapshot = super::snapshot::collect_world_snapshot(state).await;
+            match serde_json::to_value(&snapshot) {
+                Ok(value) => Response::success(request.id, value),
+                Err(e) => Response::error(
+                    request.id,
+                    RpcError::new(-32603, format!("Failed to serialize snapshot: {}", e)),
+                ),
+            }
+        }
+
         _ => {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())

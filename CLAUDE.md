@@ -174,6 +174,59 @@ Post to the channel when done so the team knows the new code is live:
 midtown channel post "Pulled main, rebuilt release, and restarted midtown."
 ```
 
+## Debugging & Test Fixtures
+
+### Capturing WorldSnapshots
+
+When debugging daemon behavior or creating test cases, capture the daemon's `WorldSnapshot`:
+
+```bash
+midtown e2e capture                      # capture current state
+midtown e2e capture --label usage-limit  # include descriptive label
+```
+
+This saves a JSON file to `tests/fixtures/snapshot/` containing:
+- All pane contents (tmux screen captures)
+- Coworker state and start times
+- Task state (in-progress, pending, ownership)
+- PR state (open, merged, CI status)
+- Reviewer assignments
+
+Use these fixtures in unit tests to verify daemon decisions without running real Claude Code.
+
+### Debug Logging
+
+For detailed daemon debugging, run with increased log level:
+
+```bash
+RUST_LOG=midtown=debug midtown daemon    # summary pane info per tick
+RUST_LOG=midtown=trace midtown daemon    # full pane content + WorldSnapshot JSON
+```
+
+The daemon logs:
+- **debug**: Pane summary (lines, has_output, has_input_text) per coworker
+- **trace**: Full pane content and serialized WorldSnapshot
+
+This helps diagnose issues like incorrect stuck detection, nudge timing, or pane parsing bugs.
+
+### Creating Failing Test Cases
+
+When a bug involves daemon behavior:
+
+1. **Capture the state**: Run `midtown e2e capture --label <bug-description>` while the issue is occurring
+2. **Create a test**: Load the fixture and verify the expected behavior against the captured state
+3. **Fix and verify**: The test should fail, then pass after the fix
+
+Example test pattern:
+```rust
+#[test]
+fn test_stuck_detection_with_usage_limit() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-usage-limit-20250202-123456.json");
+    let snapshot: WorldSnapshot = serde_json::from_str(fixture).unwrap();
+    // Test that stuck detection handles usage limit screen correctly
+}
+```
+
 ## Pull Requests
 
 - When a PR includes visual changes to the web UI (`web-app/` or `web/`), include before/after screenshots in the PR description.

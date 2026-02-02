@@ -14,6 +14,16 @@ pub enum E2eCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Capture daemon WorldSnapshot for test fixtures
+    ///
+    /// Saves the full daemon WorldSnapshot (including all pane contents, coworker
+    /// state, task state, etc.) to a JSON fixture file. Use this during normal
+    /// operation to capture real daemon states for use in unit tests.
+    Capture {
+        /// Optional label to include in the filename (e.g., "usage-limit", "idle")
+        #[arg(short, long)]
+        label: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -28,6 +38,7 @@ pub fn handle(cmd: &E2eCommand) -> Result<(), String> {
     match cmd {
         E2eCommand::Auth => handle_auth(),
         E2eCommand::Run { mode, args } => handle_run(mode, args),
+        E2eCommand::Capture { label } => handle_capture(label.as_deref()),
     }
 }
 
@@ -118,6 +129,127 @@ fn handle_run(mode: &E2eMode, extra_args: &[String]) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Capture the full daemon WorldSnapshot and save to a JSON fixture file.
+fn handle_capture(label: Option<&str>) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    // Connect to daemon socket
+    let socket_path = midtown::paths::daemon_socket();
+    let mut stream = UnixStream::connect(&socket_path).map_err(|e| {
+        format!(
+            "Could not connect to daemon socket: {}. Is the daemon running?",
+            e
+        )
+    })?;
+
+    // Make RPC call to get snapshot
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "snapshot",
+        "id": 1
+    });
+    let request_line = format!("{}\n", request);
+    stream
+        .write_all(request_line.as_bytes())
+        .map_err(|e| format!("Failed to send request: {}", e))?;
+    stream
+        .flush()
+        .map_err(|e| format!("Failed to flush request: {}", e))?;
+
+    // Read response
+    let mut reader = BufReader::new(&stream);
+    let mut response_line = String::new();
+    reader
+        .read_line(&mut response_line)
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    let response: serde_json::Value = serde_json::from_str(&response_line)
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    // Extract result
+    let snapshot = response.get("result").ok_or_else(|| {
+        let error = response.get("error");
+        format!(
+            "Daemon returned error: {}",
+            error
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        )
+    })?;
+
+    // Create fixtures directory in the repo
+    let fixtures_dir = find_fixtures_dir()?;
+    std::fs::create_dir_all(&fixtures_dir)
+        .map_err(|e| format!("Failed to create fixtures dir: {}", e))?;
+
+    // Generate unique filename: snapshot-<label>-<timestamp>.json
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let filename = match label {
+        Some(l) => format!("snapshot-{}-{}.json", l, timestamp),
+        None => format!("snapshot-{}.json", timestamp),
+    };
+    let path = fixtures_dir.join(&filename);
+
+    // Pretty-print the JSON
+    let content = serde_json::to_string_pretty(snapshot)
+        .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
+
+    std::fs::write(&path, &content)
+        .map_err(|e| format!("Failed to write fixture '{}': {}", path.display(), e))?;
+
+    // Show summary
+    let coworker_count = snapshot
+        .get("active_coworkers")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let pane_count = snapshot
+        .get("pane_contents")
+        .and_then(|v| v.as_object())
+        .map(|o| o.len())
+        .unwrap_or(0);
+    let task_count = snapshot
+        .get("all_tasks")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    println!("Captured WorldSnapshot to: {}", path.display());
+    println!();
+    println!("Snapshot summary:");
+    println!("  Active coworkers: {}", coworker_count);
+    println!("  Pane contents: {}", pane_count);
+    println!("  Tasks: {}", task_count);
+    println!("  File size: {} bytes", content.len());
+    println!();
+    println!("Use this fixture in tests by loading from:");
+    println!("  tests/fixtures/snapshot/{}", filename);
+
+    Ok(())
+}
+
+/// Find the fixtures directory by locating the repo root.
+fn find_fixtures_dir() -> Result<std::path::PathBuf, String> {
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = cwd.as_path();
+        loop {
+            // Look for Cargo.toml as marker for repo root
+            if dir.join("Cargo.toml").exists() {
+                return Ok(dir.join("tests/fixtures/snapshot"));
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent,
+                None => break,
+            }
+        }
+    }
+    Err(
+        "Could not find repository root (Cargo.toml). Are you in the midtown repository?"
+            .to_string(),
+    )
 }
 
 /// Find the e2e-container.sh script by searching upward from the current dir

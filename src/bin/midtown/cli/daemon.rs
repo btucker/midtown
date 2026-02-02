@@ -387,8 +387,11 @@ pub fn handle_start(
         cmd.spawn()
             .map_err(|e| format!("Failed to start daemon: {}", e))?;
 
-        // Wait for daemon to start, polling the socket with retries
-        let started = wait_for_daemon_socket(5, 200);
+        // Wait for daemon to start, polling the socket with retries.
+        // The daemon startup includes plugin checking and gh CLI auth which
+        // can take several seconds, so we use a generous timeout (15s total).
+        // In containerized environments, startup can be even slower.
+        let started = wait_for_daemon_socket(75, 200);
 
         if started {
             messages.push("Started daemon".to_string());

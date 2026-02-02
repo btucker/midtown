@@ -21,7 +21,10 @@ use super::DaemonState;
 /// Each field is owned data — no references back to `DaemonState`. This means
 /// evaluation functions that take `&WorldSnapshot` cannot accidentally trigger
 /// side effects on the underlying state.
-#[derive(Debug)]
+///
+/// The struct is serializable (for debugging and test fixtures), except for
+/// `Instant` fields which are skipped during serialization.
+#[derive(Debug, serde::Serialize)]
 pub struct WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
     /// All coworkers (any status).
@@ -83,12 +86,14 @@ pub struct WorldSnapshot {
     /// Whether a usage-limit nudge is already scheduled.
     pub usage_limit_nudge_scheduled: bool,
     /// The scheduled usage-limit nudge time (if any).
+    #[serde(skip)]
     pub usage_limit_nudge_at: Option<tokio::time::Instant>,
 
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the dev coworker limit.
     pub is_at_dev_limit: bool,
     /// Current monotonic instant (for timeout comparisons).
+    #[serde(skip)]
     pub now: Instant,
     /// Current wall-clock time.
     pub now_utc: DateTime<Utc>,
@@ -131,6 +136,21 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     for cw in &active_coworkers {
         let target = format!("{}:{}", session_name, cw.name);
         if let Some(content) = crate::tmux::capture_pane(&target) {
+            // Log pane content at debug level for post-mortem debugging
+            // and automated test case generation. Use trace level for the
+            // full content to avoid flooding debug logs.
+            tracing::debug!(
+                coworker = %cw.name,
+                lines = content.lines().count(),
+                has_output = crate::tmux::content_has_output(&content),
+                has_input_text = crate::tmux::has_input_text(&content),
+                "captured pane content"
+            );
+            tracing::trace!(
+                coworker = %cw.name,
+                content = %content,
+                "pane content"
+            );
             pane_contents.insert(cw.name.clone(), content);
         }
     }
@@ -212,7 +232,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let now_utc = Utc::now();
     let repo_name = state.repo_name.clone();
 
-    WorldSnapshot {
+    let snapshot = WorldSnapshot {
         active_coworkers,
         running_coworkers,
         coworker_snapshots,
@@ -239,5 +259,14 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         now,
         now_utc,
         repo_name,
+    };
+
+    // Log full snapshot at trace level for debugging and test case generation
+    if tracing::enabled!(tracing::Level::TRACE)
+        && let Ok(json) = serde_json::to_string_pretty(&snapshot)
+    {
+        tracing::trace!(snapshot = %json, "world snapshot collected");
     }
+
+    snapshot
 }
