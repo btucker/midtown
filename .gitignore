@@ -32,3 +32,6 @@ docs/plans/
 
 # Node.js dependencies
 web-app/node_modules/
+
+# Vite build output
+web-app/dist/
