@@ -545,6 +545,91 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
     effects
 }
 
+/// Detect coworkers stuck in compaction (whirlpool) or with queued prompts,
+/// and send the appropriate recovery keypress (Escape or Enter).
+///
+/// Uses per-coworker cooldowns to avoid spamming keys on every tick.
+pub(super) fn check_and_recover_stuck_ui(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<Effect> {
+    if snap.active_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let recoveries = crate::rules::decide_stuck_ui_recoveries(&snap.pane_contents);
+
+    let mut effects = Vec::new();
+
+    for recovery in recoveries {
+        match recovery {
+            crate::rules::StuckUiRecovery::InterruptCompaction { name } => {
+                let should_act = {
+                    let cooldowns = state.cooldowns.lock().unwrap();
+                    cooldowns.check("compaction_recovery", &name, COMPACTION_RECOVERY_COOLDOWN)
+                };
+                if !should_act {
+                    debug!("Compaction recovery cooldown active for {}", name);
+                    continue;
+                }
+
+                info!(
+                    "Coworker {} stuck in compaction — sending Escape to interrupt",
+                    name
+                );
+                effects.push(Effect::SendRawKeys {
+                    name: name.clone(),
+                    keys: "Escape".to_string(),
+                });
+                effects.push(Effect::RecordCooldown {
+                    category: "compaction_recovery".to_string(),
+                    key: name.clone(),
+                });
+                effects.push(Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!("🌀 Interrupted stuck compaction for {} (sent Escape)", name),
+                });
+            }
+            crate::rules::StuckUiRecovery::InterruptQueuedNudges { name } => {
+                let should_act = {
+                    let cooldowns = state.cooldowns.lock().unwrap();
+                    cooldowns.check(
+                        "queued_prompt_recovery",
+                        &name,
+                        QUEUED_PROMPT_RECOVERY_COOLDOWN,
+                    )
+                };
+                if !should_act {
+                    debug!("Queued prompt recovery cooldown active for {}", name);
+                    continue;
+                }
+
+                info!(
+                    "Coworker {} has queued nudges not being processed — sending Escape to interrupt",
+                    name
+                );
+                effects.push(Effect::SendRawKeys {
+                    name: name.clone(),
+                    keys: "Escape".to_string(),
+                });
+                effects.push(Effect::RecordCooldown {
+                    category: "queued_prompt_recovery".to_string(),
+                    key: name.clone(),
+                });
+                effects.push(Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "📨 Interrupted {} to process queued nudges (sent Escape)",
+                        name
+                    ),
+                });
+            }
+        }
+    }
+
+    effects
+}
+
 pub(super) async fn check_and_respawn_zombies(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,

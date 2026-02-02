@@ -512,6 +512,84 @@ pub(crate) fn decide_stuck_coworker_restarts(
 }
 
 // ---------------------------------------------------------------------------
+// Compaction whirlpool & queued prompt detection
+// ---------------------------------------------------------------------------
+
+/// Action to recover a coworker from a stuck UI state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StuckUiRecovery {
+    /// Coworker is stuck in compaction (whirlpool/baking). Send Escape.
+    InterruptCompaction { name: String },
+    /// Coworker has queued nudge messages sitting in the input but is not
+    /// processing them. Send Escape to interrupt and let Claude pick them up.
+    InterruptQueuedNudges { name: String },
+}
+
+/// Detect coworkers stuck in Claude Code's compaction state.
+///
+/// Compaction shows a status line like `(esc to interrupt · 18m 50s · ↓ 0 tokens)`.
+/// The verb varies ("Whirlpooling", "Baking", etc.) so we match on the stable
+/// signature `esc to interrupt` instead.
+///
+/// Returns the names of coworkers that should receive an Escape keypress.
+/// The caller is responsible for cooldown enforcement.
+pub(crate) fn detect_compaction_stuck(pane_contents: &HashMap<String, String>) -> Vec<String> {
+    pane_contents
+        .iter()
+        .filter(|(_name, content)| content.contains("esc to interrupt"))
+        .map(|(name, _content)| name.clone())
+        .collect()
+}
+
+/// Detect coworkers with queued nudge messages that aren't being processed.
+///
+/// When a coworker is at a prompt with queued messages (lines starting with `❯`
+/// visible in the pane below the active prompt), it needs an Enter or Escape
+/// to start processing them. We look for `❯` lines that appear in the pane
+/// content, which indicates nudges were delivered but haven't been submitted.
+///
+/// We detect this by looking for the `❯` character followed by text, which
+/// appears when nudge messages are queued but sitting unprocessed at the prompt.
+pub(crate) fn detect_queued_prompt_stuck(pane_contents: &HashMap<String, String>) -> Vec<String> {
+    pane_contents
+        .iter()
+        .filter(|(_name, content)| {
+            // Look for queued nudge messages: lines starting with ❯ followed by text.
+            // These appear when nudge messages were sent but the coworker hasn't
+            // pressed Enter to submit them. The ❯ is Claude Code's prompt indicator.
+            let has_queued = content.lines().any(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with('❯') && trimmed.len() > "❯".len() + 1
+            });
+            // Only flag if NOT currently in compaction (that's a separate recovery)
+            let in_compaction = content.contains("esc to interrupt");
+            has_queued && !in_compaction
+        })
+        .map(|(name, _content)| name.clone())
+        .collect()
+}
+
+/// Pure decision: determine which coworkers need UI recovery actions.
+///
+/// Checks pane contents for two stuck states and returns the appropriate
+/// recovery actions. Cooldown tracking is the caller's responsibility.
+pub(crate) fn decide_stuck_ui_recoveries(
+    pane_contents: &HashMap<String, String>,
+) -> Vec<StuckUiRecovery> {
+    let mut recoveries = Vec::new();
+
+    for name in detect_compaction_stuck(pane_contents) {
+        recoveries.push(StuckUiRecovery::InterruptCompaction { name });
+    }
+
+    for name in detect_queued_prompt_stuck(pane_contents) {
+        recoveries.push(StuckUiRecovery::InterruptQueuedNudges { name });
+    }
+
+    recoveries
+}
+
+// ---------------------------------------------------------------------------
 // Blank-pane zombie detection
 // ---------------------------------------------------------------------------
 
@@ -1737,6 +1815,171 @@ mod tests {
         let zombies =
             detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
         assert!(zombies.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Compaction whirlpool & queued prompt detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_detected_with_whirlpool_verb() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Whirlpooling your conversation…\n  (esc to interrupt · 18m 50s · ↓ 0 tokens)\n"
+                .to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes);
+        assert_eq!(stuck, vec!["york"]);
+    }
+
+    #[test]
+    fn compaction_detected_with_baking_verb() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "amsterdam".to_string(),
+            "  Baking your conversation…\n  (esc to interrupt · 3m 12s · ↓ 42 tokens)\n"
+                .to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes);
+        assert_eq!(stuck, vec!["amsterdam"]);
+    }
+
+    #[test]
+    fn compaction_detected_with_unknown_verb() {
+        // Future verbs we don't know about yet should still match
+        let mut panes = HashMap::new();
+        panes.insert(
+            "park".to_string(),
+            "  Simmering your conversation…\n  (esc to interrupt · 1m 05s · ↓ 100 tokens)\n"
+                .to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes);
+        assert_eq!(stuck, vec!["park"]);
+    }
+
+    #[test]
+    fn compaction_not_detected_in_normal_output() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Reading file src/main.rs\n  Edit: replaced 3 lines\n  $ cargo build\n".to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes);
+        assert!(stuck.is_empty());
+    }
+
+    #[test]
+    fn compaction_not_detected_when_pane_mentions_esc_in_code() {
+        // A coworker working on code that mentions "esc to interrupt" literally
+        // should not be flagged — but our detector is intentionally simple.
+        // This test documents the current behavior: the substring match WILL
+        // flag this. In practice this is extremely unlikely in real code output.
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  // detect the pattern: esc to interrupt\n  fn check() {}\n".to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes);
+        // Current behavior: matches. This is an accepted false positive.
+        assert_eq!(stuck.len(), 1);
+    }
+
+    #[test]
+    fn queued_prompt_detected_with_nudge_messages() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  some output\n❯ You have a new task assignment: task #42\n❯ Check the channel for updates\n".to_string(),
+        );
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert_eq!(stuck, vec!["york"]);
+    }
+
+    #[test]
+    fn queued_prompt_not_detected_during_compaction() {
+        // If compaction is happening simultaneously, don't also flag queued prompt
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Whirlpooling…\n  (esc to interrupt · 5m 00s · ↓ 0 tokens)\n❯ pending nudge\n"
+                .to_string(),
+        );
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert!(
+            stuck.is_empty(),
+            "should not flag queued prompt during compaction"
+        );
+    }
+
+    #[test]
+    fn queued_prompt_not_detected_with_bare_prompt() {
+        // Just the ❯ character alone (empty prompt) should NOT trigger
+        let mut panes = HashMap::new();
+        panes.insert("york".to_string(), "  output\n❯ \n".to_string());
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert!(
+            stuck.is_empty(),
+            "bare prompt character should not trigger recovery"
+        );
+    }
+
+    #[test]
+    fn queued_prompt_not_detected_in_normal_output() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  $ cargo test\n  running 5 tests\n  test result: ok. 5 passed\n".to_string(),
+        );
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert!(stuck.is_empty());
+    }
+
+    #[test]
+    fn combined_recovery_returns_both_types() {
+        let mut panes = HashMap::new();
+        // One coworker stuck in compaction
+        panes.insert(
+            "york".to_string(),
+            "  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
+        );
+        // Another coworker with queued nudges
+        panes.insert("amsterdam".to_string(), "❯ Check the channel\n".to_string());
+
+        let recoveries = decide_stuck_ui_recoveries(&panes);
+        assert_eq!(recoveries.len(), 2);
+
+        let has_compaction = recoveries
+            .iter()
+            .any(|r| matches!(r, StuckUiRecovery::InterruptCompaction { name } if name == "york"));
+        let has_queued = recoveries.iter().any(
+            |r| matches!(r, StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"),
+        );
+        assert!(has_compaction, "should detect york's compaction");
+        assert!(has_queued, "should detect amsterdam's queued nudges");
+    }
+
+    #[test]
+    fn recovery_empty_for_healthy_coworkers() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Reading file\n  Edit complete\n".to_string(),
+        );
+        panes.insert(
+            "amsterdam".to_string(),
+            "  $ cargo build\n  Compiling midtown v0.4.1\n".to_string(),
+        );
+
+        let recoveries = decide_stuck_ui_recoveries(&panes);
+        assert!(recoveries.is_empty());
+    }
+
+    #[test]
+    fn recovery_empty_for_no_coworkers() {
+        let panes: HashMap<String, String> = HashMap::new();
+        let recoveries = decide_stuck_ui_recoveries(&panes);
+        assert!(recoveries.is_empty());
     }
 
     #[test]

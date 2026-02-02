@@ -114,6 +114,15 @@ pub(super) const MAX_ZOMBIE_RESPAWN_ATTEMPTS: u32 = 3;
 /// and restarted with its current task.
 pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(300);
 
+/// Cooldown between compaction recovery attempts for the same coworker (3 minutes).
+/// Prevents spamming Escape if the detection fires repeatedly.
+pub(super) const COMPACTION_RECOVERY_COOLDOWN: Duration = Duration::from_secs(180);
+
+/// Cooldown between queued-prompt recovery attempts for the same coworker (60 seconds).
+/// Shorter than compaction because the fix (Escape) is lightweight and the state
+/// can recur quickly after nudges are delivered.
+pub(super) const QUEUED_PROMPT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(60);
+
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.
 pub(super) const USAGE_LIMIT_NUDGE_BUFFER: Duration = Duration::from_secs(30);
