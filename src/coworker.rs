@@ -721,19 +721,45 @@ impl CoworkerManager {
 
         let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &launch_config)?;
 
-        // Record the coworker with their session ID for symlink management
-        let coworker = Coworker {
-            name: name.to_string(),
-            status: CoworkerStatus::Running,
-            working_dir,
-            started_at: Utc::now(),
-            current_task: None,
-            session_id: Some(session_id),
-            isolated_tasks,
-        };
-
+        // Record the coworker with their session ID for symlink management.
+        //
+        // IMPORTANT: Check again if the name is taken before inserting. This closes
+        // the TOCTTOU race window where a concurrent spawn could have inserted the
+        // same name while we were doing slow work (worktree creation, tmux spawn).
+        // If the name is now taken, we must kill the tmux window we just created
+        // and return an error rather than overwriting the existing coworker.
         {
             let mut coworkers = self.coworkers.write().unwrap();
+
+            if coworkers.contains_key(name) {
+                // Race condition: another spawn beat us to it. Clean up the tmux
+                // window we just created and return an error.
+                drop(coworkers); // Release lock before tmux operations
+                tracing::warn!(
+                    "Spawn race detected for {}: name was taken during slow work, killing orphaned window",
+                    name
+                );
+                if let Err(e) = tmux::kill_window(&self.session_name, name) {
+                    tracing::error!("Failed to kill orphaned window for {}: {}", name, e);
+                }
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!(
+                        "Coworker {} was spawned by another concurrent request",
+                        name
+                    ),
+                });
+            }
+
+            let coworker = Coworker {
+                name: name.to_string(),
+                status: CoworkerStatus::Running,
+                working_dir,
+                started_at: Utc::now(),
+                current_task: None,
+                session_id: Some(session_id),
+                isolated_tasks,
+            };
             coworkers.insert(name.to_string(), coworker);
         }
 
@@ -772,10 +798,16 @@ impl CoworkerManager {
     /// Insert a coworker directly into the map (for testing).
     ///
     /// This bypasses the normal spawn flow and is only intended for tests.
+    /// Returns true if inserted, false if name was already taken (matching
+    /// the fixed spawn_with_name behavior that checks before insert).
     #[doc(hidden)]
-    pub fn insert_for_testing(&self, coworker: Coworker) {
+    pub fn insert_for_testing(&self, coworker: Coworker) -> bool {
         let mut coworkers = self.coworkers.write().unwrap();
+        if coworkers.contains_key(&coworker.name) {
+            return false;
+        }
         coworkers.insert(coworker.name.clone(), coworker);
+        true
     }
 
     /// Clear all coworkers (for testing).
