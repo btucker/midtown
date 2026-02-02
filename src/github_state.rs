@@ -7,6 +7,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
@@ -33,6 +34,11 @@ pub struct GitHubState {
     /// Persisted so they survive daemon restarts (unlike the previous tokio::sleep approach).
     #[serde(default)]
     pub pending_review_spawns: Vec<PendingReviewSpawn>,
+
+    /// Per-PR timestamp of the last webhook event that handled this PR.
+    /// Polling checks this to defer to webhooks when they're healthy for a specific PR.
+    #[serde(default)]
+    pub pr_last_webhook_event: HashMap<u64, DateTime<Utc>>,
 }
 
 /// A pending reviewer spawn triggered by a webhook event.
@@ -47,6 +53,27 @@ pub struct PendingReviewSpawn {
     pub spawn_after: DateTime<Utc>,
 }
 
+/// How the reviewer assignment was triggered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssignmentSource {
+    /// Triggered by a GitHub webhook event (PR opened / ready_for_review).
+    Webhook,
+    /// Triggered by the periodic polling loop as a fallback.
+    PollingFallback,
+    /// Manually assigned (e.g., by the lead or via an RPC command).
+    Manual,
+}
+
+impl fmt::Display for AssignmentSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AssignmentSource::Webhook => write!(f, "webhook"),
+            AssignmentSource::PollingFallback => write!(f, "polling"),
+            AssignmentSource::Manual => write!(f, "manual"),
+        }
+    }
+}
+
 /// A PR reviewer assignment record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrReviewerAssignment {
@@ -56,6 +83,16 @@ pub struct PrReviewerAssignment {
     pub reviewer: String,
     /// When the assignment was made
     pub assigned_at: DateTime<Utc>,
+    /// How this assignment was triggered (webhook, polling fallback, or manual).
+    #[serde(default = "default_assignment_source")]
+    pub source: AssignmentSource,
+    /// Optional webhook delivery ID for debugging/telemetry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_event_id: Option<String>,
+}
+
+fn default_assignment_source() -> AssignmentSource {
+    AssignmentSource::PollingFallback
 }
 
 impl GitHubState {
@@ -96,12 +133,32 @@ impl GitHubState {
         Ok(())
     }
 
-    /// Assign a reviewer to a PR.
-    pub fn assign_reviewer(&mut self, pr_number: u64, reviewer: &str) {
+    /// Assign a reviewer to a PR with the given source.
+    pub fn assign_reviewer(&mut self, pr_number: u64, reviewer: &str, source: AssignmentSource) {
         let assignment = PrReviewerAssignment {
             pr_number,
             reviewer: reviewer.to_string(),
             assigned_at: Utc::now(),
+            source,
+            webhook_event_id: None,
+        };
+        self.pr_reviewers.insert(pr_number, assignment);
+    }
+
+    /// Assign a reviewer to a PR with a webhook event ID for tracing.
+    pub fn assign_reviewer_with_event_id(
+        &mut self,
+        pr_number: u64,
+        reviewer: &str,
+        source: AssignmentSource,
+        webhook_event_id: Option<String>,
+    ) {
+        let assignment = PrReviewerAssignment {
+            pr_number,
+            reviewer: reviewer.to_string(),
+            assigned_at: Utc::now(),
+            source,
+            webhook_event_id,
         };
         self.pr_reviewers.insert(pr_number, assignment);
     }
@@ -202,6 +259,48 @@ impl GitHubState {
         }
     }
 
+    /// Record that a webhook event handled a specific PR.
+    ///
+    /// Polling will check this timestamp before acting on the same PR,
+    /// deferring to the webhook path when it's been active recently.
+    pub fn record_webhook_event(&mut self, pr_number: u64) {
+        self.pr_last_webhook_event.insert(pr_number, Utc::now());
+    }
+
+    /// Check if a webhook recently handled this PR (within the given window).
+    ///
+    /// Returns `true` if a webhook event was recorded for this PR within
+    /// `window_secs` seconds, meaning polling should defer.
+    pub fn webhook_recently_handled(&self, pr_number: u64, window_secs: i64) -> bool {
+        match self.pr_last_webhook_event.get(&pr_number) {
+            Some(ts) => {
+                let elapsed = Utc::now().signed_duration_since(*ts);
+                elapsed < chrono::Duration::seconds(window_secs)
+            }
+            None => false,
+        }
+    }
+
+    /// Get the assignment source for a PR's reviewer, if assigned.
+    pub fn get_assignment_source(&self, pr_number: u64) -> Option<AssignmentSource> {
+        self.pr_reviewers.get(&pr_number).map(|a| a.source)
+    }
+
+    /// Count assignments by source (for telemetry).
+    pub fn count_by_source(&self) -> HashMap<String, usize> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for assignment in self.pr_reviewers.values() {
+            *counts.entry(assignment.source.to_string()).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// Clean up stale per-PR webhook event timestamps (older than 1 hour).
+    pub fn cleanup_stale_webhook_events(&mut self) {
+        let cutoff = Utc::now() - chrono::Duration::seconds(3600);
+        self.pr_last_webhook_event.retain(|_, ts| *ts > cutoff);
+    }
+
     /// Add a pending review spawn for a PR.
     pub fn add_pending_review_spawn(&mut self, pr_number: u64, spawn_after: DateTime<Utc>) {
         // Don't add duplicates for the same PR
@@ -295,6 +394,10 @@ impl GitHubState {
 
         // Also clean up review cache for closed PRs
         self.cleanup_closed_review_cache(open_pr_numbers);
+
+        // Clean up per-PR webhook event timestamps for closed PRs
+        self.pr_last_webhook_event
+            .retain(|pr, _| open_set.contains(pr));
     }
 }
 
@@ -321,7 +424,7 @@ mod tests {
     #[test]
     fn test_assign_reviewer() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
 
         assert!(state.is_assigned(42));
         assert_eq!(state.get_reviewer(42), Some("lexington"));
@@ -331,7 +434,7 @@ mod tests {
     #[test]
     fn test_remove_assignment() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
 
         let removed = state.remove_assignment(42);
         assert!(removed.is_some());
@@ -342,8 +445,8 @@ mod tests {
     #[test]
     fn test_assigned_reviewers() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
 
         let reviewers: Vec<_> = state.assigned_reviewers().collect();
         assert_eq!(reviewers.len(), 2);
@@ -354,8 +457,8 @@ mod tests {
     #[test]
     fn test_pr_for_reviewer() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
 
         assert_eq!(state.pr_for_reviewer("lexington"), Some(42));
         assert_eq!(state.pr_for_reviewer("park"), Some(43));
@@ -369,9 +472,9 @@ mod tests {
     #[test]
     fn test_cleanup_closed_prs() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
-        state.assign_reviewer(44, "york");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
+        state.assign_reviewer(44, "york", AssignmentSource::PollingFallback);
 
         // Only PR 42 and 44 are still open
         state.cleanup_closed_prs(&[42, 44]);
@@ -387,8 +490,8 @@ mod tests {
         let path = dir.path().join("github-state.json");
 
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
 
         state.save(&path).unwrap();
 
@@ -410,7 +513,7 @@ mod tests {
     #[test]
     fn test_is_assigned_expires_after_timeout() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
 
         // Fresh assignment should be considered assigned
         assert!(state.is_assigned(42));
@@ -431,8 +534,8 @@ mod tests {
     #[test]
     fn test_cleanup_expired_assignments() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
 
         // Backdate PR 42's assignment past the timeout
         if let Some(assignment) = state.pr_reviewers.get_mut(&42) {
@@ -450,8 +553,8 @@ mod tests {
     #[test]
     fn test_cleanup_expired_preserves_active_coworkers() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "broadway");
-        state.assign_reviewer(43, "park");
+        state.assign_reviewer(42, "broadway", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
 
         // Backdate broadway's assignment past the timeout
         if let Some(assignment) = state.pr_reviewers.get_mut(&42) {
@@ -474,7 +577,7 @@ mod tests {
     #[test]
     fn test_cleanup_expired_removes_inactive_expired() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "broadway");
+        state.assign_reviewer(42, "broadway", AssignmentSource::PollingFallback);
 
         // Backdate assignment past timeout
         if let Some(assignment) = state.pr_reviewers.get_mut(&42) {
@@ -494,8 +597,8 @@ mod tests {
     #[test]
     fn test_active_count() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
 
         assert_eq!(state.active_count(), 2);
 
@@ -511,9 +614,9 @@ mod tests {
     #[test]
     fn test_active_reviewers() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
-        state.assign_reviewer(44, "lexington"); // duplicate reviewer name
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
+        state.assign_reviewer(44, "lexington", AssignmentSource::Webhook); // duplicate reviewer name
 
         let reviewers = state.active_reviewers();
         assert!(reviewers.contains("lexington"));
@@ -535,8 +638,8 @@ mod tests {
     #[test]
     fn test_active_assignments() {
         let mut state = GitHubState::default();
-        state.assign_reviewer(42, "lexington");
-        state.assign_reviewer(43, "park");
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
 
         let assignments = state.active_assignments();
         assert_eq!(assignments.len(), 2);
@@ -608,5 +711,135 @@ mod tests {
         assert_eq!(loaded.pending_review_spawns.len(), 2);
         assert_eq!(loaded.pending_review_spawns[0].pr_number, 42);
         assert_eq!(loaded.pending_review_spawns[1].pr_number, 43);
+    }
+
+    #[test]
+    fn test_assignment_source_persists() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("github-state.json");
+
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington", AssignmentSource::Webhook);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
+        state.save(&path).unwrap();
+
+        let loaded = GitHubState::load(&path).unwrap();
+        assert_eq!(
+            loaded.get_assignment_source(42),
+            Some(AssignmentSource::Webhook)
+        );
+        assert_eq!(
+            loaded.get_assignment_source(43),
+            Some(AssignmentSource::PollingFallback)
+        );
+    }
+
+    #[test]
+    fn test_webhook_recently_handled() {
+        let mut state = GitHubState::default();
+
+        // No event recorded yet
+        assert!(!state.webhook_recently_handled(42, 120));
+
+        // Record an event
+        state.record_webhook_event(42);
+        assert!(state.webhook_recently_handled(42, 120));
+        assert!(!state.webhook_recently_handled(43, 120));
+    }
+
+    #[test]
+    fn test_webhook_recently_handled_expired() {
+        let mut state = GitHubState::default();
+
+        // Manually backdate the event
+        state
+            .pr_last_webhook_event
+            .insert(42, Utc::now() - chrono::Duration::seconds(300));
+
+        // 120s window should not match a 300s-old event
+        assert!(!state.webhook_recently_handled(42, 120));
+        // 600s window should match
+        assert!(state.webhook_recently_handled(42, 600));
+    }
+
+    #[test]
+    fn test_count_by_source() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington", AssignmentSource::Webhook);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
+        state.assign_reviewer(44, "york", AssignmentSource::Webhook);
+
+        let counts = state.count_by_source();
+        assert_eq!(counts.get("webhook"), Some(&2));
+        assert_eq!(counts.get("polling"), Some(&1));
+    }
+
+    #[test]
+    fn test_cleanup_stale_webhook_events() {
+        let mut state = GitHubState::default();
+
+        // Fresh event
+        state.record_webhook_event(42);
+        // Stale event (2 hours ago)
+        state
+            .pr_last_webhook_event
+            .insert(43, Utc::now() - chrono::Duration::seconds(7200));
+
+        state.cleanup_stale_webhook_events();
+
+        assert!(state.pr_last_webhook_event.contains_key(&42));
+        assert!(!state.pr_last_webhook_event.contains_key(&43));
+    }
+
+    #[test]
+    fn test_cleanup_closed_prs_cleans_webhook_events() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.record_webhook_event(42);
+        state.record_webhook_event(43);
+
+        // Only PR 42 is still open
+        state.cleanup_closed_prs(&[42]);
+
+        assert!(state.pr_last_webhook_event.contains_key(&42));
+        assert!(!state.pr_last_webhook_event.contains_key(&43));
+    }
+
+    #[test]
+    fn test_assign_reviewer_with_event_id() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer_with_event_id(
+            42,
+            "lexington",
+            AssignmentSource::Webhook,
+            Some("delivery-abc123".to_string()),
+        );
+
+        let assignment = state.pr_reviewers.get(&42).unwrap();
+        assert_eq!(assignment.source, AssignmentSource::Webhook);
+        assert_eq!(
+            assignment.webhook_event_id.as_deref(),
+            Some("delivery-abc123")
+        );
+    }
+
+    #[test]
+    fn test_default_source_for_legacy_data() {
+        // Simulate loading legacy data without the source field
+        let json = r#"{
+            "pr_reviewers": {
+                "42": {
+                    "pr_number": 42,
+                    "reviewer": "lexington",
+                    "assigned_at": "2025-01-01T00:00:00Z"
+                }
+            }
+        }"#;
+
+        let state: GitHubState = serde_json::from_str(json).unwrap();
+        let assignment = state.pr_reviewers.get(&42).unwrap();
+        // Legacy data defaults to PollingFallback
+        assert_eq!(assignment.source, AssignmentSource::PollingFallback);
+        assert!(assignment.webhook_event_id.is_none());
     }
 }

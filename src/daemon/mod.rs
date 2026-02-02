@@ -1014,6 +1014,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     let spawn_after = chrono::Utc::now()
                         + chrono::Duration::seconds(PR_REVIEW_DELAY_SECS as i64);
                     let mut ps = state.persistent_state.lock().await;
+                    ps.github.record_webhook_event(pr_number);
                     ps.github.add_pending_review_spawn(pr_number, spawn_after);
                     if let Err(e) = ps.save_for_repo(&state.repo_name) {
                         warn!("Failed to persist pending review spawn: {}", e);
