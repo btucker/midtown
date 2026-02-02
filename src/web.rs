@@ -288,6 +288,9 @@ pub enum ClientMessage {
     /// Client stopped viewing a tmux window — may reset its size
     #[serde(rename = "leave_window")]
     LeaveWindow,
+    /// Send a nudge (text input) to a coworker or the lead
+    #[serde(rename = "nudge")]
+    Nudge { target: String, message: String },
 }
 
 /// Create the web server router
@@ -1051,6 +1054,35 @@ async fn handle_client_message(
                 .await
                 .map_err(|e| format!("Resize task failed: {}", e))?;
         }
+        ClientMessage::Nudge { target, message } => {
+            // Validate target name
+            if target.is_empty()
+                || !target
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err("Invalid nudge target".to_string());
+            }
+            if message.is_empty() {
+                return Err("Empty nudge message".to_string());
+            }
+
+            let coworkers = state
+                .coworkers
+                .as_ref()
+                .ok_or_else(|| "Coworker manager not available".to_string())?;
+
+            if target == "lead" {
+                coworkers
+                    .nudge_lead(&message)
+                    .map_err(|e| format!("Failed to nudge lead: {}", e))?;
+            } else {
+                coworkers
+                    .nudge(&target, &message)
+                    .map_err(|e| format!("Failed to nudge {}: {}", target, e))?;
+            }
+            info!("Nudge sent to {} via web UI: {}", target, message);
+        }
     }
 
     Ok(())
@@ -1309,6 +1341,32 @@ mod tests {
         let actions = tracker.stop_viewing(conn);
 
         assert_eq!(actions.reset_windows, vec!["riverside".to_string()]);
+    }
+
+    #[test]
+    fn test_client_message_nudge_parsing() {
+        let json = r#"{"type": "nudge", "target": "riverside", "message": "check the tests"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Nudge { target, message } => {
+                assert_eq!(target, "riverside");
+                assert_eq!(message, "check the tests");
+            }
+            _ => panic!("Expected Nudge"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_nudge_lead_parsing() {
+        let json = r#"{"type": "nudge", "target": "lead", "message": "please review PR #42"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Nudge { target, message } => {
+                assert_eq!(target, "lead");
+                assert_eq!(message, "please review PR #42");
+            }
+            _ => panic!("Expected Nudge"),
+        }
     }
 
     #[test]

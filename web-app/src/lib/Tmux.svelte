@@ -7,10 +7,13 @@
   let error = $state(null)
   let windows = $state([])
   let selectedWindow = $state('lead')
+  let nudgeText = $state('')
+  let nudgeStatus = $state(null)
   let interval = null
   let windowInterval = null
   let paneEl = null
   let resizeTimeout = null
+  let nudgeStatusTimeout = null
 
   // Approximate character width for a monospace font at 0.8rem.
   // This converts pixel width → terminal columns for the resize message.
@@ -77,10 +80,29 @@
     return text.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b\[[\?]?[0-9;]*[hlm]/g, '')
   }
 
+  function sendNudge() {
+    const text = nudgeText.trim()
+    if (!text || !selectedWindow) return
+    sendWsMessage({ type: 'nudge', target: selectedWindow, message: text })
+    nudgeText = ''
+    nudgeStatus = 'sent'
+    if (nudgeStatusTimeout) clearTimeout(nudgeStatusTimeout)
+    nudgeStatusTimeout = setTimeout(() => { nudgeStatus = null }, 2000)
+  }
+
+  function handleNudgeKeydown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendNudge()
+    }
+  }
+
   function selectWindow(name) {
     selectedWindow = name
     paneContent = ''
     error = null
+    nudgeText = ''
+    nudgeStatus = null
     fetchPane()
     sendViewWindow()
   }
@@ -127,6 +149,7 @@
     sendLeaveWindow()
     window.removeEventListener('resize', handleResize)
     if (resizeTimeout) clearTimeout(resizeTimeout)
+    if (nudgeStatusTimeout) clearTimeout(nudgeStatusTimeout)
   })
 </script>
 
@@ -149,6 +172,21 @@
     <div class="error-banner">{error}</div>
   {/if}
   <pre class="pane-content" bind:this={paneEl}>{paneContent}</pre>
+  <div class="nudge-bar">
+    <input
+      class="nudge-input"
+      type="text"
+      placeholder="Nudge {selectedWindow}…"
+      bind:value={nudgeText}
+      onkeydown={handleNudgeKeydown}
+    />
+    <button class="nudge-send" onclick={sendNudge} disabled={!nudgeText.trim()}>
+      Send
+    </button>
+    {#if nudgeStatus === 'sent'}
+      <span class="nudge-status">Sent</span>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -222,5 +260,67 @@
     white-space: pre;
     color: #d4d4d4;
     -webkit-overflow-scrolling: touch;
+  }
+
+  .nudge-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: #1a1a1a;
+    border-top: 1px solid #3a3a3a;
+  }
+
+  .nudge-input {
+    flex: 1;
+    padding: 6px 10px;
+    background: #0d0d0d;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    color: #d4d4d4;
+    font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 0.8rem;
+    outline: none;
+  }
+
+  .nudge-input:focus {
+    border-color: #5fafaf;
+  }
+
+  .nudge-input::placeholder {
+    color: #585858;
+  }
+
+  .nudge-send {
+    padding: 6px 12px;
+    background: #2a3a3a;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    color: #5fafaf;
+    font-size: 0.75rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .nudge-send:hover:not(:disabled) {
+    background: #3a4a4a;
+  }
+
+  .nudge-send:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .nudge-status {
+    color: #5faf5f;
+    font-size: 0.7rem;
+    white-space: nowrap;
+    animation: fade-out 2s forwards;
+  }
+
+  @keyframes fade-out {
+    0% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { opacity: 0; }
   }
 </style>

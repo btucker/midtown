@@ -1,8 +1,9 @@
 //! Health check functions for coworker lifecycle monitoring.
 //!
 //! These functions detect and respond to coworker health issues:
-//! idle shutdown, interrupted sessions, interactive prompts, stuck panes,
-//! usage limits, zombie processes, and reminder firing.
+//! idle shutdown, stuck panes, usage limits, zombie processes, and
+//! reminder firing. Pane scraping is used exclusively for health
+//! detection — workflow state is reported via RPC.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -332,104 +333,6 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
-        });
-    }
-
-    effects
-}
-
-/// Check for coworkers whose Claude Code session is interrupted and nudge them to continue.
-///
-/// Captures each active coworker's tmux pane content and checks for interruption
-/// indicators ("Interrupted" or "What should Claude do instead?"). If the interrupted
-/// state persists for 60 seconds, sends a "continue" nudge to unstick them.
-pub(super) async fn check_and_nudge_interrupted_coworkers(
-    snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
-) -> Vec<Effect> {
-    if snap.active_coworkers.is_empty() {
-        return vec![];
-    }
-
-    // Pure decision: who should be nudged?
-    let to_nudge = {
-        let mut phases = state.coworker_lifecycles.write().await;
-        let (decisions, transitions) = crate::rules::decide_interrupt_nudges(
-            &snap.coworker_snapshots,
-            &snap.pane_contents,
-            &phases,
-            snap.now,
-            INTERRUPTED_NUDGE_DURATION,
-        );
-        crate::rules::apply_phase_transitions(&mut phases, transitions);
-        decisions
-    };
-
-    let mut effects = Vec::new();
-    for nudge in to_nudge {
-        let name = &nudge.name;
-        info!(
-            "Nudging interrupted coworker: {} (interrupted for 60+ seconds)",
-            name
-        );
-
-        effects.push(Effect::PostToChannel {
-            sender: "system".to_string(),
-            message: format!("🔄 Nudging interrupted coworker: {}", name),
-        });
-        effects.push(Effect::NudgeCoworker {
-            name: name.clone(),
-            message: "continue".to_string(),
-        });
-    }
-
-    effects
-}
-
-// Interactive prompt detection moved to crate::rules::detect_interactive_prompt
-
-/// Detect coworkers waiting on interactive prompts (plan approval, permission dialogs, etc.)
-/// and nudge the lead so they can provide guidance.
-///
-/// Unlike interrupted coworkers (who just need a "continue"), prompted coworkers need a
-/// *human decision* — so we alert the lead with context about what's being asked.
-pub(super) async fn check_and_nudge_prompted_coworkers(
-    snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
-) -> Vec<Effect> {
-    if snap.active_coworkers.is_empty() {
-        return vec![];
-    }
-
-    // Pure decision: which coworkers need lead attention?
-    let to_nudge = {
-        let mut phases = state.coworker_lifecycles.write().await;
-        let (decisions, transitions) = crate::rules::decide_prompt_nudges(
-            &snap.coworker_snapshots,
-            &snap.pane_contents,
-            &phases,
-        );
-        crate::rules::apply_phase_transitions(&mut phases, transitions);
-        decisions
-    };
-
-    let mut effects = Vec::new();
-    for nudge in to_nudge {
-        let (name, label) = (&nudge.name, &nudge.label);
-        info!("Coworker {} is waiting on a {}, nudging lead", name, label);
-
-        effects.push(Effect::PostToChannel {
-            sender: "system".to_string(),
-            message: format!(
-                "⚠️ @lead {} is waiting on a {} — check their tmux pane and respond",
-                name, label
-            ),
-        });
-        effects.push(Effect::NudgeLead {
-            message: format!(
-                "{} is waiting on a {} — run: tmux select-window -t {}:{}",
-                name, label, snap.session_name, name
-            ),
         });
     }
 
