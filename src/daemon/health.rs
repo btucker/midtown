@@ -661,17 +661,17 @@ pub(super) async fn check_and_fire_reminders(
     // Convert snapshot HashSet to Vec for evaluate_trigger compatibility
     let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
 
-    let mut ps = state.persistent_state.lock().await;
-    let mut fired_any = false;
+    let ps = state.persistent_state.lock().await;
+    let mut fired_ids = Vec::new();
     let mut effects = Vec::new();
 
-    for reminder in &mut ps.reminders.reminders {
+    for reminder in &ps.reminders.reminders {
         if reminder.fired {
             continue;
         }
         if crate::reminders::evaluate_trigger(&reminder.trigger, &open_pr_coworkers) {
             info!(
-                "Reminder {} fired (trigger: {}): {}",
+                "Reminder {} should fire (trigger: {}): {}",
                 reminder.id, reminder.trigger, reminder.message
             );
             effects.push(Effect::PostToChannel {
@@ -681,16 +681,15 @@ pub(super) async fn check_and_fire_reminders(
                     reminder.trigger, reminder.message
                 ),
             });
-            reminder.fired = true;
-            fired_any = true;
+            fired_ids.push(reminder.id.clone());
         }
     }
 
-    if fired_any && let Err(e) = ps.save_for_repo(&snap.repo_name) {
-        error!(
-            "Failed to save daemon-state.json after firing reminders: {}",
-            e
-        );
+    if !fired_ids.is_empty() {
+        effects.push(Effect::MarkRemindersFired {
+            fired_ids,
+            repo_name: snap.repo_name.clone(),
+        });
     }
 
     effects

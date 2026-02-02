@@ -607,22 +607,14 @@ pub(super) fn spawn_for_pending_tasks(
         // Check if this coworker is already running (grouped to an active coworker)
         let already_running = snap.active_names.contains(&coworker_name.to_lowercase());
 
-        // Step 2: Atomically assign task ownership BEFORE spawning
-        // This prevents race conditions where multiple coworkers could claim the same task
-        if let Err(e) = crate::tasks::update_task_owner(&task.id, &coworker_name) {
-            warn!(
-                "Failed to assign task #{} to {}: {}",
-                task.id, coworker_name, e
-            );
-            continue;
-        }
-
         info!(
-            "Assigned task #{} to {} (pre-spawn, already_running={})",
+            "Proposing task #{} for {} (already_running={})",
             task.id, coworker_name, already_running
         );
 
-        // Record this assignment in in-memory maps for same-tick grouping
+        // Record this assignment in in-memory maps for same-tick grouping.
+        // These are ephemeral — they only coordinate decisions within this tick.
+        // The actual disk write happens in the effect executor.
         task_coworker_map.insert(task.id.clone(), coworker_name.clone());
         if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
             pr_coworker_map.insert(pr_num, coworker_name.clone());
@@ -635,13 +627,17 @@ pub(super) fn spawn_for_pending_tasks(
         );
 
         if already_running {
-            // Step 3a: Coworker is already running (grouped task) — nudge about new assignment
+            // Step 2a: Coworker is already running (grouped task) — assign ownership, then nudge
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
                 &task.id.to_string(),
                 &task.subject,
                 config::get_personality(),
             );
+            effects.push(Effect::AssignTaskOwner {
+                task_id: task.id.clone(),
+                owner: coworker_name.clone(),
+            });
             effects.push(Effect::NudgeCoworkerWithCallbacks {
                 name: coworker_name.clone(),
                 message: prompt,
@@ -651,7 +647,7 @@ pub(super) fn spawn_for_pending_tasks(
                 }],
             });
         } else {
-            // Step 3b: Spawn a new coworker with the pre-assigned name and prompt
+            // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
             let config = crate::tmux::ClaudeLaunchConfig::coworker(
                 coworker_name.clone(),
                 state.repo_name.clone(),
@@ -664,7 +660,10 @@ pub(super) fn spawn_for_pending_tasks(
                 &task.subject,
                 config::get_personality(),
             );
-            effects.push(Effect::SpawnCoworkerWithCallbacks {
+            effects.push(Effect::AssignAndSpawn {
+                task_id: task.id.clone(),
+                owner: coworker_name.clone(),
+                repo_name: snap.repo_name.clone(),
                 config,
                 on_success: vec![
                     Effect::BroadcastCoworkerUpdate {
