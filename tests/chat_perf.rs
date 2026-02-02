@@ -80,6 +80,9 @@ fn wrap_content(content: &str, width: usize) -> Vec<String> {
 
 /// Simulated message rendering (mirrors render_message logic).
 /// Returns the number of output lines for the message.
+///
+/// This mirrors the actual render_message() function in ui.rs, including
+/// special handling for Action messages which have a "* " prefix.
 fn render_message_line_count(
     msg: &Message,
     width: usize,
@@ -88,8 +91,16 @@ fn render_message_line_count(
 ) -> usize {
     let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
 
-    // Content width after timestamp gutter
-    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
+    // Action messages have a "* " prefix that consumes 2 extra characters
+    // See ui.rs render_message() for the actual implementation
+    let extra_prefix = if msg.message_type == MessageType::Action {
+        2 // "* " prefix
+    } else {
+        0
+    };
+
+    // Content width after timestamp gutter (and action prefix if applicable)
+    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + extra_prefix);
     if content_width == 0 {
         return 0;
     }
