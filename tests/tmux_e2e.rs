@@ -1101,12 +1101,12 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
         let child_output = Command::new("pgrep")
             .args(["-P", &pid.to_string()])
             .output();
-        if let Ok(o) = child_output {
-            if o.status.success() {
-                for line in String::from_utf8_lossy(&o.stdout).lines() {
-                    if let Ok(child_pid) = line.trim().parse::<u32>() {
-                        all_pids.push(child_pid);
-                    }
+        if let Ok(o) = child_output
+            && o.status.success()
+        {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Ok(child_pid) = line.trim().parse::<u32>() {
+                    all_pids.push(child_pid);
                 }
             }
         }

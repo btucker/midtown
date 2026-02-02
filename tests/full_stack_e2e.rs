@@ -53,17 +53,16 @@ fn cleanup_orphaned_test_daemons() {
     if let Ok(output) = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
         .output()
+        && let Ok(sessions) = String::from_utf8(output.stdout)
     {
-        if let Ok(sessions) = String::from_utf8(output.stdout) {
-            let current_pid = format!("fullstack-e2e-test-{}-", std::process::id());
-            for session in sessions.lines() {
-                if session.contains("fullstack-e2e-test") && !session.contains(&current_pid) {
-                    let _ = Command::new("tmux")
-                        .args(["kill-session", "-t", session])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
+        let current_pid = format!("fullstack-e2e-test-{}-", std::process::id());
+        for session in sessions.lines() {
+            if session.contains("fullstack-e2e-test") && !session.contains(&current_pid) {
+                let _ = Command::new("tmux")
+                    .args(["kill-session", "-t", session])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
             }
         }
     }
@@ -658,11 +657,10 @@ fn test_web_ui_connects() {
     if let Ok(output) = Command::new("lsof")
         .args(["-ti", &format!(":{}", test_port)])
         .output()
+        && let Ok(pids) = String::from_utf8(output.stdout)
     {
-        if let Ok(pids) = String::from_utf8(output.stdout) {
-            for pid in pids.lines() {
-                let _ = Command::new("kill").arg("-9").arg(pid.trim()).output();
-            }
+        for pid in pids.lines() {
+            let _ = Command::new("kill").arg("-9").arg(pid.trim()).output();
         }
     }
     thread::sleep(Duration::from_millis(500));

@@ -184,19 +184,31 @@ impl Default for DaemonConfig {
     }
 }
 
+/// Hardcoded list of required Claude Code plugins.
+///
+/// These plugins are essential for midtown's agents to function properly.
+/// The daemon will automatically install any missing plugins on startup.
+pub const REQUIRED_PLUGINS: &[&str] = &[
+    "superpowers@claude-plugins-official",
+    "code-review@claude-plugins-official",
+    "pr-review-toolkit@claude-plugins-official",
+    "commit-commands@claude-plugins-official",
+    "feature-dev@claude-plugins-official",
+    "explanatory-output-style@claude-plugins-official",
+    "code-simplifier@claude-plugins-official",
+];
+
 /// Ensure required Claude Code plugins are installed.
 ///
-/// Reads the required plugins list from config, checks which are already
-/// installed, and installs any missing ones. Failures are logged as warnings
-/// but don't block daemon startup.
+/// Checks the hardcoded list of required plugins and installs any missing ones.
+/// Failures are logged as warnings but don't block daemon startup.
 async fn ensure_plugins_installed() {
-    let required = crate::config::get_required_plugins();
-    if required.is_empty() {
+    if REQUIRED_PLUGINS.is_empty() {
         debug!("No required plugins configured");
         return;
     }
 
-    info!("Checking {} required plugins", required.len());
+    info!("Checking {} required plugins", REQUIRED_PLUGINS.len());
 
     // Get list of installed plugins
     let installed = match get_installed_plugins().await {
@@ -208,9 +220,9 @@ async fn ensure_plugins_installed() {
     };
 
     // Find missing plugins
-    let missing: Vec<_> = required
+    let missing: Vec<_> = REQUIRED_PLUGINS
         .iter()
-        .filter(|p| !installed.contains(*p))
+        .filter(|p| !installed.contains(**p))
         .collect();
 
     if missing.is_empty() {
@@ -259,10 +271,10 @@ async fn get_installed_plugins() -> Result<HashSet<String>, String> {
 /// Install a plugin by name.
 async fn install_plugin(name: &str) -> Result<(), String> {
     let output = tokio::process::Command::new("claude")
-        .args(["plugin", "add", name])
+        .args(["plugin", "install", name])
         .output()
         .await
-        .map_err(|e| format!("Failed to run claude plugin add: {}", e))?;
+        .map_err(|e| format!("Failed to run claude plugin install: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
