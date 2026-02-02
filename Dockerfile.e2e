@@ -1,0 +1,62 @@
+# Dockerfile.e2e — Containerized E2E test environment for Midtown
+#
+# Provides a reproducible environment with tmux, git, and all dependencies
+# needed to run E2E tests that exercise the daemon, coworker lifecycle, and
+# channel communication.
+#
+# Usage:
+#   docker build -t midtown-e2e -f Dockerfile.e2e .
+#   docker run midtown-e2e                          # coordination mode (no auth)
+#   docker run -e ANTHROPIC_API_KEY midtown-e2e full # full mode (real Claude)
+
+FROM rust:bookworm
+
+# System dependencies: tmux for process model, git for worktrees,
+# procps for process inspection, jq for JSON parsing in scripts
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tmux \
+        git \
+        curl \
+        procps \
+        jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI via native installer
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    || echo "Claude CLI install skipped (may not be available in CI)"
+
+# gh CLI via GitHub's apt repo
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user — tests use $HOME/.midtown/ paths and running as root
+# would mask permission bugs that real users would hit
+RUN useradd -m -s /bin/bash testuser
+
+# Copy source into the image — create WORKDIR with correct ownership first,
+# since WORKDIR creates directories as root and COPY --chown only applies to files
+RUN mkdir -p /home/testuser/midtown && chown testuser:testuser /home/testuser/midtown
+WORKDIR /home/testuser/midtown
+COPY --chown=testuser:testuser . .
+
+# Build release binary and pre-compile tests to cache deps in the image layer.
+# This means `cargo test` inside the container only needs to link, not compile.
+USER testuser
+RUN cargo build --release \
+    && cargo test --release --no-run 2>&1 | tail -5
+
+# Default environment: disable webhook server and chat monitor for tests,
+# stub out the lead command so tests don't need a real Claude session
+ENV MIDTOWN_WEBHOOK_PORT=0 \
+    MIDTOWN_CHAT_MONITOR=0 \
+    MIDTOWN_LEAD_COMMAND="sleep 300"
+
+COPY --chmod=755 scripts/e2e-entrypoint.sh /usr/local/bin/e2e-entrypoint.sh
+
+ENTRYPOINT ["e2e-entrypoint.sh"]
+CMD ["coordination"]
