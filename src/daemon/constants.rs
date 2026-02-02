@@ -85,9 +85,6 @@ pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 /// This prevents spawn storms where coworkers are rapidly sent on breaks.
 pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 
-/// How long a coworker must be interrupted before nudging them to continue (60 seconds)
-pub(super) const INTERRUPTED_NUDGE_DURATION: Duration = Duration::from_secs(60);
-
 /// Cooldown between orphan recovery spawns (5 seconds)
 /// Only spawn one coworker per tick, with a minimum gap between spawns.
 pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);

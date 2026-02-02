@@ -2090,63 +2090,6 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         assert_eq!(dev_cap(10), 8);
     }
 
-    // Interactive prompt detection tests
-    #[test]
-    fn test_detect_interactive_prompt_plan_approval() {
-        let pane = r#"
-  ╭──────────────────────────────────────────────────────────╮
-  │ Plan: Add authentication endpoint                        │
-  │                                                          │
-  │  1. Yes, and bypass permissions                          │
-  │  2. Yes, clear context and bypass permissions            │
-  │  3. No, and tell Claude what to do differently           │
-  ╰──────────────────────────────────────────────────────────╯
-        "#;
-        assert_eq!(
-            crate::rules::detect_interactive_prompt(pane),
-            Some("plan approval")
-        );
-    }
-
-    #[test]
-    fn test_detect_interactive_prompt_permission_request() {
-        let pane = "Claude wants to run: cargo test\n  Allow once  Allow always  Deny";
-        assert_eq!(
-            crate::rules::detect_interactive_prompt(pane),
-            Some("permission request")
-        );
-    }
-
-    #[test]
-    fn test_detect_interactive_prompt_confirmation() {
-        let pane = "This will modify 15 files. Would you like to proceed?";
-        assert_eq!(
-            crate::rules::detect_interactive_prompt(pane),
-            Some("confirmation prompt")
-        );
-    }
-
-    #[test]
-    fn test_detect_interactive_prompt_question() {
-        let pane = "Which approach do you prefer?\n  Select an option\n  > Option A\n    Option B";
-        assert_eq!(
-            crate::rules::detect_interactive_prompt(pane),
-            Some("question prompt")
-        );
-    }
-
-    #[test]
-    fn test_detect_interactive_prompt_none() {
-        // Normal working output — no prompt
-        let pane = "Reading file src/main.rs\nEditing src/daemon.rs\n";
-        assert_eq!(crate::rules::detect_interactive_prompt(pane), None);
-    }
-
-    #[test]
-    fn test_detect_interactive_prompt_empty() {
-        assert_eq!(crate::rules::detect_interactive_prompt(""), None);
-    }
-
     // Usage limit detection tests
     #[test]
     fn test_parse_usage_limit_duration_minutes() {
