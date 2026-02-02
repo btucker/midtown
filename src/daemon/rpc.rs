@@ -214,13 +214,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
             match (trigger, message) {
                 (Some("all-work-merged"), Some(msg)) => {
-                    handle_reminder_create(request.id, msg, state)
+                    handle_reminder_create(request.id, msg, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
         }
 
-        "reminder.list" => handle_reminder_list(request.id, state),
+        "reminder.list" => handle_reminder_list(request.id, state).await,
 
         "reminder.cancel" => {
             let id = request
@@ -230,7 +230,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|v| v.as_str());
 
             match id {
-                Some(id) => handle_reminder_cancel(request.id, id, state),
+                Some(id) => handle_reminder_cancel(request.id, id, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -765,16 +765,15 @@ fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Respons
 }
 
 /// Handle reminder.create RPC method.
-fn handle_reminder_create(id: RequestId, message: &str, state: &DaemonState) -> Response {
-    let mut reminder_state = state.reminder_state.lock().unwrap();
-    let reminder_id = reminder_state.add(
+async fn handle_reminder_create(id: RequestId, message: &str, state: &DaemonState) -> Response {
+    let mut ps = state.persistent_state.lock().await;
+    let reminder_id = ps.reminders.add(
         crate::reminders::ReminderTrigger::AllWorkMerged,
         message.to_string(),
     );
 
-    let path = crate::paths::reminders_file_for_repo(&state.repo_name);
-    if let Err(e) = reminder_state.save(&path) {
-        error!("Failed to save reminders: {}", e);
+    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        error!("Failed to save daemon-state.json: {}", e);
     }
 
     let confirmation = format!(
@@ -786,9 +785,9 @@ fn handle_reminder_create(id: RequestId, message: &str, state: &DaemonState) -> 
 }
 
 /// Handle reminder.list RPC method.
-fn handle_reminder_list(id: RequestId, state: &DaemonState) -> Response {
-    let reminder_state = state.reminder_state.lock().unwrap();
-    let active = reminder_state.active();
+async fn handle_reminder_list(id: RequestId, state: &DaemonState) -> Response {
+    let ps = state.persistent_state.lock().await;
+    let active = ps.reminders.active();
 
     if active.is_empty() {
         return Response::success(id, serde_json::json!({ "message": "No active reminders." }));
@@ -812,12 +811,11 @@ fn handle_reminder_list(id: RequestId, state: &DaemonState) -> Response {
 }
 
 /// Handle reminder.cancel RPC method.
-fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &DaemonState) -> Response {
-    let mut reminder_state = state.reminder_state.lock().unwrap();
-    if reminder_state.cancel(reminder_id) {
-        let path = crate::paths::reminders_file_for_repo(&state.repo_name);
-        if let Err(e) = reminder_state.save(&path) {
-            error!("Failed to save reminders: {}", e);
+async fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &DaemonState) -> Response {
+    let mut ps = state.persistent_state.lock().await;
+    if ps.reminders.cancel(reminder_id) {
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            error!("Failed to save daemon-state.json: {}", e);
         }
         let msg = format!("Reminder {} cancelled.", reminder_id);
         info!("{}", msg);
@@ -986,9 +984,9 @@ fn get_all_tasks() -> Vec<serde_json::Value> {
 fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     // Get reviewer assignments from GitHubState (best-effort via try_lock)
     let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
-        .github_state
+        .persistent_state
         .try_lock()
-        .map(|gs| gs.active_assignments())
+        .map(|ps| ps.github.active_assignments())
         .unwrap_or_default();
 
     // Fetch PRs and repo metadata from all repos in the project.

@@ -61,7 +61,7 @@ pub async fn evaluate_tick(
             effects.extend(super::dispatch::check_and_recover_orphans(snap, state));
             effects.extend(super::dispatch::spawn_for_pending_tasks(snap, state));
             effects.extend(super::health::check_and_respawn_zombies(snap, state));
-            effects.extend(super::health::check_and_fire_reminders(snap, state));
+            effects.extend(super::health::check_and_fire_reminders(snap, state).await);
             effects
         }
     }

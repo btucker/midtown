@@ -15,6 +15,7 @@ mod helpers;
 mod pr;
 mod rpc;
 pub(crate) mod snapshot;
+pub(crate) mod state;
 mod trackers;
 mod webhook_fwd;
 
@@ -320,8 +321,8 @@ pub(crate) struct DaemonState {
     cooldowns: std::sync::Mutex<crate::rules::CooldownTracker>,
     /// Tracks orphaned worktrees — detection time, warning cooldown, and auto-pruning
     orphan_tracker: std::sync::RwLock<OrphanTracker>,
-    /// Persistent GitHub state (PR reviewer assignments, etc.)
-    github_state: Mutex<crate::github_state::GitHubState>,
+    /// Unified persistent state (GitHub + reminders), saved to daemon-state.json.
+    persistent_state: Mutex<state::DaemonPersistentState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
     /// Consolidated lead typing indicator state (pane hash, working flag, last activity).
@@ -335,8 +336,6 @@ pub(crate) struct DaemonState {
     /// When a coworker hits an API usage/rate limit, we parse the expiry and store it here.
     /// The main loop checks this and nudges everyone when the time arrives.
     usage_limit_nudge_at: Mutex<Option<tokio::time::Instant>>,
-    /// Persistent reminder state (one-shot condition-based notifications)
-    reminder_state: std::sync::Mutex<crate::reminders::ReminderState>,
     /// Hash of the last PR poll response body, used to skip re-processing when data hasn't changed.
     /// This doesn't reduce API calls, but avoids redundant lock acquisition and issue detection
     /// when the PR state hasn't changed between poll cycles.
@@ -419,14 +418,14 @@ impl DaemonState {
 
     /// Check if a PR has a review comment from a Claude coworker.
     ///
-    /// Uses `github_state` as the single source of truth. First checks the
-    /// persistent cache; if not found, makes GitHub API calls and caches
+    /// Uses the persistent state cache as the single source of truth. First
+    /// checks the cache; if not found, makes GitHub API calls and caches
     /// positive results permanently (review status is monotonic).
     async fn is_pr_reviewed(&self, pr_number: u64) -> bool {
-        // Fast path: check github_state cache (single source of truth)
+        // Fast path: check persistent cache (single source of truth)
         {
-            let github_state = self.github_state.lock().await;
-            if github_state.has_cached_review(pr_number) {
+            let ps = self.persistent_state.lock().await;
+            if ps.github.has_cached_review(pr_number) {
                 debug!(
                     "PR #{} has cached Claude review (skipping API call)",
                     pr_number
@@ -440,8 +439,8 @@ impl DaemonState {
 
         // Cache positive results (review status is monotonic)
         if has_review {
-            let mut github_state = self.github_state.lock().await;
-            github_state.mark_reviewed_pr(pr_number);
+            let mut ps = self.persistent_state.lock().await;
+            ps.github.mark_reviewed_pr(pr_number);
         }
 
         has_review
@@ -459,19 +458,11 @@ impl DaemonState {
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
     ) -> crate::Result<Self> {
-        // Load persistent GitHub state
-        let github_state =
-            crate::github_state::load_state_for_repo(&repo_name).unwrap_or_else(|e| {
-                warn!("Failed to load github-state.json: {}, using defaults", e);
-                crate::github_state::GitHubState::default()
-            });
-
-        // Load persistent reminder state
-        let reminder_path = crate::paths::reminders_file_for_repo(&repo_name);
-        let reminder_state =
-            crate::reminders::ReminderState::load(&reminder_path).unwrap_or_else(|e| {
-                warn!("Failed to load reminders.json: {}, using defaults", e);
-                crate::reminders::ReminderState::default()
+        // Load unified persistent state (migrates from legacy files if needed)
+        let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
+            .unwrap_or_else(|e| {
+                warn!("Failed to load daemon-state.json: {}, using defaults", e);
+                state::DaemonPersistentState::default()
             });
 
         let user_display_name = config::get_user_display_name_for_project(&repo_name);
@@ -487,13 +478,12 @@ impl DaemonState {
             all_repo_paths,
             cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),
             orphan_tracker: std::sync::RwLock::new(OrphanTracker::new()),
-            github_state: Mutex::new(github_state),
+            persistent_state: Mutex::new(persistent_state),
             web_updates_tx,
             max_coworkers,
             push_manager,
             usage_limit_nudge_at: Mutex::new(None),
             lead_typing: std::sync::Mutex::new(trackers::LeadTypingState::default()),
-            reminder_state: std::sync::Mutex::new(reminder_state),
             last_pr_poll_hash: Mutex::new(0),
             pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::new()),
             pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
@@ -1019,16 +1009,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     });
                 }
 
-                // Queue a reviewer spawn after the delay (persisted in github-state.json)
+                // Queue a reviewer spawn after the delay (persisted in daemon-state.json)
                 if let Some(pr_number) = webhook_event.needs_review {
                     let spawn_after = chrono::Utc::now()
                         + chrono::Duration::seconds(PR_REVIEW_DELAY_SECS as i64);
-                    let mut github_state = state.github_state.lock().await;
-                    github_state.add_pending_review_spawn(pr_number, spawn_after);
-                    if let Err(e) = crate::github_state::save_state_for_repo(
-                        &state.repo_name,
-                        &github_state,
-                    ) {
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.github.add_pending_review_spawn(pr_number, spawn_after);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
                         warn!("Failed to persist pending review spawn: {}", e);
                     }
                     info!(
@@ -1072,8 +1059,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         "Webhook: caching review status for PR #{} (review comment detected)",
                         pr_number
                     );
-                    let mut github_state = state.github_state.lock().await;
-                    github_state.mark_reviewed_pr(pr_number);
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.github.mark_reviewed_pr(pr_number);
                 }
 
                 // Route @mentions in webhook messages directly (chat monitor skips

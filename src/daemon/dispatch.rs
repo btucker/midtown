@@ -166,13 +166,13 @@ pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
         }
     }
 
-    // Check reviewer assignments from github-state.json
+    // Check reviewer assignments from daemon-state.json
     let reviewer_prs: std::collections::HashMap<String, u64> = {
-        let github_state = state.github_state.lock().await;
+        let ps = state.persistent_state.lock().await;
         discovered
             .iter()
             .filter_map(|name| {
-                github_state
+                ps.github
                     .pr_for_reviewer(name)
                     .map(|pr| (name.to_lowercase(), pr))
             })

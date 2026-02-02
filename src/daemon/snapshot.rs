@@ -171,13 +171,13 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 
     // ── Reviewer state ──────────────────────────────────────────────────
     let (active_reviewers, reviewer_pr_assignments) = {
-        let github_state = state.github_state.lock().await;
-        let reviewers = github_state.active_reviewers();
+        let ps = state.persistent_state.lock().await;
+        let reviewers = ps.github.active_reviewers();
         // Collect reviewer → PR assignments for all active coworkers
         let assignments: HashMap<String, u64> = active_coworkers
             .iter()
             .filter_map(|cw| {
-                github_state
+                ps.github
                     .pr_for_reviewer(&cw.name)
                     .map(|pr| (cw.name.clone(), pr))
             })

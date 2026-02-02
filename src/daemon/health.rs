@@ -654,18 +654,18 @@ pub(super) fn check_and_respawn_zombies(
     effects
 }
 
-pub(super) fn check_and_fire_reminders(
+pub(super) async fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
     // Convert snapshot HashSet to Vec for evaluate_trigger compatibility
     let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
 
-    let mut reminder_state = state.reminder_state.lock().unwrap();
+    let mut ps = state.persistent_state.lock().await;
     let mut fired_any = false;
     let mut effects = Vec::new();
 
-    for reminder in &mut reminder_state.reminders {
+    for reminder in &mut ps.reminders.reminders {
         if reminder.fired {
             continue;
         }
@@ -686,11 +686,11 @@ pub(super) fn check_and_fire_reminders(
         }
     }
 
-    if fired_any {
-        let path = crate::paths::reminders_file_for_repo(&snap.repo_name);
-        if let Err(e) = reminder_state.save(&path) {
-            error!("Failed to save reminders after firing: {}", e);
-        }
+    if fired_any && let Err(e) = ps.save_for_repo(&snap.repo_name) {
+        error!(
+            "Failed to save daemon-state.json after firing reminders: {}",
+            e
+        );
     }
 
     effects

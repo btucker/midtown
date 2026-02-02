@@ -502,9 +502,10 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         })
         .collect();
 
-    // Load GitHub state to get reviewer assignments (local file, cheap)
-    let github_state =
-        crate::github_state::load_state_for_repo(&state.config.repo).unwrap_or_default();
+    // Load persistent state to get reviewer assignments (local file, cheap)
+    let persistent_state =
+        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
+            .unwrap_or_default();
 
     // --- PR data: prefer daemon RPC, fall back to cached gh CLI calls ---
     let repo_name = state.config.repo.clone();
@@ -537,7 +538,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             // RPC returns "ci_status" / "reviewer" / "reviewed_at"; gh CLI returns
             // "isDraft" / "reviewDecision". Handle both shapes.
             // Look up reviewer from persistent state (covers both RPC and CLI shapes)
-            let assignment = github_state.pr_reviewers.get(&pr_number);
+            let assignment = persistent_state.github.pr_reviewers.get(&pr_number);
             let reviewer = pr
                 .get("reviewer")
                 .and_then(|v| v.as_str())
@@ -549,7 +550,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             let review_posted = pr
                 .get("review_posted")
                 .and_then(|v| v.as_bool())
-                .unwrap_or_else(|| github_state.reviewed_prs.contains(&pr_number));
+                .unwrap_or_else(|| persistent_state.github.reviewed_prs.contains(&pr_number));
             let status = if pr.get("ci_status").is_some() {
                 // RPC shape: derive review status from review_posted and reviewer
                 if review_posted {
