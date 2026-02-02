@@ -38,9 +38,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # would mask permission bugs that real users would hit
 RUN useradd -m -s /bin/bash testuser
 
-# Copy source into the image
+# Copy source into the image.
+# WORKDIR creates the directory as root; we must chown it so testuser can
+# create temp files (e.g. cargo's target directory) in the working directory.
 WORKDIR /home/testuser/midtown
 COPY --chown=testuser:testuser . .
+RUN chown testuser:testuser /home/testuser/midtown
 
 # Build release binary and pre-compile tests to cache deps in the image layer.
 # This means `cargo test` inside the container only needs to link, not compile.
