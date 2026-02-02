@@ -99,10 +99,10 @@ fn render_message_line_count(
 
     if show_sender {
         // Add blank line before new sender (except between system-like senders)
-        if let Some(prev) = prev_sender {
-            if !(is_system_like_sender(prev) && is_system_like_sender(&msg.from)) {
-                line_count += 1;
-            }
+        if let Some(prev) = prev_sender
+            && !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
+        {
+            line_count += 1;
         }
         // Sender name line
         line_count += 1;
