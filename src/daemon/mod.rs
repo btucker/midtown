@@ -1066,6 +1066,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     );
                 }
 
+                // Nudge PR owner immediately on review state change (approved / changes_requested)
+                if let Some(review_change) = webhook_event.review_state_change {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        pr::handle_webhook_review_state_change(&state, review_change).await;
+                    });
+                }
+
+                // Nudge PR owner immediately on CI failure
+                if let Some(ci_failure) = webhook_event.pr_ci_failure {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        pr::handle_webhook_ci_failure(&state, ci_failure).await;
+                    });
+                }
+
                 // Cache review status immediately from webhook data (avoids API calls)
                 if let Some(pr_number) = webhook_event.reviewed_pr {
                     debug!(

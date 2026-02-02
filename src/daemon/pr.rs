@@ -1528,3 +1528,318 @@ pub(super) async fn handle_pr_comment_nudge(
         add_eyes_reaction(repo, node).await;
     }
 }
+
+/// Handle a formal review state change (approved / changes_requested) from a webhook.
+///
+/// This provides immediate nudging when a reviewer submits a formal review,
+/// instead of waiting for the next polling cycle to detect the state change.
+/// The `PrIssueTracker` cooldown prevents duplicate nudges if polling also fires.
+pub(super) async fn handle_webhook_review_state_change(
+    state: &DaemonState,
+    change: crate::webhook::PrReviewStateChange,
+) {
+    let pr_number = change.pr_number;
+    let issue_type = match change.state {
+        crate::webhook::ReviewState::Approved => PrIssueType::Approved,
+        crate::webhook::ReviewState::ChangesRequested => PrIssueType::ChangesRequested,
+    };
+
+    // Check cooldown — polling may have already nudged for this issue
+    {
+        let tracker = state.pr_issue_tracker.lock().await;
+        if !tracker.should_nudge(pr_number, issue_type) {
+            debug!(
+                "PR #{} {} nudge on cooldown (already handled), skipping webhook nudge",
+                pr_number, issue_type
+            );
+            return;
+        }
+    }
+
+    // Resolve owner: use webhook data if available, otherwise look up async
+    let owner = match change.owner_coworker {
+        Some(ref o) => Some(o.clone()),
+        None => get_pr_owner_coworker_async(pr_number).await,
+    };
+
+    let Some(owner) = owner else {
+        debug!(
+            "PR #{} has no coworker owner, skipping webhook {} nudge",
+            pr_number, issue_type
+        );
+        return;
+    };
+
+    let nudge_msg = format!(
+        "PR #{} — {}: {}",
+        pr_number,
+        issue_type,
+        get_issue_action(issue_type)
+    );
+
+    // Get active coworkers for the decision function
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    let action = crate::rules::decide_pr_issue_action(
+        &owner,
+        &active_coworkers,
+        state.is_at_dev_limit(),
+        &nudge_msg,
+    );
+
+    let nudged = match action {
+        crate::rules::PrAction::NudgeOwner {
+            owner: ref o,
+            message: ref msg,
+        } => match state.coworkers.nudge(o, msg) {
+            Ok(()) => {
+                info!(
+                    "Webhook: nudged {} about {} on PR #{}",
+                    o, issue_type, pr_number
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    "Webhook: failed to nudge {} about {} on PR #{}: {}",
+                    o, issue_type, pr_number, e
+                );
+                false
+            }
+        },
+        crate::rules::PrAction::SpawnOwner {
+            owner: ref o,
+            message: ref msg,
+        } => {
+            info!(
+                "Webhook: PR #{} owner {} is not active, spawning to address {}",
+                pr_number, o, issue_type
+            );
+            let saved_session = {
+                let sessions = state.pr_break_sessions.read().unwrap();
+                sessions.get(o).cloned()
+            };
+            if saved_session.is_some() {
+                info!("Resuming saved PR break session for {}", o);
+            }
+            let session_mode = match saved_session.as_deref() {
+                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::tmux::SessionMode::Resume,
+            };
+            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                o.clone(),
+                state.repo_name.clone(),
+                session_mode,
+                Some(msg.clone()),
+            );
+            match state.spawn_coworker(&config).await {
+                Ok(_) => {
+                    if saved_session.is_some() {
+                        let mut sessions = state.pr_break_sessions.write().unwrap();
+                        sessions.remove(o);
+                    }
+                    info!(
+                        "Webhook: spawned {} to address {} on PR #{}",
+                        o, issue_type, pr_number
+                    );
+                    state.broadcast_coworker_update(o, "running", None);
+                    let call_msg = Message::text(
+                        "midtown",
+                        crate::daemon_messages::called_in_pr_issue(
+                            o,
+                            &issue_type.to_string(),
+                            pr_number,
+                            crate::config::get_personality(),
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&call_msg) {
+                        warn!("Failed to post call-in message: {}", e);
+                    }
+                    true
+                }
+                Err(e) => {
+                    warn!(
+                        "Webhook: failed to spawn {} for PR #{} {}: {}",
+                        o, pr_number, issue_type, e
+                    );
+                    false
+                }
+            }
+        }
+        crate::rules::PrAction::PostToChannel { message: ref msg } => {
+            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
+            if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                warn!("Failed to post PR issue to channel: {}", e);
+            }
+            true
+        }
+        crate::rules::PrAction::Skip { ref reason } => {
+            debug!("Webhook: {}", reason);
+            false
+        }
+    };
+
+    if nudged {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_nudge(pr_number, issue_type);
+    }
+}
+
+/// Handle a CI check failure on a PR branch from a webhook.
+///
+/// This provides immediate nudging when CI fails on a PR, instead of waiting
+/// for the next polling cycle. The `PrIssueTracker` cooldown prevents duplicate
+/// nudges if polling also fires.
+pub(super) async fn handle_webhook_ci_failure(
+    state: &DaemonState,
+    failure: crate::webhook::PrCiFailure,
+) {
+    let pr_number = failure.pr_number;
+
+    // Check cooldown
+    {
+        let tracker = state.pr_issue_tracker.lock().await;
+        if !tracker.should_nudge(pr_number, PrIssueType::CiFailed) {
+            debug!(
+                "PR #{} CI failure nudge on cooldown, skipping webhook nudge",
+                pr_number
+            );
+            return;
+        }
+    }
+
+    // Resolve owner
+    let owner = match failure.owner_coworker {
+        Some(ref o) => Some(o.clone()),
+        None => get_pr_owner_coworker_async(pr_number).await,
+    };
+
+    let Some(owner) = owner else {
+        debug!(
+            "PR #{} has no coworker owner, skipping webhook CI failure nudge",
+            pr_number
+        );
+        return;
+    };
+
+    let nudge_msg = format!(
+        "PR #{} — CI check '{}' failed: please investigate",
+        pr_number, failure.check_name
+    );
+
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    let action = crate::rules::decide_pr_issue_action(
+        &owner,
+        &active_coworkers,
+        state.is_at_dev_limit(),
+        &nudge_msg,
+    );
+
+    let nudged = match action {
+        crate::rules::PrAction::NudgeOwner {
+            owner: ref o,
+            message: ref msg,
+        } => match state.coworkers.nudge(o, msg) {
+            Ok(()) => {
+                info!(
+                    "Webhook: nudged {} about CI failure on PR #{}",
+                    o, pr_number
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    "Webhook: failed to nudge {} about CI failure on PR #{}: {}",
+                    o, pr_number, e
+                );
+                false
+            }
+        },
+        crate::rules::PrAction::SpawnOwner {
+            owner: ref o,
+            message: ref msg,
+        } => {
+            info!(
+                "Webhook: PR #{} owner {} is not active, spawning to address CI failure",
+                pr_number, o
+            );
+            let saved_session = {
+                let sessions = state.pr_break_sessions.read().unwrap();
+                sessions.get(o).cloned()
+            };
+            if saved_session.is_some() {
+                info!("Resuming saved PR break session for {}", o);
+            }
+            let session_mode = match saved_session.as_deref() {
+                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::tmux::SessionMode::Resume,
+            };
+            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                o.clone(),
+                state.repo_name.clone(),
+                session_mode,
+                Some(msg.clone()),
+            );
+            match state.spawn_coworker(&config).await {
+                Ok(_) => {
+                    if saved_session.is_some() {
+                        let mut sessions = state.pr_break_sessions.write().unwrap();
+                        sessions.remove(o);
+                    }
+                    info!(
+                        "Webhook: spawned {} to address CI failure on PR #{}",
+                        o, pr_number
+                    );
+                    state.broadcast_coworker_update(o, "running", None);
+                    let call_msg = Message::text(
+                        "midtown",
+                        crate::daemon_messages::called_in_pr_issue(
+                            o,
+                            "CI failed",
+                            pr_number,
+                            crate::config::get_personality(),
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&call_msg) {
+                        warn!("Failed to post call-in message: {}", e);
+                    }
+                    true
+                }
+                Err(e) => {
+                    warn!(
+                        "Webhook: failed to spawn {} for PR #{} CI failure: {}",
+                        o, pr_number, e
+                    );
+                    false
+                }
+            }
+        }
+        crate::rules::PrAction::PostToChannel { message: ref msg } => {
+            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
+            if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                warn!("Failed to post PR CI failure to channel: {}", e);
+            }
+            true
+        }
+        crate::rules::PrAction::Skip { ref reason } => {
+            debug!("Webhook: {}", reason);
+            false
+        }
+    };
+
+    if nudged {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_nudge(pr_number, PrIssueType::CiFailed);
+    }
+}
