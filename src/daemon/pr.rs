@@ -18,8 +18,9 @@ use crate::{config, daemon_messages};
 
 use super::DaemonState;
 use super::constants::*;
-use super::effects::{Effect, execute_effects};
+use super::effects::Effect;
 use super::helpers::*;
+use super::snapshot::WorldSnapshot;
 use super::trackers::{PrIssueType, StuckConditionType};
 
 /// Get list of coworker names who have open PRs.
@@ -147,16 +148,16 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
 ///
 /// Called from `evaluate_tick(PrPollTick)` in the main event loop.
 pub(super) async fn poll_prs_for_issues(
+    snap: &WorldSnapshot,
     state: &DaemonState,
 ) -> Result<Vec<Effect>, Box<dyn std::error::Error + Send + Sync>> {
     debug!("Polling PRs for actionable issues...");
 
     let mut effects: Vec<Effect> = Vec::new();
 
-    // Get list of active coworkers
-    let active_coworkers: Vec<String> = state
-        .coworkers
-        .list()
+    // Get list of active coworkers from snapshot (consistent with other tick handlers)
+    let active_coworkers: Vec<String> = snap
+        .active_coworkers
         .iter()
         .map(|c| c.name.clone())
         .collect();
@@ -202,9 +203,8 @@ pub(super) async fn poll_prs_for_issues(
 
     // Cleanup old tracking entries, but preserve assignments for active coworkers
     // so reviewers don't lose their PR tracking while still running
-    let active_coworker_names: HashSet<String> = state
-        .coworkers
-        .list()
+    let active_coworker_names: HashSet<String> = snap
+        .active_coworkers
         .iter()
         .map(|cw| cw.name.clone())
         .collect();
@@ -1077,9 +1077,13 @@ fn review_complete_action_to_effects(
 /// Process pending webhook-triggered reviewer spawns whose delay has expired.
 ///
 /// Drains ready entries from the persisted `pending_review_spawns` queue,
-/// fetches each PR's current data, and spawns a reviewer if eligible.
+/// fetches each PR's current data, and returns effects for eligible spawns.
 /// Unlike the previous `tokio::time::sleep` approach, these survive daemon restarts.
-pub(super) async fn process_pending_review_spawns(state: &DaemonState) {
+///
+/// Returns effects to be executed by the caller (following the evaluate-execute pattern).
+pub(super) async fn process_pending_review_spawns(state: &DaemonState) -> Vec<Effect> {
+    let mut all_effects = Vec::new();
+
     // Drain ready spawns from persistent state
     let ready_prs = {
         let mut ps = state.persistent_state.lock().await;
@@ -1093,7 +1097,7 @@ pub(super) async fn process_pending_review_spawns(state: &DaemonState) {
     };
 
     if ready_prs.is_empty() {
-        return;
+        return all_effects;
     }
 
     for pr_number in ready_prs {
@@ -1154,8 +1158,10 @@ pub(super) async fn process_pending_review_spawns(state: &DaemonState) {
             crate::github_state::AssignmentSource::Webhook,
         )
         .await;
-        execute_effects(effects, state).await;
+        all_effects.extend(effects);
     }
+
+    all_effects
 }
 
 /// Uncached check for Claude review on a PR (makes GitHub API calls).

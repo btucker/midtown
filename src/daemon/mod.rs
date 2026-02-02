@@ -1133,7 +1133,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // cleanup_orphaned_worktrees is not yet effect-based
                 dispatch::cleanup_orphaned_worktrees(&state);
                 // Process any pending webhook review spawns whose delay has expired
-                pr::process_pending_review_spawns(&state).await;
+                let review_effects = pr::process_pending_review_spawns(&state).await;
+                effects::execute_effects(review_effects, &state).await;
             }
 
             // Periodic channel log rotation

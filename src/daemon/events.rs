@@ -71,7 +71,7 @@ pub async fn evaluate_tick(
         }
         DaemonEvent::PrPollTick => {
             // PR polling: check open PRs for issues, spawn reviewers.
-            match super::pr::poll_prs_for_issues(state).await {
+            match super::pr::poll_prs_for_issues(snap, state).await {
                 Ok(effects) => effects,
                 Err(e) => {
                     tracing::warn!("PR poll error: {}", e);
