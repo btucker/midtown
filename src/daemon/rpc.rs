@@ -256,6 +256,10 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             info!("Check-pending triggered via RPC");
             let snap = snapshot::collect_world_snapshot(state).await;
             let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+            // Mark in-flight tasks BEFORE executing effects to prevent race conditions.
+            // Without this, a TaskDispatchTick firing while effects execute would see
+            // the task as still pending and generate a duplicate AssignAndSpawn.
+            state.mark_in_flight_spawns_from_effects(&pending_effects);
             effects::execute_effects(pending_effects, state).await;
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
