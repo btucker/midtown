@@ -2147,6 +2147,38 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         assert_eq!(crate::rules::detect_interactive_prompt(""), None);
     }
 
+    #[test]
+    fn test_detect_interactive_prompt_bypass_permissions_not_stuck() {
+        // When bypass permissions mode is active, the pane shows permission text
+        // alongside the bypass indicator. This should NOT be detected as a stuck prompt.
+        let pane = "Claude wants to run: cargo test\n  Allow once  Allow always  Deny\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        assert_eq!(
+            crate::rules::detect_interactive_prompt(pane),
+            None,
+            "bypass permissions mode should not trigger interactive prompt detection"
+        );
+    }
+
+    #[test]
+    fn test_detect_interactive_prompt_bypass_permissions_plan_not_stuck() {
+        // Plan approval prompt with bypass mode active should not be detected
+        let pane = r#"
+  ╭──────────────────────────────────────────────────────────╮
+  │ Plan: Add authentication endpoint                        │
+  │                                                          │
+  │  1. Yes, and bypass permissions                          │
+  │  2. Yes, clear context and bypass permissions            │
+  │  3. No, and tell Claude what to do differently           │
+  ╰──────────────────────────────────────────────────────────╯
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+        "#;
+        assert_eq!(
+            crate::rules::detect_interactive_prompt(pane),
+            None,
+            "bypass permissions mode should suppress plan approval detection"
+        );
+    }
+
     // Usage limit detection tests
     #[test]
     fn test_parse_usage_limit_duration_minutes() {

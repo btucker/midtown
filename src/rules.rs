@@ -481,7 +481,17 @@ const INTERACTIVE_PROMPT_PATTERNS: &[(&str, &str)] = &[
 ];
 
 /// Check if pane content contains an interactive prompt that needs human input.
+///
+/// Returns `None` when bypass permissions mode is active (indicated by
+/// `"⏵⏵ bypass permissions on"` in the pane), since the agent is
+/// auto-approving permissions and is NOT stuck waiting for input.
 pub(crate) fn detect_interactive_prompt(pane_content: &str) -> Option<&'static str> {
+    // When bypass permissions mode is active, the pane still shows permission/plan
+    // prompt text but the agent is auto-approving — not stuck.
+    if pane_content.contains("bypass permissions on") {
+        return None;
+    }
+
     for (pattern, label) in INTERACTIVE_PROMPT_PATTERNS {
         if pane_content.contains(pattern) {
             return Some(label);
