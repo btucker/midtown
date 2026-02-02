@@ -34,12 +34,11 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 
 use fs2::FileExt;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{Mutex, RwLock, broadcast, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
@@ -305,10 +304,10 @@ pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
     channel: Channel,
     socket_path: PathBuf,
-    /// Consolidated per-coworker lifecycle state (phase + last activity).
-    /// Bundles what was previously `coworker_phases` and `last_coworker_activity`
-    /// into a single map. Entries are created on spawn and cleared on shutdown.
-    coworker_lifecycles: RwLock<HashMap<String, crate::rules::CoworkerLifecycle>>,
+    /// Unified per-coworker records: session health, workflow phase, last activity.
+    /// Replaces the separate `coworker_lifecycles` and `coworker_state_reports`
+    /// maps. Entries are created on spawn and removed on shutdown.
+    coworker_records: tokio::sync::RwLock<HashMap<String, crate::rules::CoworkerRecord>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
     /// Repository name (primary repo)
@@ -349,24 +348,12 @@ pub(crate) struct DaemonState {
     pr_break_sessions: std::sync::RwLock<HashMap<String, String>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
-    /// Per-coworker pane content hash and last-changed timestamp (for stuck detection).
-    /// Maps coworker name → (last_hash, last_changed_at).
-    coworker_pane_hashes: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a daemon session, so we cache indefinitely.
     repo_name_cache: std::sync::RwLock<HashMap<PathBuf, String>>,
     /// User display name from config (e.g. "Ben"). Used to recognize user @mentions
     /// and identify user-sent messages when the display name differs from "user".
     user_display_name: Option<String>,
-    /// In-memory coworker state reports (phase + task), keyed by coworker name.
-    /// Replaces file-based state.json — coworkers report state via RPC, daemon
-    /// stores it here and uses it for tmux tab display and web UI updates.
-    coworker_state_reports:
-        std::sync::RwLock<HashMap<String, crate::coworker_state::CoworkerStateReport>>,
-    /// Per-coworker zombie respawn attempt counter. Tracks how many times each
-    /// coworker has been respawned as a zombie without recovering. Reset when a
-    /// coworker is spawned normally (non-zombie path). Used to cap respawn loops.
-    zombie_respawn_counts: std::sync::Mutex<HashMap<String, u32>>,
     /// Timestamp of the last received webhook event (monotonic).
     /// Used by the PR poll task to determine webhook health: if recent,
     /// polling uses a relaxed interval; if stale or absent, polling is aggressive.
@@ -476,7 +463,7 @@ impl DaemonState {
             coworkers,
             channel,
             socket_path,
-            coworker_lifecycles: RwLock::new(HashMap::new()),
+            coworker_records: tokio::sync::RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
             repo_name,
             default_branch,
@@ -493,32 +480,24 @@ impl DaemonState {
             pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::new()),
             pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
-            coworker_pane_hashes: std::sync::Mutex::new(HashMap::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
             user_display_name,
-            coworker_state_reports: std::sync::RwLock::new(HashMap::new()),
-            zombie_respawn_counts: std::sync::Mutex::new(HashMap::new()),
             last_webhook_event_at: Mutex::new(None),
         })
     }
 
-    /// Spawn a coworker and initialize its lifecycle state.
+    /// Spawn a coworker and initialize its record.
     ///
     /// Wraps `CoworkerManager::spawn_with_name` and inserts a fresh
-    /// `CoworkerLifecycle` entry on success, ensuring stale timestamps
-    /// from any previous incarnation are replaced.
+    /// `CoworkerRecord` on success, ensuring stale state from any
+    /// previous incarnation is replaced.
     async fn spawn_coworker(&self, config: &crate::tmux::ClaudeLaunchConfig) -> crate::Result<()> {
         self.coworkers.spawn_with_name(config)?;
-        let mut lc = self.coworker_lifecycles.write().await;
-        lc.insert(
+        let mut records = self.coworker_records.write().await;
+        records.insert(
             config.name.clone(),
-            crate::rules::CoworkerLifecycle::new_spawn(),
+            crate::rules::CoworkerRecord::new_spawn(),
         );
-        // Clear zombie respawn counter on successful spawn
-        {
-            let mut counts = self.zombie_respawn_counts.lock().unwrap();
-            counts.remove(&config.name);
-        }
         Ok(())
     }
 

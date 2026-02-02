@@ -36,7 +36,7 @@ pub enum DaemonEvent {
 /// effects. The caller executes all returned effects via `execute_effects`.
 ///
 /// Some check functions still take `&DaemonState` for mutable tracker state
-/// (coworker_lifecycles, cooldowns, etc.) and inline spawns that cannot yet be
+/// (coworker_records, cooldowns, etc.) and inline spawns that cannot yet be
 /// expressed as pure effects (spawn success/failure determines follow-up effects).
 pub async fn evaluate_tick(
     event: &DaemonEvent,
@@ -50,7 +50,7 @@ pub async fn evaluate_tick(
             effects.extend(super::health::check_and_shutdown_idle_coworkers(snap, state).await);
             effects.extend(super::health::check_and_restart_stuck_coworkers(
                 snap, state,
-            ));
+            ).await);
             effects.extend(super::health::check_for_usage_limits(snap));
             effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
             effects
@@ -60,7 +60,7 @@ pub async fn evaluate_tick(
             effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
             effects.extend(super::dispatch::check_and_recover_orphans(snap, state));
             effects.extend(super::dispatch::spawn_for_pending_tasks(snap, state));
-            effects.extend(super::health::check_and_respawn_zombies(snap, state));
+            effects.extend(super::health::check_and_respawn_zombies(snap, state).await);
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);
             effects
         }

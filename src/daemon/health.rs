@@ -5,7 +5,7 @@
 //! reminder firing. Pane scraping is used exclusively for health
 //! detection — workflow state is reported via RPC.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -184,7 +184,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
 
     // Pure decision: who should be shut down?
     let to_shutdown = {
-        let mut phases = state.coworker_lifecycles.write().await;
+        let mut records = state.coworker_records.write().await;
         let (decisions, transitions) = crate::rules::decide_idle_shutdowns(
             &snap.coworker_snapshots,
             &snap.busy_coworkers,
@@ -192,13 +192,13 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &snap.active_reviewers,
             &snap.coworkers_with_unblocked_deps,
             &snap.ci_passed_pr_coworkers,
-            &phases,
+            &records,
             snap.now,
             snap.now_utc,
             IDLE_BREAK_DURATION,
             MINIMUM_COWORKER_LIFETIME,
         );
-        crate::rules::apply_phase_transitions(&mut phases, transitions);
+        crate::rules::apply_health_transitions(&mut records, transitions);
         decisions
     };
 
@@ -346,7 +346,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
 /// every coworker's captured pane content and compare to the previous hash. If the
 /// hash has been unchanged for 5 minutes, the coworker is assumed stuck (hung process,
 /// infinite loop, etc.) and is restarted.
-pub(super) fn check_and_restart_stuck_coworkers(
+pub(super) async fn check_and_restart_stuck_coworkers(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
@@ -354,8 +354,14 @@ pub(super) fn check_and_restart_stuck_coworkers(
         return vec![];
     }
 
-    // Read current hash state, run pure decision, then write back updated state
-    let mut hashes = state.coworker_pane_hashes.lock().unwrap();
+    // Extract pane hashes from unified records, run pure decision, write back
+    let mut records = state.coworker_records.write().await;
+    let hashes: HashMap<String, (u64, Instant)> = records
+        .iter()
+        .filter_map(|(name, r): (&String, &crate::rules::CoworkerRecord)| {
+            r.pane_hash.map(|h| (name.clone(), h))
+        })
+        .collect();
     let result = crate::rules::decide_stuck_coworker_restarts(
         &hashes,
         &snap.pane_contents,
@@ -364,9 +370,20 @@ pub(super) fn check_and_restart_stuck_coworkers(
         COWORKER_STUCK_DURATION,
     );
 
-    // Apply updated hash state
-    *hashes = result.updated_hashes;
-    drop(hashes);
+    // Write updated hashes back into records
+    for (name, hash_entry) in &result.updated_hashes {
+        records
+            .entry(name.clone())
+            .or_insert_with(crate::rules::CoworkerRecord::new_spawn)
+            .pane_hash = Some(*hash_entry);
+    }
+    // Clear hashes for coworkers no longer tracked
+    for (name, record) in records.iter_mut() {
+        if !result.updated_hashes.contains_key(name) {
+            record.pane_hash = None;
+        }
+    }
+    drop(records);
 
     // Generate effects from pure decisions
     let mut effects = Vec::new();
@@ -514,7 +531,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
     effects
 }
 
-pub(super) fn check_and_respawn_zombies(
+pub(super) async fn check_and_respawn_zombies(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
@@ -561,19 +578,23 @@ pub(super) fn check_and_respawn_zombies(
         }
 
         // Per-coworker cooldown to prevent respawn loops
-        let cooldowns = state.cooldowns.lock().unwrap();
-        if !cooldowns.check("zombie_respawn", &name, ZOMBIE_RESPAWN_COOLDOWN) {
+        let should_check = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.check("zombie_respawn", &name, ZOMBIE_RESPAWN_COOLDOWN)
+        };
+        if !should_check {
             debug!("Zombie respawn cooldown active for {}", name);
             continue;
         }
-        drop(cooldowns);
 
         // Check respawn attempt count — give up after MAX_ZOMBIE_RESPAWN_ATTEMPTS
         let attempt_count = {
-            let mut counts = state.zombie_respawn_counts.lock().unwrap();
-            let count = counts.entry(name.clone()).or_insert(0);
-            *count += 1;
-            *count
+            let mut records = state.coworker_records.write().await;
+            let record = records
+                .entry(name.clone())
+                .or_insert_with(crate::rules::CoworkerRecord::new_spawn);
+            record.zombie_respawn_count += 1;
+            record.zombie_respawn_count
         };
 
         if attempt_count > MAX_ZOMBIE_RESPAWN_ATTEMPTS {
@@ -595,8 +616,10 @@ pub(super) fn check_and_respawn_zombies(
             });
             // Clean up the counter
             {
-                let mut counts = state.zombie_respawn_counts.lock().unwrap();
-                counts.remove(&name);
+                let mut records = state.coworker_records.write().await;
+                if let Some(record) = records.get_mut(&name) {
+                    record.zombie_respawn_count = 0;
+                }
             }
             continue;
         }
