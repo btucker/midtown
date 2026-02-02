@@ -286,7 +286,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
                 if let Err(e) = ps.save_for_repo(&repo_name) {
-                    warn!("Failed to save daemon-state.json after firing reminders: {}", e);
+                    warn!(
+                        "Failed to save daemon-state.json after firing reminders: {}",
+                        e
+                    );
                 }
             }
         }
