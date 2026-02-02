@@ -83,33 +83,24 @@ impl CooldownTracker {
 
 /// The current phase of a coworker in the daemon's lifecycle.
 ///
-/// Replaces three separate HashMaps (`idle_since`, `interrupted_since`,
-/// `prompted_nudged`) with a single enum per coworker. A coworker can only
-/// be in one phase at a time — the enum enforces mutual exclusivity.
+/// A coworker can only be in one phase at a time — the enum enforces
+/// mutual exclusivity. Workflow states (interrupted, prompted) are reported
+/// via RPC rather than inferred from pane content.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CoworkerPhase {
     /// Coworker has no tasks and is waiting for the idle timeout to expire.
     Idle { since: Instant },
-    /// Coworker's session shows an interruption marker; waiting for the
-    /// nudge timeout to fire.
-    Interrupted { since: Instant },
-    /// Coworker's session is blocked on an interactive prompt (plan approval,
-    /// permission dialog, etc.). The fingerprint deduplicates nudges for the
-    /// same prompt.
-    Prompted { fingerprint: String },
 }
 
 /// Consolidated per-coworker lifecycle state.
 ///
-/// Bundles the coworker's current phase (idle/interrupted/prompted) and their
-/// last channel activity timestamp into a single entry. This replaces the
-/// separate `coworker_phases` and `last_coworker_activity` HashMaps with one
-/// `HashMap<String, CoworkerLifecycle>`, ensuring both are cleared together
-/// on spawn and shutdown.
+/// Bundles the coworker's current phase and their last channel activity
+/// timestamp into a single entry, ensuring both are cleared together on
+/// spawn and shutdown.
 #[derive(Debug, Clone)]
 pub(crate) struct CoworkerLifecycle {
-    /// Current lifecycle phase (idle, interrupted, prompted), or `None` if
-    /// the coworker is actively working (no special phase).
+    /// Current lifecycle phase (idle), or `None` if the coworker is actively
+    /// working (no special phase).
     pub phase: Option<CoworkerPhase>,
     /// When the coworker last posted to the channel. `None` if no activity
     /// has been recorded yet (e.g., freshly spawned).
@@ -198,19 +189,6 @@ pub(crate) struct ShutdownDecision {
     /// When true, the daemon should save the coworker's session ID before shutdown
     /// so it can be resumed later (e.g., PR break-and-resume when CI passes).
     pub save_session: bool,
-}
-
-/// Decision to nudge an interrupted coworker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InterruptNudge {
-    pub name: String,
-}
-
-/// Decision to alert the lead about a prompted coworker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PromptNudge {
-    pub name: String,
-    pub label: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -306,8 +284,6 @@ pub(crate) fn decide_idle_shutdowns(
                         });
                     }
                 }
-                // Don't overwrite Interrupted or Prompted — those take priority
-                Some(CoworkerPhase::Interrupted { .. } | CoworkerPhase::Prompted { .. }) => {}
                 None => {
                     transitions.push(PhaseTransition::Set {
                         name: coworker.clone(),
@@ -326,178 +302,6 @@ pub(crate) fn decide_idle_shutdowns(
     }
 
     (to_shutdown, transitions)
-}
-
-/// Decide which coworkers should be nudged due to interrupted sessions.
-///
-/// Takes pane contents and immutable lifecycle state.
-/// Returns nudge decisions and phase transitions without performing
-/// any side effects or mutations.
-pub(crate) fn decide_interrupt_nudges(
-    coworkers: &[CoworkerSnapshot],
-    pane_contents: &HashMap<String, String>,
-    lifecycles: &HashMap<String, CoworkerLifecycle>,
-    now: Instant,
-    nudge_duration: Duration,
-) -> (Vec<InterruptNudge>, Vec<PhaseTransition>) {
-    let mut to_nudge = Vec::new();
-    let mut transitions = Vec::new();
-
-    for cw in coworkers {
-        let coworker = &cw.name;
-
-        let pane_content = match pane_contents.get(coworker) {
-            Some(content) => content,
-            None => {
-                if matches!(
-                    get_phase(lifecycles, coworker),
-                    Some(CoworkerPhase::Interrupted { .. })
-                ) {
-                    transitions.push(PhaseTransition::Clear {
-                        name: coworker.clone(),
-                    });
-                }
-                continue;
-            }
-        };
-
-        let is_interrupted = pane_content.contains("Interrupted")
-            || pane_content.contains("What should Claude do instead?");
-
-        if is_interrupted {
-            match get_phase(lifecycles, coworker) {
-                Some(CoworkerPhase::Interrupted { since }) => {
-                    if now.duration_since(since) >= nudge_duration {
-                        to_nudge.push(InterruptNudge {
-                            name: coworker.clone(),
-                        });
-                        transitions.push(PhaseTransition::Clear {
-                            name: coworker.clone(),
-                        });
-                    }
-                }
-                _ => {
-                    // Transition to Interrupted (overwriting Idle or absent)
-                    transitions.push(PhaseTransition::Set {
-                        name: coworker.clone(),
-                        phase: CoworkerPhase::Interrupted { since: now },
-                    });
-                }
-            }
-        } else if matches!(
-            get_phase(lifecycles, coworker),
-            Some(CoworkerPhase::Interrupted { .. })
-        ) {
-            // No longer interrupted — clear the phase
-            transitions.push(PhaseTransition::Clear {
-                name: coworker.clone(),
-            });
-        }
-    }
-
-    (to_nudge, transitions)
-}
-
-/// Decide which coworkers should trigger a lead prompt nudge.
-///
-/// Takes pane contents and immutable lifecycle state.
-/// Returns nudge decisions and phase transitions without performing
-/// any side effects or mutations.
-pub(crate) fn decide_prompt_nudges(
-    coworkers: &[CoworkerSnapshot],
-    pane_contents: &HashMap<String, String>,
-    lifecycles: &HashMap<String, CoworkerLifecycle>,
-) -> (Vec<PromptNudge>, Vec<PhaseTransition>) {
-    let mut to_nudge = Vec::new();
-    let mut transitions = Vec::new();
-
-    for cw in coworkers {
-        let coworker = &cw.name;
-
-        // Skip the lead — they're the human
-        if coworker == "lead" {
-            continue;
-        }
-
-        let pane_content = match pane_contents.get(coworker) {
-            Some(content) => content,
-            None => {
-                if matches!(
-                    get_phase(lifecycles, coworker),
-                    Some(CoworkerPhase::Prompted { .. })
-                ) {
-                    transitions.push(PhaseTransition::Clear {
-                        name: coworker.clone(),
-                    });
-                }
-                continue;
-            }
-        };
-
-        match detect_interactive_prompt(pane_content) {
-            Some(label) => {
-                let fingerprint = label.to_string();
-                let already_nudged = matches!(
-                    get_phase(lifecycles, coworker),
-                    Some(CoworkerPhase::Prompted { fingerprint: prev }) if prev == fingerprint
-                );
-                if !already_nudged {
-                    transitions.push(PhaseTransition::Set {
-                        name: coworker.clone(),
-                        phase: CoworkerPhase::Prompted { fingerprint },
-                    });
-                    to_nudge.push(PromptNudge {
-                        name: coworker.clone(),
-                        label: label.to_string(),
-                    });
-                }
-            }
-            None => {
-                if matches!(
-                    get_phase(lifecycles, coworker),
-                    Some(CoworkerPhase::Prompted { .. })
-                ) {
-                    transitions.push(PhaseTransition::Clear {
-                        name: coworker.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    (to_nudge, transitions)
-}
-
-/// Patterns that indicate a coworker is waiting on an interactive prompt.
-const INTERACTIVE_PROMPT_PATTERNS: &[(&str, &str)] = &[
-    ("Yes, and don't ask again for this project", "plan approval"),
-    ("Yes, and bypass permissions", "plan approval"),
-    ("Yes, clear context and bypass permissions", "plan approval"),
-    ("Do you want to proceed?", "confirmation prompt"),
-    ("Would you like to proceed?", "confirmation prompt"),
-    ("Allow once", "permission request"),
-    ("Allow always", "permission request"),
-    ("Select an option", "question prompt"),
-];
-
-/// Check if pane content contains an interactive prompt that needs human input.
-///
-/// Returns `None` when bypass permissions mode is active (indicated by
-/// `"⏵⏵ bypass permissions on"` in the pane), since the agent is
-/// auto-approving permissions and is NOT stuck waiting for input.
-pub(crate) fn detect_interactive_prompt(pane_content: &str) -> Option<&'static str> {
-    // When bypass permissions mode is active, the pane still shows permission/plan
-    // prompt text but the agent is auto-approving — not stuck.
-    if pane_content.contains("bypass permissions on") {
-        return None;
-    }
-
-    for (pattern, label) in INTERACTIVE_PROMPT_PATTERNS {
-        if pane_content.contains(pattern) {
-            return Some(label);
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1510,209 +1314,6 @@ mod tests {
         );
 
         assert!(decisions.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // decide_interrupt_nudges tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn interrupt_nudge_after_duration() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("york".to_string(), "Some output\nInterrupted\n".to_string());
-        let mut phases = lifecycle_with(
-            "york",
-            CoworkerPhase::Interrupted {
-                since: Instant::now() - Duration::from_secs(90),
-            },
-        );
-
-        let (nudges, transitions) = decide_interrupt_nudges(
-            &coworkers,
-            &pane_contents,
-            &phases,
-            Instant::now(),
-            Duration::from_secs(60),
-        );
-        apply_phase_transitions(&mut phases, transitions);
-
-        assert_eq!(nudges.len(), 1);
-        assert_eq!(nudges[0].name, "york");
-        // Tracking reset after nudge
-        assert!(get_phase(&phases, "york").is_none());
-    }
-
-    #[test]
-    fn interrupt_nudge_not_yet_due() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("york".to_string(), "Interrupted".to_string());
-        let phases = lifecycle_with(
-            "york",
-            CoworkerPhase::Interrupted {
-                since: Instant::now() - Duration::from_secs(10),
-            },
-        );
-
-        let (nudges, _transitions) = decide_interrupt_nudges(
-            &coworkers,
-            &pane_contents,
-            &phases,
-            Instant::now(),
-            Duration::from_secs(60),
-        );
-
-        assert!(nudges.is_empty());
-        // Still tracking (no transitions clear it)
-        assert!(get_phase(&phases, "york").is_some());
-    }
-
-    #[test]
-    fn interrupt_tracking_cleared_when_no_longer_interrupted() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("york".to_string(), "All good, working fine".to_string());
-        let mut phases = lifecycle_with(
-            "york",
-            CoworkerPhase::Interrupted {
-                since: Instant::now() - Duration::from_secs(90),
-            },
-        );
-
-        let (nudges, transitions) = decide_interrupt_nudges(
-            &coworkers,
-            &pane_contents,
-            &phases,
-            Instant::now(),
-            Duration::from_secs(60),
-        );
-        apply_phase_transitions(&mut phases, transitions);
-
-        assert!(nudges.is_empty());
-        // Tracking cleared
-        assert!(get_phase(&phases, "york").is_none());
-    }
-
-    #[test]
-    fn interrupt_starts_tracking_newly_interrupted() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert(
-            "york".to_string(),
-            "What should Claude do instead?".to_string(),
-        );
-        let mut phases: HashMap<String, CoworkerLifecycle> = HashMap::new();
-
-        let (nudges, transitions) = decide_interrupt_nudges(
-            &coworkers,
-            &pane_contents,
-            &phases,
-            Instant::now(),
-            Duration::from_secs(60),
-        );
-        apply_phase_transitions(&mut phases, transitions);
-
-        assert!(nudges.is_empty());
-        assert!(get_phase(&phases, "york").is_some());
-    }
-
-    // -----------------------------------------------------------------------
-    // decide_prompt_nudges tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prompt_nudge_new_prompt_detected() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert(
-            "york".to_string(),
-            "Some output\nAllow once\nAllow always".to_string(),
-        );
-        let mut phases: HashMap<String, CoworkerLifecycle> = HashMap::new();
-
-        let (nudges, transitions) = decide_prompt_nudges(&coworkers, &pane_contents, &phases);
-        apply_phase_transitions(&mut phases, transitions);
-
-        assert_eq!(nudges.len(), 1);
-        assert_eq!(nudges[0].name, "york");
-        assert_eq!(nudges[0].label, "permission request");
-        assert!(
-            matches!(get_phase(&phases, "york"), Some(CoworkerPhase::Prompted { fingerprint }) if fingerprint == "permission request")
-        );
-    }
-
-    #[test]
-    fn prompt_nudge_skips_already_nudged_same_type() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("york".to_string(), "Allow once\nAllow always".to_string());
-        let phases = lifecycle_with(
-            "york",
-            CoworkerPhase::Prompted {
-                fingerprint: "permission request".to_string(),
-            },
-        );
-
-        let (nudges, _transitions) = decide_prompt_nudges(&coworkers, &pane_contents, &phases);
-
-        assert!(nudges.is_empty());
-    }
-
-    #[test]
-    fn prompt_nudge_fires_for_different_prompt_type() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert(
-            "york".to_string(),
-            "Yes, and don't ask again for this project".to_string(),
-        );
-        let phases = lifecycle_with(
-            "york",
-            CoworkerPhase::Prompted {
-                fingerprint: "permission request".to_string(),
-            },
-        );
-
-        let (nudges, _transitions) = decide_prompt_nudges(&coworkers, &pane_contents, &phases);
-
-        assert_eq!(nudges.len(), 1);
-        assert_eq!(nudges[0].label, "plan approval");
-    }
-
-    #[test]
-    fn prompt_nudge_clears_when_no_prompt() {
-        let coworkers = vec![cw("york", 10)];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("york".to_string(), "Working normally".to_string());
-        let mut phases = lifecycle_with(
-            "york",
-            CoworkerPhase::Prompted {
-                fingerprint: "permission request".to_string(),
-            },
-        );
-
-        let (nudges, transitions) = decide_prompt_nudges(&coworkers, &pane_contents, &phases);
-        apply_phase_transitions(&mut phases, transitions);
-
-        assert!(nudges.is_empty());
-        assert!(get_phase(&phases, "york").is_none());
-    }
-
-    #[test]
-    fn prompt_nudge_skips_lead() {
-        let coworkers = vec![CoworkerSnapshot {
-            name: "lead".to_string(),
-            started_at: Utc::now() - chrono::Duration::minutes(10),
-            isolated_tasks: false,
-        }];
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("lead".to_string(), "Allow once\nAllow always".to_string());
-        let phases: HashMap<String, CoworkerLifecycle> = HashMap::new();
-
-        let (nudges, _transitions) = decide_prompt_nudges(&coworkers, &pane_contents, &phases);
-
-        assert!(nudges.is_empty());
     }
 
     // -----------------------------------------------------------------------

@@ -51,8 +51,6 @@ pub async fn evaluate_tick(
             // calls. For example, a prompt nudge can supersede an idle shutdown
             // decision for the same coworker.
             effects.extend(super::health::check_and_shutdown_idle_coworkers(snap, state).await);
-            effects.extend(super::health::check_and_nudge_interrupted_coworkers(snap, state).await);
-            effects.extend(super::health::check_and_nudge_prompted_coworkers(snap, state).await);
             effects.extend(super::health::check_and_restart_stuck_coworkers(
                 snap, state,
             ));
