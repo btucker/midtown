@@ -377,10 +377,16 @@ pub fn create_window(
 /// Claude Code survives the SIGHUP that tmux sends on window destruction.
 pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
     let target = format!("{}:{}", session, name);
+    kill_window_by_target(&target)
+}
 
+/// Kill a tmux window by its fully-qualified target string (e.g., "session:@0").
+///
+/// SIGTERMs pane processes first (Claude Code ignores SIGHUP), then kills the window.
+pub fn kill_window_by_target(target: &str) -> crate::Result<()> {
     // SIGTERM the pane process first — Claude Code ignores SIGHUP
     if let Ok(output) = Command::new("tmux")
-        .args(["list-panes", "-t", &target, "-F", "#{pane_pid}"])
+        .args(["list-panes", "-t", target, "-F", "#{pane_pid}"])
         .output()
     {
         let pids: Vec<String> = String::from_utf8_lossy(&output.stdout)
@@ -398,7 +404,7 @@ pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
     }
 
     let status = Command::new("tmux")
-        .args(["kill-window", "-t", &target])
+        .args(["kill-window", "-t", target])
         .status()
         .map_err(Error::Io)?;
 
@@ -943,6 +949,95 @@ pub fn window_exists(session: &str, name: &str) -> crate::Result<bool> {
     }))
 }
 
+/// Count how many tmux windows in a session match the given name.
+///
+/// Uses `#{window_id}` to uniquely identify windows, since multiple windows
+/// can share the same name. Returns the count and the list of window IDs.
+pub fn count_windows_by_name(session: &str, name: &str) -> crate::Result<(usize, Vec<String>)> {
+    let output = Command::new("tmux")
+        .args([
+            "list-windows",
+            "-t",
+            session,
+            "-F",
+            "#{window_id}:#{window_name}",
+        ])
+        .output()
+        .map_err(Error::Io)?;
+
+    if !output.status.success() {
+        return Ok((0, vec![]));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let name_lower = name.to_lowercase();
+
+    let matching_ids: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| {
+            // Format: "@0:lead" or "@3:lead:dev#5"
+            let (id, rest) = line.split_once(':')?;
+            let base_name = rest.split(':').next().unwrap_or(rest).to_lowercase();
+            if base_name == name_lower {
+                Some(id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let count = matching_ids.len();
+    Ok((count, matching_ids))
+}
+
+/// Kill ALL tmux windows in a session that match the given name.
+///
+/// Unlike `kill_window` which uses `session:name` (tmux only targets the first
+/// match), this function lists windows by ID and kills each one individually.
+/// This prevents duplicate windows from accumulating when the same name is
+/// created multiple times (e.g., during restart races).
+pub fn kill_all_windows_by_name(session: &str, name: &str) -> crate::Result<usize> {
+    let (count, ids) = count_windows_by_name(session, name)?;
+
+    if count == 0 {
+        return Ok(0);
+    }
+
+    for id in &ids {
+        // Kill by window ID (e.g., "@0") which is always unique
+        let target = format!("{}:{}", session, id);
+
+        // SIGTERM pane processes first — Claude Code ignores SIGHUP
+        if let Ok(output) = Command::new("tmux")
+            .args(["list-panes", "-t", &target, "-F", "#{pane_pid}"])
+            .output()
+        {
+            let pids: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect();
+            if !pids.is_empty() {
+                let _ = Command::new("kill")
+                    .args(&pids)
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+
+        let _ = Command::new("tmux")
+            .args(["kill-window", "-t", &target])
+            .status();
+    }
+
+    // Brief pause to let tmux clean up
+    if count > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
+    Ok(count)
+}
+
 /// Poll a tmux window to see if it survives startup.
 ///
 /// Checks every 500ms for up to 3 seconds. Returns `true` if the window
@@ -1394,14 +1489,19 @@ pub fn spawn_lead(
     project_name: &str,
     additional_dirs: &[PathBuf],
 ) -> crate::Result<()> {
-    // Kill any existing lead windows to prevent duplicates.
-    // This can happen if the lead health check races or a previous
-    // spawn left a stale window behind.
-    if window_exists(session, "lead").unwrap_or(false) {
-        tracing::warn!("Killing existing lead window before respawn");
-        let _ = kill_window(session, "lead");
-        // Brief pause to let tmux clean up
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    // Kill ALL existing lead windows to prevent duplicates.
+    // Using kill_all_windows_by_name instead of kill_window because tmux's
+    // `kill-window -t session:name` only targets the first match when
+    // multiple windows share the same name. This can happen if health check
+    // races during restart create extras.
+    match kill_all_windows_by_name(session, "lead") {
+        Ok(n) if n > 0 => {
+            tracing::warn!("Killed {} existing lead window(s) before respawn", n);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!("Failed to clean up existing lead windows: {}", e);
+        }
     }
 
     let prompt_file = write_lead_prompt_file()?;
