@@ -14,7 +14,7 @@ use ratatui::{
 
 use midtown::{Message, MessageType};
 
-use super::app::{App, CiStatus, RepoStatus, TaskStatus};
+use super::app::{App, CiStatus, RepoStatus};
 
 /// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
 #[derive(Debug, Clone)]
@@ -710,17 +710,11 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Update visible height for scroll calculations
     app.visible_height = inner.height as usize;
 
-    // Get visible messages
+    // Get cached current_tasks lookup first, then visible messages.
+    // We clone current_tasks to avoid holding a mutable borrow across the loop.
+    let current_tasks = app.current_tasks().clone();
+    let user_display_name = app.user_display_name.clone();
     let visible = app.visible_messages();
-
-    // Build a lookup map of coworker name -> current task subject
-    // A coworker's "current task" is an in_progress task where they're the owner
-    let current_tasks: HashMap<String, String> = app
-        .tasks
-        .iter()
-        .filter(|t| t.status == TaskStatus::InProgress && t.owner.is_some())
-        .map(|t| (t.owner.clone().unwrap().to_lowercase(), t.subject.clone()))
-        .collect();
 
     // Build lines for messages, tracking previous sender for grouping
     let mut lines: Vec<Line> = Vec::new();
@@ -732,7 +726,7 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
             inner.width as usize,
             prev_sender,
             &current_tasks,
-            app.user_display_name.as_deref(),
+            user_display_name.as_deref(),
         );
         lines.extend(msg_lines);
         prev_sender = Some(&msg.from);

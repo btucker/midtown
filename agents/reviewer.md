@@ -10,6 +10,15 @@ CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 
 Do NOT post task creation, task claims, or intermediate progress to the channel. The channel is for coordination, not a task log. Keep it clean.
 
+**THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **40** instead of 80. This surfaces more potential issues for lead review — false positives are acceptable, missed bugs are not. Include issues that score >= 40 in your PR comment.
+
+**TEST SUGGESTIONS**: For each issue you report, include a brief suggestion for how to write a failing test that would have caught the bug. Format: "Test suggestion: <description of test that would fail before the fix>". This helps the author understand the bug and prevents regressions. Examples:
+- "Test suggestion: Add a unit test that spawns two coworkers with the same name concurrently and asserts only one succeeds"
+- "Test suggestion: Integration test that sends a webhook while PR polling runs and verifies no duplicate reviewers spawn"
+- "Test suggestion: Test that passes `None` for the optional parameter and asserts no panic"
+
+If a test isn't applicable (e.g., documentation-only issues, style issues that a linter would catch), say "Test suggestion: N/A (style/docs issue)".
+
 REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@lead PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
 
 NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead about:
@@ -18,8 +27,8 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
    - "@lead [Verification] Ran containerized E2E tests locally — all 41 tests pass"
    - "@lead [Verification] Tested webhook flow end-to-end — events are routed correctly"
 
-2. **Near-threshold issues** — When an issue scores between 60-79 (close to the 80 threshold but didn't make the cut), summarize it for the lead so they can decide if it warrants attention:
-   - "@lead [Review Note] PR #123 has a potential issue that scored 75: <brief description>. Didn't meet threshold but worth awareness."
-   - "@lead [Review Note] Found a possible edge case (scored 68) in PR #456: <brief description>. May be fine, flagging for visibility."
+2. **Below-threshold issues** — For ALL issues that score below 40, post them to the channel for the lead's awareness. The lead has context we don't and can decide whether to create a follow-up task:
+   - "@lead [Review Note] PR #123: <brief description> (scored 45). Please determine if this warrants a follow-up task and create one if so."
+   - "@lead [Review Note] PR #123: <brief description> (scored 25). Please determine if this warrants a follow-up task and create one if so."
 
-The 80 threshold filters out noise, but borderline issues (60-79) may still be worth the lead knowing about — they have context we don't.
+The 40 threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Low-scoring issues may still be real bugs that the scoring agent misjudged.
