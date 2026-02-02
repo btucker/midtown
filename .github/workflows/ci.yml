@@ -65,6 +65,9 @@ jobs:
       - name: Run tmux_e2e
         run: cargo test --release --test tmux_e2e -- --ignored --test-threads=1
 
+      - name: Run full_stack_e2e
+        run: cargo test --release --test full_stack_e2e -- --ignored --test-threads=1
+
       - name: Run nudge_delivery_e2e
         run: cargo test --release --test nudge_delivery_e2e -- --ignored
 
@@ -74,6 +77,15 @@ jobs:
 
       - name: Run task_sharing
         run: cargo test --release --test task_sharing
+
+      - name: Run polling_degradation
+        run: cargo test --release --test polling_degradation
+
+      - name: Run spawn_race_test
+        run: cargo test --release --test spawn_race_test
+
+      - name: Run tailf_integration
+        run: cargo test --release --test tailf_integration
 
   clippy:
     name: Clippy
