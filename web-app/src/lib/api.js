@@ -265,9 +265,12 @@ export function sendMessage(content) {
   }
 }
 
-// Send a raw JSON message over the WebSocket (for view_window / leave_window)
+// Send a raw JSON message over the WebSocket (for view_window / leave_window).
+// Returns true if the message was sent, false if the WebSocket was not open.
 export function sendWsMessage(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg))
+    return true
   }
+  return false
 }

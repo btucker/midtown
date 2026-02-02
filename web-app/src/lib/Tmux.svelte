@@ -14,6 +14,7 @@
   let paneEl = null
   let resizeTimeout = null
   let nudgeStatusTimeout = null
+  let lastSentCols = 0
 
   // Approximate character width for a monospace font at 0.8rem.
   // This converts pixel width → terminal columns for the resize message.
@@ -29,7 +30,9 @@
   function sendViewWindow() {
     if (!selectedWindow) return
     const cols = getViewportCols()
-    sendWsMessage({ type: 'view_window', window: selectedWindow, cols })
+    if (sendWsMessage({ type: 'view_window', window: selectedWindow, cols })) {
+      lastSentCols = cols
+    }
   }
 
   function sendLeaveWindow() {
@@ -111,10 +114,14 @@
     if (interval) return
     fetchWindows()
     fetchPane()
-    // Notify backend of viewed window after a brief delay to let paneEl bind
-    requestAnimationFrame(() => sendViewWindow())
     interval = setInterval(() => {
       fetchPane()
+      // Re-send view_window periodically to recover from dropped messages.
+      // Only sends if the viewport cols have changed or no successful send yet.
+      const cols = getViewportCols()
+      if (cols !== lastSentCols) {
+        sendViewWindow()
+      }
     }, 1000)
     // Refresh windows every 10 seconds
     windowInterval = setInterval(fetchWindows, 10000)
@@ -138,6 +145,15 @@
       sendViewWindow()
     }, 300)
   }
+
+  // Re-send the view_window message whenever the WebSocket connects or reconnects.
+  // On reconnect, the backend assigns a new conn_id and the old viewer tracking is
+  // cleaned up, so we must re-register as a viewer to keep the resize in effect.
+  $effect(() => {
+    if ($connected && selectedWindow) {
+      sendViewWindow()
+    }
+  })
 
   onMount(() => {
     startPolling()
