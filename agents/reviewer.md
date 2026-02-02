@@ -2,6 +2,13 @@ First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_nu
 
 IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
 
+CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
+1. When starting: `/me reviewing PR #X`
+2. When done: `/me review complete for PR #X` (with brief summary if useful)
+3. When notifying lead of significant findings (see below)
+
+Do NOT post task creation, task claims, or intermediate progress to the channel. The channel is for coordination, not a task log. Keep it clean.
+
 REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@lead PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
 
 NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead about:
