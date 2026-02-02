@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 mod cli;
 mod client;
 
-use cli::{ChannelCommand, CoworkerCommand, HookCommand, PrCommand, TaskCommand};
+use cli::{ChannelCommand, CoworkerCommand, E2eCommand, HookCommand, PrCommand, TaskCommand};
 use client::DaemonClient;
 
 #[derive(Parser)]
@@ -123,6 +123,11 @@ enum Commands {
     },
     /// Open IRC-style chat TUI
     Chat,
+    /// E2E testing commands (auth setup, run containerized tests)
+    E2e {
+        #[command(subcommand)]
+        command: E2eCommand,
+    },
     /// Report coworker workflow state (called by coworkers to update status)
     State {
         /// Workflow phase
@@ -430,6 +435,15 @@ fn main() {
         return;
     }
 
+    // E2e command (no daemon required - auth setup or containerized tests)
+    if let Commands::E2e { command } = &command {
+        if let Err(e) = cli::handle_e2e(command) {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // State command (no daemon required - writes state file directly)
     if let Commands::State { phase, task } = &command {
         let result = cli::handle_state(*phase, *task);
@@ -638,6 +652,7 @@ fn main() {
         | Commands::Lead { .. }
         | Commands::Project { .. }
         | Commands::Chat
+        | Commands::E2e { .. }
         | Commands::State { .. }
         | Commands::Hook { .. }
         | Commands::Log { .. }

@@ -2,6 +2,7 @@ mod channel;
 mod chat;
 mod coworker;
 mod daemon;
+pub mod e2e;
 mod hooks;
 mod lead;
 mod pr;
@@ -10,6 +11,7 @@ mod task;
 
 pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
+pub use e2e::E2eCommand;
 pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
 pub use pr::PrCommand;
@@ -120,6 +122,11 @@ pub fn handle_state(
 /// Handle hook commands (insight, idle, task, ask) - no daemon required
 pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
     hooks::handle(cmd)
+}
+
+/// Handle E2E test commands (auth, run) - no daemon required
+pub fn handle_e2e(cmd: &E2eCommand) -> Result<(), String> {
+    e2e::handle(cmd)
 }
 
 /// Handle `midtown lead remind` subcommands
