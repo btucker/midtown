@@ -1,5 +1,6 @@
 //! Application state and logic for the chat TUI
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -102,10 +103,15 @@ pub struct MergedPr {
 /// Number of messages to load initially and per history load
 const INITIAL_MESSAGE_COUNT: usize = 100;
 
+/// Maximum number of messages to keep loaded in memory.
+/// When loading history, if we exceed this limit, we stop loading more.
+/// This prevents unbounded memory growth when scrolling through large channel logs.
+const MAX_LOADED_MESSAGES: usize = 500;
+
 /// Application state
 pub struct App {
-    /// All messages from the channel
-    pub messages: Vec<Message>,
+    /// All messages from the channel (VecDeque for O(1) front insertion)
+    pub messages: VecDeque<Message>,
     /// Current scroll offset (0 = most recent at bottom)
     pub scroll_offset: usize,
     /// Visible height for chat panel (updated during render)
@@ -151,6 +157,11 @@ pub struct App {
     pub input_cursor: usize,
     /// User display name from config (None = "user")
     pub user_display_name: Option<String>,
+    /// Cached mapping of coworker name -> current task subject.
+    /// Rebuilt only when tasks change, not every frame.
+    current_tasks_cache: HashMap<String, String>,
+    /// Hash of task state used to detect when cache needs rebuilding
+    tasks_cache_hash: u64,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -175,7 +186,7 @@ impl App {
         let repo_name = fetch_repo_name();
 
         let mut app = Self {
-            messages: Vec::new(),
+            messages: VecDeque::new(),
             scroll_offset: 0,
             visible_height: 20,
             channel,
@@ -198,6 +209,8 @@ impl App {
             input_text: String::new(),
             input_cursor: 0,
             user_display_name: midtown::config::get_user_display_name(),
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
         };
 
         // Initial load
@@ -219,7 +232,7 @@ impl App {
                 if let Ok((messages, start_pos)) =
                     channel.read_last_n_messages(INITIAL_MESSAGE_COUNT)
                 {
-                    self.messages = messages;
+                    self.messages = VecDeque::from(messages);
                     self.history_start_position = start_pos;
                     self.history_fully_loaded = start_pos == 0;
                     self.scroll_offset = 0; // Start at bottom (most recent)
@@ -505,20 +518,32 @@ impl App {
 
     /// Load more history if user scrolls near the top
     fn maybe_load_more_history(&mut self) {
-        if self.history_fully_loaded || !self.is_near_top() {
+        // Don't load more if we've reached the cap or already have all history
+        if self.history_fully_loaded
+            || !self.is_near_top()
+            || self.messages.len() >= MAX_LOADED_MESSAGES
+        {
             return;
         }
 
+        // Calculate how many more messages we can load without exceeding the cap
+        let room_for = MAX_LOADED_MESSAGES.saturating_sub(self.messages.len());
+        if room_for == 0 {
+            return;
+        }
+        let load_count = room_for.min(INITIAL_MESSAGE_COUNT);
+
         if let Some(ref channel) = self.channel
-            && let Ok((older_messages, new_start)) = channel
-                .read_messages_before_position(self.history_start_position, INITIAL_MESSAGE_COUNT)
+            && let Ok((older_messages, new_start)) =
+                channel.read_messages_before_position(self.history_start_position, load_count)
         {
             if !older_messages.is_empty() {
                 let added = older_messages.len();
-                // Prepend older messages to the beginning
-                let mut combined = older_messages;
-                combined.extend(std::mem::take(&mut self.messages));
-                self.messages = combined;
+                // Prepend older messages to the beginning using VecDeque's O(1) push_front
+                // Iterate in reverse so oldest message ends up at front
+                for msg in older_messages.into_iter().rev() {
+                    self.messages.push_front(msg);
+                }
 
                 // Adjust scroll offset to keep viewing the same messages
                 self.scroll_offset += added;
@@ -539,7 +564,7 @@ impl App {
     }
 
     /// Get messages visible in the current scroll position
-    pub fn visible_messages(&self) -> &[Message] {
+    pub fn visible_messages(&mut self) -> &[Message] {
         let total = self.messages.len();
         if total == 0 {
             return &[];
@@ -550,7 +575,50 @@ impl App {
         let end = total.saturating_sub(self.scroll_offset);
         let start = end.saturating_sub(self.visible_height);
 
-        &self.messages[start..end]
+        // VecDeque is a ring buffer; make_contiguous ensures we can return a slice
+        let slice = self.messages.make_contiguous();
+        &slice[start..end]
+    }
+
+    /// Get the cached current_tasks map, rebuilding if tasks have changed.
+    /// This avoids rebuilding the HashMap on every frame.
+    pub fn current_tasks(&mut self) -> &HashMap<String, String> {
+        // Compute a simple hash of task state to detect changes
+        let new_hash = self.compute_tasks_hash();
+        if new_hash != self.tasks_cache_hash {
+            self.rebuild_current_tasks_cache();
+            self.tasks_cache_hash = new_hash;
+        }
+        &self.current_tasks_cache
+    }
+
+    /// Compute a hash of the relevant task state for cache invalidation
+    fn compute_tasks_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        for task in &self.tasks {
+            if task.status == TaskStatus::InProgress {
+                task.id.hash(&mut hasher);
+                task.owner.hash(&mut hasher);
+                task.subject.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Rebuild the current_tasks cache from task data
+    fn rebuild_current_tasks_cache(&mut self) {
+        self.current_tasks_cache.clear();
+        for task in &self.tasks {
+            if task.status == TaskStatus::InProgress
+                && let Some(ref owner) = task.owner
+            {
+                self.current_tasks_cache
+                    .insert(owner.to_lowercase(), task.subject.clone());
+            }
+        }
     }
 }
 
@@ -1258,7 +1326,7 @@ mod tests {
     #[test]
     fn test_tasks_by_status_groups_correctly() {
         let app = App {
-            messages: Vec::new(),
+            messages: VecDeque::new(),
             scroll_offset: 0,
             visible_height: 20,
             channel: None,
@@ -1303,6 +1371,8 @@ mod tests {
             input_text: String::new(),
             input_cursor: 0,
             user_display_name: None,
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -1318,7 +1388,7 @@ mod tests {
     fn test_initial_load_shows_most_recent_messages() {
         // Simulate app state after loading 50 messages with visible_height of 10
         // scroll_offset=0 should mean we see the LAST 10 messages (most recent)
-        let messages: Vec<Message> = (0..50)
+        let messages: VecDeque<Message> = (0..50)
             .map(|i| Message {
                 id: i.to_string(),
                 from: "test".to_string(),
@@ -1328,7 +1398,7 @@ mod tests {
             })
             .collect();
 
-        let app = App {
+        let mut app = App {
             messages,
             scroll_offset: 0, // "at bottom" - should show most recent
             visible_height: 10,
@@ -1352,6 +1422,8 @@ mod tests {
             input_text: String::new(),
             input_cursor: 0,
             user_display_name: None,
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
         };
 
         let visible = app.visible_messages();
