@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { connected, activeProject } from './store.js'
+  import { sendWsMessage } from './api.js'
 
   let paneContent = $state('')
   let error = $state(null)
@@ -8,6 +9,29 @@
   let selectedWindow = $state('lead')
   let interval = null
   let windowInterval = null
+  let paneEl = null
+  let resizeTimeout = null
+
+  // Approximate character width for a monospace font at 0.8rem.
+  // This converts pixel width → terminal columns for the resize message.
+  const CHAR_WIDTH_PX = 7.7
+
+  function getViewportCols() {
+    if (!paneEl) return 80
+    // Use the pane content element's width minus padding (12px each side)
+    const usable = paneEl.clientWidth - 24
+    return Math.max(80, Math.floor(usable / CHAR_WIDTH_PX))
+  }
+
+  function sendViewWindow() {
+    if (!selectedWindow) return
+    const cols = getViewportCols()
+    sendWsMessage({ type: 'view_window', window: selectedWindow, cols })
+  }
+
+  function sendLeaveWindow() {
+    sendWsMessage({ type: 'leave_window' })
+  }
 
   async function fetchWindows() {
     try {
@@ -58,15 +82,17 @@
     paneContent = ''
     error = null
     fetchPane()
+    sendViewWindow()
   }
 
   function startPolling() {
     if (interval) return
     fetchWindows()
     fetchPane()
+    // Notify backend of viewed window after a brief delay to let paneEl bind
+    requestAnimationFrame(() => sendViewWindow())
     interval = setInterval(() => {
       fetchPane()
-      // Refresh window list less frequently
     }, 1000)
     // Refresh windows every 10 seconds
     windowInterval = setInterval(fetchWindows, 10000)
@@ -83,12 +109,24 @@
     }
   }
 
+  function handleResize() {
+    // Debounce resize events — only send after 300ms of no resizing
+    if (resizeTimeout) clearTimeout(resizeTimeout)
+    resizeTimeout = setTimeout(() => {
+      sendViewWindow()
+    }, 300)
+  }
+
   onMount(() => {
     startPolling()
+    window.addEventListener('resize', handleResize)
   })
 
   onDestroy(() => {
     stopPolling()
+    sendLeaveWindow()
+    window.removeEventListener('resize', handleResize)
+    if (resizeTimeout) clearTimeout(resizeTimeout)
   })
 </script>
 
@@ -110,7 +148,7 @@
   {#if error}
     <div class="error-banner">{error}</div>
   {/if}
-  <pre class="pane-content">{paneContent}</pre>
+  <pre class="pane-content" bind:this={paneEl}>{paneContent}</pre>
 </div>
 
 <style>

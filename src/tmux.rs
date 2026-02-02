@@ -1527,6 +1527,74 @@ pub fn session_exists(name: &str) -> crate::Result<bool> {
     Ok(status.success())
 }
 
+/// Minimum terminal width enforced when web viewers resize a window.
+///
+/// Prevents extremely narrow windows that would break terminal UIs.
+pub const MIN_RESIZE_COLS: u16 = 80;
+
+/// Resize a tmux window's width to the specified number of columns.
+///
+/// Used by the web UI viewer tracking system to match the window width
+/// to the widest connected viewer's viewport. Enforces a minimum of
+/// `MIN_RESIZE_COLS` to prevent breaking terminal UIs.
+///
+/// Returns `Ok(())` if the resize succeeds or the window doesn't exist.
+pub fn resize_window_width(session: &str, window_name: &str, cols: u16) -> crate::Result<()> {
+    let cols = cols.max(MIN_RESIZE_COLS);
+
+    let target = match find_window_target(session, window_name) {
+        Some(t) => t,
+        None => {
+            tracing::debug!(
+                "Cannot resize window {} — not found in session {}",
+                window_name,
+                session
+            );
+            return Ok(());
+        }
+    };
+
+    let status = Command::new("tmux")
+        .args(["resize-window", "-t", &target, "-x", &cols.to_string()])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        tracing::debug!("Failed to resize tmux window {} to {} cols", target, cols);
+    }
+
+    Ok(())
+}
+
+/// Reset a tmux window to automatic sizing.
+///
+/// Uses `tmux resize-window -A` which sizes the window to the smallest
+/// attached client. Called when all web viewers disconnect from a window.
+pub fn reset_window_size(session: &str, window_name: &str) -> crate::Result<()> {
+    let target = match find_window_target(session, window_name) {
+        Some(t) => t,
+        None => {
+            tracing::debug!(
+                "Cannot reset window {} — not found in session {}",
+                window_name,
+                session
+            );
+            return Ok(());
+        }
+    };
+
+    let status = Command::new("tmux")
+        .args(["resize-window", "-t", &target, "-A"])
+        .status()
+        .map_err(Error::Io)?;
+
+    if !status.success() {
+        tracing::debug!("Failed to reset tmux window {} size", target);
+    }
+
+    Ok(())
+}
+
 /// Get the width of a tmux session's terminal in columns.
 ///
 /// Uses `tmux display-message` to query the client width.
@@ -1808,6 +1876,11 @@ mod tests {
     }
 
     // Note: coworker_system_prompt tests moved to src/agents.rs
+
+    #[test]
+    fn test_min_resize_cols_is_80() {
+        assert_eq!(MIN_RESIZE_COLS, 80);
+    }
 
     #[test]
     fn test_get_coworker_color_known_names() {
