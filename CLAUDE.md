@@ -33,13 +33,14 @@ cargo install --path .
 **Containerized E2E tests** (canonical way to run E2E — reproducible environment):
 
 ```bash
-# Using the wrapper script directly:
-./scripts/e2e-container.sh coordination          # fast, no auth needed
-./scripts/e2e-container.sh full                   # real Claude, needs auth
+# Using the CLI:
+midtown e2e auth                            # one-time: authenticate for container testing
+midtown e2e run coordination                # fast, no auth needed
+midtown e2e run full                        # real Claude, needs auth setup first
 
-# Auth for full mode (one of):
-export ANTHROPIC_API_KEY=sk-ant-...
-CLAUDE_AUTH_DIR=~/.midtown/claude-auth ./scripts/e2e-container.sh full
+# Or use the scripts directly:
+./scripts/e2e-container.sh coordination
+./scripts/e2e-container.sh full
 ```
 
 ## Architecture
