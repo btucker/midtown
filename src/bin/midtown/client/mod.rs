@@ -205,6 +205,19 @@ impl DaemonClient {
         self.send("coworker.nudge", Some(args))
     }
 
+    pub fn coworker_report_state(
+        &self,
+        name: &str,
+        phase: &str,
+        task_id: Option<u32>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "name": name, "phase": phase });
+        if let Some(id) = task_id {
+            params["task_id"] = serde_json::json!(id);
+        }
+        self.send("coworker.report-state", Some(params))
+    }
+
     pub fn coworker_asking(&self, name: &str, question: &str) -> Result<Response, String> {
         self.send(
             "coworker.asking",

@@ -77,18 +77,37 @@ pub fn handle_chat() -> Result<(), String> {
     chat::run()
 }
 
-/// Handle `midtown state <phase> [--task <id>]` — writes structured coworker state.
+/// Handle `midtown state <phase> [--task <id>]` — reports coworker state via daemon RPC.
 ///
 /// Called explicitly by coworkers to report their workflow phase.
-/// Writes a JSON state file that the daemon reads for tmux tab display.
+/// Sends state to the daemon which stores it in memory and updates tmux tab display.
+/// Falls back to file-based state if the daemon is unreachable.
 pub fn handle_state(
     phase: midtown::coworker_state::WorkflowPhase,
     task_id: Option<u32>,
 ) -> Result<Response, String> {
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+
+    // Convert phase to the snake_case string the RPC endpoint expects
+    let phase_str = match phase {
+        midtown::coworker_state::WorkflowPhase::Claiming => "claiming",
+        midtown::coworker_state::WorkflowPhase::Developing => "developing",
+        midtown::coworker_state::WorkflowPhase::Testing => "testing",
+        midtown::coworker_state::WorkflowPhase::PullRequest => "pull_request",
+        midtown::coworker_state::WorkflowPhase::Reviewing => "reviewing",
+        midtown::coworker_state::WorkflowPhase::Debugging => "debugging",
+        midtown::coworker_state::WorkflowPhase::Completed => "completed",
+        midtown::coworker_state::WorkflowPhase::Idle => "idle",
+    };
+
+    // Try RPC first (daemon is the authority for state)
+    if let Ok(client) = crate::client::DaemonClient::connect() {
+        return client.coworker_report_state(&agent, phase_str, task_id);
+    }
+
+    // Fallback: write to file if daemon is unreachable (e.g., during startup)
     let repo =
         hooks::detect_git_repo_public().ok_or_else(|| "Not in a git repository".to_string())?;
-
     let report = midtown::coworker_state::CoworkerStateReport::new(phase, task_id);
     midtown::coworker_state::write_state(&repo, &agent, &report)
         .map_err(|e| format!("Failed to write state: {}", e))?;
