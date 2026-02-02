@@ -38,7 +38,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # would mask permission bugs that real users would hit
 RUN useradd -m -s /bin/bash testuser
 
-# Copy source into the image
+# Copy source into the image — create WORKDIR with correct ownership first,
+# since WORKDIR creates directories as root and COPY --chown only applies to files
+RUN mkdir -p /home/testuser/midtown && chown testuser:testuser /home/testuser/midtown
 WORKDIR /home/testuser/midtown
 COPY --chown=testuser:testuser . .
 
