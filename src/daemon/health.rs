@@ -96,10 +96,11 @@ pub(super) fn check_and_respawn_lead(
         _ => return, // session gone entirely, don't interfere
     }
 
-    // Session exists — check if the lead window is present
-    match crate::tmux::window_exists(session, "lead") {
-        Ok(true) => {} // lead is alive, nothing to do
-        Ok(false) => {
+    // Session exists — check how many lead windows are present.
+    // Using count_windows_by_name instead of window_exists to detect
+    // duplicates that can accumulate from restart races.
+    match crate::tmux::count_windows_by_name(session, "lead") {
+        Ok((0, _)) => {
             warn!("Lead window missing in session {}, respawning...", session);
             match crate::tmux::spawn_lead(
                 session,
@@ -109,6 +110,19 @@ pub(super) fn check_and_respawn_lead(
             ) {
                 Ok(()) => info!("Successfully respawned lead window"),
                 Err(e) => error!("Failed to respawn lead window: {}", e),
+            }
+        }
+        Ok((1, _)) => {} // exactly one lead window, all good
+        Ok((n, ids)) => {
+            // Multiple lead windows detected — kill all but the first one
+            warn!(
+                "Found {} duplicate lead windows in session {}, cleaning up extras",
+                n, session
+            );
+            for id in ids.iter().skip(1) {
+                let target = format!("{}:{}", session, id);
+                info!("Killing duplicate lead window {}", target);
+                let _ = crate::tmux::kill_window_by_target(&target);
             }
         }
         Err(e) => {
