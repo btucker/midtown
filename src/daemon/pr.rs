@@ -323,6 +323,7 @@ async fn poll_prs_for_issues(
     {
         let mut ps = state.persistent_state.lock().await;
         ps.github.cleanup_expired_preserving(&active_coworker_names);
+        ps.github.cleanup_stale_webhook_events();
     }
     {
         let mut cooldowns = state.cooldowns.lock().unwrap();
@@ -839,6 +840,19 @@ fn nudge_lead_stuck(state: &DaemonState, message: &str) {
 /// and nudges them to run `/code-review:code-review <pr-number>`. The isolated
 /// task list ensures review sub-tasks don't pollute the shared task list.
 async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value]) {
+    spawn_reviewers_for_prs_with_source(
+        state,
+        prs,
+        crate::github_state::AssignmentSource::PollingFallback,
+    )
+    .await;
+}
+
+async fn spawn_reviewers_for_prs_with_source(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+    source: crate::github_state::AssignmentSource,
+) {
     // Check rate limit
     let current_review_count = {
         let ps = state.persistent_state.lock().await;
@@ -882,6 +896,23 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                 pr_number, age_secs, PR_REVIEW_DELAY_SECS
             );
             continue;
+        }
+
+        // When polling, defer to webhooks if one recently handled this PR.
+        // This prevents polling from spawning a duplicate reviewer when the
+        // webhook path already queued a pending spawn for the same PR.
+        if source == crate::github_state::AssignmentSource::PollingFallback {
+            let ps = state.persistent_state.lock().await;
+            if ps
+                .github
+                .webhook_recently_handled(pr_number, PR_REVIEW_DELAY_SECS as i64 * 2)
+            {
+                debug!(
+                    "PR #{} was recently handled by webhook, polling defers",
+                    pr_number
+                );
+                continue;
+            }
         }
 
         // Check if PR already has a Claude review.
@@ -1117,17 +1148,18 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                 // Record the assignment in persistent state
                 {
                     let mut ps = state.persistent_state.lock().await;
-                    ps.github.assign_reviewer(pr_number, &new_coworker);
+                    ps.github.assign_reviewer(pr_number, &new_coworker, source);
                     if let Err(e) = ps.save_for_repo(&state.repo_name) {
                         warn!("Failed to save daemon-state.json: {}", e);
                     }
                 }
 
                 info!(
-                    "Spawned {} to review PR #{}: {}",
+                    "Spawned {} to review PR #{}: {} (source: {})",
                     new_coworker,
                     pr_number,
-                    truncate_str(title, 40)
+                    truncate_str(title, 40),
+                    source
                 );
 
                 // Post to channel (the coworker's /me status update will set
@@ -1247,7 +1279,13 @@ pub(super) async fn process_pending_review_spawns(state: &DaemonState) {
         }
 
         // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
-        spawn_reviewers_for_prs(state, &[pr]).await;
+        // Use Webhook source since this was triggered by a webhook event.
+        spawn_reviewers_for_prs_with_source(
+            state,
+            &[pr],
+            crate::github_state::AssignmentSource::Webhook,
+        )
+        .await;
     }
 }
 

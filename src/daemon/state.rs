@@ -143,7 +143,11 @@ mod tests {
         let path = dir.path().join("daemon-state.json");
 
         let mut state = DaemonPersistentState::default();
-        state.github.assign_reviewer(42, "lexington");
+        state.github.assign_reviewer(
+            42,
+            "lexington",
+            crate::github_state::AssignmentSource::PollingFallback,
+        );
         state.reminders.add(
             crate::reminders::ReminderTrigger::AllWorkMerged,
             "Deploy".to_string(),
@@ -186,8 +190,16 @@ mod tests {
         let mut state = DaemonPersistentState::default();
 
         // Populate github state
-        state.github.assign_reviewer(1, "broadway");
-        state.github.assign_reviewer(2, "park");
+        state.github.assign_reviewer(
+            1,
+            "broadway",
+            crate::github_state::AssignmentSource::PollingFallback,
+        );
+        state.github.assign_reviewer(
+            2,
+            "park",
+            crate::github_state::AssignmentSource::PollingFallback,
+        );
         state.github.mark_reviewed_pr(10);
         state
             .github
