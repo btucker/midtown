@@ -900,19 +900,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut lead_health_interval = interval(LEAD_HEALTH_CHECK_INTERVAL);
     let daemon_start_instant = tokio::time::Instant::now();
 
-    // Start PR polling background task
-    let (pr_poll_shutdown_tx, pr_poll_shutdown_rx) = watch::channel(false);
-    {
-        let state = Arc::clone(&state);
-        let interval_secs = config.pr_poll_interval_secs;
-        tokio::spawn(async move {
-            pr::pr_poll_task(state, interval_secs, pr_poll_shutdown_rx).await;
-        });
-        info!(
-            "PR polling started (adaptive: {}s aggressive / {}s relaxed)",
-            config.pr_poll_interval_secs, RELAXED_PR_POLL_INTERVAL_SECS
-        );
-    }
+    // Timer for periodic PR polling (integrated into main loop to prevent spawn races)
+    let mut pr_poll_interval =
+        tokio::time::interval(std::time::Duration::from_secs(config.pr_poll_interval_secs));
+    // Skip the first tick (which fires immediately)
+    pr_poll_interval.tick().await;
+    info!(
+        "PR polling interval set to {}s (in main event loop)",
+        config.pr_poll_interval_secs
+    );
 
     // Start chat monitor background task if enabled
     let (chat_monitor_shutdown_tx, chat_monitor_shutdown_rx) = watch::channel(false);
@@ -1161,6 +1157,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
             }
 
+            // Periodic PR polling: check open PRs for issues, spawn reviewers.
+            // Integrated into main loop (not a separate task) to prevent spawn
+            // races with TaskDispatchTick - both now share the same snapshot.
+            _ = pr_poll_interval.tick() => {
+                let snap = snapshot::collect_world_snapshot(&state).await;
+                let tick_effects = events::evaluate_tick(
+                    &events::DaemonEvent::PrPollTick,
+                    &snap,
+                    &state,
+                ).await;
+                effects::execute_effects(tick_effects, &state).await;
+            }
+
             // Handle SIGTERM
             _ = sigterm.recv() => {
                 info!("Received SIGTERM, shutting down...");
@@ -1181,9 +1190,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     info!("Stopping webhook forwarder watchdog...");
     let _ = forwarder_shutdown_tx.send(true);
 
-    // Signal PR poll task to stop
-    info!("Stopping PR poll task...");
-    let _ = pr_poll_shutdown_tx.send(true);
+    // PR polling is now in main loop, no separate task to stop
 
     // Signal chat monitor task to stop
     info!("Stopping chat monitor task...");

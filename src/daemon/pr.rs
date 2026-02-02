@@ -9,10 +9,8 @@
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::message::{Message, MessageType};
@@ -139,73 +137,6 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
     result
 }
 
-/// Background task that polls PRs for actionable issues.
-///
-/// Checks all open PRs on an adaptive interval:
-/// - **Webhooks healthy** (recent event within [`WEBHOOK_HEALTH_TIMEOUT`]): polls every
-///   [`RELAXED_PR_POLL_INTERVAL_SECS`] (2 min) — polling is only a backstop.
-/// - **Webhooks degraded** (no recent events): polls every `aggressive_interval_secs`
-///   (default 30s) to compensate for missing real-time events.
-///
-/// Detects:
-/// - Merge conflicts
-/// - CI failures
-/// - Changes requested
-/// - Approved and ready to merge
-///
-/// Nudges the PR owner (extracted from branch prefix) or an idle coworker.
-pub(super) async fn pr_poll_task(
-    state: Arc<DaemonState>,
-    aggressive_interval_secs: u64,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
-    let aggressive = Duration::from_secs(aggressive_interval_secs);
-    let relaxed = Duration::from_secs(RELAXED_PR_POLL_INTERVAL_SECS);
-
-    loop {
-        // Determine interval based on webhook health
-        let interval = {
-            let last_event = state.last_webhook_event_at.lock().await;
-            match *last_event {
-                Some(ts) if ts.elapsed() < WEBHOOK_HEALTH_TIMEOUT => {
-                    debug!(
-                        "PR poll: webhooks healthy (last event {:.0?} ago), using relaxed interval ({}s)",
-                        ts.elapsed(),
-                        RELAXED_PR_POLL_INTERVAL_SECS
-                    );
-                    relaxed
-                }
-                _ => {
-                    debug!(
-                        "PR poll: webhooks degraded or no events yet, using aggressive interval ({}s)",
-                        aggressive_interval_secs
-                    );
-                    aggressive
-                }
-            }
-        };
-
-        // Wait for the interval or shutdown signal
-        let delay = tokio::time::sleep(interval);
-
-        tokio::select! {
-            _ = delay => {
-                // Time to poll PRs — collect effects then execute them
-                match poll_prs_for_issues(&state).await {
-                    Ok(effects) => execute_effects(effects, &state).await,
-                    Err(e) => warn!("PR poll error: {}", e),
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    info!("PR poll task received shutdown signal");
-                    break;
-                }
-            }
-        }
-    }
-}
-
 // ============================================================================
 
 /// Poll all open PRs and return effects for actionable issues.
@@ -213,7 +144,9 @@ pub(super) async fn pr_poll_task(
 /// Fetches PR data from GitHub, reads tracker state to avoid duplicate nudges,
 /// and returns a list of effects to execute. The caller is responsible for
 /// executing the returned effects via `execute_effects()`.
-async fn poll_prs_for_issues(
+///
+/// Called from `evaluate_tick(PrPollTick)` in the main event loop.
+pub(super) async fn poll_prs_for_issues(
     state: &DaemonState,
 ) -> Result<Vec<Effect>, Box<dyn std::error::Error + Send + Sync>> {
     debug!("Polling PRs for actionable issues...");
