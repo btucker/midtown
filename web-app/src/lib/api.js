@@ -264,3 +264,10 @@ export function sendMessage(content) {
     console.error('WebSocket not connected')
   }
 }
+
+// Send a raw JSON message over the WebSocket (for view_window / leave_window)
+export function sendWsMessage(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg))
+  }
+}

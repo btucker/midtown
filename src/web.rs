@@ -27,6 +27,125 @@ use crate::message::Message;
 use crate::push::PushManager;
 use crate::tmux;
 
+/// Tracks which WebSocket connections are viewing which tmux windows,
+/// along with each viewer's viewport width in columns.
+///
+/// Used to resize tmux windows to match the widest web viewer, then
+/// reset to automatic sizing when all viewers disconnect.
+#[derive(Debug)]
+pub struct ViewerTracker {
+    /// Map of conn_id → (window_name, cols)
+    viewers: std::collections::HashMap<u64, (String, u16)>,
+    /// Next connection ID to assign
+    next_conn_id: u64,
+    /// Tmux session name for resize commands
+    session: String,
+}
+
+impl ViewerTracker {
+    pub fn new(session: String) -> Self {
+        Self {
+            viewers: std::collections::HashMap::new(),
+            next_conn_id: 1,
+            session,
+        }
+    }
+
+    /// Allocate a new connection ID.
+    pub fn new_conn_id(&mut self) -> u64 {
+        let id = self.next_conn_id;
+        self.next_conn_id += 1;
+        id
+    }
+
+    /// Register or update a viewer's window and viewport width.
+    ///
+    /// Returns the set of windows that need resizing (old window to reset,
+    /// new window to resize).
+    pub fn set_viewing(&mut self, conn_id: u64, window: String, cols: u16) -> ResizeActions {
+        let old_window = self.viewers.get(&conn_id).map(|(w, _)| w.clone());
+        self.viewers.insert(conn_id, (window.clone(), cols));
+
+        let mut actions = ResizeActions::default();
+
+        // If viewer switched windows, check if old window needs reset
+        if let Some(ref old) = old_window
+            && *old != window
+        {
+            let max_cols = self.max_cols_for_window(old);
+            if max_cols == 0 {
+                actions.reset_windows.push(old.clone());
+            } else {
+                actions.resize_windows.push((old.clone(), max_cols));
+            }
+        }
+
+        // Resize the new window to the max viewer width
+        let max_cols = self.max_cols_for_window(&window);
+        actions.resize_windows.push((window, max_cols));
+
+        actions
+    }
+
+    /// Remove a viewer (on disconnect or leave).
+    ///
+    /// Returns the window that may need resizing or resetting.
+    pub fn remove_viewer(&mut self, conn_id: u64) -> ResizeActions {
+        let mut actions = ResizeActions::default();
+
+        if let Some((window, _)) = self.viewers.remove(&conn_id) {
+            let max_cols = self.max_cols_for_window(&window);
+            if max_cols == 0 {
+                actions.reset_windows.push(window);
+            } else {
+                actions.resize_windows.push((window, max_cols));
+            }
+        }
+
+        actions
+    }
+
+    /// Stop viewing without removing the connection (viewer navigated away).
+    pub fn stop_viewing(&mut self, conn_id: u64) -> ResizeActions {
+        self.remove_viewer(conn_id)
+    }
+
+    /// Compute max(cols) across all viewers of a given window.
+    fn max_cols_for_window(&self, window: &str) -> u16 {
+        self.viewers
+            .values()
+            .filter(|(w, _)| w == window)
+            .map(|(_, cols)| *cols)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Actions to perform after a viewer change.
+#[derive(Debug, Default)]
+pub struct ResizeActions {
+    /// Windows to resize to a specific column width.
+    pub resize_windows: Vec<(String, u16)>,
+    /// Windows to reset to automatic sizing.
+    pub reset_windows: Vec<String>,
+}
+
+impl ResizeActions {
+    /// Execute all resize/reset actions against tmux.
+    pub fn execute(&self, session: &str) {
+        for (window, cols) in &self.resize_windows {
+            if let Err(e) = tmux::resize_window_width(session, window, *cols) {
+                tracing::warn!("Failed to resize window {}: {}", window, e);
+            }
+        }
+        for window in &self.reset_windows {
+            if let Err(e) = tmux::reset_window_size(session, window) {
+                tracing::warn!("Failed to reset window {} size: {}", window, e);
+            }
+        }
+    }
+}
+
 /// TTL for cached API responses (30 seconds).
 const CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -109,6 +228,9 @@ pub struct WebState {
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a session, so we cache indefinitely.
     pub repo_name_cache: std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, String>>,
+    /// Tracks which WebSocket connections are viewing which tmux windows,
+    /// enabling dynamic window resizing to match the web viewport.
+    pub viewer_tracker: Mutex<ViewerTracker>,
 }
 
 /// Types of real-time updates sent to clients
@@ -160,6 +282,12 @@ pub enum ClientMessage {
     /// Request coworker status
     #[serde(rename = "get_status")]
     GetStatus,
+    /// Client is viewing a tmux window — resize it to match their viewport
+    #[serde(rename = "view_window")]
+    ViewWindow { window: String, cols: u16 },
+    /// Client stopped viewing a tmux window — may reset its size
+    #[serde(rename = "leave_window")]
+    LeaveWindow,
 }
 
 /// Create the web server router
@@ -798,6 +926,13 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<WebState>>) ->
 async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
     let (mut sender, mut receiver) = socket.split();
 
+    // Assign a unique connection ID for viewer tracking
+    let conn_id = {
+        let mut tracker = state.viewer_tracker.lock().unwrap();
+        tracker.new_conn_id()
+    };
+    debug!("WebSocket connection {} opened", conn_id);
+
     // Subscribe to broadcast updates
     let mut updates_rx = state.updates_tx.subscribe();
 
@@ -823,7 +958,7 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(WsMessage::Text(text)) => {
-                if let Err(e) = handle_client_message(&text, &state_clone).await {
+                if let Err(e) = handle_client_message(&text, &state_clone, conn_id).await {
                     warn!("Error handling client message: {}", e);
                 }
             }
@@ -836,12 +971,28 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
         }
     }
 
+    // Clean up viewer tracking on disconnect
+    let actions = {
+        let mut tracker = state.viewer_tracker.lock().unwrap();
+        tracker.remove_viewer(conn_id)
+    };
+    if !actions.resize_windows.is_empty() || !actions.reset_windows.is_empty() {
+        let session = state.viewer_tracker.lock().unwrap().session.clone();
+        tokio::task::spawn_blocking(move || actions.execute(&session))
+            .await
+            .ok();
+    }
+
     send_task.abort();
-    debug!("WebSocket connection closed");
+    debug!("WebSocket connection {} closed", conn_id);
 }
 
 /// Handle a message from a WebSocket client
-async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), String> {
+async fn handle_client_message(
+    text: &str,
+    state: &Arc<WebState>,
+    conn_id: u64,
+) -> Result<(), String> {
     let msg: ClientMessage =
         serde_json::from_str(text).map_err(|e| format!("Invalid message format: {}", e))?;
 
@@ -866,6 +1017,39 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
         ClientMessage::GetStatus => {
             // Client should use the REST endpoint for status
             debug!("Client requested status via WebSocket");
+        }
+        ClientMessage::ViewWindow { window, cols } => {
+            // Validate window name
+            if window.is_empty()
+                || !window
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err("Invalid window name".to_string());
+            }
+            let actions = {
+                let mut tracker = state.viewer_tracker.lock().unwrap();
+                tracker.set_viewing(conn_id, window.clone(), cols)
+            };
+            let session = state.viewer_tracker.lock().unwrap().session.clone();
+            debug!(
+                "conn {} viewing window {} at {} cols",
+                conn_id, window, cols
+            );
+            tokio::task::spawn_blocking(move || actions.execute(&session))
+                .await
+                .map_err(|e| format!("Resize task failed: {}", e))?;
+        }
+        ClientMessage::LeaveWindow => {
+            let actions = {
+                let mut tracker = state.viewer_tracker.lock().unwrap();
+                tracker.stop_viewing(conn_id)
+            };
+            let session = state.viewer_tracker.lock().unwrap().session.clone();
+            debug!("conn {} left window view", conn_id);
+            tokio::task::spawn_blocking(move || actions.execute(&session))
+                .await
+                .map_err(|e| format!("Resize task failed: {}", e))?;
         }
     }
 
@@ -943,10 +1127,11 @@ mod tests {
             all_repo_paths: Vec::new(),
             default_branch: "main".to_string(),
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
 
         let json = r#"{"type": "send_message", "content": "hello from mobile"}"#;
-        handle_client_message(json, &state).await.unwrap();
+        handle_client_message(json, &state, 1).await.unwrap();
 
         // The message should be forwarded to the daemon via channel_post_tx
         let post = channel_post_rx
@@ -1026,6 +1211,104 @@ mod tests {
         let update = WebUpdate::LeadTyping(LeadTypingData { working: false });
         let json = serde_json::to_string(&update).unwrap();
         assert!(json.contains(r#""working":false"#));
+    }
+
+    #[test]
+    fn test_client_message_view_window_parsing() {
+        let json = r#"{"type": "view_window", "window": "riverside", "cols": 120}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::ViewWindow { window, cols } => {
+                assert_eq!(window, "riverside");
+                assert_eq!(cols, 120);
+            }
+            _ => panic!("Expected ViewWindow"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_leave_window_parsing() {
+        let json = r#"{"type": "leave_window"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::LeaveWindow));
+    }
+
+    #[test]
+    fn test_viewer_tracker_single_viewer() {
+        let mut tracker = ViewerTracker::new("midtown-test".to_string());
+        let conn = tracker.new_conn_id();
+
+        let actions = tracker.set_viewing(conn, "riverside".to_string(), 120);
+        assert_eq!(actions.resize_windows.len(), 1);
+        assert_eq!(actions.resize_windows[0], ("riverside".to_string(), 120));
+        assert!(actions.reset_windows.is_empty());
+    }
+
+    #[test]
+    fn test_viewer_tracker_max_cols_across_viewers() {
+        let mut tracker = ViewerTracker::new("midtown-test".to_string());
+        let conn1 = tracker.new_conn_id();
+        let conn2 = tracker.new_conn_id();
+
+        tracker.set_viewing(conn1, "riverside".to_string(), 100);
+        let actions = tracker.set_viewing(conn2, "riverside".to_string(), 150);
+
+        // Should resize to max(100, 150) = 150
+        assert_eq!(actions.resize_windows.len(), 1);
+        assert_eq!(actions.resize_windows[0], ("riverside".to_string(), 150));
+    }
+
+    #[test]
+    fn test_viewer_tracker_remove_recalculates_max() {
+        let mut tracker = ViewerTracker::new("midtown-test".to_string());
+        let conn1 = tracker.new_conn_id();
+        let conn2 = tracker.new_conn_id();
+
+        tracker.set_viewing(conn1, "riverside".to_string(), 100);
+        tracker.set_viewing(conn2, "riverside".to_string(), 150);
+
+        // Remove the wider viewer — should resize down to 100
+        let actions = tracker.remove_viewer(conn2);
+        assert_eq!(actions.resize_windows.len(), 1);
+        assert_eq!(actions.resize_windows[0], ("riverside".to_string(), 100));
+        assert!(actions.reset_windows.is_empty());
+    }
+
+    #[test]
+    fn test_viewer_tracker_last_viewer_resets() {
+        let mut tracker = ViewerTracker::new("midtown-test".to_string());
+        let conn = tracker.new_conn_id();
+
+        tracker.set_viewing(conn, "riverside".to_string(), 120);
+        let actions = tracker.remove_viewer(conn);
+
+        // No viewers left — should reset
+        assert!(actions.resize_windows.is_empty());
+        assert_eq!(actions.reset_windows, vec!["riverside".to_string()]);
+    }
+
+    #[test]
+    fn test_viewer_tracker_switch_windows() {
+        let mut tracker = ViewerTracker::new("midtown-test".to_string());
+        let conn = tracker.new_conn_id();
+
+        tracker.set_viewing(conn, "riverside".to_string(), 120);
+        let actions = tracker.set_viewing(conn, "park".to_string(), 100);
+
+        // Should reset riverside (no viewers) and resize park
+        assert!(actions.reset_windows.contains(&"riverside".to_string()));
+        assert!(actions.resize_windows.contains(&("park".to_string(), 100)));
+    }
+
+    #[test]
+    fn test_viewer_tracker_stop_viewing() {
+        let mut tracker = ViewerTracker::new("midtown-test".to_string());
+        let conn = tracker.new_conn_id();
+
+        tracker.set_viewing(conn, "riverside".to_string(), 120);
+        let actions = tracker.stop_viewing(conn);
+
+        assert_eq!(actions.reset_windows, vec!["riverside".to_string()]);
     }
 
     #[test]
