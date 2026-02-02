@@ -238,9 +238,6 @@ pub(crate) fn apply_health_transitions(
 pub(crate) struct ShutdownDecision {
     pub name: String,
     pub is_isolated: bool,
-    /// When true, the daemon should save the coworker's session ID before shutdown
-    /// so it can be resumed later (e.g., PR break-and-resume when CI passes).
-    pub save_session: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +249,13 @@ pub(crate) struct ShutdownDecision {
 /// Takes pre-collected state snapshots and immutable coworker records.
 /// Returns shutdown decisions and health state transitions without performing
 /// any side effects or mutations.
+///
+/// A coworker is protected from break if:
+/// - They have in-progress tasks (busy)
+/// - They have open unmerged PRs
+/// - They are actively reviewing a PR
+/// - They have unblocked dependent tasks
+/// - Their pane content changed recently (within `pane_activity_grace`)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_idle_shutdowns(
     coworkers: &[CoworkerSnapshot],
@@ -259,12 +263,13 @@ pub(crate) fn decide_idle_shutdowns(
     coworkers_with_open_prs: &HashSet<String>,
     active_reviewers: &HashSet<String>,
     coworkers_with_unblocked_deps: &HashSet<String>,
-    ci_passed_pr_coworkers: &HashSet<String>,
+    _ci_passed_pr_coworkers: &HashSet<String>,
     records: &HashMap<String, CoworkerRecord>,
     now: Instant,
     now_utc: DateTime<Utc>,
     idle_break_duration: Duration,
     minimum_lifetime: Duration,
+    pane_activity_grace: Duration,
 ) -> (Vec<ShutdownDecision>, Vec<HealthTransition>) {
     let mut to_shutdown = Vec::new();
     let mut transitions = Vec::new();
@@ -286,6 +291,14 @@ pub(crate) fn decide_idle_shutdowns(
             continue;
         }
 
+        // Check pane activity: if the pane content changed recently, the coworker
+        // is actively working and must not be sent on break.
+        let pane_recently_active = records
+            .get(coworker)
+            .and_then(|r| r.pane_hash)
+            .map(|(_, last_changed)| now.duration_since(last_changed) < pane_activity_grace)
+            .unwrap_or(false);
+
         let is_busy = busy_coworkers
             .iter()
             .any(|b| b.eq_ignore_ascii_case(coworker));
@@ -298,18 +311,10 @@ pub(crate) fn decide_idle_shutdowns(
         let has_unblocked_deps = coworkers_with_unblocked_deps
             .iter()
             .any(|d| d.eq_ignore_ascii_case(coworker));
-        let has_ci_passed_pr = ci_passed_pr_coworkers
-            .iter()
-            .any(|c| c.eq_ignore_ascii_case(coworker));
 
-        // PR owners with passing CI are eligible for break (save_session=true)
-        if has_open_pr && has_ci_passed_pr && !is_busy && !is_reviewing && !has_unblocked_deps {
-            to_shutdown.push(ShutdownDecision {
-                name: coworker.clone(),
-                is_isolated: cw.isolated_tasks,
-                save_session: true,
-            });
-        } else if is_busy || has_open_pr || is_reviewing || has_unblocked_deps {
+        // Coworkers with open PRs, active tasks, review assignments,
+        // unblocked deps, or recent pane activity are never sent on break.
+        if is_busy || has_open_pr || is_reviewing || has_unblocked_deps || pane_recently_active {
             if matches!(
                 get_health(records, coworker),
                 Some(SessionHealth::Idle { .. })
@@ -323,7 +328,6 @@ pub(crate) fn decide_idle_shutdowns(
             to_shutdown.push(ShutdownDecision {
                 name: coworker.clone(),
                 is_isolated: true,
-                save_session: false,
             });
         } else {
             match get_health(records, coworker) {
@@ -332,7 +336,6 @@ pub(crate) fn decide_idle_shutdowns(
                         to_shutdown.push(ShutdownDecision {
                             name: coworker.clone(),
                             is_isolated: false,
-                            save_session: false,
                         });
                     }
                 }
@@ -509,6 +512,140 @@ pub(crate) fn decide_stuck_coworker_restarts(
         restarts,
         updated_hashes,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Compaction whirlpool & queued prompt detection
+// ---------------------------------------------------------------------------
+
+/// Action to recover a coworker from a stuck UI state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StuckUiRecovery {
+    /// Coworker is stuck in compaction (whirlpool/baking). Send Escape.
+    InterruptCompaction { name: String },
+    /// Coworker has queued nudge messages sitting in the input but is not
+    /// processing them. Send Escape to interrupt and let Claude pick them up.
+    InterruptQueuedNudges { name: String },
+}
+
+/// Detect coworkers stuck in Claude Code's compaction state.
+///
+/// Compaction shows a status line like `(esc to interrupt · 18m 50s · ↓ 0 tokens)`.
+/// The verb varies ("Whirlpooling", "Baking", etc.) so we match on the stable
+/// signature `esc to interrupt` instead.
+///
+/// Only flags coworkers whose compaction has been running for at least
+/// `min_duration` — compaction is a normal, useful operation and we must not
+/// interrupt short-running compactions.
+///
+/// Returns the names of coworkers that should receive an Escape keypress.
+/// The caller is responsible for cooldown enforcement.
+pub(crate) fn detect_compaction_stuck(
+    pane_contents: &HashMap<String, String>,
+    min_duration: Duration,
+) -> Vec<String> {
+    pane_contents
+        .iter()
+        .filter(|(_name, content)| {
+            // Find the compaction status line and parse the elapsed time
+            content.lines().any(|line| {
+                if !line.contains("esc to interrupt") {
+                    return false;
+                }
+                // Parse duration from pattern like "· 18m 50s ·" or "· 5m 00s ·"
+                match parse_compaction_duration(line) {
+                    Some(elapsed) => elapsed >= min_duration,
+                    // If we can't parse the duration, be conservative and don't interrupt
+                    None => false,
+                }
+            })
+        })
+        .map(|(name, _content)| name.clone())
+        .collect()
+}
+
+/// Parse the elapsed duration from a compaction status line.
+///
+/// Expected format: `(esc to interrupt · 18m 50s · ↓ 0 tokens)`
+/// Returns the parsed duration, or None if the format doesn't match.
+fn parse_compaction_duration(line: &str) -> Option<Duration> {
+    // Look for the pattern "· Xm Ys ·" after "esc to interrupt"
+    let after_esc = line.split("esc to interrupt").nth(1)?;
+
+    let mut total_secs: u64 = 0;
+    let mut found_time = false;
+
+    for part in after_esc.split_whitespace() {
+        if let Some(m) = part.strip_suffix('m')
+            && let Ok(mins) = m.parse::<u64>()
+        {
+            total_secs += mins * 60;
+            found_time = true;
+        } else if let Some(s) = part.strip_suffix('s')
+            && let Ok(secs) = s.parse::<u64>()
+        {
+            total_secs += secs;
+            found_time = true;
+        }
+    }
+
+    if found_time {
+        Some(Duration::from_secs(total_secs))
+    } else {
+        None
+    }
+}
+
+/// Detect coworkers with queued nudge messages that aren't being processed.
+///
+/// When a coworker is at a prompt with queued messages (lines starting with `❯`
+/// visible in the pane below the active prompt), it needs an Enter or Escape
+/// to start processing them. We look for `❯` lines that appear in the pane
+/// content, which indicates nudges were delivered but haven't been submitted.
+///
+/// We detect this by looking for the `❯` character followed by text, which
+/// appears when nudge messages are queued but sitting unprocessed at the prompt.
+pub(crate) fn detect_queued_prompt_stuck(pane_contents: &HashMap<String, String>) -> Vec<String> {
+    pane_contents
+        .iter()
+        .filter(|(_name, content)| {
+            // Look for queued nudge messages: lines starting with ❯ followed by text.
+            // These appear when nudge messages were sent but the coworker hasn't
+            // pressed Enter to submit them. The ❯ is Claude Code's prompt indicator.
+            let has_queued = content.lines().any(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with('❯') && trimmed.len() > "❯".len() + 1
+            });
+            // Only flag if NOT currently in compaction (that's a separate recovery)
+            let in_compaction = content.contains("esc to interrupt");
+            has_queued && !in_compaction
+        })
+        .map(|(name, _content)| name.clone())
+        .collect()
+}
+
+/// Pure decision: determine which coworkers need UI recovery actions.
+///
+/// Checks pane contents for two stuck states and returns the appropriate
+/// recovery actions. Cooldown tracking is the caller's responsibility.
+///
+/// `min_compaction_duration` sets the minimum elapsed time before a
+/// compaction is considered stuck. Short compactions are normal and useful.
+pub(crate) fn decide_stuck_ui_recoveries(
+    pane_contents: &HashMap<String, String>,
+    min_compaction_duration: Duration,
+) -> Vec<StuckUiRecovery> {
+    let mut recoveries = Vec::new();
+
+    for name in detect_compaction_stuck(pane_contents, min_compaction_duration) {
+        recoveries.push(StuckUiRecovery::InterruptCompaction { name });
+    }
+
+    for name in detect_queued_prompt_stuck(pane_contents) {
+        recoveries.push(StuckUiRecovery::InterruptQueuedNudges { name });
+    }
+
+    recoveries
 }
 
 // ---------------------------------------------------------------------------
@@ -1084,13 +1221,13 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "york");
         assert!(!decisions[0].is_isolated);
-        assert!(!decisions[0].save_session);
         assert!(get_health(&phases, "york").is_none());
     }
 
@@ -1116,6 +1253,7 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -1146,6 +1284,7 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
 
         assert!(decisions.is_empty());
@@ -1173,6 +1312,7 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
 
         assert!(decisions.is_empty());
@@ -1200,6 +1340,7 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -1230,6 +1371,7 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -1255,6 +1397,7 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
 
         assert_eq!(decisions.len(), 1);
@@ -1279,6 +1422,7 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -1288,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_shutdown_pr_break_with_ci_passed() {
+    fn idle_shutdown_skips_coworker_with_open_pr_even_ci_passed() {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
             "york",
@@ -1297,7 +1441,7 @@ mod tests {
             },
         );
 
-        // york has an open PR AND CI is passing — should trigger PR break (save_session=true)
+        // york has an open PR AND CI is passing — should still be protected (never break with open PR)
         let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
             &set(&[]),
@@ -1310,15 +1454,17 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
 
-        assert_eq!(decisions.len(), 1);
-        assert_eq!(decisions[0].name, "york");
-        assert!(decisions[0].save_session);
+        assert!(
+            decisions.is_empty(),
+            "coworkers with open PRs should never be sent on break"
+        );
     }
 
     #[test]
-    fn idle_shutdown_pr_break_not_triggered_without_ci() {
+    fn idle_shutdown_skips_coworker_with_open_pr_no_ci() {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
             "york",
@@ -1340,37 +1486,92 @@ mod tests {
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
 
         assert!(decisions.is_empty());
     }
 
     #[test]
-    fn idle_shutdown_pr_break_not_triggered_if_busy() {
+    fn idle_shutdown_skips_coworker_with_recent_pane_activity() {
         let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
+        // york has a pane_hash that changed recently (10 seconds ago)
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerRecord {
+                health: Some(SessionHealth::Idle {
+                    since: Instant::now() - Duration::from_secs(60),
+                }),
+                last_activity: None,
+                workflow_phase: None,
+                task_id: None,
+                workflow_updated_at: None,
+                pane_hash: Some((12345, Instant::now() - Duration::from_secs(10))),
+                zombie_respawn_count: 0,
             },
         );
 
-        // york has open PR, CI passed, but is busy — should NOT trigger break
+        // york is idle and has no tasks/PRs, but pane changed 10s ago — should NOT break
         let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
-            &set(&["york"]),
-            &set(&["york"]),
             &set(&[]),
             &set(&[]),
-            &set(&["york"]),
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
             &phases,
             Instant::now(),
             Utc::now(),
             Duration::from_secs(30),
             Duration::from_secs(300),
+            Duration::from_secs(120),
         );
 
-        assert!(decisions.is_empty());
+        assert!(
+            decisions.is_empty(),
+            "coworkers with recent pane activity should not be sent on break"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_allows_break_with_stale_pane() {
+        let coworkers = vec![cw("york", 10)];
+        // york has a pane_hash that last changed 5 minutes ago (well beyond grace period)
+        let mut phases = HashMap::new();
+        phases.insert(
+            "york".to_string(),
+            CoworkerRecord {
+                health: Some(SessionHealth::Idle {
+                    since: Instant::now() - Duration::from_secs(60),
+                }),
+                last_activity: None,
+                workflow_phase: None,
+                task_id: None,
+                workflow_updated_at: None,
+                pane_hash: Some((12345, Instant::now() - Duration::from_secs(300))),
+                zombie_respawn_count: 0,
+            },
+        );
+
+        // york is idle, no tasks/PRs, pane unchanged for 5 minutes — should break
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &set(&[]),
+            &phases,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            Duration::from_secs(120),
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].name, "york");
     }
 
     // -----------------------------------------------------------------------
@@ -1737,6 +1938,230 @@ mod tests {
         let zombies =
             detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
         assert!(zombies.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Compaction whirlpool & queued prompt detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_detected_with_whirlpool_verb_long_duration() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Whirlpooling your conversation…\n  (esc to interrupt · 18m 50s · ↓ 0 tokens)\n"
+                .to_string(),
+        );
+        // 18m 50s > 5 min threshold — should trigger
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert_eq!(stuck, vec!["york"]);
+    }
+
+    #[test]
+    fn compaction_not_detected_with_short_duration() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "amsterdam".to_string(),
+            "  Baking your conversation…\n  (esc to interrupt · 3m 12s · ↓ 42 tokens)\n"
+                .to_string(),
+        );
+        // 3m 12s < 5 min threshold — should NOT trigger (compaction is normal)
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(
+            stuck.is_empty(),
+            "short compaction should not be interrupted"
+        );
+    }
+
+    #[test]
+    fn compaction_detected_at_exact_threshold() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "park".to_string(),
+            "  Simmering your conversation…\n  (esc to interrupt · 5m 00s · ↓ 100 tokens)\n"
+                .to_string(),
+        );
+        // 5m 00s = 5 min threshold — should trigger
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert_eq!(stuck, vec!["park"]);
+    }
+
+    #[test]
+    fn compaction_not_detected_just_under_threshold() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "park".to_string(),
+            "  Simmering your conversation…\n  (esc to interrupt · 4m 59s · ↓ 100 tokens)\n"
+                .to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(
+            stuck.is_empty(),
+            "compaction just under threshold should not be interrupted"
+        );
+    }
+
+    #[test]
+    fn compaction_not_detected_in_normal_output() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Reading file src/main.rs\n  Edit: replaced 3 lines\n  $ cargo build\n".to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(stuck.is_empty());
+    }
+
+    #[test]
+    fn compaction_not_detected_when_pane_mentions_esc_in_code() {
+        // "esc to interrupt" in code output but no parseable duration — conservative: don't interrupt
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  // detect the pattern: esc to interrupt\n  fn check() {}\n".to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        // Can't parse duration from code comment → conservative: don't interrupt
+        assert!(
+            stuck.is_empty(),
+            "unparseable duration should not trigger (conservative)"
+        );
+    }
+
+    #[test]
+    fn parse_compaction_duration_works() {
+        assert_eq!(
+            parse_compaction_duration("  (esc to interrupt · 18m 50s · ↓ 0 tokens)"),
+            Some(Duration::from_secs(18 * 60 + 50))
+        );
+        assert_eq!(
+            parse_compaction_duration("  (esc to interrupt · 0m 30s · ↓ 0 tokens)"),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            parse_compaction_duration("  (esc to interrupt · 5m 00s · ↓ 100 tokens)"),
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(
+            parse_compaction_duration("  // detect the pattern: esc to interrupt"),
+            None,
+        );
+    }
+
+    #[test]
+    fn queued_prompt_detected_with_nudge_messages() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  some output\n❯ You have a new task assignment: task #42\n❯ Check the channel for updates\n".to_string(),
+        );
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert_eq!(stuck, vec!["york"]);
+    }
+
+    #[test]
+    fn queued_prompt_not_detected_during_compaction() {
+        // If compaction is happening simultaneously, don't also flag queued prompt
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Whirlpooling…\n  (esc to interrupt · 5m 00s · ↓ 0 tokens)\n❯ pending nudge\n"
+                .to_string(),
+        );
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert!(
+            stuck.is_empty(),
+            "should not flag queued prompt during compaction"
+        );
+    }
+
+    #[test]
+    fn queued_prompt_not_detected_with_bare_prompt() {
+        // Just the ❯ character alone (empty prompt) should NOT trigger
+        let mut panes = HashMap::new();
+        panes.insert("york".to_string(), "  output\n❯ \n".to_string());
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert!(
+            stuck.is_empty(),
+            "bare prompt character should not trigger recovery"
+        );
+    }
+
+    #[test]
+    fn queued_prompt_not_detected_in_normal_output() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  $ cargo test\n  running 5 tests\n  test result: ok. 5 passed\n".to_string(),
+        );
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert!(stuck.is_empty());
+    }
+
+    #[test]
+    fn combined_recovery_returns_both_types() {
+        let mut panes = HashMap::new();
+        // One coworker stuck in compaction (10 min — well above threshold)
+        panes.insert(
+            "york".to_string(),
+            "  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
+        );
+        // Another coworker with queued nudges
+        panes.insert("amsterdam".to_string(), "❯ Check the channel\n".to_string());
+
+        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        assert_eq!(recoveries.len(), 2);
+
+        let has_compaction = recoveries
+            .iter()
+            .any(|r| matches!(r, StuckUiRecovery::InterruptCompaction { name } if name == "york"));
+        let has_queued = recoveries.iter().any(
+            |r| matches!(r, StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"),
+        );
+        assert!(has_compaction, "should detect york's compaction");
+        assert!(has_queued, "should detect amsterdam's queued nudges");
+    }
+
+    #[test]
+    fn combined_recovery_skips_short_compaction() {
+        let mut panes = HashMap::new();
+        // Compaction running for only 2 minutes — below threshold
+        panes.insert(
+            "york".to_string(),
+            "  (esc to interrupt · 2m 00s · ↓ 0 tokens)\n".to_string(),
+        );
+        panes.insert("amsterdam".to_string(), "❯ Check the channel\n".to_string());
+
+        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        // Only the queued nudge should trigger, not the short compaction
+        assert_eq!(recoveries.len(), 1);
+        assert!(matches!(
+            &recoveries[0],
+            StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"
+        ));
+    }
+
+    #[test]
+    fn recovery_empty_for_healthy_coworkers() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Reading file\n  Edit complete\n".to_string(),
+        );
+        panes.insert(
+            "amsterdam".to_string(),
+            "  $ cargo build\n  Compiling midtown v0.4.1\n".to_string(),
+        );
+
+        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        assert!(recoveries.is_empty());
+    }
+
+    #[test]
+    fn recovery_empty_for_no_coworkers() {
+        let panes: HashMap<String, String> = HashMap::new();
+        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        assert!(recoveries.is_empty());
     }
 
     #[test]

@@ -85,6 +85,11 @@ pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 /// This prevents spawn storms where coworkers are rapidly sent on breaks.
 pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 
+/// Grace period for pane activity before a coworker can be sent on break (2 minutes).
+/// If the coworker's tmux pane content changed within this window, they are considered
+/// actively working and must not be sent on break, regardless of task ownership.
+pub(super) const PANE_ACTIVITY_GRACE: Duration = Duration::from_secs(120);
+
 /// Cooldown between orphan recovery spawns (5 seconds)
 /// Only spawn one coworker per tick, with a minimum gap between spawns.
 pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
@@ -113,6 +118,22 @@ pub(super) const MAX_ZOMBIE_RESPAWN_ATTEMPTS: u32 = 3;
 /// If the tmux pane content hash hasn't changed for this duration, the coworker is killed
 /// and restarted with its current task.
 pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(300);
+
+/// Minimum elapsed compaction time before we consider it stuck (5 minutes).
+/// Compaction is a normal, useful operation. Only interrupt if it has been
+/// running for an unusually long time with no progress. Better to leave a
+/// truly-stuck coworker for an extra few minutes than to interrupt legitimate
+/// compaction.
+pub(super) const MIN_COMPACTION_STUCK_DURATION: Duration = Duration::from_secs(300);
+
+/// Cooldown between compaction recovery attempts for the same coworker (3 minutes).
+/// Prevents spamming Escape if the detection fires repeatedly.
+pub(super) const COMPACTION_RECOVERY_COOLDOWN: Duration = Duration::from_secs(180);
+
+/// Cooldown between queued-prompt recovery attempts for the same coworker (60 seconds).
+/// Shorter than compaction because the fix (Escape) is lightweight and the state
+/// can recur quickly after nudges are delivered.
+pub(super) const QUEUED_PROMPT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.

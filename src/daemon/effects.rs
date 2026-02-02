@@ -95,6 +95,10 @@ pub enum Effect {
     },
     /// Clear a saved PR break session after successful resume.
     ClearPrBreakSession { name: String },
+    /// Send raw tmux keys to a coworker (e.g., Escape, Enter) without the
+    /// nudge text mechanism. Used for recovering stuck states like compaction
+    /// whirlpools or queued prompts.
+    SendRawKeys { name: String, keys: String },
     /// Assign a reviewer to a PR in github_state and persist.
     AssignReviewer {
         pr_number: u64,
@@ -333,6 +337,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 ps.github.assign_reviewer(pr_number, &reviewer_name, source);
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon-state.json: {}", e);
+                }
+            }
+            Effect::SendRawKeys { name, keys } => {
+                if let Err(e) =
+                    crate::tmux::send_keys_raw(state.coworkers.session_name(), &name, &keys)
+                {
+                    warn!("Failed to send raw keys to {}: {}", name, e);
                 }
             }
             Effect::PostSystemMessage { message } => {
