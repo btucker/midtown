@@ -11,7 +11,7 @@ mod dispatch;
 pub(crate) mod effects;
 pub(crate) mod events;
 mod health;
-mod helpers;
+pub mod helpers;
 mod pr;
 mod rpc;
 pub(crate) mod snapshot;

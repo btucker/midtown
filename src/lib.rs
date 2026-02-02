@@ -45,7 +45,7 @@
 pub mod daemon;
 
 // Pure decision functions and shared types for the daemon tick loop
-pub(crate) mod rules;
+pub mod rules;
 
 // RPC subsystem (furiosa)
 pub mod rpc;

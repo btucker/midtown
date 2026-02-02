@@ -44,6 +44,9 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
 
+      - name: Install Claude Code
+        run: curl -fsSL https://claude.ai/install.sh | bash
+
       - name: Configure git
         run: |
           git config --global user.email "e2e@midtown.test"

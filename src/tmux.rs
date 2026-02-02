@@ -448,32 +448,128 @@ pub fn session_pane_pids(session: &str) -> Vec<(String, u32)> {
     }
 }
 
-/// Send SIGTERM to all pane processes in a session.
+/// Send SIGTERM to all pane processes in a session, then SIGKILL any survivors.
 ///
 /// Claude Code (node) installs a SIGHUP handler, so `tmux kill-session`
 /// (which sends SIGHUP) leaves orphaned processes consuming memory and
 /// potentially causing contention with other Claude instances. SIGTERM
 /// triggers a clean shutdown.
+///
+/// Also kills child processes (Claude spawns node subprocesses) to ensure
+/// complete cleanup even if the parent shell exits but children survive.
 pub fn terminate_session_processes(session: &str) {
     let pids = session_pane_pids(session);
     if pids.is_empty() {
         return;
     }
 
-    // Collect all PIDs into a single kill command
-    let pid_strings: Vec<String> = pids.iter().map(|(_, pid)| pid.to_string()).collect();
+    // Collect all pane PIDs and their descendants
+    let mut all_pids: Vec<u32> = Vec::new();
+    for (_, pid) in &pids {
+        all_pids.push(*pid);
+        // Also collect child processes (Claude's node subprocesses)
+        all_pids.extend(get_descendant_pids(*pid));
+    }
+    all_pids.sort();
+    all_pids.dedup();
+
+    if all_pids.is_empty() {
+        return;
+    }
+
+    // Send SIGTERM to all processes
+    let pid_strings: Vec<String> = all_pids.iter().map(|p| p.to_string()).collect();
     let _ = Command::new("kill")
         .args(&pid_strings)
         .stderr(std::process::Stdio::null())
         .status();
 
-    for (name, pid) in &pids {
-        tracing::debug!("Sent SIGTERM to {}:{} (pid {})", session, name, pid);
+    tracing::debug!(
+        "Sent SIGTERM to {} processes in session {}",
+        all_pids.len(),
+        session
+    );
+
+    // Poll for processes to exit (up to 2 seconds)
+    let poll_interval = std::time::Duration::from_millis(100);
+    let timeout = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout {
+        std::thread::sleep(poll_interval);
+        let survivors: Vec<u32> = all_pids
+            .iter()
+            .copied()
+            .filter(|&p| is_pid_alive(p))
+            .collect();
+        if survivors.is_empty() {
+            tracing::debug!("All processes in session {} exited cleanly", session);
+            return;
+        }
     }
 
-    // Brief wait for processes to exit cleanly before tmux kill-session
-    // sends SIGHUP to anything still running
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Force kill any survivors
+    let survivors: Vec<u32> = all_pids
+        .iter()
+        .copied()
+        .filter(|&p| is_pid_alive(p))
+        .collect();
+    if !survivors.is_empty() {
+        tracing::warn!(
+            "Force killing {} processes that didn't exit: {:?}",
+            survivors.len(),
+            survivors
+        );
+        let pid_strings: Vec<String> = survivors.iter().map(|p| p.to_string()).collect();
+        let _ = Command::new("kill")
+            .arg("-9")
+            .args(&pid_strings)
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        // Brief wait for SIGKILL to take effect
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Get all descendant PIDs of a process (children, grandchildren, etc).
+///
+/// Uses `pgrep -P` to find immediate children, then recursively finds their children.
+fn get_descendant_pids(parent_pid: u32) -> Vec<u32> {
+    let mut descendants = Vec::new();
+    let mut to_check = vec![parent_pid];
+
+    while let Some(pid) = to_check.pop() {
+        // Find immediate children of this PID
+        let output = Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .output();
+
+        if let Ok(o) = output
+            && o.status.success()
+        {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Ok(child_pid) = line.trim().parse::<u32>()
+                    && !descendants.contains(&child_pid)
+                {
+                    descendants.push(child_pid);
+                    to_check.push(child_pid); // Check for grandchildren
+                }
+            }
+        }
+    }
+
+    descendants
+}
+
+/// Check if a process is still alive.
+fn is_pid_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Capture the current content of a tmux pane.

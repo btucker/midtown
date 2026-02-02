@@ -268,3 +268,284 @@ impl OrphanTracker {
         self.entries.retain(|name, _| still_flagged.contains(name));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // Graceful degradation tests: deduplication between webhook and polling
+    //
+    // When webhooks ARE working, they fire first and record nudges. Polling
+    // then sees the nudge is on cooldown and skips duplicate action.
+    //
+    // When webhooks are NOT working (degraded), polling is the first to detect
+    // issues and record nudges. These tests verify both paths use the same
+    // tracker and respect cooldowns.
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // PrIssueTracker — prevents double-nudging for PR issues
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn tracker_allows_first_nudge() {
+        let tracker = PrIssueTracker::new();
+
+        assert!(
+            tracker.should_nudge(42, PrIssueType::CiFailed),
+            "first nudge for an issue should be allowed"
+        );
+    }
+
+    #[test]
+    fn tracker_blocks_immediate_repeat_nudge() {
+        let mut tracker = PrIssueTracker::new();
+
+        // Webhook fires first and records the nudge
+        tracker.record_nudge(42, PrIssueType::CiFailed);
+
+        // Polling runs shortly after — should be blocked
+        assert!(
+            !tracker.should_nudge(42, PrIssueType::CiFailed),
+            "immediate repeat nudge should be blocked (webhook then polling)"
+        );
+    }
+
+    #[test]
+    fn tracker_allows_different_issue_types() {
+        let mut tracker = PrIssueTracker::new();
+
+        // Webhook records CI failure nudge
+        tracker.record_nudge(42, PrIssueType::CiFailed);
+
+        // Different issue type should still be allowed
+        assert!(
+            tracker.should_nudge(42, PrIssueType::MergeConflict),
+            "different issue type on same PR should be allowed"
+        );
+    }
+
+    #[test]
+    fn tracker_allows_different_prs() {
+        let mut tracker = PrIssueTracker::new();
+
+        // Webhook records nudge for PR #42
+        tracker.record_nudge(42, PrIssueType::Approved);
+
+        // Same issue type on different PR should be allowed
+        assert!(
+            tracker.should_nudge(43, PrIssueType::Approved),
+            "same issue type on different PR should be allowed"
+        );
+    }
+
+    #[test]
+    fn tracker_cleanup_removes_expired() {
+        let mut tracker = PrIssueTracker::new();
+
+        // Insert an entry with an expired timestamp
+        tracker.nudged.insert(
+            (42, PrIssueType::CiFailed),
+            Instant::now() - Duration::from_secs(PR_NUDGE_COOLDOWN_SECS + 1),
+        );
+
+        tracker.cleanup();
+
+        assert!(
+            tracker.nudged.is_empty(),
+            "expired entries should be removed by cleanup"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // StuckConditionTracker — polling-only stuck detection
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn stuck_tracker_tracks_condition() {
+        let mut tracker = StuckConditionTracker::new();
+
+        let first_detected = tracker.track("42", StuckConditionType::NoReview);
+
+        // Should return a reasonable timestamp (not too far in the past)
+        assert!(
+            first_detected.elapsed() < Duration::from_secs(1),
+            "first detected should be approximately now"
+        );
+    }
+
+    #[test]
+    fn stuck_tracker_allows_first_nudge() {
+        let mut tracker = StuckConditionTracker::new();
+
+        tracker.track("42", StuckConditionType::NoReview);
+
+        assert!(
+            tracker.should_nudge("42", StuckConditionType::NoReview),
+            "should allow first nudge for tracked condition"
+        );
+    }
+
+    #[test]
+    fn stuck_tracker_blocks_repeat_nudge() {
+        let mut tracker = StuckConditionTracker::new();
+
+        tracker.track("42", StuckConditionType::NoReview);
+        tracker.record_nudge("42", StuckConditionType::NoReview);
+
+        assert!(
+            !tracker.should_nudge("42", StuckConditionType::NoReview),
+            "should block immediate repeat nudge"
+        );
+    }
+
+    #[test]
+    fn stuck_tracker_increments_nudge_count() {
+        let mut tracker = StuckConditionTracker::new();
+
+        tracker.track("york", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("york", StuckConditionType::SilentCoworker),
+            0
+        );
+
+        tracker.record_nudge("york", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("york", StuckConditionType::SilentCoworker),
+            1
+        );
+
+        // Manually reset cooldown to allow another nudge
+        if let Some(entry) = tracker
+            .conditions
+            .get_mut(&("york".to_string(), StuckConditionType::SilentCoworker))
+        {
+            entry.1 = Some(Instant::now() - Duration::from_secs(STUCK_NUDGE_COOLDOWN_SECS + 1));
+        }
+
+        tracker.record_nudge("york", StuckConditionType::SilentCoworker);
+        assert_eq!(
+            tracker.nudge_count("york", StuckConditionType::SilentCoworker),
+            2,
+            "nudge count should escalate for repeated stuck conditions"
+        );
+    }
+
+    #[test]
+    fn stuck_tracker_clear_removes_condition() {
+        let mut tracker = StuckConditionTracker::new();
+
+        tracker.track("42", StuckConditionType::MergeReady);
+        tracker.record_nudge("42", StuckConditionType::MergeReady);
+
+        tracker.clear("42", StuckConditionType::MergeReady);
+
+        assert!(
+            !tracker.should_nudge("42", StuckConditionType::MergeReady),
+            "cleared condition should not be nudgeable (not tracked)"
+        );
+
+        // But if we track it again, it should be fresh
+        tracker.track("42", StuckConditionType::MergeReady);
+        assert!(
+            tracker.should_nudge("42", StuckConditionType::MergeReady),
+            "re-tracked condition should be nudgeable again"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // OrphanTracker — orphaned worktree detection (polling-only)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn orphan_tracker_allows_first_warn() {
+        let mut tracker = OrphanTracker::new();
+
+        tracker.track("lexington".to_string());
+
+        assert!(
+            tracker.should_warn("lexington"),
+            "should allow first warning for orphan"
+        );
+    }
+
+    #[test]
+    fn orphan_tracker_blocks_repeat_warn() {
+        let mut tracker = OrphanTracker::new();
+
+        tracker.track("lexington".to_string());
+        tracker.record_warn("lexington");
+
+        assert!(
+            !tracker.should_warn("lexington"),
+            "should block immediate repeat warning"
+        );
+    }
+
+    #[test]
+    fn orphan_tracker_prune_removes_resolved() {
+        let mut tracker = OrphanTracker::new();
+
+        tracker.track("lexington".to_string());
+        tracker.track("amsterdam".to_string());
+
+        // Lexington's worktree is restored — no longer flagged
+        tracker.prune(&["amsterdam".to_string()]);
+
+        assert!(tracker.entries.contains_key("amsterdam"));
+        assert!(
+            !tracker.entries.contains_key("lexington"),
+            "pruned orphan should be removed"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Integration scenario: webhook fires before polling
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn webhook_before_polling_prevents_duplicate() {
+        let mut tracker = PrIssueTracker::new();
+
+        // Scenario: PR #42 gets CI failure
+        // 1. Webhook fires and nudges owner
+        tracker.record_nudge(42, PrIssueType::CiFailed);
+
+        // 2. ~30s later, polling runs and detects the same issue
+        // Polling should see the cooldown and skip
+        assert!(
+            !tracker.should_nudge(42, PrIssueType::CiFailed),
+            "polling should skip when webhook already handled the issue"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Integration scenario: webhook degraded, polling takes over
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn polling_handles_issue_when_webhook_missing() {
+        let mut tracker = PrIssueTracker::new();
+
+        // Scenario: Webhook is degraded, polling is first to detect CI failure
+        // 1. Polling detects issue (no prior webhook)
+        assert!(
+            tracker.should_nudge(42, PrIssueType::CiFailed),
+            "polling should handle issue when webhook hasn't fired"
+        );
+
+        // 2. Polling records the nudge
+        tracker.record_nudge(42, PrIssueType::CiFailed);
+
+        // 3. Next polling cycle should be blocked
+        assert!(
+            !tracker.should_nudge(42, PrIssueType::CiFailed),
+            "repeat polling should be blocked after first handled"
+        );
+    }
+}

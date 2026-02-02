@@ -2,16 +2,19 @@
 //!
 //! These are stateless helpers that don't depend on DaemonState or
 //! external processes. They parse, format, and detect patterns.
+//!
+//! Functions in this module are used by both the webhook and polling paths,
+//! ensuring functional equivalence for graceful degradation.
 
 use super::constants::{COWORKER_NAMES, SYSTEM_SENDERS};
-use super::trackers::PrIssueType;
+pub use super::trackers::PrIssueType;
 
 // ---------------------------------------------------------------------------
 // Text / parsing helpers
 // ---------------------------------------------------------------------------
 
 /// Truncate a string to max length with ellipsis.
-pub(super) fn truncate_str(s: &str, max_len: usize) -> String {
+pub fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
@@ -20,7 +23,7 @@ pub(super) fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 /// Truncate a message for summary display.
-pub(super) fn truncate_message(msg: &str, max_len: usize) -> String {
+pub fn truncate_message(msg: &str, max_len: usize) -> String {
     let first_line = msg.lines().next().unwrap_or(msg);
     if first_line.len() <= max_len {
         first_line.to_string()
@@ -34,7 +37,7 @@ pub(super) fn truncate_message(msg: &str, max_len: usize) -> String {
 // ---------------------------------------------------------------------------
 
 /// Check if a message contains @all (case-insensitive, with word boundary).
-pub(super) fn contains_at_all(content: &str) -> bool {
+pub fn contains_at_all(content: &str) -> bool {
     let content_lower = content.to_lowercase();
     if let Some(idx) = content_lower.find("@all") {
         let after_idx = idx + 4; // "@all".len()
@@ -53,7 +56,7 @@ pub(super) fn contains_at_all(content: &str) -> bool {
 ///
 /// Returns a list of coworker names that were mentioned (lowercase).
 /// Uses word boundary detection to avoid false positives.
-pub(super) fn extract_mentions(content: &str) -> Vec<String> {
+pub fn extract_mentions(content: &str) -> Vec<String> {
     let mut mentions = Vec::new();
     let content_lower = content.to_lowercase();
 
@@ -80,12 +83,12 @@ pub(super) fn extract_mentions(content: &str) -> Vec<String> {
 }
 
 /// Check if a sender is a coworker (not Lead or system).
-pub(super) fn is_coworker_sender(from: &str) -> bool {
+pub fn is_coworker_sender(from: &str) -> bool {
     !SYSTEM_SENDERS.contains(&from)
 }
 
 /// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
-pub(super) fn coworker_from_branch(branch: &str) -> Option<String> {
+pub fn coworker_from_branch(branch: &str) -> Option<String> {
     let prefix = branch.split('/').next()?;
     COWORKER_NAMES
         .iter()
@@ -98,7 +101,7 @@ pub(super) fn coworker_from_branch(branch: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Detect actionable issues for a PR.
-pub(super) fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
+pub fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
     let mut issues = Vec::new();
 
     // Check for merge conflicts
@@ -142,7 +145,7 @@ pub(super) fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
 /// - It has no CI failures
 /// - It has no merge conflicts (mergeable != "CONFLICTING")
 /// - All status checks have completed (no pending checks)
-pub(super) fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
+pub fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
     let review_decision = pr
         .get("reviewDecision")
         .and_then(|r| r.as_str())
@@ -188,7 +191,7 @@ pub(super) fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
 ///
 /// Returns true if there are checks and all have completed successfully,
 /// or if there are no checks at all (no CI configured).
-pub(super) fn all_ci_checks_passed(pr: &serde_json::Value) -> bool {
+pub fn all_ci_checks_passed(pr: &serde_json::Value) -> bool {
     if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
         if checks.is_empty() {
             return true;
@@ -212,7 +215,7 @@ pub(super) fn all_ci_checks_passed(pr: &serde_json::Value) -> bool {
 }
 
 /// Get action text for a PR issue type.
-pub(super) fn get_issue_action(issue_type: PrIssueType) -> &'static str {
+pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
     match issue_type {
         PrIssueType::MergeConflict => "please rebase",
         PrIssueType::CiFailed => "please investigate",
@@ -232,7 +235,7 @@ pub(super) fn get_issue_action(issue_type: PrIssueType) -> &'static str {
 /// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
 /// - The "<!-- midtown:" frontmatter (comment-based reviews)
 /// - The "## Code Review by" header (comment-based reviews)
-pub(super) fn text_contains_review_signature(text: &str) -> bool {
+pub fn text_contains_review_signature(text: &str) -> bool {
     text.contains("🤖 Reviewed by")
         || text.contains("Reviewed by")
         || text.contains("<!-- midtown:")
@@ -242,7 +245,7 @@ pub(super) fn text_contains_review_signature(text: &str) -> bool {
 /// Get the creation time of a PR to enforce review delay.
 ///
 /// Returns None if the PR age couldn't be determined.
-pub(super) fn get_pr_age_secs(pr: &serde_json::Value) -> Option<u64> {
+pub fn get_pr_age_secs(pr: &serde_json::Value) -> Option<u64> {
     let created_at = pr.get("createdAt").and_then(|c| c.as_str())?;
     let created = chrono::DateTime::parse_from_rfc3339(created_at).ok()?;
     let now = chrono::Utc::now();
@@ -278,4 +281,402 @@ pub(super) fn extract_pr_number(content: &str) -> Option<u64> {
     }
 
     None
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // =========================================================================
+    // Graceful degradation tests: polling path detects issues without webhooks
+    //
+    // These tests verify that when GitHub webhooks aren't delivering events,
+    // the polling path (via `poll_prs_for_issues`) can still detect and handle
+    // all PR issues. The key insight is that webhooks and polling use the SAME
+    // detection functions — these tests verify those functions work correctly.
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // detect_pr_issues — identifies actionable PR issues from JSON data
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn detect_issues_finds_merge_conflict() {
+        // Polling discovers merge conflict via `gh pr list --json mergeable`
+        let pr = json!({
+            "number": 42,
+            "mergeable": "CONFLICTING",
+            "statusCheckRollup": [],
+            "reviewDecision": ""
+        });
+
+        let issues = detect_pr_issues(&pr);
+
+        assert!(
+            issues.contains(&PrIssueType::MergeConflict),
+            "polling should detect merge conflicts without webhook"
+        );
+    }
+
+    #[test]
+    fn detect_issues_finds_ci_failure() {
+        // Polling discovers CI failure via `gh pr list --json statusCheckRollup`
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"conclusion": "FAILURE"}
+            ],
+            "reviewDecision": ""
+        });
+
+        let issues = detect_pr_issues(&pr);
+
+        assert!(
+            issues.contains(&PrIssueType::CiFailed),
+            "polling should detect CI failures without webhook"
+        );
+    }
+
+    #[test]
+    fn detect_issues_finds_changes_requested() {
+        // Polling discovers review state via `gh pr list --json reviewDecision`
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [],
+            "reviewDecision": "CHANGES_REQUESTED"
+        });
+
+        let issues = detect_pr_issues(&pr);
+
+        assert!(
+            issues.contains(&PrIssueType::ChangesRequested),
+            "polling should detect changes_requested without webhook"
+        );
+    }
+
+    #[test]
+    fn detect_issues_finds_approval() {
+        // Polling discovers approval via `gh pr list --json reviewDecision`
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "APPROVED"
+        });
+
+        let issues = detect_pr_issues(&pr);
+
+        assert!(
+            issues.contains(&PrIssueType::Approved),
+            "polling should detect approval without webhook"
+        );
+    }
+
+    #[test]
+    fn detect_issues_finds_multiple_issues() {
+        // A PR can have multiple issues (e.g., CI failed AND merge conflict)
+        let pr = json!({
+            "number": 42,
+            "mergeable": "CONFLICTING",
+            "statusCheckRollup": [{"conclusion": "FAILURE"}],
+            "reviewDecision": ""
+        });
+
+        let issues = detect_pr_issues(&pr);
+
+        assert_eq!(
+            issues.len(),
+            2,
+            "should detect both merge conflict and CI failure"
+        );
+        assert!(issues.contains(&PrIssueType::MergeConflict));
+        assert!(issues.contains(&PrIssueType::CiFailed));
+    }
+
+    #[test]
+    fn detect_issues_returns_empty_for_healthy_pr() {
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": ""
+        });
+
+        let issues = detect_pr_issues(&pr);
+
+        assert!(
+            issues.is_empty(),
+            "healthy PR with no review yet should have no issues"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // is_auto_mergeable — identifies PRs ready for auto-merge (polling-only)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn auto_merge_requires_approval() {
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "" // No review yet
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "PR without approval cannot be auto-merged"
+        );
+    }
+
+    #[test]
+    fn auto_merge_requires_no_conflicts() {
+        let pr = json!({
+            "number": 42,
+            "mergeable": "CONFLICTING",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "APPROVED"
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "PR with merge conflicts cannot be auto-merged"
+        );
+    }
+
+    #[test]
+    fn auto_merge_requires_ci_success() {
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "FAILURE"}],
+            "reviewDecision": "APPROVED"
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "PR with CI failure cannot be auto-merged"
+        );
+    }
+
+    #[test]
+    fn auto_merge_requires_ci_complete() {
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "PENDING"}],
+            "reviewDecision": "APPROVED"
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "PR with pending CI cannot be auto-merged"
+        );
+    }
+
+    #[test]
+    fn auto_merge_succeeds_when_all_conditions_met() {
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"conclusion": "SUCCESS"}
+            ],
+            "reviewDecision": "APPROVED"
+        });
+
+        assert!(
+            is_auto_mergeable(&pr),
+            "approved PR with green CI should be auto-mergeable"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // all_ci_checks_passed — verifies CI status for PR break decisions
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ci_passed_with_all_success() {
+        let pr = json!({
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"conclusion": "SUCCESS"}
+            ]
+        });
+
+        assert!(
+            all_ci_checks_passed(&pr),
+            "all SUCCESS conclusions = CI passed"
+        );
+    }
+
+    #[test]
+    fn ci_not_passed_with_failure() {
+        let pr = json!({
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"conclusion": "FAILURE"}
+            ]
+        });
+
+        assert!(!all_ci_checks_passed(&pr), "any FAILURE = CI not passed");
+    }
+
+    #[test]
+    fn ci_not_passed_with_pending() {
+        let pr = json!({
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"conclusion": "PENDING"}
+            ]
+        });
+
+        assert!(
+            !all_ci_checks_passed(&pr),
+            "any PENDING = CI not passed yet"
+        );
+    }
+
+    #[test]
+    fn ci_not_passed_with_empty_conclusion() {
+        // Empty conclusion typically means check is still running
+        let pr = json!({
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"conclusion": ""}
+            ]
+        });
+
+        assert!(
+            !all_ci_checks_passed(&pr),
+            "empty conclusion = still running = CI not passed"
+        );
+    }
+
+    #[test]
+    fn ci_passed_with_no_checks() {
+        // No CI configured = considered passing (repo choice)
+        let pr = json!({
+            "statusCheckRollup": []
+        });
+
+        assert!(
+            all_ci_checks_passed(&pr),
+            "no CI checks configured = considered passing"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // coworker_from_branch — extracts owner from PR branch name
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn coworker_from_branch_extracts_prefix() {
+        assert_eq!(
+            coworker_from_branch("lexington/fix-auth"),
+            Some("lexington".to_string())
+        );
+        assert_eq!(
+            coworker_from_branch("amsterdam/feature-123"),
+            Some("amsterdam".to_string())
+        );
+    }
+
+    #[test]
+    fn coworker_from_branch_case_insensitive() {
+        assert_eq!(
+            coworker_from_branch("YORK/big-feature"),
+            Some("york".to_string())
+        );
+        assert_eq!(
+            coworker_from_branch("Amsterdam/Fix"),
+            Some("amsterdam".to_string())
+        );
+    }
+
+    #[test]
+    fn coworker_from_branch_returns_none_for_unknown() {
+        assert_eq!(
+            coworker_from_branch("unknown-name/feature"),
+            None,
+            "unknown branch prefix should return None"
+        );
+        assert_eq!(
+            coworker_from_branch("main"),
+            None,
+            "branch without slash should return None"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // text_contains_review_signature — detects Claude reviews
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn review_signature_detects_emoji_signature() {
+        assert!(text_contains_review_signature(
+            "## Summary\n\nLGTM!\n\n🤖 Reviewed by lexington"
+        ));
+    }
+
+    #[test]
+    fn review_signature_detects_frontmatter() {
+        assert!(text_contains_review_signature(
+            "<!-- midtown:reviewer=lexington -->\n\n## Code Review"
+        ));
+    }
+
+    #[test]
+    fn review_signature_detects_header() {
+        assert!(text_contains_review_signature(
+            "## Code Review by amsterdam\n\nLooks good!"
+        ));
+    }
+
+    #[test]
+    fn review_signature_returns_false_for_normal_comment() {
+        assert!(!text_contains_review_signature(
+            "Thanks for the PR! I'll take a look."
+        ));
+    }
+
+    // -------------------------------------------------------------------------
+    // @mention extraction
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn extract_mentions_finds_coworker() {
+        let mentions = extract_mentions("Hey @york can you look at this?");
+        assert_eq!(mentions, vec!["york"]);
+    }
+
+    #[test]
+    fn extract_mentions_finds_multiple() {
+        let mentions = extract_mentions("@amsterdam @broadway please review");
+        assert!(mentions.contains(&"amsterdam".to_string()));
+        assert!(mentions.contains(&"broadway".to_string()));
+    }
+
+    #[test]
+    fn extract_mentions_respects_word_boundary() {
+        // @yorkshire should not match @york
+        let mentions = extract_mentions("Contact @yorkshire for help");
+        assert!(mentions.is_empty(), "@yorkshire should not match @york");
+    }
+
+    #[test]
+    fn contains_at_all_detects_broadcast() {
+        assert!(contains_at_all("Hey @all, please check the channel"));
+        assert!(contains_at_all("@ALL important update"));
+        assert!(!contains_at_all("@alliance meeting tomorrow"));
+    }
 }

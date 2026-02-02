@@ -909,6 +909,247 @@ fn test_node_sighup_handler_survives_kill_session() {
     }
 }
 
+/// terminate_session_processes must also kill child processes (descendants).
+///
+/// Claude Code spawns node subprocesses. If we only kill the direct pane process
+/// (the shell), the node children can become orphans. The improved implementation
+/// uses pgrep -P to find and kill all descendants.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_terminate_session_processes_kills_child_processes() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_string_lossy().to_string();
+
+    // Create a window with a parent process that spawns a child
+    // The parent is "sh -c" and it spawns "sleep 300" as a child
+    midtown::tmux::create_window(
+        &session,
+        "parent-child",
+        &dir,
+        Some("sh -c 'sleep 300 & wait'"),
+    )
+    .expect("create_window failed");
+    thread::sleep(Duration::from_millis(500));
+
+    // Get the pane PID (the shell)
+    let pane_pids = midtown::tmux::session_pane_pids(&session);
+    let parent_pid = pane_pids
+        .iter()
+        .find(|(name, _)| name.contains("parent"))
+        .map(|(_, pid)| *pid)
+        .expect("Couldn't find parent-child pane");
+
+    // Find child processes using pgrep
+    let child_pids_output = Command::new("pgrep")
+        .args(["-P", &parent_pid.to_string()])
+        .output();
+
+    let child_pids: Vec<u32> = match child_pids_output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect(),
+        _ => vec![],
+    };
+
+    // Terminate and kill session
+    midtown::tmux::terminate_session_processes(&session);
+    kill_test_session(&session);
+
+    // Verify parent is dead
+    thread::sleep(Duration::from_millis(300));
+    let parent_alive = Command::new("kill")
+        .args(["-0", &parent_pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(
+        !parent_alive,
+        "Parent process {} should be dead",
+        parent_pid
+    );
+
+    // Verify all children are dead
+    for child_pid in &child_pids {
+        let child_alive = Command::new("kill")
+            .args(["-0", &child_pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(
+            !child_alive,
+            "Child process {} should be dead — descendant tracking failed",
+            child_pid
+        );
+    }
+}
+
+/// Test that stubborn processes (that ignore SIGTERM) are force-killed.
+///
+/// The improved terminate_session_processes sends SIGTERM, waits up to 2s,
+/// then sends SIGKILL to any survivors.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_terminate_session_processes_force_kills_stubborn_processes() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_string_lossy().to_string();
+
+    // Create a process that ignores SIGTERM (trap '' TERM)
+    midtown::tmux::create_window(&session, "stubborn", &dir, Some("trap '' TERM; sleep 300"))
+        .expect("create_window failed");
+    thread::sleep(Duration::from_millis(500));
+
+    let pane_pids = midtown::tmux::session_pane_pids(&session);
+    let stubborn_pid = pane_pids
+        .iter()
+        .find(|(name, _)| name.contains("stubborn"))
+        .map(|(_, pid)| *pid)
+        .expect("Couldn't find stubborn pane");
+
+    // Terminate and kill session
+    midtown::tmux::terminate_session_processes(&session);
+    kill_test_session(&session);
+
+    // The stubborn process should be dead (killed with SIGKILL after timeout)
+    thread::sleep(Duration::from_millis(300));
+    let alive = Command::new("kill")
+        .args(["-0", &stubborn_pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(
+        !alive,
+        "Stubborn process {} should be force-killed with SIGKILL",
+        stubborn_pid
+    );
+}
+
+/// Test that spawning and stopping a real Claude process works correctly.
+///
+/// This test spawns an actual claude process in a tmux window, then
+/// uses terminate_session_processes to kill it and verifies nothing survives.
+#[test]
+#[ignore]
+#[timeout(60_000)]
+fn test_spawn_and_stop_claude_kills_all_processes() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Check if claude is available
+    let claude_available = Command::new("claude")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !claude_available {
+        eprintln!("claude not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_string_lossy().to_string();
+
+    // Spawn a real claude process
+    let config = midtown::tmux::ClaudeLaunchConfig {
+        name: "test-claude".to_string(),
+        session_mode: midtown::tmux::SessionMode::Fresh,
+        task_mode: midtown::tmux::TaskMode::Isolated,
+        initial_prompt: Some("Say 'ready' and wait.".to_string()),
+        additional_dirs: vec![],
+        restrict_setting_sources: true,
+    };
+    let result = midtown::tmux::spawn_claude(&session, &dir, &config);
+    assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
+
+    // Wait for claude to start
+    thread::sleep(Duration::from_secs(5));
+
+    // Get all pane PIDs and their descendants
+    let pane_pids = midtown::tmux::session_pane_pids(&session);
+    let mut all_pids: Vec<u32> = pane_pids.iter().map(|(_, pid)| *pid).collect();
+
+    // Find all descendant PIDs
+    for (_, pid) in &pane_pids {
+        let child_output = Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .output();
+        if let Ok(o) = child_output {
+            if o.status.success() {
+                for line in String::from_utf8_lossy(&o.stdout).lines() {
+                    if let Ok(child_pid) = line.trim().parse::<u32>() {
+                        all_pids.push(child_pid);
+                    }
+                }
+            }
+        }
+    }
+    all_pids.sort();
+    all_pids.dedup();
+
+    println!("PIDs before terminate: {:?}", all_pids);
+
+    // Terminate and kill session
+    midtown::tmux::terminate_session_processes(&session);
+    kill_test_session(&session);
+
+    // Give processes time to die
+    thread::sleep(Duration::from_secs(1));
+
+    // Verify ALL processes are dead
+    let survivors: Vec<u32> = all_pids
+        .iter()
+        .copied()
+        .filter(|pid| {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Clean up any survivors
+    for pid in &survivors {
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+    }
+
+    assert!(
+        survivors.is_empty(),
+        "Orphaned Claude processes survived: {:?}. \
+         midtown stop should kill all processes it started.",
+        survivors
+    );
+}
+
 // ── Channel write + read roundtrip ─────────────────────────────────
 
 /// Messages written to the channel can be read back with correct content.
