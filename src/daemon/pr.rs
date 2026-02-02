@@ -669,12 +669,11 @@ async fn collect_stuck_condition_effects(
     // --- Scenario 4: Silent coworker (claimed task, no channel activity) ---
     {
         let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
-        let lifecycles = state.coworker_lifecycles.read().await;
+        let records = state.coworker_records.read().await;
 
         for name in &busy_coworkers {
-            let last_activity: Option<Instant> = lifecycles
-                .get(name.as_str())
-                .and_then(|lc| lc.last_activity);
+            let last_activity: Option<Instant> =
+                records.get(name.as_str()).and_then(|r| r.last_activity);
             let is_silent = match last_activity {
                 Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
                 // No activity recorded — coworker hasn't posted to channel yet.

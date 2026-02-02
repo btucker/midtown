@@ -150,7 +150,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
             match (name, phase) {
                 (Some(name), Some(phase)) => {
-                    handle_coworker_report_state(request.id, name, phase, task_id, state)
+                    handle_coworker_report_state(request.id, name, phase, task_id, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -418,7 +418,7 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 /// Stores the coworker's workflow phase in daemon memory and updates the
 /// tmux tab display. Replaces the previous file-based state.json approach
 /// so the daemon is the single authority for coworker state.
-fn handle_coworker_report_state(
+async fn handle_coworker_report_state(
     id: RequestId,
     name: &str,
     phase_str: &str,
@@ -443,14 +443,15 @@ fn handle_coworker_report_state(
         }
     };
 
-    let report = crate::coworker_state::CoworkerStateReport::new(phase, task_id);
-    let status_display = report.display_status();
-
-    // Store in daemon memory
-    {
-        let mut reports = state.coworker_state_reports.write().unwrap();
-        reports.insert(name.to_string(), report);
-    }
+    // Store in unified coworker record
+    let status_display = {
+        let mut records = state.coworker_records.write().await;
+        crate::rules::set_workflow(&mut records, name, phase, task_id);
+        records
+            .get(name)
+            .and_then(|r| r.display_status())
+            .unwrap_or_default()
+    };
 
     // Update tmux tab display
     if let Err(e) = state
@@ -660,14 +661,12 @@ pub(super) async fn handle_channel_post(
 
             // Track last activity time for coworker (used for silent coworker detection)
             if is_coworker_sender(from) {
-                let mut lifecycles = state.coworker_lifecycles.write().await;
-                lifecycles
+                let mut records = state.coworker_records.write().await;
+                records
                     .entry(from.to_string())
-                    .or_insert_with(|| crate::rules::CoworkerLifecycle {
-                        phase: None,
-                        last_activity: None,
-                    })
+                    .or_insert_with(crate::rules::CoworkerRecord::new_spawn)
                     .last_activity = Some(Instant::now());
+                drop(records); // Release write lock before acquiring read lock
             }
 
             // Update tmux tab for coworkers when they post /me actions.
@@ -675,15 +674,18 @@ pub(super) async fn handle_channel_post(
             // parsing the freeform /me message text with keyword matching.
             if msg_type == MessageType::Action {
                 let has_rpc_state = {
-                    let reports = state.coworker_state_reports.read().unwrap();
-                    if let Some(report) = reports.get(from) {
-                        let display = report.display_status();
-                        drop(reports);
-                        let r = state.coworkers.update_status_formatted(from, &display);
-                        if let Err(e) = r {
-                            debug!("Failed to update tmux tab for {}: {}", from, e);
+                    let records = state.coworker_records.read().await;
+                    if let Some(record) = records.get(from) {
+                        if let Some(display) = record.display_status() {
+                            drop(records);
+                            if let Err(e) = state.coworkers.update_status_formatted(from, &display)
+                            {
+                                debug!("Failed to update tmux tab for {}: {}", from, e);
+                            }
+                            true
+                        } else {
+                            false
                         }
-                        true
                     } else {
                         false
                     }

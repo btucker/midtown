@@ -133,15 +133,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Clear state file so next session doesn't read stale phase
                 crate::coworker_state::clear_state(&state.repo_name, &name);
-                // Clean up in-memory state report
+                // Clean up unified coworker record (health, workflow phase, etc.)
                 {
-                    let mut reports = state.coworker_state_reports.write().unwrap();
-                    reports.remove(&name);
-                }
-                // Clean up lifecycle state for the shut-down coworker
-                {
-                    let mut lc = state.coworker_lifecycles.write().await;
-                    lc.remove(&name);
+                    let mut records = state.coworker_records.write().await;
+                    records.remove(&name);
                 }
             }
             Effect::NudgeCoworker { name, message } => {
@@ -191,15 +186,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Clear state file so respawned session doesn't read stale phase
                 crate::coworker_state::clear_state(&state.repo_name, &name);
-                // Clean up in-memory state report
+                // Clean up unified coworker record
                 {
-                    let mut reports = state.coworker_state_reports.write().unwrap();
-                    reports.remove(&name);
-                }
-                // Clean up lifecycle state so respawn starts fresh
-                {
-                    let mut lc = state.coworker_lifecycles.write().await;
-                    lc.remove(&name);
+                    let mut records = state.coworker_records.write().await;
+                    records.remove(&name);
                 }
                 // Brief delay to let tmux clean up
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;

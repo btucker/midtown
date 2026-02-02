@@ -4,7 +4,7 @@
 //! a decision enum or struct — no side effects, no async, fully testable.
 //!
 //! The [`CooldownTracker`] provides a unified cooldown mechanism.
-//! The [`CoworkerPhase`] enum tracks per-coworker lifecycle state.
+//! The [`SessionHealth`] enum tracks per-coworker lifecycle state.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -78,73 +78,125 @@ impl CooldownTracker {
 }
 
 // ---------------------------------------------------------------------------
-// CoworkerPhase — the per-coworker state machine
+// SessionHealth — the per-coworker state machine
 // ---------------------------------------------------------------------------
 
-/// The current phase of a coworker in the daemon's lifecycle.
+/// The current health state of a coworker's session.
 ///
 /// A coworker can only be in one phase at a time — the enum enforces
 /// mutual exclusivity. Pane scraping is used only for health checks
 /// (stuck detection, zombie detection, usage limits), not workflow state.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum CoworkerPhase {
+pub(crate) enum SessionHealth {
     /// Coworker has no tasks and is waiting for the idle timeout to expire.
     Idle { since: Instant },
 }
 
-/// Consolidated per-coworker lifecycle state.
+/// Unified per-coworker record in daemon state.
 ///
-/// Bundles the coworker's current phase and their last channel activity
+/// Bundles the coworker's current health and their last channel activity
 /// timestamp into a single entry, ensuring both are cleared together on
 /// spawn and shutdown.
 #[derive(Debug, Clone)]
-pub(crate) struct CoworkerLifecycle {
-    /// Current lifecycle phase (idle), or `None` if the coworker is actively
-    /// working (no special phase).
-    pub phase: Option<CoworkerPhase>,
+pub(crate) struct CoworkerRecord {
+    /// Current session health (idle), or `None` if the coworker is actively
+    /// working (no special health state).
+    pub health: Option<SessionHealth>,
     /// When the coworker last posted to the channel. `None` if no activity
     /// has been recorded yet (e.g., freshly spawned).
     pub last_activity: Option<Instant>,
+    /// Coworker-reported workflow phase (developing, testing, PR, etc.).
+    /// Set via RPC when coworker calls `midtown state <phase>`.
+    pub workflow_phase: Option<crate::coworker_state::WorkflowPhase>,
+    /// Task number the coworker is working on (from RPC state report).
+    pub task_id: Option<u32>,
+    /// When the workflow phase was last updated via RPC.
+    pub workflow_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Pane content hash and last-changed timestamp for stuck detection.
+    pub pane_hash: Option<(u64, Instant)>,
+    /// Number of consecutive zombie respawn attempts. Reset on normal spawn.
+    pub zombie_respawn_count: u32,
 }
 
-impl CoworkerLifecycle {
-    /// Create a fresh lifecycle entry for a newly spawned coworker.
+impl CoworkerRecord {
+    /// Create a fresh record entry for a newly spawned coworker.
     pub fn new_spawn() -> Self {
         Self {
-            phase: None,
+            health: None,
             last_activity: Some(Instant::now()),
+            workflow_phase: None,
+            task_id: None,
+            workflow_updated_at: None,
+            pane_hash: None,
+            zombie_respawn_count: 0,
         }
     }
-}
 
-/// Get the current phase for a coworker, if any.
-pub(crate) fn get_phase(
-    lifecycles: &HashMap<String, CoworkerLifecycle>,
-    name: &str,
-) -> Option<CoworkerPhase> {
-    lifecycles.get(name).and_then(|l| l.phase.clone())
-}
-
-/// Set the phase for a coworker, creating the lifecycle entry if needed.
-pub(crate) fn set_phase(
-    lifecycles: &mut HashMap<String, CoworkerLifecycle>,
-    name: &str,
-    phase: CoworkerPhase,
-) {
-    lifecycles
-        .entry(name.to_string())
-        .or_insert_with(|| CoworkerLifecycle {
-            phase: None,
-            last_activity: None,
+    /// Format for tmux tab display, matching CoworkerStateReport::display_status().
+    pub fn display_status(&self) -> Option<String> {
+        self.workflow_phase.map(|phase| match self.task_id {
+            Some(id) => format!("{}#{}", phase.abbreviation(), id),
+            None => phase.abbreviation().to_string(),
         })
-        .phase = Some(phase);
+    }
 }
 
-/// Clear the phase for a coworker (without removing the lifecycle entry).
-pub(crate) fn clear_phase(lifecycles: &mut HashMap<String, CoworkerLifecycle>, name: &str) {
-    if let Some(lc) = lifecycles.get_mut(name) {
-        lc.phase = None;
+/// Get the current health state for a coworker, if any.
+pub(crate) fn get_health(
+    records: &HashMap<String, CoworkerRecord>,
+    name: &str,
+) -> Option<SessionHealth> {
+    records.get(name).and_then(|r| r.health.clone())
+}
+
+/// Set the health state for a coworker, creating the record entry if needed.
+pub(crate) fn set_health(
+    records: &mut HashMap<String, CoworkerRecord>,
+    name: &str,
+    health: SessionHealth,
+) {
+    records
+        .entry(name.to_string())
+        .or_insert_with(|| CoworkerRecord {
+            health: None,
+            last_activity: None,
+            workflow_phase: None,
+            task_id: None,
+            workflow_updated_at: None,
+            pane_hash: None,
+            zombie_respawn_count: 0,
+        })
+        .health = Some(health);
+}
+
+/// Clear the health state for a coworker (without removing the record entry).
+pub(crate) fn clear_health(records: &mut HashMap<String, CoworkerRecord>, name: &str) {
+    if let Some(rec) = records.get_mut(name) {
+        rec.health = None;
     }
+}
+
+/// Update the workflow phase for a coworker (from RPC state report).
+pub(crate) fn set_workflow(
+    records: &mut HashMap<String, CoworkerRecord>,
+    name: &str,
+    phase: crate::coworker_state::WorkflowPhase,
+    task_id: Option<u32>,
+) {
+    let record = records
+        .entry(name.to_string())
+        .or_insert_with(|| CoworkerRecord {
+            health: None,
+            last_activity: None,
+            workflow_phase: None,
+            task_id: None,
+            workflow_updated_at: None,
+            pane_hash: None,
+            zombie_respawn_count: 0,
+        });
+    record.workflow_phase = Some(phase);
+    record.task_id = task_id;
+    record.workflow_updated_at = Some(chrono::Utc::now());
 }
 
 // ---------------------------------------------------------------------------
@@ -157,25 +209,25 @@ pub(crate) fn clear_phase(lifecycles: &mut HashMap<String, CoworkerLifecycle>, n
 /// caller can apply phase mutations *after* the pure decision is complete.
 /// This keeps the decision functions free of mutation.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PhaseTransition {
+pub(crate) enum HealthTransition {
     /// Set a coworker's phase to a new value.
-    Set { name: String, phase: CoworkerPhase },
+    Set { name: String, phase: SessionHealth },
     /// Clear a coworker's phase (set to None).
     Clear { name: String },
 }
 
-/// Apply a list of phase transitions to the lifecycle map.
-pub(crate) fn apply_phase_transitions(
-    lifecycles: &mut HashMap<String, CoworkerLifecycle>,
-    transitions: Vec<PhaseTransition>,
+/// Apply a list of health state transitions to the record map.
+pub(crate) fn apply_health_transitions(
+    records: &mut HashMap<String, CoworkerRecord>,
+    transitions: Vec<HealthTransition>,
 ) {
     for transition in transitions {
         match transition {
-            PhaseTransition::Set { name, phase } => {
-                set_phase(lifecycles, &name, phase);
+            HealthTransition::Set { name, phase } => {
+                set_health(records, &name, phase);
             }
-            PhaseTransition::Clear { name } => {
-                clear_phase(lifecycles, &name);
+            HealthTransition::Clear { name } => {
+                clear_health(records, &name);
             }
         }
     }
@@ -197,8 +249,8 @@ pub(crate) struct ShutdownDecision {
 
 /// Decide which coworkers should be shut down due to idleness.
 ///
-/// Takes pre-collected state snapshots and immutable lifecycle state.
-/// Returns shutdown decisions and phase transitions without performing
+/// Takes pre-collected state snapshots and immutable coworker records.
+/// Returns shutdown decisions and health state transitions without performing
 /// any side effects or mutations.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_idle_shutdowns(
@@ -208,12 +260,12 @@ pub(crate) fn decide_idle_shutdowns(
     active_reviewers: &HashSet<String>,
     coworkers_with_unblocked_deps: &HashSet<String>,
     ci_passed_pr_coworkers: &HashSet<String>,
-    lifecycles: &HashMap<String, CoworkerLifecycle>,
+    records: &HashMap<String, CoworkerRecord>,
     now: Instant,
     now_utc: DateTime<Utc>,
     idle_break_duration: Duration,
     minimum_lifetime: Duration,
-) -> (Vec<ShutdownDecision>, Vec<PhaseTransition>) {
+) -> (Vec<ShutdownDecision>, Vec<HealthTransition>) {
     let mut to_shutdown = Vec::new();
     let mut transitions = Vec::new();
 
@@ -224,10 +276,10 @@ pub(crate) fn decide_idle_shutdowns(
         let lifetime = now_utc.signed_duration_since(cw.started_at);
         if lifetime < chrono::Duration::from_std(minimum_lifetime).unwrap_or_default() {
             if matches!(
-                get_phase(lifecycles, coworker),
-                Some(CoworkerPhase::Idle { .. })
+                get_health(records, coworker),
+                Some(SessionHealth::Idle { .. })
             ) {
-                transitions.push(PhaseTransition::Clear {
+                transitions.push(HealthTransition::Clear {
                     name: coworker.clone(),
                 });
             }
@@ -259,10 +311,10 @@ pub(crate) fn decide_idle_shutdowns(
             });
         } else if is_busy || has_open_pr || is_reviewing || has_unblocked_deps {
             if matches!(
-                get_phase(lifecycles, coworker),
-                Some(CoworkerPhase::Idle { .. })
+                get_health(records, coworker),
+                Some(SessionHealth::Idle { .. })
             ) {
-                transitions.push(PhaseTransition::Clear {
+                transitions.push(HealthTransition::Clear {
                     name: coworker.clone(),
                 });
             }
@@ -274,8 +326,8 @@ pub(crate) fn decide_idle_shutdowns(
                 save_session: false,
             });
         } else {
-            match get_phase(lifecycles, coworker) {
-                Some(CoworkerPhase::Idle { since }) => {
+            match get_health(records, coworker) {
+                Some(SessionHealth::Idle { since }) => {
                     if now.duration_since(since) >= idle_break_duration {
                         to_shutdown.push(ShutdownDecision {
                             name: coworker.clone(),
@@ -285,9 +337,9 @@ pub(crate) fn decide_idle_shutdowns(
                     }
                 }
                 None => {
-                    transitions.push(PhaseTransition::Set {
+                    transitions.push(HealthTransition::Set {
                         name: coworker.clone(),
-                        phase: CoworkerPhase::Idle { since: now },
+                        phase: SessionHealth::Idle { since: now },
                     });
                 }
             }
@@ -296,7 +348,7 @@ pub(crate) fn decide_idle_shutdowns(
 
     // Clear phase for shutdown coworkers (entry preserved for last_activity)
     for decision in &to_shutdown {
-        transitions.push(PhaseTransition::Clear {
+        transitions.push(HealthTransition::Clear {
             name: decision.name.clone(),
         });
     }
@@ -988,14 +1040,19 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Create a lifecycle map with a single coworker in the given phase.
-    fn lifecycle_with(name: &str, phase: CoworkerPhase) -> HashMap<String, CoworkerLifecycle> {
+    /// Create a record map with a single coworker in the given health state.
+    fn lifecycle_with(name: &str, health: SessionHealth) -> HashMap<String, CoworkerRecord> {
         let mut map = HashMap::new();
         map.insert(
             name.to_string(),
-            CoworkerLifecycle {
-                phase: Some(phase),
+            CoworkerRecord {
+                health: Some(health),
                 last_activity: None,
+                workflow_phase: None,
+                task_id: None,
+                workflow_updated_at: None,
+                pane_hash: None,
+                zombie_respawn_count: 0,
             },
         );
         map
@@ -1010,7 +1067,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1028,13 +1085,13 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(300),
         );
-        apply_phase_transitions(&mut phases, transitions);
+        apply_health_transitions(&mut phases, transitions);
 
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "york");
         assert!(!decisions[0].is_isolated);
         assert!(!decisions[0].save_session);
-        assert!(get_phase(&phases, "york").is_none());
+        assert!(get_health(&phases, "york").is_none());
     }
 
     #[test]
@@ -1042,7 +1099,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1060,11 +1117,11 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(300),
         );
-        apply_phase_transitions(&mut phases, transitions);
+        apply_health_transitions(&mut phases, transitions);
 
         assert!(decisions.is_empty());
         // Busy coworker removed from idle tracking
-        assert!(get_phase(&phases, "york").is_none());
+        assert!(get_health(&phases, "york").is_none());
     }
 
     #[test]
@@ -1072,7 +1129,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1099,7 +1156,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1126,7 +1183,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let mut phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1144,11 +1201,11 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(300),
         );
-        apply_phase_transitions(&mut phases, transitions);
+        apply_health_transitions(&mut phases, transitions);
 
         assert!(decisions.is_empty());
         // Coworker with unblocked deps removed from idle tracking
-        assert!(get_phase(&phases, "york").is_none());
+        assert!(get_health(&phases, "york").is_none());
     }
 
     #[test]
@@ -1156,7 +1213,7 @@ mod tests {
         let coworkers = vec![cw("york", 2)]; // Only 2 minutes old
         let mut phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1174,17 +1231,17 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(300),
         );
-        apply_phase_transitions(&mut phases, transitions);
+        apply_health_transitions(&mut phases, transitions);
 
         assert!(decisions.is_empty());
         // Young coworker also removed from idle tracking
-        assert!(get_phase(&phases, "york").is_none());
+        assert!(get_health(&phases, "york").is_none());
     }
 
     #[test]
     fn idle_shutdown_isolated_coworker_immediate() {
         let coworkers = vec![cw_isolated("reviewer", 10)];
-        let phases: HashMap<String, CoworkerLifecycle> = HashMap::new();
+        let phases: HashMap<String, CoworkerRecord> = HashMap::new();
 
         let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
@@ -1208,7 +1265,7 @@ mod tests {
     #[test]
     fn idle_shutdown_starts_tracking_newly_idle() {
         let coworkers = vec![cw("york", 10)];
-        let mut phases: HashMap<String, CoworkerLifecycle> = HashMap::new();
+        let mut phases: HashMap<String, CoworkerRecord> = HashMap::new();
 
         let (decisions, transitions) = decide_idle_shutdowns(
             &coworkers,
@@ -1223,11 +1280,11 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(300),
         );
-        apply_phase_transitions(&mut phases, transitions);
+        apply_health_transitions(&mut phases, transitions);
 
         // No shutdown yet — just started tracking
         assert!(decisions.is_empty());
-        assert!(get_phase(&phases, "york").is_some());
+        assert!(get_health(&phases, "york").is_some());
     }
 
     #[test]
@@ -1235,7 +1292,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1265,7 +1322,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1293,7 +1350,7 @@ mod tests {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
             "york",
-            CoworkerPhase::Idle {
+            SessionHealth::Idle {
                 since: Instant::now() - Duration::from_secs(60),
             },
         );
@@ -1315,6 +1372,10 @@ mod tests {
 
         assert!(decisions.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // decide_pr_issue_action tests
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // decide_pr_issue_action tests
