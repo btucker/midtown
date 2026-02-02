@@ -75,6 +75,14 @@ impl CooldownTracker {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Clears all entries for a specific key (e.g., coworker name).
+    ///
+    /// Called when a coworker is shut down to prevent stale cooldown state
+    /// from affecting future operations if they're respawned.
+    pub fn clear_for_key(&mut self, key: &str) {
+        self.entries.retain(|(_, k), _| k != key);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -598,30 +606,97 @@ fn parse_compaction_duration(line: &str) -> Option<Duration> {
 
 /// Detect coworkers with queued nudge messages that aren't being processed.
 ///
-/// When a coworker is at a prompt with queued messages (lines starting with `❯`
-/// visible in the pane below the active prompt), it needs an Enter or Escape
-/// to start processing them. We look for `❯` lines that appear in the pane
-/// content, which indicates nudges were delivered but haven't been submitted.
+/// Claude Code's TUI structure (from bottom to top):
+/// - Status bar (permissions/interrupt hints)
+/// - Bottom input separator (`───────...`)
+/// - Input line (`❯ [text being typed]`)
+/// - Top input separator (`───────...`)
+/// - **Queued nudges appear here** (`❯ message` lines)
+/// - Action/verb line (`✳` in-progress or `⏺` completed)
+/// - Conversation history (already processed)
 ///
-/// We detect this by looking for the `❯` character followed by text, which
-/// appears when nudge messages are queued but sitting unprocessed at the prompt.
+/// Queued nudges are messages that were sent via tmux send-keys but haven't
+/// been submitted yet. They appear BELOW the action line but ABOVE the input
+/// separator. We need to parse the TUI structure to find them, not just look
+/// for any `❯` line (which would match conversation history).
 pub(crate) fn detect_queued_prompt_stuck(pane_contents: &HashMap<String, String>) -> Vec<String> {
     pane_contents
         .iter()
-        .filter(|(_name, content)| {
-            // Look for queued nudge messages: lines starting with ❯ followed by text.
-            // These appear when nudge messages were sent but the coworker hasn't
-            // pressed Enter to submit them. The ❯ is Claude Code's prompt indicator.
-            let has_queued = content.lines().any(|line| {
-                let trimmed = line.trim();
-                trimmed.starts_with('❯') && trimmed.len() > "❯".len() + 1
-            });
-            // Only flag if NOT currently in compaction (that's a separate recovery)
-            let in_compaction = content.contains("esc to interrupt");
-            has_queued && !in_compaction
-        })
+        .filter(|(_name, content)| has_queued_nudges(content))
         .map(|(name, _content)| name.clone())
         .collect()
+}
+
+/// Check if pane content has queued nudges waiting to be processed.
+///
+/// Returns true if there are `❯ text` lines between the action line and
+/// the input separator, indicating nudges that were sent but not submitted.
+fn has_queued_nudges(content: &str) -> bool {
+    // Don't check during compaction (separate recovery mechanism)
+    if content.contains("esc to interrupt") {
+        return false;
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Find the input separator (line of mostly ─ characters) scanning from bottom
+    // The input area has two separators; we want the top one (second from bottom)
+    let mut separator_indices: Vec<usize> = Vec::new();
+    for (i, line) in lines.iter().enumerate().rev() {
+        if is_input_separator(line) {
+            separator_indices.push(i);
+            if separator_indices.len() >= 2 {
+                break;
+            }
+        }
+    }
+
+    // Need at least the top input separator to locate the queued area
+    let top_separator_idx = match separator_indices.last() {
+        Some(&idx) => idx,
+        None => return false,
+    };
+
+    // Find the action line (starts with ✳ or ⏺) scanning upward from separator
+    let mut action_line_idx = None;
+    for i in (0..top_separator_idx).rev() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with('✳') || trimmed.starts_with('⏺') {
+            action_line_idx = Some(i);
+            break;
+        }
+    }
+
+    let action_idx = match action_line_idx {
+        Some(idx) => idx,
+        None => return false,
+    };
+
+    // Look for queued nudges between action line and top separator
+    // These are `❯ text` lines (with actual content after the prompt)
+    for line in lines
+        .iter()
+        .skip(action_idx + 1)
+        .take(top_separator_idx.saturating_sub(action_idx + 1))
+    {
+        let trimmed = line.trim();
+        if trimmed.starts_with('❯') && trimmed.len() > "❯".len() + 1 {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Check if a line is an input separator (horizontal line of ─ characters).
+fn is_input_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Input separators are long lines of ─ (box drawing horizontal)
+    let dash_count = trimmed.chars().filter(|&c| c == '─').count();
+    dash_count > 20 && dash_count as f64 / trimmed.chars().count() as f64 > 0.9
 }
 
 /// Pure decision: determine which coworkers need UI recovery actions.
@@ -1151,6 +1226,31 @@ mod tests {
         // Sleep past the cooldown.
         thread::sleep(Duration::from_millis(15));
         assert!(tracker.check("fast", "k", Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn clear_for_key_removes_matching_entries() {
+        let mut tracker = CooldownTracker::new();
+
+        // Add entries for multiple coworkers across different rules
+        tracker.record("compaction_recovery", "york");
+        tracker.record("queued_prompt_recovery", "york");
+        tracker.record("compaction_recovery", "amsterdam");
+        tracker.record("idle_timeout", "amsterdam");
+
+        assert_eq!(tracker.len(), 4);
+
+        // Clear entries for york
+        tracker.clear_for_key("york");
+
+        // Only amsterdam's entries should remain
+        assert_eq!(tracker.len(), 2);
+        assert!(!tracker.check("compaction_recovery", "amsterdam", Duration::from_secs(60)));
+        assert!(!tracker.check("idle_timeout", "amsterdam", Duration::from_secs(60)));
+
+        // york's entries should be cleared (check returns true = no cooldown active)
+        assert!(tracker.check("compaction_recovery", "york", Duration::from_secs(60)));
+        assert!(tracker.check("queued_prompt_recovery", "york", Duration::from_secs(60)));
     }
 
     // -----------------------------------------------------------------------
@@ -2050,11 +2150,18 @@ mod tests {
 
     #[test]
     fn queued_prompt_detected_with_nudge_messages() {
+        // Realistic TUI: queued nudge between action line and input separator
         let mut panes = HashMap::new();
-        panes.insert(
-            "york".to_string(),
-            "  some output\n❯ You have a new task assignment: task #42\n❯ Check the channel for updates\n".to_string(),
-        );
+        let tui_content = "\
+⏺ Previous completed action
+
+✳ Current action in progress...
+❯ You have a new task assignment: task #42
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("york".to_string(), tui_content.to_string());
         let stuck = detect_queued_prompt_stuck(&panes);
         assert_eq!(stuck, vec!["york"]);
     }
@@ -2077,9 +2184,17 @@ mod tests {
 
     #[test]
     fn queued_prompt_not_detected_with_bare_prompt() {
-        // Just the ❯ character alone (empty prompt) should NOT trigger
+        // Normal TUI with empty input - no queued nudges
         let mut panes = HashMap::new();
-        panes.insert("york".to_string(), "  output\n❯ \n".to_string());
+        let tui_content = "\
+⏺ Completed action
+
+✳ Working on something...
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("york".to_string(), tui_content.to_string());
         let stuck = detect_queued_prompt_stuck(&panes);
         assert!(
             stuck.is_empty(),
@@ -2099,6 +2214,29 @@ mod tests {
     }
 
     #[test]
+    fn queued_prompt_not_detected_in_conversation_history() {
+        // This is the FALSE POSITIVE case: ❯ lines in conversation history
+        // should NOT be detected as queued nudges
+        let mut panes = HashMap::new();
+        let tui_content = "\
+❯ Previous user message in history
+
+⏺ Claude's response to that message
+
+✳ Current action in progress...
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("york".to_string(), tui_content.to_string());
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert!(
+            stuck.is_empty(),
+            "❯ lines in conversation history should not trigger recovery"
+        );
+    }
+
+    #[test]
     fn combined_recovery_returns_both_types() {
         let mut panes = HashMap::new();
         // One coworker stuck in compaction (10 min — well above threshold)
@@ -2106,8 +2244,17 @@ mod tests {
             "york".to_string(),
             "  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
         );
-        // Another coworker with queued nudges
-        panes.insert("amsterdam".to_string(), "❯ Check the channel\n".to_string());
+        // Another coworker with queued nudges (proper TUI structure)
+        let amsterdam_tui = "\
+⏺ Previous action
+
+✳ Working on task...
+❯ Check the channel
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
 
         let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
         assert_eq!(recoveries.len(), 2);
@@ -2130,7 +2277,17 @@ mod tests {
             "york".to_string(),
             "  (esc to interrupt · 2m 00s · ↓ 0 tokens)\n".to_string(),
         );
-        panes.insert("amsterdam".to_string(), "❯ Check the channel\n".to_string());
+        // Queued nudge with proper TUI structure
+        let amsterdam_tui = "\
+⏺ Previous action
+
+✳ Working on task...
+❯ Check the channel
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
 
         let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
         // Only the queued nudge should trigger, not the short compaction
