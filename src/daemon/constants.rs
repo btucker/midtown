@@ -51,8 +51,8 @@ pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
 /// How long a coworker must be idle before being sent on a break (30 seconds)
 pub(super) const IDLE_BREAK_DURATION: Duration = Duration::from_secs(30);
 
-/// How often to check for idle coworkers (30 seconds)
-pub(super) const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+/// How often to run the session monitor tick (idle shutdown, nudges, stuck detection) (30 seconds)
+pub(super) const SESSION_MONITOR_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How often to check lead pane activity for typing indicator (3 seconds)
 pub(super) const LEAD_TYPING_CHECK_INTERVAL: Duration = Duration::from_secs(3);
@@ -78,8 +78,8 @@ pub(super) const LEAD_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 /// tries to respawn the lead window before the tmux session is fully settled.
 pub(super) const LEAD_HEALTH_CHECK_STARTUP_GRACE: Duration = Duration::from_secs(30);
 
-/// Interval for checking orphaned tasks (5 seconds)
-pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
+/// Interval for task dispatch: orphan recovery, duplicate detection, spawning, cleanup (5 seconds)
+pub(super) const TASK_DISPATCH_INTERVAL_SECS: u64 = 5;
 
 /// Minimum time a coworker must be alive before being sent on a break (5 minutes)
 /// This prevents spawn storms where coworkers are rapidly sent on breaks.
