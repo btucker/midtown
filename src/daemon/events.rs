@@ -22,8 +22,7 @@ use super::snapshot::WorldSnapshot;
 /// the remaining inline side effects to the evaluate/execute pattern.
 #[derive(Debug)]
 pub enum DaemonEvent {
-    /// Periodic session-monitor tick: idle shutdown, interrupt/prompt nudge, stuck
-    /// detection, usage limits.
+    /// Periodic session-monitor tick: idle shutdown, stuck detection, usage limits.
     SessionMonitorTick,
     /// Periodic task-dispatch tick: duplicate detection, orphan recovery, task spawning,
     /// zombie respawning, reminders.
@@ -47,9 +46,7 @@ pub async fn evaluate_tick(
     match event {
         DaemonEvent::SessionMonitorTick => {
             let mut effects = Vec::new();
-            // Order matters: later calls can override phase transitions from earlier
-            // calls. For example, a prompt nudge can supersede an idle shutdown
-            // decision for the same coworker.
+            // Health checks: idle shutdown, stuck detection, usage limits.
             effects.extend(super::health::check_and_shutdown_idle_coworkers(snap, state).await);
             effects.extend(super::health::check_and_restart_stuck_coworkers(
                 snap, state,

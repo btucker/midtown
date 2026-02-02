@@ -37,8 +37,11 @@ pub struct WorldSnapshot {
     /// Coworker start times keyed by lowercase name.
     pub coworker_start_times: HashMap<String, DateTime<Utc>>,
 
-    // ── Pane contents ───────────────────────────────────────────────────
+    // ── Pane contents (health checks only) ─────────────────────────────
     /// Captured tmux pane content per coworker (keyed by name).
+    /// Used for health checks only: stuck detection (hash comparison),
+    /// zombie detection (blank pane), and usage limit detection.
+    /// Workflow state is reported via RPC, not inferred from pane content.
     pub pane_contents: HashMap<String, String>,
     /// Running coworkers whose pane is entirely blank (no visible output).
     pub blank_pane_coworkers: HashSet<String>,

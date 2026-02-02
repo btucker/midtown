@@ -84,8 +84,8 @@ impl CooldownTracker {
 /// The current phase of a coworker in the daemon's lifecycle.
 ///
 /// A coworker can only be in one phase at a time — the enum enforces
-/// mutual exclusivity. Workflow states (interrupted, prompted) are reported
-/// via RPC rather than inferred from pane content.
+/// mutual exclusivity. Pane scraping is used only for health checks
+/// (stuck detection, zombie detection, usage limits), not workflow state.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CoworkerPhase {
     /// Coworker has no tasks and is waiting for the idle timeout to expire.

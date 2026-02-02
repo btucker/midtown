@@ -2,8 +2,8 @@
 //!
 //! These functions detect and respond to coworker health issues:
 //! idle shutdown, stuck panes, usage limits, zombie processes, and
-//! reminder firing. Workflow state (interrupted, prompted) is reported
-//! via RPC rather than inferred from pane content.
+//! reminder firing. Pane scraping is used exclusively for health
+//! detection — workflow state is reported via RPC.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
