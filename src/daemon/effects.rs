@@ -1,6 +1,7 @@
 use tracing::{info, warn};
 
 use super::DaemonState;
+use super::trackers::PrIssueType;
 use crate::message::Message;
 
 /// A side effect that the daemon should execute.
@@ -10,7 +11,6 @@ use crate::message::Message;
 /// effects are carried out. This separation makes the decision logic testable
 /// without mocking async infrastructure.
 #[derive(Debug)]
-#[allow(dead_code)] // SpawnCoworker defined for when inline spawns are fully extracted
 pub enum Effect {
     /// Spawn a coworker using a typed launch configuration.
     SpawnCoworker(crate::tmux::ClaudeLaunchConfig),
@@ -22,6 +22,8 @@ pub enum Effect {
     NudgeLead { message: String },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     PostToChannel { sender: String, message: String },
+    /// Post a system message to the channel (and broadcast to WebSocket clients).
+    PostSystemMessage { message: String },
     /// Broadcast a coworker status update to WebSocket clients.
     BroadcastCoworkerUpdate {
         name: String,
@@ -83,6 +85,21 @@ pub enum Effect {
     MarkRemindersFired {
         fired_ids: Vec<String>,
         repo_name: String,
+    },
+    /// Auto-merge a PR using `gh pr merge --squash --auto`.
+    AutoMergePr { pr_number: u64, title: String },
+    /// Record a PR issue nudge in the tracker (prevents repeated nudges).
+    RecordPrNudge {
+        pr_number: u64,
+        issue_type: PrIssueType,
+    },
+    /// Clear a saved PR break session after successful resume.
+    ClearPrBreakSession { name: String },
+    /// Assign a reviewer to a PR in github_state and persist.
+    AssignReviewer {
+        pr_number: u64,
+        reviewer_name: String,
+        source: crate::github_state::AssignmentSource,
     },
 }
 
@@ -302,6 +319,89 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
+            Effect::AutoMergePr { pr_number, title } => {
+                auto_merge_pr(state, pr_number, &title).await;
+            }
+            Effect::RecordPrNudge {
+                pr_number,
+                issue_type,
+            } => {
+                let mut tracker = state.pr_issue_tracker.lock().await;
+                tracker.record_nudge(pr_number, issue_type);
+            }
+            Effect::ClearPrBreakSession { name } => {
+                let mut sessions = state.pr_break_sessions.write().unwrap();
+                sessions.remove(&name);
+                info!("Cleared PR break session for {}", name);
+            }
+            Effect::AssignReviewer {
+                pr_number,
+                reviewer_name,
+                source,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!("Failed to save daemon-state.json: {}", e);
+                }
+            }
+            Effect::PostSystemMessage { message } => {
+                let msg = Message::system(message);
+                if let Err(e) = state.send_and_broadcast(&msg) {
+                    warn!("Failed to post system message: {}", e);
+                }
+            }
+        }
+    }
+}
+
+/// Auto-merge a PR using `gh pr merge --squash`.
+///
+/// Posts a channel message on success or failure.
+async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
+    use super::helpers::truncate_str;
+
+    let output = match tokio::process::Command::new("gh")
+        .args(["pr", "merge", &pr_number.to_string(), "--squash", "--auto"])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!("Failed to run gh pr merge for PR #{}: {}", pr_number, e);
+            return;
+        }
+    };
+
+    if output.status.success() {
+        info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
+                pr_number,
+                truncate_str(title, 40)
+            ),
+            crate::message::MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge message: {}", e);
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "⚠️ Auto-merge failed for PR #{} ({}) — {}",
+                pr_number,
+                truncate_str(title, 40),
+                truncate_str(stderr.trim(), 80)
+            ),
+            crate::message::MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge failure message: {}", e);
         }
     }
 }
