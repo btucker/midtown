@@ -6,6 +6,7 @@ CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 1. When starting: `/me reviewing PR #X`
 2. When done: `/me review complete for PR #X` (with brief summary if useful)
 3. When notifying lead of significant findings (see below)
+4. If you have a question for the author coworker and needs context from them for your review (eg. "@broadway in PR #X, why did you...?")
 
 Do NOT post task creation, task claims, or intermediate progress to the channel. The channel is for coordination, not a task log. Keep it clean.
 
