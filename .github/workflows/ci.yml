@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,38 +27,29 @@ jobs:
         run: cargo test --all-features
 
   e2e:
-    name: E2E Tests
+    name: E2E Tests (Container)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Build E2E container
+        run: docker build -t midtown-e2e -f Dockerfile.e2e .
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Run coordination E2E tests
+        run: docker run --rm midtown-e2e coordination
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+  e2e-full:
+    name: E2E Tests (Full Stack)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Build E2E container
+        run: docker build -t midtown-e2e -f Dockerfile.e2e .
 
-      - name: Run daemon e2e tests
-        run: cargo test --release --all-features --test daemon_e2e -- --ignored --test-threads=1
-        env:
-          MIDTOWN_WEBHOOK_PORT: "0"
-          MIDTOWN_CHAT_MONITOR: "0"
-
-      - name: Run tmux e2e tests
-        run: cargo test --release --all-features --test tmux_e2e -- --ignored
-        env:
-          MIDTOWN_LEAD_COMMAND: "sleep 300"
-
-      - name: Run nudge delivery e2e tests
-        run: cargo test --release --all-features --test nudge_delivery_e2e -- --ignored
-
-      # Chat e2e tests require a real terminal for TUI rendering and time out in CI
-      # Run these locally: cargo test --release --all-features --test chat_e2e -- --ignored
+      - name: Run full E2E tests
+        run: docker run --rm -e ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }} midtown-e2e full
 
   clippy:
     name: Clippy

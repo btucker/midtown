@@ -30,6 +30,18 @@ cargo install --path .
 
 **E2E tests** require tmux and run with `--ignored`. CI uses `MIDTOWN_WEBHOOK_PORT=0` and `MIDTOWN_CHAT_MONITOR=0` to disable network features during testing.
 
+**Containerized E2E tests** (canonical way to run E2E — reproducible environment):
+
+```bash
+# Using the wrapper script directly:
+./scripts/e2e-container.sh coordination          # fast, no auth needed
+./scripts/e2e-container.sh full                   # real Claude, needs auth
+
+# Auth for full mode (one of):
+export ANTHROPIC_API_KEY=sk-ant-...
+CLAUDE_AUTH_DIR=~/.midtown/claude-auth ./scripts/e2e-container.sh full
+```
+
 ## Architecture
 
 ### State Machine Daemon
