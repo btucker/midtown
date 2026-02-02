@@ -17,19 +17,12 @@ pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
 /// Per-project daemons use 47023+.
 pub const DEFAULT_WEBHOOK_PORT: u16 = 47023;
 
-/// Default interval for polling PRs when webhooks are degraded (30 seconds).
-/// Used as the aggressive/fallback interval when webhook events are not flowing.
+/// Default interval for polling PRs (30 seconds).
+///
+/// PR polling now runs in the main event loop (not a separate task) to prevent
+/// spawn races with TaskDispatchTick. Adaptive intervals based on webhook health
+/// were removed as part of this change for simplicity.
 pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
-
-/// Relaxed interval for polling PRs when webhooks are healthy (2 minutes).
-/// When webhooks are delivering real-time events, polling serves only as a
-/// backstop for reconciliation, so we can afford a longer interval.
-pub const RELAXED_PR_POLL_INTERVAL_SECS: u64 = 120;
-
-/// Duration without a webhook event before considering webhooks degraded (5 minutes).
-/// If no webhook events have been received within this window (despite open PRs
-/// or other expected activity), the PR poll switches to the aggressive interval.
-pub(super) const WEBHOOK_HEALTH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;

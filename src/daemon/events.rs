@@ -17,16 +17,22 @@ use super::snapshot::WorldSnapshot;
 
 /// Events that drive the daemon's state machine.
 ///
-/// Currently covers the two periodic tick groups. Future phases will add
+/// Currently covers the periodic tick groups. Future phases will add
 /// variants for webhook events, RPC requests, and signals — converting
 /// the remaining inline side effects to the evaluate/execute pattern.
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)] // All tick events share the "Tick" suffix by design
 pub enum DaemonEvent {
     /// Periodic session-monitor tick: idle shutdown, stuck detection, usage limits.
     SessionMonitorTick,
     /// Periodic task-dispatch tick: duplicate detection, orphan recovery, task spawning,
     /// zombie respawning, reminders.
     TaskDispatchTick,
+    /// Periodic PR poll tick: check open PRs for issues, spawn reviewers.
+    ///
+    /// Previously ran in a separate `tokio::spawn` task, now integrated into the
+    /// main select! loop to prevent spawn races with TaskDispatchTick.
+    PrPollTick,
 }
 
 /// Evaluate a daemon event against the current world snapshot, returning effects.
@@ -62,6 +68,16 @@ pub async fn evaluate_tick(
             effects.extend(super::health::check_and_respawn_zombies(snap, state).await);
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);
             effects
+        }
+        DaemonEvent::PrPollTick => {
+            // PR polling: check open PRs for issues, spawn reviewers.
+            match super::pr::poll_prs_for_issues(snap, state).await {
+                Ok(effects) => effects,
+                Err(e) => {
+                    tracing::warn!("PR poll error: {}", e);
+                    Vec::new()
+                }
+            }
         }
     }
 }
