@@ -142,6 +142,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut records = state.coworker_records.write().await;
                     records.remove(&name);
                 }
+                // Clear cooldown entries for this coworker (prevents stale state on respawn)
+                {
+                    let mut cooldowns = state.cooldowns.lock().unwrap();
+                    cooldowns.clear_for_key(&name);
+                }
             }
             Effect::NudgeCoworker { name, message } => {
                 if let Err(e) = state.coworkers.nudge(&name, &message) {
@@ -194,6 +199,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 {
                     let mut records = state.coworker_records.write().await;
                     records.remove(&name);
+                }
+                // Clear cooldown entries for this coworker (prevents stale state on respawn)
+                {
+                    let mut cooldowns = state.cooldowns.lock().unwrap();
+                    cooldowns.clear_for_key(&name);
                 }
                 // Brief delay to let tmux clean up
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
