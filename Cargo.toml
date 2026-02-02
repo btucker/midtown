@@ -1,6 +1,6 @@
 [package]
 name = "midtown"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Midtown - a multi-Claude Code workspace manager, inspired by Gastown"
 license = "Apache-2.0"
