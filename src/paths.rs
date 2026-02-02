@@ -231,20 +231,22 @@ pub fn github_state_file_for_repo(repo: &str) -> PathBuf {
     projects_dir_for_repo(repo).join("github-state.json")
 }
 
-/// Get the GitHub state file path for the current repository.
-///
-/// Detects the repo name from the current git working directory.
-/// Falls back to "default" if not in a git repository.
-pub fn github_state_file() -> PathBuf {
-    let repo = detect_repo_name().unwrap_or_else(|| "default".to_string());
-    github_state_file_for_repo(&repo)
-}
-
 /// Get the reminders file path for a specific repository.
 ///
 /// Returns `~/.midtown/projects/<repo>/reminders.json`.
 pub fn reminders_file_for_repo(repo: &str) -> PathBuf {
     projects_dir_for_repo(repo).join("reminders.json")
+}
+
+/// Get the unified daemon state file path for a specific repository.
+///
+/// Returns `~/.midtown/projects/<repo>/daemon-state.json`.
+///
+/// This file stores all persistent daemon state:
+/// - GitHub PR reviewer assignments, review cache, pending spawns
+/// - One-shot reminders
+pub fn daemon_state_file_for_repo(repo: &str) -> PathBuf {
+    projects_dir_for_repo(repo).join("daemon-state.json")
 }
 
 /// Get the daemon socket path for a specific repository.

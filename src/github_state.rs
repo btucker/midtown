@@ -298,28 +298,13 @@ impl GitHubState {
     }
 }
 
-/// Load GitHub state for the current repository.
-pub fn load_state() -> io::Result<GitHubState> {
-    let path = crate::paths::github_state_file();
-    GitHubState::load(&path)
-}
-
-/// Save GitHub state for the current repository.
-pub fn save_state(state: &GitHubState) -> io::Result<()> {
-    let path = crate::paths::github_state_file();
-    state.save(&path)
-}
-
-/// Load GitHub state for a specific repository.
+/// Load GitHub state for a specific repository (legacy file).
+///
+/// Used only by migration code in `daemon::state`. New code should use
+/// `DaemonPersistentState::load_for_repo()` instead.
 pub fn load_state_for_repo(repo: &str) -> io::Result<GitHubState> {
     let path = crate::paths::github_state_file_for_repo(repo);
     GitHubState::load(&path)
-}
-
-/// Save GitHub state for a specific repository.
-pub fn save_state_for_repo(repo: &str, state: &GitHubState) -> io::Result<()> {
-    let path = crate::paths::github_state_file_for_repo(repo);
-    state.save(&path)
 }
 
 #[cfg(test)]

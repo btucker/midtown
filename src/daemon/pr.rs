@@ -321,8 +321,8 @@ async fn poll_prs_for_issues(
         tracker.cleanup();
     }
     {
-        let mut github_state = state.github_state.lock().await;
-        github_state.cleanup_expired_preserving(&active_coworker_names);
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.cleanup_expired_preserving(&active_coworker_names);
     }
     {
         let mut cooldowns = state.cooldowns.lock().unwrap();
@@ -396,11 +396,11 @@ async fn poll_prs_for_issues(
             .iter()
             .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
             .collect();
-        let mut github_state = state.github_state.lock().await;
-        github_state.cleanup_closed_prs(&open_pr_numbers);
-        github_state.cleanup_expired_preserving(&active_coworker_names);
-        if let Err(e) = crate::github_state::save_state_for_repo(&state.repo_name, &github_state) {
-            warn!("Failed to save github-state.json after cleanup: {}", e);
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.cleanup_closed_prs(&open_pr_numbers);
+        ps.github.cleanup_expired_preserving(&active_coworker_names);
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!("Failed to save daemon-state.json after cleanup: {}", e);
         }
     }
 
@@ -623,8 +623,8 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
         if review_decision.is_empty() && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs() {
             // Check if a reviewer is assigned (daemon tried to self-heal)
             let is_assigned = {
-                let github_state = state.github_state.lock().await;
-                github_state.is_assigned(pr_number)
+                let ps = state.persistent_state.lock().await;
+                ps.github.is_assigned(pr_number)
             };
 
             tracker.track(&pr_id, StuckConditionType::NoReview);
@@ -782,8 +782,8 @@ async fn check_for_stuck_conditions(state: &DaemonState, prs: &[serde_json::Valu
             .count();
 
         let current_review_count = {
-            let github_state = state.github_state.lock().await;
-            github_state.active_count()
+            let ps = state.persistent_state.lock().await;
+            ps.github.active_count()
         };
 
         // Backlog exists when more PRs need review than we can handle
@@ -841,8 +841,8 @@ fn nudge_lead_stuck(state: &DaemonState, message: &str) {
 async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value]) {
     // Check rate limit
     let current_review_count = {
-        let github_state = state.github_state.lock().await;
-        github_state.active_count()
+        let ps = state.persistent_state.lock().await;
+        ps.github.active_count()
     };
 
     if current_review_count >= MAX_CONCURRENT_REVIEWS {
@@ -896,8 +896,8 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
             // If so, leave the assignment in place so the idle shutdown path can
             // properly send them off with break_review_complete() instead of break_no_pr().
             let reviewer_still_running = {
-                let github_state = state.github_state.lock().await;
-                if let Some(reviewer_name) = github_state.get_reviewer(pr_number) {
+                let ps = state.persistent_state.lock().await;
+                if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
                     state.coworkers.get(reviewer_name).is_some()
                 } else {
                     false
@@ -911,14 +911,12 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
                 );
             } else {
                 // Free the tracker slot — the review completed and the reviewer is gone
-                let mut github_state = state.github_state.lock().await;
-                if github_state.is_assigned(pr_number) {
+                let mut ps = state.persistent_state.lock().await;
+                if ps.github.is_assigned(pr_number) {
                     debug!("PR #{} review completed, freeing tracker slot", pr_number);
-                    github_state.remove_assignment(pr_number);
-                    if let Err(e) =
-                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
-                    {
-                        warn!("Failed to save github-state.json: {}", e);
+                    ps.github.remove_assignment(pr_number);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!("Failed to save daemon-state.json: {}", e);
                     }
                 }
             }
@@ -1068,8 +1066,8 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
         // This runs AFTER review detection so completed reviews are always detected,
         // but prevents spawning duplicate reviewers for PRs already under review.
         {
-            let github_state = state.github_state.lock().await;
-            if github_state.is_assigned(pr_number) {
+            let ps = state.persistent_state.lock().await;
+            if ps.github.is_assigned(pr_number) {
                 debug!("PR #{} already assigned for review", pr_number);
                 continue;
             }
@@ -1118,12 +1116,10 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
 
                 // Record the assignment in persistent state
                 {
-                    let mut github_state = state.github_state.lock().await;
-                    github_state.assign_reviewer(pr_number, &new_coworker);
-                    if let Err(e) =
-                        crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
-                    {
-                        warn!("Failed to save github-state.json: {}", e);
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.github.assign_reviewer(pr_number, &new_coworker);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!("Failed to save daemon-state.json: {}", e);
                     }
                 }
 
@@ -1186,11 +1182,10 @@ async fn spawn_reviewers_for_prs(state: &DaemonState, prs: &[serde_json::Value])
 pub(super) async fn process_pending_review_spawns(state: &DaemonState) {
     // Drain ready spawns from persistent state
     let ready_prs = {
-        let mut github_state = state.github_state.lock().await;
-        let ready = github_state.drain_ready_review_spawns();
+        let mut ps = state.persistent_state.lock().await;
+        let ready = ps.github.drain_ready_review_spawns();
         if !ready.is_empty()
-            && let Err(e) =
-                crate::github_state::save_state_for_repo(&state.repo_name, &github_state)
+            && let Err(e) = ps.save_for_repo(&state.repo_name)
         {
             warn!("Failed to persist review spawn drain: {}", e);
         }
