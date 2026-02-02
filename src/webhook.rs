@@ -55,6 +55,48 @@ pub struct WebhookEvent {
     /// PR number that received a Claude review comment (for caching review status).
     /// Set when an `issue_comment` webhook contains a review signature.
     pub reviewed_pr: Option<u64>,
+    /// A formal review state change (approved / changes_requested) — triggers immediate
+    /// nudge of the PR owner instead of waiting for the next polling cycle.
+    pub review_state_change: Option<PrReviewStateChange>,
+    /// A CI check failure on a PR branch — triggers immediate nudge of the PR owner.
+    pub pr_ci_failure: Option<PrCiFailure>,
+}
+
+/// Structured data about a formal PR review state change (approved or changes requested).
+///
+/// Populated by the `pull_request_review` webhook handler so the daemon can
+/// immediately nudge the PR owner rather than waiting for the next poll cycle.
+#[derive(Debug, Clone)]
+pub struct PrReviewStateChange {
+    /// PR number
+    pub pr_number: u64,
+    /// The coworker who owns the PR (from branch prefix or body frontmatter)
+    pub owner_coworker: Option<String>,
+    /// The reviewer who submitted the review
+    pub reviewer: String,
+    /// Whether the review was approved or requested changes
+    pub state: ReviewState,
+}
+
+/// The state of a formal PR review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+}
+
+/// Structured data about a CI check failure on a PR branch.
+///
+/// Populated by the `check_run` webhook handler so the daemon can
+/// immediately nudge the PR owner rather than waiting for the next poll cycle.
+#[derive(Debug, Clone)]
+pub struct PrCiFailure {
+    /// PR number
+    pub pr_number: u64,
+    /// The coworker who owns the PR (from branch prefix or body frontmatter)
+    pub owner_coworker: Option<String>,
+    /// Name of the failed check
+    pub check_name: String,
 }
 
 /// Identifies a GitHub comment for the reactions API.
@@ -587,6 +629,8 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         merged_pr,
         ci_failed_on_default_branch: None,
         reviewed_pr: None,
+        review_state_change: None,
+        pr_ci_failure: None,
     }))
 }
 
@@ -619,6 +663,24 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         _ => return Ok(None),
     };
 
+    // Produce a structured review state change for approved/changes_requested
+    // so the daemon can immediately nudge the PR owner via webhook.
+    let review_state_change = match event.review.state.to_lowercase().as_str() {
+        "approved" => Some(PrReviewStateChange {
+            pr_number: event.pull_request.number,
+            owner_coworker: coworker.map(|s| s.to_string()),
+            reviewer: event.review.user.login.clone(),
+            state: ReviewState::Approved,
+        }),
+        "changes_requested" => Some(PrReviewStateChange {
+            pr_number: event.pull_request.number,
+            owner_coworker: coworker.map(|s| s.to_string()),
+            reviewer: event.review.user.login.clone(),
+            state: ReviewState::ChangesRequested,
+        }),
+        _ => None,
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
@@ -636,6 +698,8 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         merged_pr: None,
         ci_failed_on_default_branch: None,
         reviewed_pr: None,
+        review_state_change,
+        pr_ci_failure: None,
     }))
 }
 
@@ -685,6 +749,8 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
         merged_pr: None,
         ci_failed_on_default_branch: None,
         reviewed_pr,
+        review_state_change: None,
+        pr_ci_failure: None,
     }))
 }
 
@@ -727,6 +793,8 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         merged_pr: None,
         ci_failed_on_default_branch: None,
         reviewed_pr: None,
+        review_state_change: None,
+        pr_ci_failure: None,
     }))
 }
 
@@ -770,6 +838,8 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
         merged_pr: None,
         ci_failed_on_default_branch: None,
         reviewed_pr: None,
+        review_state_change: None,
+        pr_ci_failure: None,
     }))
 }
 
@@ -839,6 +909,23 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         None
     };
 
+    // Produce a structured CI failure for PR branches so the daemon can
+    // immediately nudge the PR owner via webhook.
+    let pr_ci_failure = if is_failure {
+        event
+            .check_run
+            .check_suite
+            .as_ref()
+            .and_then(|cs| cs.pull_requests.first())
+            .map(|pr| PrCiFailure {
+                pr_number: pr.number,
+                owner_coworker: coworker.map(|s| s.to_string()),
+                check_name: event.check_run.name.clone(),
+            })
+    } else {
+        None
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
@@ -847,6 +934,8 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         merged_pr: None,
         ci_failed_on_default_branch,
         reviewed_pr: None,
+        review_state_change: None,
+        pr_ci_failure,
     }))
 }
 
@@ -1511,5 +1600,175 @@ mod tests {
         assert_eq!(activity.pr_number, 77);
         assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
         assert_eq!(activity.actor, "lexington");
+    }
+
+    #[test]
+    fn test_review_approved_produces_state_change() {
+        let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 200,
+                "state": "approved",
+                "user": {"login": "reviewer_bot"}
+            },
+            "pull_request": {
+                "number": 42,
+                "head": {"ref": "broadway/fix-bug"},
+                "body": "Some PR description"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request_review(payload.as_bytes())
+            .unwrap()
+            .unwrap();
+        let change = event.review_state_change.unwrap();
+        assert_eq!(change.pr_number, 42);
+        assert_eq!(change.owner_coworker.as_deref(), Some("broadway"));
+        assert_eq!(change.reviewer, "reviewer_bot");
+        assert_eq!(change.state, ReviewState::Approved);
+        // CI failure should be None for review events
+        assert!(event.pr_ci_failure.is_none());
+    }
+
+    #[test]
+    fn test_review_changes_requested_produces_state_change() {
+        let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 201,
+                "state": "changes_requested",
+                "user": {"login": "reviewer_bot"}
+            },
+            "pull_request": {
+                "number": 55,
+                "head": {"ref": "columbus/add-feature"},
+                "body": "<!-- midtown: columbus -->\n\nDescription"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request_review(payload.as_bytes())
+            .unwrap()
+            .unwrap();
+        let change = event.review_state_change.unwrap();
+        assert_eq!(change.pr_number, 55);
+        assert_eq!(change.owner_coworker.as_deref(), Some("columbus"));
+        assert_eq!(change.reviewer, "reviewer_bot");
+        assert_eq!(change.state, ReviewState::ChangesRequested);
+    }
+
+    #[test]
+    fn test_review_commented_no_state_change() {
+        let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 202,
+                "state": "commented",
+                "user": {"login": "reviewer_bot"}
+            },
+            "pull_request": {
+                "number": 42,
+                "head": {"ref": "broadway/fix-bug"}
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request_review(payload.as_bytes())
+            .unwrap()
+            .unwrap();
+        // "commented" reviews should NOT produce a state change
+        assert!(event.review_state_change.is_none());
+    }
+
+    #[test]
+    fn test_check_run_failure_on_pr_produces_ci_failure() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "Build",
+                "status": "completed",
+                "conclusion": "failure",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "park/implement-thing",
+                    "pull_requests": [{"number": 99}]
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "main"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        let failure = event.pr_ci_failure.unwrap();
+        assert_eq!(failure.pr_number, 99);
+        assert_eq!(failure.owner_coworker.as_deref(), Some("park"));
+        assert_eq!(failure.check_name, "Build");
+        // Should NOT flag as default-branch CI failure
+        assert!(event.ci_failed_on_default_branch.is_none());
+    }
+
+    #[test]
+    fn test_check_run_success_on_pr_no_ci_failure() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "Build",
+                "status": "completed",
+                "conclusion": "success",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "park/implement-thing",
+                    "pull_requests": [{"number": 99}]
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "main"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        assert!(event.pr_ci_failure.is_none());
+    }
+
+    #[test]
+    fn test_check_run_failure_on_main_no_pr_ci_failure() {
+        let payload = r#"{
+            "action": "completed",
+            "check_run": {
+                "name": "Build",
+                "status": "completed",
+                "conclusion": "failure",
+                "check_suite": {
+                    "head_sha": "abc123",
+                    "head_branch": "main",
+                    "pull_requests": []
+                }
+            },
+            "repository": {"full_name": "org/repo", "default_branch": "main"}
+        }"#;
+
+        let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
+        // No PR associated → no pr_ci_failure
+        assert!(event.pr_ci_failure.is_none());
+        // But it should flag as default-branch CI failure
+        assert!(event.ci_failed_on_default_branch.is_some());
+    }
+
+    #[test]
+    fn test_pull_request_opened_no_review_state_change() {
+        let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "Add feature",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {"ref": "broadway/add-feature"}
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+        // PR opened events should not produce review state changes or CI failures
+        assert!(event.review_state_change.is_none());
+        assert!(event.pr_ci_failure.is_none());
     }
 }
