@@ -766,6 +766,26 @@ impl CoworkerManager {
         let coworkers = self.coworkers.read().unwrap();
         coworkers.len()
     }
+
+    // ─── Test-only methods ───────────────────────────────────────────────────
+
+    /// Insert a coworker directly into the map (for testing).
+    ///
+    /// This bypasses the normal spawn flow and is only intended for tests.
+    #[doc(hidden)]
+    pub fn insert_for_testing(&self, coworker: Coworker) {
+        let mut coworkers = self.coworkers.write().unwrap();
+        coworkers.insert(coworker.name.clone(), coworker);
+    }
+
+    /// Clear all coworkers (for testing).
+    ///
+    /// This bypasses the normal shutdown flow and is only intended for tests.
+    #[doc(hidden)]
+    pub fn clear_for_testing(&self) {
+        let mut coworkers = self.coworkers.write().unwrap();
+        coworkers.clear();
+    }
 }
 
 /// Check if a worktree directory is a valid git worktree.
