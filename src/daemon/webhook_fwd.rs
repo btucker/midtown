@@ -3,6 +3,9 @@
 //! Runs a watchdog loop that starts, monitors, and periodically restarts the
 //! GitHub CLI webhook forwarder. Handles stale hook cleanup when the forwarder
 //! encounters "Hook already exists" errors.
+//!
+//! Also detects and cleans up orphaned `gh webhook forward` processes from
+//! previous daemon runs that weren't properly shut down.
 
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -42,6 +45,9 @@ pub(super) async fn webhook_forwarder_watchdog(
         "Starting webhook forwarder watchdog (restart every {}s)",
         restart_interval_secs
     );
+
+    // Clean up any orphaned gh webhook forward processes from previous runs
+    cleanup_orphaned_webhook_forwarders(&gh_repo);
 
     let mut current_process: Option<std::process::Child> = None;
 
@@ -262,4 +268,108 @@ fn delete_stale_github_webhooks(repo: &str) -> bool {
         warn!("No stale CLI webhooks found to delete");
     }
     deleted
+}
+
+/// Find and kill orphaned `gh webhook forward` processes for this repo.
+///
+/// When the daemon crashes or is killed without proper cleanup, the `gh webhook
+/// forward` subprocess may keep running. This causes "Hook already exists" errors
+/// when trying to start a new forwarder. We detect these orphans by their command
+/// line arguments and kill them before starting a fresh forwarder.
+fn cleanup_orphaned_webhook_forwarders(repo: &str) {
+    let pids = find_gh_webhook_forward_pids(repo);
+
+    if pids.is_empty() {
+        debug!(
+            "No orphaned gh webhook forward processes found for {}",
+            repo
+        );
+        return;
+    }
+
+    for pid in pids {
+        info!(
+            "Found orphaned gh webhook forward process (PID {}) for {}, killing it",
+            pid, repo
+        );
+        // Send SIGTERM first for graceful shutdown
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+
+        // Give it a moment to exit
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Check if still running and force kill if needed
+        if is_process_running(pid) {
+            debug!("Process {} still running, sending SIGKILL", pid);
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+        }
+    }
+
+    info!(
+        "Cleaned up orphaned webhook forwarder(s) for {}, proceeding with fresh start",
+        repo
+    );
+}
+
+/// Find PIDs of `gh webhook forward` processes for a specific repo.
+///
+/// Uses `pgrep` with full command line matching on macOS/Linux.
+fn find_gh_webhook_forward_pids(repo: &str) -> Vec<u32> {
+    // pgrep -f matches against the full command line
+    // We look for processes matching "gh webhook forward" with our repo
+    let output = std::process::Command::new("pgrep")
+        .args(["-f", &format!("gh webhook forward.*--repo={}", repo)])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .collect(),
+        Ok(_) => {
+            // pgrep returns non-zero when no matches found — that's fine
+            Vec::new()
+        }
+        Err(e) => {
+            // pgrep not available, try ps-based fallback
+            debug!("pgrep failed ({}), trying ps fallback", e);
+            find_gh_webhook_forward_pids_via_ps(repo)
+        }
+    }
+}
+
+/// Fallback: find PIDs using `ps aux` when pgrep isn't available.
+fn find_gh_webhook_forward_pids_via_ps(repo: &str) -> Vec<u32> {
+    let output = std::process::Command::new("ps").args(["aux"]).output().ok();
+
+    let Some(output) = output else {
+        return Vec::new();
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let search_pattern = "gh webhook forward";
+    let repo_pattern = format!("--repo={}", repo);
+
+    stdout
+        .lines()
+        .filter(|line| line.contains(search_pattern) && line.contains(&repo_pattern))
+        .filter_map(|line| {
+            // ps aux format: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+            line.split_whitespace().nth(1)?.parse::<u32>().ok()
+        })
+        .collect()
+}
+
+/// Check if a process is still running.
+fn is_process_running(pid: u32) -> bool {
+    // kill -0 checks if process exists without sending a signal
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }

@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 // ---------------------------------------------------------------------------
 
 /// Lightweight snapshot of a coworker at a point in time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct CoworkerSnapshot {
     pub name: String,
     pub started_at: DateTime<Utc>,
@@ -838,7 +838,7 @@ pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
 
 /// Action to take for a PR issue or comment.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PrAction {
+pub enum PrAction {
     /// Owner is active — nudge them with a message.
     NudgeOwner { owner: String, message: String },
     /// Owner is inactive — spawn them with a message.
@@ -853,7 +853,7 @@ pub(crate) enum PrAction {
 ///
 /// Pure function: takes the issue context and returns a `PrAction`.
 /// The caller handles side effects (nudge/spawn/post).
-pub(crate) fn decide_pr_issue_action(
+pub fn decide_pr_issue_action(
     owner: &str,
     active_coworkers: &[String],
     at_dev_limit: bool,

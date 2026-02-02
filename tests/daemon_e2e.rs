@@ -873,6 +873,117 @@ fn newest_file_mtime(dir: &std::path::Path) -> Option<std::time::SystemTime> {
     newest
 }
 
+/// Test that required Claude Code plugins are automatically installed on daemon startup.
+///
+/// This E2E test verifies the plugin auto-installation feature by:
+/// 1. Uninstalling the required plugin if it's present
+/// 2. Starting the daemon (which should trigger auto-install)
+/// 3. Verifying the plugin is now installed
+#[test]
+#[ignore] // Requires built binary and Claude Code
+fn test_daemon_installs_required_plugins() {
+    use midtown::daemon::REQUIRED_PLUGINS;
+
+    // Must have at least one required plugin to test
+    assert!(
+        !REQUIRED_PLUGINS.is_empty(),
+        "REQUIRED_PLUGINS should not be empty"
+    );
+
+    let test_plugin = REQUIRED_PLUGINS[0];
+
+    // Check if Claude CLI is available
+    let list_output = Command::new("claude")
+        .args(["plugin", "list", "--json"])
+        .output();
+
+    let list_output = match list_output {
+        Ok(output) if output.status.success() => output,
+        _ => {
+            eprintln!("Skipping: claude CLI not available or failed");
+            return;
+        }
+    };
+
+    // Check if plugin is installed and uninstall it for testing
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    if let Ok(plugins) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+        let is_installed = plugins
+            .iter()
+            .any(|p| p.get("id").and_then(|id| id.as_str()) == Some(test_plugin));
+
+        if is_installed {
+            // Uninstall the plugin for testing
+            let _ = Command::new("claude")
+                .args(["plugin", "remove", test_plugin])
+                .output();
+
+            // Give it a moment
+            thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    // Verify plugin is NOT installed before starting daemon
+    let list_output = Command::new("claude")
+        .args(["plugin", "list", "--json"])
+        .output()
+        .expect("Should run claude plugin list");
+
+    let plugins_before: Vec<serde_json::Value> =
+        serde_json::from_slice(&list_output.stdout).unwrap_or_default();
+    let installed_before = plugins_before
+        .iter()
+        .any(|p| p.get("id").and_then(|id| id.as_str()) == Some(test_plugin));
+
+    assert!(
+        !installed_before,
+        "Plugin should NOT be installed before daemon start for this test to be valid"
+    );
+
+    // Start daemon (this triggers ensure_plugins_installed)
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("Daemon failed to start — skipping plugin installation test");
+        return;
+    }
+
+    // Give the daemon time to install plugins (installation happens at startup)
+    // The daemon should have already installed plugins before the socket became available,
+    // but give it a bit more time just in case
+    thread::sleep(Duration::from_secs(2));
+
+    // Verify plugin is now installed
+    let list_output = Command::new("claude")
+        .args(["plugin", "list", "--json"])
+        .output()
+        .expect("Should run claude plugin list after daemon start");
+
+    let plugins_after: Vec<serde_json::Value> =
+        serde_json::from_slice(&list_output.stdout).unwrap_or_default();
+    let installed_after = plugins_after
+        .iter()
+        .any(|p| p.get("id").and_then(|id| id.as_str()) == Some(test_plugin));
+
+    assert!(
+        installed_after,
+        "Required plugin '{}' should be automatically installed when daemon starts. \
+         Plugins before: {:?}, Plugins after: {:?}",
+        test_plugin,
+        plugins_before
+            .iter()
+            .filter_map(|p| p.get("id").and_then(|id| id.as_str()))
+            .collect::<Vec<_>>(),
+        plugins_after
+            .iter()
+            .filter_map(|p| p.get("id").and_then(|id| id.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Regression test for #653: global config template is generated on first load.
 ///
 /// Verifies that GlobalConfig::load() creates a template file when none exists,
