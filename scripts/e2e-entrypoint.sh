@@ -38,7 +38,7 @@ run_coordination_tests() {
     cargo test --release --test daemon_e2e -- --ignored --test-threads=1 "${test_args[@]}"
 
     echo "--- tmux_e2e ---"
-    cargo test --release --test tmux_e2e -- --ignored "${test_args[@]}"
+    cargo test --release --test tmux_e2e -- --ignored --test-threads=1 "${test_args[@]}"
 
     echo "--- nudge_delivery_e2e ---"
     cargo test --release --test nudge_delivery_e2e -- --ignored "${test_args[@]}"
