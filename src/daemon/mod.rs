@@ -15,6 +15,7 @@ pub mod helpers;
 mod pr;
 mod rpc;
 pub(crate) mod snapshot;
+mod startup;
 pub(crate) mod state;
 mod trackers;
 mod webhook_fwd;
@@ -956,36 +957,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         REVIEW_HEADROOM
     );
 
-    // Initialize coworker_records for discovered coworkers by reading their state files.
-    // This recovers workflow phase (dev, test, PR, etc.) across daemon restarts.
-    {
-        let discovered_names: Vec<String> = state
-            .coworkers
-            .list()
-            .iter()
-            .map(|c| c.name.clone())
-            .collect();
-        if !discovered_names.is_empty() {
-            let mut records = state.coworker_records.write().await;
-            for name in &discovered_names {
-                if let Some(file_state) = crate::coworker_state::read_state(&repo_name, name) {
-                    info!(
-                        "Recovered state for {}: {} (from state.json)",
-                        name,
-                        file_state.display_status()
-                    );
-                    let mut record = crate::rules::CoworkerRecord::new_spawn();
-                    record.workflow_phase = Some(file_state.phase);
-                    record.task_id = file_state.task_id;
-                    record.workflow_updated_at = Some(file_state.updated_at);
-                    records.insert(name.clone(), record);
-                } else {
-                    // No state file - create a minimal record so the coworker is tracked
-                    records.insert(name.clone(), crate::rules::CoworkerRecord::new_spawn());
-                }
-            }
-        }
-    }
+    // Recover coworker workflow state from their state files across daemon restarts.
+    startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
