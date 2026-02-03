@@ -1289,8 +1289,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // If the next tick fires while effects are executing, it will skip these tasks.
                 state.mark_in_flight_spawns_from_effects(&tick_effects);
                 effects::execute_effects(tick_effects, &state).await;
-                // cleanup_orphaned_worktrees is not yet effect-based
-                dispatch::cleanup_orphaned_worktrees(&state);
+                // cleanup_orphaned_worktrees is not yet effect-based, but now runs
+                // blocking git operations in spawn_blocking to avoid blocking RPC
+                dispatch::cleanup_orphaned_worktrees(&state).await;
                 // Process any pending webhook review spawns whose delay has expired
                 let review_effects = pr::process_pending_review_spawns(&state).await;
                 effects::execute_effects(review_effects, &state).await;

@@ -404,8 +404,22 @@ fn filter_orphans_with_merged_branches(
 /// Worktrees with no commits beyond the base branch are deleted.
 /// Worktrees with unmerged commits are flagged to the Lead via channel.
 /// Worktrees whose branches have open or recently merged PRs are skipped — they're tracked work.
-pub(super) fn cleanup_orphaned_worktrees(state: &DaemonState) {
-    let flagged = state.coworkers.cleanup_orphaned_worktrees();
+///
+/// The actual worktree cleanup runs in a blocking task to avoid blocking the
+/// async runtime (git commands and GitHub API calls can take several seconds).
+pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
+    // Clone the coworker manager for use in the blocking task.
+    // CoworkerManager is Clone and contains Arc<> internally.
+    let coworkers = state.coworkers.clone();
+
+    // Run the blocking worktree operations (git commands, gh CLI) in a separate
+    // thread pool to avoid blocking the async runtime and RPC handlers.
+    let flagged = tokio::task::spawn_blocking(move || coworkers.cleanup_orphaned_worktrees())
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Worktree cleanup task panicked: {}", e);
+            vec![]
+        });
 
     // Filter out worktrees whose branches have open PRs (by coworker name).
     let open_pr_owners = {
