@@ -2878,6 +2878,126 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Subagent detection E2E tests (using real snapshot fixtures)
+    // -----------------------------------------------------------------------
+
+    /// E2E test: verify subagent detection works with real captured pane content.
+    ///
+    /// This test uses the snapshot-20260203-023607.json fixture which captured
+    /// Madison with a running subagent ("✽ Checking PR eligibility…").
+    /// This is the exact scenario from bug #27 where Madison was being falsely
+    /// detected as idle while her scoring subagent was running.
+    #[test]
+    fn snapshot_20260203_023607_detects_madison_running_subagent() {
+        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023607.json");
+        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
+
+        let mut panes: HashMap<String, String> = HashMap::new();
+        for (name, content) in pane_contents {
+            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
+        }
+
+        // Madison should have a running subagent detected (she has ✽ Checking PR eligibility…)
+        let madison_pane = panes.get("madison").expect("madison should be in snapshot");
+        assert!(
+            has_running_subagent(madison_pane),
+            "madison's pane should show a running subagent (whirlpool indicator)"
+        );
+
+        // Verify the specific pattern is present
+        assert!(
+            madison_pane.contains("✽"),
+            "madison's pane should contain whirlpool indicator"
+        );
+
+        // Count total coworkers with running subagents
+        let coworkers_with_subagents: HashSet<String> = panes
+            .iter()
+            .filter(|(_, content)| has_running_subagent(content))
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
+
+        assert!(
+            coworkers_with_subagents.contains("madison"),
+            "madison should be in the set of coworkers with running subagents"
+        );
+    }
+
+    /// E2E test: verify idle shutdown protection for coworkers with running subagents.
+    ///
+    /// Uses the same fixture as above but tests the full idle shutdown decision flow
+    /// to ensure Madison would be protected from idle shutdown while her subagent runs.
+    #[test]
+    fn snapshot_20260203_023607_madison_protected_from_idle_shutdown() {
+        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023607.json");
+        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
+
+        let mut panes: HashMap<String, String> = HashMap::new();
+        for (name, content) in pane_contents {
+            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
+        }
+
+        // Build the set of coworkers with running subagents (same as snapshot collector does)
+        let coworkers_with_running_subagents: HashSet<String> = panes
+            .iter()
+            .filter(|(_, content)| has_running_subagent(content))
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
+
+        // Create a CoworkerSnapshot for madison (10 minutes old, so past minimum lifetime)
+        let coworkers = vec![CoworkerSnapshot {
+            name: "madison".to_string(),
+            started_at: Utc::now() - chrono::Duration::minutes(10),
+            isolated_tasks: true, // madison is an isolated reviewer
+        }];
+
+        // Create idle health state (madison has been "idle" for 60+ seconds)
+        let mut phases = HashMap::new();
+        phases.insert(
+            "madison".to_string(),
+            CoworkerRecord {
+                health: Some(SessionHealth::Idle {
+                    since: Instant::now() - Duration::from_secs(60),
+                }),
+                last_activity: None,
+                workflow_phase: None,
+                task_id: None,
+                workflow_updated_at: None,
+                pane_hash: Some((12345, Instant::now() - Duration::from_secs(300))), // stale pane
+                zombie_respawn_count: 0,
+            },
+        );
+
+        // Run idle shutdown decision with madison having a running subagent
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),                         // not busy (no in-progress tasks)
+            &set(&[]),                         // no open PRs
+            &set(&[]),                         // not reviewing
+            &set(&[]),                         // no unblocked deps
+            &coworkers_with_running_subagents, // madison HAS running subagent
+            &set(&[]),                         // ci_passed
+            &phases,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            Duration::from_secs(120),
+        );
+
+        // Madison should NOT be shut down because she has a running subagent
+        assert!(
+            decisions.is_empty(),
+            "madison should NOT be sent on break while she has a running subagent. \
+             This is the fix for bug #27: false idle detection when subagent is running. \
+             Decisions: {:?}",
+            decisions
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Usage limit detection tests
     // -----------------------------------------------------------------------
 
