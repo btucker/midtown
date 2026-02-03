@@ -169,7 +169,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
             match (name, message) {
                 (Some(name), Some(message)) => {
-                    handle_coworker_nudge(request.id, from, name, message, state)
+                    handle_coworker_nudge(request.id, from, name, message, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -190,9 +190,9 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
-        "status" => handle_status(request.id, state),
+        "status" => handle_status(request.id, state).await,
 
-        "kanban.data" => handle_kanban_data(request.id, state),
+        "kanban.data" => handle_kanban_data(request.id, state).await,
 
         "channel.post" => {
             let params = request.params.as_ref();
@@ -503,15 +503,20 @@ async fn handle_coworker_report_state(
 ///
 /// Sends the nudge directly to the coworker's tmux window without posting to the channel,
 /// to avoid the chat monitor seeing the @mention and creating a duplicate nudge.
-fn handle_coworker_nudge(
+async fn handle_coworker_nudge(
     id: RequestId,
     _from: &str,
     name: &str,
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    match state.coworkers.nudge(name, message) {
-        Ok(()) => {
+    // Run blocking tmux operation in spawn_blocking to avoid blocking async runtime
+    let coworkers = state.coworkers.clone();
+    let name_owned = name.to_string();
+    let message_owned = message.to_string();
+
+    match tokio::task::spawn_blocking(move || coworkers.nudge(&name_owned, &message_owned)).await {
+        Ok(Ok(())) => {
             info!("Nudged coworker {}: {}", name, message);
             Response::success(
                 id,
@@ -521,9 +526,13 @@ fn handle_coworker_nudge(
                 }),
             )
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!("Failed to nudge coworker {}: {}", name, e);
             Response::error(id, RpcError::new(-32603, e.to_string()))
+        }
+        Err(e) => {
+            error!("spawn_blocking panic while nudging {}: {}", name, e);
+            Response::error(id, RpcError::new(-32603, "Internal error".to_string()))
         }
     }
 }
@@ -546,22 +555,22 @@ fn handle_coworker_asking(
         error!("Failed to post question to channel: {}", e);
     }
 
-    // Mark the coworker as waiting for feedback in tmux tab.
-    // This is a direct call since the question is posted as a text message,
-    // not a /me action, so the channel handler won't pick it up.
-    if let Err(e) = state
-        .coworkers
-        .update_status_display(name, Some("waiting for feedback"))
-    {
-        debug!("Failed to update tmux tab for {}: {}", name, e);
-    }
-
-    // Nudge the Lead with the question
+    // Mark the coworker as waiting for feedback in tmux tab and nudge the Lead.
+    // Run blocking tmux operations in spawn_blocking to avoid blocking async runtime.
+    let coworkers = state.coworkers.clone();
+    let name_owned = name.to_string();
     let nudge_message = format!("{} is asking: {}", name, question);
-    if let Err(e) = state.coworkers.nudge("Lead", &nudge_message) {
-        // Log but don't fail - Lead might not be in a tmux window
-        debug!("Failed to nudge Lead: {}", e);
-    }
+
+    tokio::task::spawn_blocking(move || {
+        // Update tmux tab status
+        if let Err(e) = coworkers.update_status_display(&name_owned, Some("waiting for feedback")) {
+            debug!("Failed to update tmux tab for {}: {}", name_owned, e);
+        }
+        // Nudge the Lead with the question
+        if let Err(e) = coworkers.nudge("Lead", &nudge_message) {
+            debug!("Failed to nudge Lead: {}", e);
+        }
+    });
 
     info!("Coworker {} asking: {}", name, question);
     Response::success(
@@ -651,10 +660,15 @@ fn handle_task_updated(
         task_id, task.subject, updater
     );
 
-    // Nudge the owner (could be a coworker or Lead)
-    if let Err(e) = state.coworkers.nudge(owner, &nudge_message) {
-        debug!("Failed to nudge {} for task update: {}", owner, e);
-    }
+    // Nudge the owner (could be a coworker or Lead).
+    // Run in spawn_blocking to avoid blocking the async runtime.
+    let coworkers = state.coworkers.clone();
+    let owner_owned = owner.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = coworkers.nudge(&owner_owned, &nudge_message) {
+            debug!("Failed to nudge {} for task update: {}", owner_owned, e);
+        }
+    });
 
     info!(
         "task.updated: nudged {} about task {} (updated by {})",
@@ -737,30 +751,33 @@ pub(super) async fn handle_channel_post(
             // Update tmux tab for coworkers when they post /me actions.
             // Prefer structured state from daemon memory (reported via RPC) over
             // parsing the freeform /me message text with keyword matching.
+            //
+            // Run tmux operations in spawn_blocking to avoid blocking the async
+            // runtime. This prevents RPC timeouts when tmux commands are slow.
             if msg_type == MessageType::Action {
-                let has_rpc_state = {
+                let display_status = {
                     let records = state.coworker_records.read().await;
-                    if let Some(record) = records.get(from) {
-                        if let Some(display) = record.display_status() {
-                            drop(records);
-                            if let Err(e) = state.coworkers.update_status_formatted(from, &display)
-                            {
-                                debug!("Failed to update tmux tab for {}: {}", from, e);
-                            }
-                            true
-                        } else {
-                            false
+                    records.get(from).and_then(|record| record.display_status())
+                };
+
+                let coworkers = state.coworkers.clone();
+                let from_clone = from.to_string();
+                let content_clone = content.clone();
+
+                tokio::task::spawn_blocking(move || {
+                    if let Some(display) = display_status {
+                        if let Err(e) = coworkers.update_status_formatted(&from_clone, &display) {
+                            debug!("Failed to update tmux tab for {}: {}", from_clone, e);
                         }
                     } else {
-                        false
+                        // Fallback: parse /me message text with keyword matching
+                        if let Err(e) =
+                            coworkers.update_status_display(&from_clone, Some(&content_clone))
+                        {
+                            debug!("Failed to update tmux tab for {}: {}", from_clone, e);
+                        }
                     }
-                };
-                if !has_rpc_state {
-                    // Fallback: parse /me message text with keyword matching
-                    if let Err(e) = state.coworkers.update_status_display(from, Some(&content)) {
-                        debug!("Failed to update tmux tab for {}: {}", from, e);
-                    }
-                }
+                });
             }
 
             // Nudge lead when user messages arrive (from web UI or TUI input)
@@ -780,9 +797,13 @@ pub(super) async fn handle_channel_post(
                 if !has_coworker_mentions || has_lead_mention {
                     let nudge_msg = format!("user: {}", content);
                     info!("Nudging Lead about user message");
-                    if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
-                        warn!("Failed to nudge Lead about user message: {}", e);
-                    }
+                    // Run in spawn_blocking to avoid blocking the async runtime
+                    let coworkers = state.coworkers.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
+                            warn!("Failed to nudge Lead about user message: {}", e);
+                        }
+                    });
                 } else {
                     info!(
                         "Skipping Lead nudge — user message routed directly to mentioned coworker(s)"
@@ -816,10 +837,13 @@ pub(super) async fn handle_channel_post(
                     let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
                     info!("Nudging Lead about @lead mention from {}", from);
 
-                    // Nudge the Lead window
-                    if let Err(e) = state.coworkers.nudge_lead(&nudge_msg) {
-                        warn!("Failed to nudge Lead about @lead mention: {}", e);
-                    }
+                    // Nudge the Lead window (spawn_blocking to avoid blocking async runtime)
+                    let coworkers = state.coworkers.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
+                            warn!("Failed to nudge Lead about @lead mention: {}", e);
+                        }
+                    });
 
                     // Send push notification to mobile PWA
                     state.send_push_notification(
@@ -839,9 +863,13 @@ pub(super) async fn handle_channel_post(
                     .is_some_and(|dn| content_lower.contains(&format!("@{}", dn.to_lowercase())));
             if has_user_mention && !state.is_user_sender(from) {
                 info!("Bell notification: @user mentioned by {}", from);
-                if let Err(e) = state.coworkers.notify_user() {
-                    warn!("Failed to send bell notification for @user mention: {}", e);
-                }
+                // Run in spawn_blocking to avoid blocking the async runtime
+                let coworkers = state.coworkers.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = coworkers.notify_user() {
+                        warn!("Failed to send bell notification for @user mention: {}", e);
+                    }
+                });
                 let display = state.user_display_name.as_deref().unwrap_or("user");
                 let summary = if content.len() > 100 {
                     format!("{}...", &content[..97])
@@ -980,7 +1008,10 @@ async fn handle_reminder_cancel(id: RequestId, reminder_id: &str, state: &Daemon
 // ============================================================================
 
 /// Handle status RPC method.
-fn handle_status(id: RequestId, state: &DaemonState) -> Response {
+///
+/// This handler runs blocking operations (gh CLI, file I/O) in spawn_blocking
+/// to avoid blocking the async runtime and causing RPC timeouts.
+async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     // Build a map of coworker name -> task subject from in_progress tasks
     // This is the source of truth for what each coworker is working on
     let coworker_tasks: std::collections::HashMap<String, String> =
@@ -1012,21 +1043,29 @@ fn handle_status(id: RequestId, state: &DaemonState) -> Response {
         })
         .collect();
 
-    // Get open PRs from GitHub via gh CLI
-    let pull_requests = get_open_prs();
+    // Run blocking operations (gh CLI calls, file I/O) in spawn_blocking
+    // to avoid blocking the async runtime and causing RPC timeouts.
+    let (pull_requests, tasks, merged_prs, recent_activity) =
+        match tokio::task::spawn_blocking(move || {
+            let pull_requests = get_open_prs();
+            let tasks = get_all_tasks();
+            let merged_prs = get_merged_prs();
+            let recent_activity = get_recent_channel_activity();
+            (pull_requests, tasks, merged_prs, recent_activity)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                error!("spawn_blocking panic in status handler: {}", e);
+                return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
+            }
+        };
 
-    // Get all tasks from Claude Code task storage (all statuses)
-    let tasks = get_all_tasks();
     let pending_count = tasks
         .iter()
         .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
         .count();
-
-    // Get recently merged PRs
-    let merged_prs = get_merged_prs();
-
-    // Get recent channel activity
-    let recent_activity = get_recent_channel_activity();
 
     Response::success(
         id,
@@ -1128,7 +1167,11 @@ fn get_all_tasks() -> Vec<serde_json::Value> {
 ///
 /// Returns open PRs with author, reviewer, CI status, and timestamps,
 /// plus recently merged PRs for the Done column.
-fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
+/// Handle kanban.data RPC method.
+///
+/// Runs blocking GraphQL operations in spawn_blocking to avoid blocking
+/// the async runtime and causing RPC timeouts.
+async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     // Get reviewer assignments from GitHubState (best-effort via try_lock)
     let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
         .persistent_state
@@ -1136,38 +1179,58 @@ fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         .map(|ps| ps.github.active_assignments())
         .unwrap_or_default();
 
-    // Fetch PRs and repo metadata from all repos in the project.
-    // We resolve nameWithOwner once per repo and reuse it for both the
-    // batched GraphQL PR query and the repo metadata response.
-    let is_multi_repo = state.all_repo_paths.len() > 1;
-    let mut prs = Vec::new();
-    let mut merged_prs = Vec::new();
-    let mut repos = Vec::new();
-    for repo_path in &state.all_repo_paths {
-        let repo_label = if is_multi_repo {
-            repo_path.file_name().and_then(|s| s.to_str())
-        } else {
-            None
-        };
+    // Clone data needed for the blocking task
+    let all_repo_paths = state.all_repo_paths.clone();
+    let is_multi_repo = all_repo_paths.len() > 1;
 
-        // Resolve owner/name via cache (only hits API on first call per repo path)
-        let full_name = state.get_repo_full_name(repo_path);
+    // Pre-resolve repo full names (this uses caching and is fast)
+    let repo_data: Vec<(std::path::PathBuf, String, String)> = all_repo_paths
+        .iter()
+        .map(|repo_path| {
+            let full_name = state.get_repo_full_name(repo_path);
+            let label = repo_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            (repo_path.clone(), full_name, label)
+        })
+        .collect();
 
-        let label = repo_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        repos.push(serde_json::json!({
-            "label": label,
-            "full_name": full_name,
-        }));
+    // Run blocking GraphQL operations in spawn_blocking
+    let (prs, merged_prs, repos) = match tokio::task::spawn_blocking(move || {
+        let mut prs = Vec::new();
+        let mut merged_prs = Vec::new();
+        let mut repos = Vec::new();
 
-        let (open, merged) =
-            fetch_kanban_all_prs(&reviewer_assignments, &full_name, repo_path, repo_label);
-        prs.extend(open);
-        merged_prs.extend(merged);
-    }
+        for (repo_path, full_name, label) in repo_data {
+            let repo_label = if is_multi_repo {
+                repo_path.file_name().and_then(|s| s.to_str())
+            } else {
+                None
+            };
+
+            repos.push(serde_json::json!({
+                "label": label,
+                "full_name": full_name,
+            }));
+
+            let (open, merged) =
+                fetch_kanban_all_prs(&reviewer_assignments, &full_name, &repo_path, repo_label);
+            prs.extend(open);
+            merged_prs.extend(merged);
+        }
+
+        (prs, merged_prs, repos)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            error!("spawn_blocking panic in kanban_data handler: {}", e);
+            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
+        }
+    };
 
     Response::success(
         id,
