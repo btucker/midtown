@@ -654,7 +654,10 @@ fn backlog_count_excludes_comment_reviewed_prs() {
                 .unwrap_or("");
             let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
             // PR needs review if it's not a draft, has no formal review, and no Claude comment review
-            !is_draft && review_decision.is_empty() && !reviewed_prs.contains(&pr_number)
+            pr_number != 0
+                && !is_draft
+                && review_decision.is_empty()
+                && !reviewed_prs.contains(&pr_number)
         })
         .count();
 
@@ -665,4 +668,66 @@ fn backlog_count_excludes_comment_reviewed_prs() {
 
     // This matches the fix in collect_stuck_condition_effects where the
     // prs_needing_review calculation now checks reviewed_prs.contains(&pr_number)
+}
+
+/// Test that malformed PRs (missing number field) are excluded from backlog count.
+///
+/// Defensive programming: PRs with null/missing number field should be skipped
+/// to prevent unexpected behavior when calling reviewed_prs.contains(&0).
+#[test]
+fn backlog_count_excludes_malformed_prs() {
+    use std::collections::HashSet;
+
+    let prs = vec![
+        // Normal PR
+        json!({
+            "number": 300,
+            "headRefName": "amsterdam/feature",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        // Malformed PR with null number
+        json!({
+            "number": null,
+            "headRefName": "york/malformed",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        // Malformed PR with missing number field
+        json!({
+            "headRefName": "lexington/no-number",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+    ];
+
+    let reviewed_prs: HashSet<u64> = HashSet::new();
+
+    let count: usize = prs
+        .iter()
+        .filter(|pr| {
+            let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+            let review_decision = pr
+                .get("reviewDecision")
+                .and_then(|r| r.as_str())
+                .unwrap_or("");
+            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+            // Must have valid pr_number (defensive check)
+            pr_number != 0
+                && !is_draft
+                && review_decision.is_empty()
+                && !reviewed_prs.contains(&pr_number)
+        })
+        .count();
+
+    assert_eq!(
+        count, 1,
+        "should only count PR 300, excluding malformed PRs with null/missing number"
+    );
 }

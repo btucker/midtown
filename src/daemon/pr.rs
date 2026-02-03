@@ -719,7 +719,10 @@ async fn collect_stuck_condition_effects(
                     .unwrap_or("");
                 let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
                 // PR needs review if it's not a draft, has no formal review, and no Claude comment review
-                !is_draft && review_decision.is_empty() && !reviewed_prs.contains(&pr_number)
+                pr_number != 0
+                    && !is_draft
+                    && review_decision.is_empty()
+                    && !reviewed_prs.contains(&pr_number)
             })
             .count();
 
