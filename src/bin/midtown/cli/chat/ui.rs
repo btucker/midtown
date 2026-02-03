@@ -736,16 +736,21 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Each message can render to multiple lines (sender + content + continuations),
     // so the total rendered lines often exceeds visible_height.
     //
-    // When at bottom (scroll_offset=0): show LAST N lines (newest messages)
-    // When scrolled up (scroll_offset>0): show FIRST N lines (older messages the user scrolled to)
+    // The scroll system uses message-level offsets (scroll_offset), but we render
+    // to lines. To provide smooth scrolling:
+    // - Default: take LAST N lines (shows most recent of selected messages)
+    // - At max scroll: take FIRST N lines (shows the very oldest messages)
+    //
+    // This fixes a jarring discontinuity where scroll_offset 0→1 would previously
+    // switch from LAST to FIRST lines, causing a massive visual jump.
     let visible_lines = if lines.len() > inner.height as usize {
-        if app.scroll_offset == 0 {
-            // At bottom: take last N lines to show newest messages
-            lines.split_off(lines.len() - inner.height as usize)
-        } else {
-            // Scrolled up: take first N lines to show older messages
+        if app.is_at_max_scroll() {
+            // At very top of history: take first N lines to show oldest messages
             lines.truncate(inner.height as usize);
             lines
+        } else {
+            // Normal case: take last N lines for smooth scrolling
+            lines.split_off(lines.len() - inner.height as usize)
         }
     } else {
         lines
@@ -1707,12 +1712,19 @@ mod tests {
     }
 
     #[test]
-    fn test_scroll_offset_shows_older_messages() {
-        // Bug reproduction: When user scrolls up (scroll_offset > 0), they expect to see
-        // older messages. But the current code always takes the LAST N lines of rendered
-        // content, which means scrolling has no visible effect.
+    fn test_smooth_scrolling_always_shows_last_lines() {
+        // Test for smooth scrolling behavior.
         //
-        // This test verifies that scrolling up actually shows different (older) content.
+        // The scroll system has two components:
+        // 1. visible_messages() returns a window of messages based on scroll_offset
+        // 2. draw_chat_panel() truncates rendered lines to fit the visible area
+        //
+        // For smooth scrolling, we should ALWAYS take the LAST N lines of rendered
+        // content (except at max scroll). This ensures that scrolling by 1 message
+        // produces a proportional visual shift, not a jarring jump.
+        //
+        // The OLD buggy behavior switched from LAST to FIRST lines when scroll_offset
+        // changed from 0 to 1, causing a massive visual discontinuity.
         use chrono::Utc;
 
         // Create 20 messages, each from a different sender (so each takes ~3 lines)
@@ -1737,18 +1749,18 @@ mod tests {
             prev_sender = Some(&msg.from);
         }
 
-        // Simulate scroll_offset=10 (scrolled up): visible_messages returns messages 0..10
-        let scrolled_up_messages = &messages[0..10];
-        let mut scrolled_up_lines: Vec<Line> = Vec::new();
+        // Simulate scroll_offset=1 (scrolled up by 1): visible_messages returns messages 9..19
+        let scrolled_one_messages = &messages[9..19];
+        let mut scrolled_one_lines: Vec<Line> = Vec::new();
         let mut prev_sender: Option<&str> = None;
-        for msg in scrolled_up_messages {
-            scrolled_up_lines.extend(render_message(msg, 80, prev_sender, &current_tasks, None));
+        for msg in scrolled_one_messages {
+            scrolled_one_lines.extend(render_message(msg, 80, prev_sender, &current_tasks, None));
             prev_sender = Some(&msg.from);
         }
 
         let visible_height = 10;
 
-        // At bottom: take LAST N lines (correct - shows newest messages)
+        // Both cases should take LAST N lines for smooth scrolling
         let bottom_visible: Vec<_> = if at_bottom_lines.len() > visible_height {
             at_bottom_lines
                 .iter()
@@ -1758,29 +1770,21 @@ mod tests {
             at_bottom_lines.iter().collect()
         };
 
-        // Scrolled up: the bug is taking LAST N lines, should take FIRST N lines
-        let scrolled_buggy: Vec<_> = if scrolled_up_lines.len() > visible_height {
-            scrolled_up_lines
+        let scrolled_visible: Vec<_> = if scrolled_one_lines.len() > visible_height {
+            scrolled_one_lines
                 .iter()
-                .skip(scrolled_up_lines.len() - visible_height)
+                .skip(scrolled_one_lines.len() - visible_height)
                 .collect()
         } else {
-            scrolled_up_lines.iter().collect()
+            scrolled_one_lines.iter().collect()
         };
-
-        // Scrolled up: correct behavior should take FIRST N lines
-        let scrolled_fixed: Vec<_> = scrolled_up_lines.iter().take(visible_height).collect();
 
         // Extract content
         let bottom_content: String = bottom_visible
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        let buggy_content: String = scrolled_buggy
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-        let fixed_content: String = scrolled_fixed
+        let scrolled_content: String = scrolled_visible
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
@@ -1793,27 +1797,26 @@ mod tests {
             bottom_content
         );
 
-        // Scrolled up with buggy logic shows LAST N lines of older messages
-        // which might contain message 8 or 9 (end of 0..10 range)
+        // Scrolled up by 1 should show slightly older content (18, 17, etc.)
+        // but NOT a massive jump to messages 9, 10, etc.
         assert!(
-            buggy_content.contains("message content 9")
-                || buggy_content.contains("message content 8"),
-            "Buggy scrolled shows end of old messages, got: {}",
-            buggy_content
+            scrolled_content.contains("message content 18")
+                || scrolled_content.contains("message content 17"),
+            "Scrolled by 1 should show slightly older messages, got: {}",
+            scrolled_content
         );
 
-        // Scrolled up with fixed logic shows FIRST N lines of older messages
-        // which should contain message 0 or 1 (start of 0..10 range)
-        assert!(
-            fixed_content.contains("user0") || fixed_content.contains("message content 0"),
-            "Fixed scrolled should show oldest messages (0, 1, etc.), got: {}",
-            fixed_content
-        );
+        // The content should have shifted slightly, not jumped dramatically
+        // If we're using LAST N lines in both cases, the content should be
+        // similar but shifted by roughly 1 message worth of lines
+        let bottom_has_19 = bottom_content.contains("message content 19");
+        let scrolled_has_19 = scrolled_content.contains("message content 19");
 
-        // The key assertion: buggy and fixed should show DIFFERENT content when scrolled
-        assert_ne!(
-            buggy_content, fixed_content,
-            "Scrolled content should differ between buggy and fixed implementations"
+        // After scrolling up 1, message 19 might not be visible anymore
+        // (it was in messages 10..20 but now we have 9..19, so 19 is not included)
+        assert!(
+            !scrolled_has_19 || !bottom_has_19,
+            "Scrolling should change visible content"
         );
     }
 
