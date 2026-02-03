@@ -52,6 +52,9 @@ pub struct WorldSnapshot {
     pub pane_contents: HashMap<String, String>,
     /// Running coworkers whose pane is entirely blank (no visible output).
     pub blank_pane_coworkers: HashSet<String>,
+    /// Coworkers who have a subagent (Task tool) currently running.
+    /// Detected from pane content showing whirlpool indicator or "Running X Task agent".
+    pub coworkers_with_running_subagents: HashSet<String>,
 
     // ── Task state ──────────────────────────────────────────────────────
     /// In-progress tasks: `(task_id, subject, owner)`.
@@ -177,6 +180,18 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|cw| cw.name.to_lowercase())
         .collect();
 
+    // Derive subagent set: coworkers whose pane indicates a Task agent is running
+    let coworkers_with_running_subagents: HashSet<String> = running_coworkers
+        .iter()
+        .filter(|cw| {
+            pane_contents
+                .get(&cw.name)
+                .map(|c| crate::rules::has_running_subagent(c))
+                .unwrap_or(false)
+        })
+        .map(|cw| cw.name.to_lowercase())
+        .collect();
+
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
     let busy_coworkers: HashSet<String> =
@@ -252,6 +267,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         coworker_stop_times,
         pane_contents,
         blank_pane_coworkers,
+        coworkers_with_running_subagents,
         in_progress_tasks,
         busy_coworkers,
         all_tasks,
@@ -304,6 +320,7 @@ mod tests {
             coworker_stop_times: stop_times.clone(),
             pane_contents: HashMap::new(),
             blank_pane_coworkers: HashSet::new(),
+            coworkers_with_running_subagents: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
             all_tasks: vec![],
