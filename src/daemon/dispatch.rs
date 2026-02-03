@@ -754,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_orphans_with_open_prs() {
+    fn test_filter_orphans_with_pr_work_filters_open_pr() {
         let flagged = vec![
             "amsterdam".to_string(),
             "riverside".to_string(),
@@ -768,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_orphans_all_have_open_prs() {
+    fn test_filter_orphans_with_pr_work_all_have_pr_work() {
         let flagged = vec!["amsterdam".to_string(), "riverside".to_string()];
         let open_pr_owners: HashSet<String> = ["amsterdam".to_string(), "riverside".to_string()]
             .into_iter()
@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_orphans_none_have_open_prs() {
+    fn test_filter_orphans_with_pr_work_none_have_pr_work() {
         let flagged = vec!["amsterdam".to_string(), "park".to_string()];
         let open_pr_owners: HashSet<String> = HashSet::new();
         let merged_pr_owners: HashSet<String> = HashSet::new();
