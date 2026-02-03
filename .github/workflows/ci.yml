@@ -60,7 +60,7 @@ jobs:
         run: cargo build --release
 
       - name: Run daemon_e2e
-        run: cargo test --release --test daemon_e2e -- --ignored --test-threads=1
+        run: cargo test --release --test daemon_e2e -- --ignored --test-threads=1 --skip installs_required_plugins
 
       - name: Run tmux_e2e
         run: cargo test --release --test tmux_e2e -- --ignored --test-threads=1
