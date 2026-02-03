@@ -191,6 +191,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if let Err(e) = state.coworkers.shutdown(&name) {
                     warn!("Failed to shutdown zombie coworker {}: {}", name, e);
                 }
+                // Record stop time for workflow features that need to track coworker lifecycle
+                {
+                    let mut stop_times = state.coworker_stop_times.write().unwrap();
+                    stop_times.insert(name.to_lowercase(), chrono::Utc::now());
+                }
                 // Clear state file so respawned session doesn't read stale phase
                 crate::coworker_state::clear_state(&state.repo_name, &name);
                 // Clean up unified coworker record
