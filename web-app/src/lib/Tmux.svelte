@@ -101,6 +101,11 @@
     }
   }
 
+  function sendEscape() {
+    if (!selectedWindow) return
+    sendWsMessage({ type: 'send_key', target: selectedWindow, key: 'Escape' })
+  }
+
   function selectWindow(name) {
     selectedWindow = name
     paneContent = ''
@@ -190,10 +195,13 @@
   {/if}
   <pre class="pane-content" bind:this={paneEl}>{paneContent}</pre>
   <div class="nudge-bar">
+    <button class="esc-btn" onclick={sendEscape} title="Send Escape key">
+      Esc
+    </button>
     <input
       class="nudge-input"
       type="text"
-      placeholder="Nudge {selectedWindow}…"
+      placeholder="Message {selectedWindow}"
       bind:value={nudgeText}
       onkeydown={handleNudgeKeydown}
     />
@@ -283,14 +291,32 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 8px;
+    padding: 8px 8px;
+    margin-bottom: 8px;
     background: #1a1a1a;
     border-top: 1px solid #3a3a3a;
   }
 
+  .esc-btn {
+    padding: 8px 10px;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    color: #888;
+    font-size: 0.7rem;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .esc-btn:hover {
+    background: #3a3a3a;
+    color: #aaa;
+  }
+
   .nudge-input {
     flex: 1;
-    padding: 6px 10px;
+    padding: 8px 10px;
     background: #0d0d0d;
     border: 1px solid #3a3a3a;
     border-radius: 4px;
@@ -309,7 +335,7 @@
   }
 
   .nudge-send {
-    padding: 6px 12px;
+    padding: 8px 12px;
     background: #2a3a3a;
     border: 1px solid #3a3a3a;
     border-radius: 4px;

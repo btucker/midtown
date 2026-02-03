@@ -575,6 +575,40 @@ impl CoworkerManager {
             })
     }
 
+    /// Send a special key (like Escape) to a coworker or the lead.
+    ///
+    /// Unlike nudge, this sends a raw key without text, useful for canceling
+    /// operations or escaping from vim mode.
+    ///
+    /// Note: This bypasses the lead nudge queue intentionally. The Escape key is
+    /// meant for immediate effect (canceling operations), so waiting for an empty
+    /// input prompt would defeat the purpose.
+    pub fn send_key(&self, name: &str, key: &str) -> crate::Result<()> {
+        // Validate the target exists and determine the actual tmux target
+        let target = if name == "lead" {
+            if !tmux::window_exists(&self.session_name, "lead")? {
+                return Err(crate::Error::Rpc {
+                    code: -32602,
+                    message: "Lead session not found".to_string(),
+                });
+            }
+            // Target pane .0 (Claude Code) specifically, not the chat TUI pane (.1)
+            "lead.0".to_string()
+        } else {
+            let coworkers = self.coworkers.read().unwrap();
+            if !coworkers.contains_key(name) {
+                return Err(crate::Error::Rpc {
+                    code: -32602,
+                    message: format!("Coworker not found: {}", name),
+                });
+            }
+            name.to_string()
+        };
+
+        // Send the key to the tmux window/pane
+        tmux::send_keys_raw(&self.session_name, &target, key)
+    }
+
     /// Background worker that processes queued lead nudges.
     ///
     /// For each nudge, waits until the lead's input prompt is empty (or 90s
