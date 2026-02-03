@@ -141,10 +141,13 @@ impl CoworkerRecord {
     }
 
     /// Format for tmux tab display, matching CoworkerStateReport::display_status().
+    ///
+    /// Note: Task ID 0 is treated as "no task" since it's often used as a
+    /// placeholder for taskless work (e.g., PR reviews without a formal task).
     pub fn display_status(&self) -> Option<String> {
         self.workflow_phase.map(|phase| match self.task_id {
-            Some(id) => format!("{}#{}", phase.abbreviation(), id),
-            None => phase.abbreviation().to_string(),
+            Some(id) if id > 0 => format!("{}#{}", phase.abbreviation(), id),
+            _ => phase.abbreviation().to_string(),
         })
     }
 }
@@ -2337,5 +2340,42 @@ mod tests {
             zombies.is_empty(),
             "lead window must never be treated as a zombie"
         );
+    }
+
+    #[test]
+    fn test_coworker_record_display_status_with_task_zero_omits_number() {
+        // Task ID 0 is used as a placeholder for taskless work (e.g., PR reviews
+        // without a formal task assignment). It should display without the "#0"
+        // suffix to avoid confusing window names like "PR#0".
+        use crate::coworker_state::WorkflowPhase;
+
+        let mut record = CoworkerRecord::new_spawn();
+        record.workflow_phase = Some(WorkflowPhase::PullRequest);
+        record.task_id = Some(0);
+
+        // Should show "PR" not "PR#0"
+        assert_eq!(record.display_status(), Some("PR".to_string()));
+    }
+
+    #[test]
+    fn test_coworker_record_display_status_with_valid_task() {
+        use crate::coworker_state::WorkflowPhase;
+
+        let mut record = CoworkerRecord::new_spawn();
+        record.workflow_phase = Some(WorkflowPhase::Developing);
+        record.task_id = Some(42);
+
+        assert_eq!(record.display_status(), Some("dev#42".to_string()));
+    }
+
+    #[test]
+    fn test_coworker_record_display_status_without_task() {
+        use crate::coworker_state::WorkflowPhase;
+
+        let mut record = CoworkerRecord::new_spawn();
+        record.workflow_phase = Some(WorkflowPhase::Idle);
+        record.task_id = None;
+
+        assert_eq!(record.display_status(), Some("idle".to_string()));
     }
 }
