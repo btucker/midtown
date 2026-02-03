@@ -448,8 +448,11 @@ impl CoworkerManager {
                     tracing::info!("Cleaned up empty orphaned worktree for {}", name);
                 }
                 Ok(false) => {
-                    tracing::warn!(
-                        "Orphaned worktree for {} has unmerged commits - flagging to lead",
+                    // Log at debug level - the actual rate-limited warning happens
+                    // in dispatch::cleanup_orphaned_worktrees() via OrphanTracker.
+                    // Logging warn! here would spam every tick (5 seconds).
+                    tracing::debug!(
+                        "Orphaned worktree for {} has unmerged commits - will check filters",
                         name
                     );
                     flagged.push(name);
