@@ -274,12 +274,12 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Don't run `gh pr list` to check PR status — read the channel instead
 - Don't retry `gh pr merge` when waiting — the daemon handles auto-merge when PRs are ready
 
-**Using `gh` for details is fine:**
+**Using `gh` to investigate (after notification) is fine:**
 - `gh pr create` — creating your PR
 - `gh pr comment` — posting review comments
 - `gh pr view` — reading PR description, review comments, or discussion
 - `gh pr diff` — viewing changes
-- `gh pr checks` / `gh run view` — investigating why CI failed (after the daemon notifies you)
+- `gh pr checks` / `gh run view` — investigating CI failures after the daemon notifies you
 - `gh api` — fetching specific data not available in the channel
 
 The key distinction: **don't poll** (repeatedly checking status), but **do use `gh`** when you need details to act on. For example, when the daemon tells you CI failed, use `gh run view` to see failure logs.
