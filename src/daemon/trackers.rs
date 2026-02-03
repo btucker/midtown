@@ -213,6 +213,55 @@ impl StuckConditionTracker {
 // OrphanTracker
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CommentTracker
+// ---------------------------------------------------------------------------
+
+/// Tracks the last seen comment count per PR for polling-based detection.
+///
+/// This enables the polling path to detect new review comments when webhooks
+/// are degraded. We track comment count rather than individual comment IDs
+/// because it's simpler and sufficient for "has activity since last poll".
+#[derive(Debug, Default)]
+pub struct CommentTracker {
+    /// Map of pr_number -> (last_seen_count, last_checked_time)
+    /// We track count of non-owner comments to detect when new feedback arrives.
+    comment_counts: HashMap<u64, (usize, Instant)>,
+}
+
+impl CommentTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if a PR has new non-owner comments since last poll.
+    ///
+    /// Returns `true` if the comment count increased, indicating new activity.
+    /// Always returns `true` for newly seen PRs (first poll).
+    pub fn has_new_comments(&self, pr_number: u64, current_count: usize) -> bool {
+        match self.comment_counts.get(&pr_number) {
+            Some((prev_count, _)) => current_count > *prev_count,
+            None => current_count > 0, // New PR with comments
+        }
+    }
+
+    /// Record the current comment count for a PR.
+    pub fn record(&mut self, pr_number: u64, count: usize) {
+        self.comment_counts
+            .insert(pr_number, (count, Instant::now()));
+    }
+
+    /// Clean up entries for PRs that are no longer open.
+    pub fn cleanup(&mut self, open_pr_numbers: &[u64]) {
+        let open_set: std::collections::HashSet<_> = open_pr_numbers.iter().collect();
+        self.comment_counts.retain(|pr, _| open_set.contains(pr));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OrphanTracker
+// ---------------------------------------------------------------------------
+
 /// How long before re-warning about the same orphaned worktree (1 hour).
 const ORPHAN_WARN_COOLDOWN: Duration = Duration::from_secs(3600);
 
@@ -502,6 +551,61 @@ mod tests {
             !tracker.entries.contains_key("lexington"),
             "pruned orphan should be removed"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // CommentTracker — polling fallback for review comment notifications
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn comment_tracker_detects_new_comments() {
+        let mut tracker = CommentTracker::new();
+
+        // First poll: PR #42 has 2 non-owner comments
+        assert!(
+            tracker.has_new_comments(42, 2),
+            "first poll with comments should return true"
+        );
+        tracker.record(42, 2);
+
+        // Second poll: same count
+        assert!(
+            !tracker.has_new_comments(42, 2),
+            "same count should return false"
+        );
+
+        // Third poll: count increased
+        assert!(
+            tracker.has_new_comments(42, 3),
+            "increased count should return true"
+        );
+    }
+
+    #[test]
+    fn comment_tracker_returns_false_for_new_pr_with_no_comments() {
+        let tracker = CommentTracker::new();
+
+        // New PR with 0 comments — no new activity
+        assert!(
+            !tracker.has_new_comments(42, 0),
+            "new PR with no comments should return false"
+        );
+    }
+
+    #[test]
+    fn comment_tracker_cleanup_removes_closed_prs() {
+        let mut tracker = CommentTracker::new();
+
+        tracker.record(42, 5);
+        tracker.record(43, 3);
+        tracker.record(44, 1);
+
+        // Only PRs 42 and 44 are still open
+        tracker.cleanup(&[42, 44]);
+
+        assert!(tracker.comment_counts.contains_key(&42));
+        assert!(!tracker.comment_counts.contains_key(&43));
+        assert!(tracker.comment_counts.contains_key(&44));
     }
 
     // -------------------------------------------------------------------------

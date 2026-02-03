@@ -253,6 +253,70 @@ pub fn get_pr_age_secs(pr: &serde_json::Value) -> Option<u64> {
     Some(duration.num_seconds().max(0) as u64)
 }
 
+/// Count non-owner comments on a PR for review notification polling.
+///
+/// Returns the number of comments that are NOT from the PR owner.
+/// A comment is from the owner if:
+/// - The GitHub username matches the PR author
+/// - OR the comment contains `<!-- midtown: <owner> -->` frontmatter
+///
+/// This enables the polling path to detect new review feedback when webhooks
+/// are degraded, matching the webhook behavior.
+pub fn count_non_owner_comments(pr: &serde_json::Value, owner_coworker: Option<&str>) -> usize {
+    let comments = match pr.get("comments").and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return 0,
+    };
+
+    // Get the PR author's GitHub username for comparison
+    let pr_author = pr
+        .get("author")
+        .and_then(|a| a.get("login"))
+        .and_then(|l| l.as_str())
+        .unwrap_or("");
+
+    comments
+        .iter()
+        .filter(|comment| {
+            let commenter_login = comment
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|l| l.as_str())
+                .unwrap_or("");
+            let comment_body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
+
+            // Check if this comment is from the PR author (same GitHub account)
+            if commenter_login == pr_author {
+                // Could still be from a different coworker (frontmatter check)
+                if let Some(owner) = owner_coworker {
+                    // Check frontmatter: if it's from a different coworker, count it
+                    if let Some(coworker) = coworker_from_frontmatter(comment_body) {
+                        return coworker != owner;
+                    }
+                }
+                // No frontmatter or matches owner - this is from the owner
+                return false;
+            }
+
+            // Different GitHub account - definitely not from the owner
+            true
+        })
+        .count()
+}
+
+/// Extract coworker name from frontmatter in body (e.g., "<!-- midtown: lexington -->")
+fn coworker_from_frontmatter(body: &str) -> Option<&str> {
+    let start = body.find("<!-- midtown:")?;
+    let after_start = &body[start + 13..];
+    let end = after_start.find("-->")?;
+    let name = after_start[..end].trim();
+
+    COWORKER_NAMES
+        .iter()
+        .find(|&&n| n.eq_ignore_ascii_case(name))
+        .copied()
+}
+
 /// Extract PR number from a message content.
 ///
 /// Looks for patterns like "PR #42", "#42", "PR #123".
@@ -678,5 +742,98 @@ mod tests {
         assert!(contains_at_all("Hey @all, please check the channel"));
         assert!(contains_at_all("@ALL important update"));
         assert!(!contains_at_all("@alliance meeting tomorrow"));
+    }
+
+    // -------------------------------------------------------------------------
+    // count_non_owner_comments — polling fallback for review comments
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn count_non_owner_comments_excludes_pr_author() {
+        let pr = json!({
+            "author": {"login": "btucker"},
+            "comments": [
+                {"author": {"login": "btucker"}, "body": "I'll fix this"},
+                {"author": {"login": "reviewer"}, "body": "LGTM!"}
+            ]
+        });
+
+        assert_eq!(
+            count_non_owner_comments(&pr, Some("lexington")),
+            1,
+            "should exclude PR author's comments"
+        );
+    }
+
+    #[test]
+    fn count_non_owner_comments_excludes_owner_frontmatter() {
+        // When a coworker comments (using the shared GitHub account), they
+        // include <!-- midtown: name --> frontmatter. Comments from the PR
+        // owner's coworker should be excluded.
+        let pr = json!({
+            "author": {"login": "btucker"},
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "<!-- midtown: lexington -->\n\nI'll fix this"
+                },
+                {
+                    "author": {"login": "btucker"},
+                    "body": "<!-- midtown: columbus -->\n\nLGTM!"
+                }
+            ]
+        });
+
+        // lexington is the PR owner, so their comment is excluded
+        // columbus is a different coworker, so their comment counts
+        assert_eq!(
+            count_non_owner_comments(&pr, Some("lexington")),
+            1,
+            "should exclude owner's coworker comments via frontmatter"
+        );
+    }
+
+    #[test]
+    fn count_non_owner_comments_counts_external_reviewers() {
+        let pr = json!({
+            "author": {"login": "btucker"},
+            "comments": [
+                {"author": {"login": "external_reviewer"}, "body": "Please add tests"},
+                {"author": {"login": "another_reviewer"}, "body": "Looks good!"}
+            ]
+        });
+
+        assert_eq!(
+            count_non_owner_comments(&pr, Some("lexington")),
+            2,
+            "should count all external reviewer comments"
+        );
+    }
+
+    #[test]
+    fn count_non_owner_comments_returns_zero_for_empty() {
+        let pr = json!({
+            "author": {"login": "btucker"},
+            "comments": []
+        });
+
+        assert_eq!(
+            count_non_owner_comments(&pr, Some("lexington")),
+            0,
+            "should return 0 for no comments"
+        );
+    }
+
+    #[test]
+    fn count_non_owner_comments_handles_missing_comments_field() {
+        let pr = json!({
+            "author": {"login": "btucker"}
+        });
+
+        assert_eq!(
+            count_non_owner_comments(&pr, Some("lexington")),
+            0,
+            "should return 0 when comments field is missing"
+        );
     }
 }
