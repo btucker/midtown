@@ -1393,3 +1393,83 @@ fn live_daemon_concurrent_rpc_methods() {
     );
     println!("Status completed in {:?}", status_elapsed);
 }
+
+/// Live test: Verify GH_TOKEN authentication works correctly.
+///
+/// This test verifies that when the daemon is configured with github_user,
+/// it correctly fetches the token and all gh CLI calls succeed. Tests that
+/// PRs are fetched (requires valid auth) and the response contains real data.
+///
+/// Run: cargo test --test daemon_e2e live_daemon_gh_token -- --ignored --nocapture
+#[test]
+#[ignore] // Requires running daemon with github_user configured
+fn live_daemon_gh_token_auth_works() {
+    let mut fixture = match LiveDaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.ensure_daemon_running() {
+        eprintln!("Skipping: Could not start daemon");
+        return;
+    }
+
+    // Get status which includes PR list (requires working gh auth)
+    let response = fixture.rpc_call_with_timeout("status", None, Duration::from_secs(10));
+    assert!(response.is_some(), "Status should respond");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "Status should not return error: {:?}",
+        response["error"]
+    );
+
+    let result = &response["result"];
+
+    // Verify we got a successful response with PR data
+    assert_eq!(
+        result["success"].as_bool(),
+        Some(true),
+        "Status should report success"
+    );
+
+    // The pull_requests field should exist (even if empty)
+    assert!(
+        result["pull_requests"].is_array(),
+        "Status should include pull_requests array"
+    );
+
+    // Log what we got for debugging
+    let pr_count = result["pull_requests"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    println!("GH_TOKEN auth working: fetched {} PRs", pr_count);
+
+    // If there are PRs, verify they have expected fields (proves API worked)
+    if pr_count > 0 {
+        let first_pr = &result["pull_requests"][0];
+        assert!(
+            first_pr["number"].is_number(),
+            "PR should have number field"
+        );
+        assert!(first_pr["title"].is_string(), "PR should have title field");
+        println!(
+            "  PR #{}: {}",
+            first_pr["number"],
+            first_pr["title"].as_str().unwrap_or("")
+        );
+    }
+
+    // Also verify merged_prs works (another gh CLI call)
+    assert!(
+        result["merged_prs"].is_array(),
+        "Status should include merged_prs array"
+    );
+    let merged_count = result["merged_prs"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    println!("Also fetched {} merged PRs", merged_count);
+}

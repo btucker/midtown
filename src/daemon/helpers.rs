@@ -855,4 +855,36 @@ mod tests {
             "should return 0 when comments field is missing"
         );
     }
+
+    // =========================================================================
+    // is_gh_auth_error tests
+    // =========================================================================
+
+    #[test]
+    fn is_gh_auth_error_detects_bad_credentials() {
+        assert!(is_gh_auth_error("gh: Bad credentials (HTTP 401)"));
+        assert!(is_gh_auth_error("error: bad credentials"));
+        assert!(is_gh_auth_error("Bad Credentials"));
+    }
+
+    #[test]
+    fn is_gh_auth_error_detects_401() {
+        assert!(is_gh_auth_error("HTTP 401 Unauthorized"));
+        assert!(is_gh_auth_error("status: 401"));
+    }
+
+    #[test]
+    fn is_gh_auth_error_detects_auth_required() {
+        assert!(is_gh_auth_error("authentication required"));
+        assert!(is_gh_auth_error("requires authentication"));
+        assert!(is_gh_auth_error("not logged in to github"));
+    }
+
+    #[test]
+    fn is_gh_auth_error_ignores_other_errors() {
+        assert!(!is_gh_auth_error("network error"));
+        assert!(!is_gh_auth_error("repository not found"));
+        assert!(!is_gh_auth_error("rate limit exceeded"));
+        assert!(!is_gh_auth_error(""));
+    }
 }
