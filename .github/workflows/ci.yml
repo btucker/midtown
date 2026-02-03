@@ -151,6 +151,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
+      MIDTOWN_WEBHOOK_PORT: 0
+      MIDTOWN_CHAT_MONITOR: 0
+      MIDTOWN_LEAD_COMMAND: "sleep 300"
     steps:
       - uses: actions/checkout@v4
 
@@ -164,8 +167,31 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate code coverage
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Install Claude Code
+        run: curl -fsSL https://claude.ai/install.sh | bash
+
+      - name: Configure git
+        run: |
+          git config --global user.email "coverage@midtown.test"
+          git config --global user.name "Midtown Coverage"
+          git config --global init.defaultBranch main
+
+      - name: Start tmux server
+        run: tmux start-server
+
+      - name: Generate coverage (unit + E2E tests)
+        run: |
+          # Run unit tests with coverage
+          cargo llvm-cov --no-report --all-features
+          # Run select E2E tests with coverage (fast ones only to avoid timeout)
+          cargo llvm-cov --no-report --test daemon_e2e -- --ignored --test-threads=1 --skip installs_required_plugins || true
+          cargo llvm-cov --no-report --test task_sharing || true
+          cargo llvm-cov --no-report --test spawn_race_test || true
+          # Generate combined report
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
