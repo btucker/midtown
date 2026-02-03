@@ -15,7 +15,7 @@ use std::time::Duration;
 use crossterm::{
     cursor::MoveTo,
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
         MouseEventKind,
     },
     execute,
@@ -103,10 +103,10 @@ async fn run_app_async(
             maybe_event = event_stream.next() => {
                 match maybe_event {
                     Some(Ok(event)) => {
+                        // Handle the first event
                         match handle_event(app, event) {
                             EventResult::Exit => return Ok(()),
                             EventResult::ToggleSelectionMode => {
-                                // Toggle mouse capture based on selection mode
                                 if app.selection_mode {
                                     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
                                 } else {
@@ -114,6 +114,25 @@ async fn run_app_async(
                                 }
                             }
                             EventResult::Continue => {}
+                        }
+
+                        // Drain all pending events before redrawing to prevent scroll lag.
+                        // This coalesces rapid mouse scroll events into a single batch,
+                        // avoiding the overhead of redrawing between each scroll event.
+                        while event::poll(Duration::ZERO).unwrap_or(false) {
+                            if let Ok(event) = event::read() {
+                                match handle_event(app, event) {
+                                    EventResult::Exit => return Ok(()),
+                                    EventResult::ToggleSelectionMode => {
+                                        if app.selection_mode {
+                                            let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+                                        } else {
+                                            let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+                                        }
+                                    }
+                                    EventResult::Continue => {}
+                                }
+                            }
                         }
                     }
                     Some(Err(_)) => {
