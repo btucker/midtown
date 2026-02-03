@@ -43,6 +43,14 @@ midtown e2e run full                        # real Claude, needs auth setup firs
 ./scripts/e2e-container.sh full
 ```
 
+**While waiting for GitHub CI**: After pushing a PR, don't wait idle for CI results. Run the full containerized E2E tests locally:
+
+```bash
+midtown e2e run coordination    # run while CI is in progress
+```
+
+This catches failures faster than waiting for GitHub Actions and keeps you productive. The container environment matches CI, so local passes should match remote passes.
+
 ## Architecture
 
 ### State Machine Daemon
