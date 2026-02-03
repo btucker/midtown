@@ -296,6 +296,10 @@ struct PrCoworkerCache {
     /// Coworker names from recently merged PR branch names.
     /// Updated every `MERGED_PRS_FETCH_INTERVAL_SECS` (5 minutes via CooldownTracker).
     merged_pr_owners: HashSet<String>,
+    /// Full branch names from recently merged PRs (e.g., "york/feature-x").
+    /// Used for precise orphan filtering - avoids hiding genuinely orphaned
+    /// worktrees when the same coworker has other merged PRs.
+    merged_pr_branches: HashSet<String>,
     /// Coworker names whose open PR has all CI checks passing.
     /// Used by snapshot to determine PR break eligibility.
     ci_passed_pr_owners: HashSet<String>,
@@ -306,6 +310,7 @@ impl PrCoworkerCache {
         Self {
             open_pr_owners: HashSet::new(),
             merged_pr_owners: HashSet::new(),
+            merged_pr_branches: HashSet::new(),
             ci_passed_pr_owners: HashSet::new(),
         }
     }

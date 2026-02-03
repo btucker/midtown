@@ -489,6 +489,13 @@ impl CoworkerManager {
         coworkers.get(name).cloned()
     }
 
+    /// Get the branch name checked out in a coworker's worktree.
+    ///
+    /// Returns None if the worktree doesn't exist or is in detached HEAD state.
+    pub fn get_worktree_branch(&self, name: &str) -> Option<String> {
+        self.worktree_manager.get_branch(name)
+    }
+
     /// Update a coworker's status display in their tmux tab.
     ///
     /// This is called when a coworker posts a /me action to the channel,

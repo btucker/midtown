@@ -357,9 +357,7 @@ pub(super) fn check_for_duplicate_task_workers(
 // Pending task auto-spawn
 // ============================================================================
 
-/// Spawn coworkers for pending tasks.
-///
-/// Filter out worktrees whose branches have open PRs.
+/// Filter out worktrees that have open PRs.
 ///
 /// A worktree with an open PR is not orphaned — it's just waiting for review/merge.
 /// Pure function for testability.
@@ -373,22 +371,63 @@ fn filter_orphans_with_open_prs(
         .collect()
 }
 
+/// Filter out worktrees whose exact branch matches a recently merged PR.
+///
+/// Unlike open PR filtering (by coworker name), merged PR filtering must be
+/// done by exact branch name to avoid hiding genuinely orphaned worktrees.
+/// If a coworker has branch A merged and branch B orphaned, only A should
+/// be filtered out, not B.
+///
+/// Returns (coworker_name, should_filter) pairs.
+fn filter_orphans_with_merged_branches(
+    flagged: Vec<String>,
+    merged_pr_branches: &HashSet<String>,
+    get_branch_for_coworker: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    flagged
+        .into_iter()
+        .filter(|name| {
+            // Get the branch name for this coworker's worktree
+            if let Some(branch) = get_branch_for_coworker(name) {
+                // Only filter out if the EXACT branch was merged
+                !merged_pr_branches.contains(&branch)
+            } else {
+                // Can't determine branch - don't filter (conservative)
+                true
+            }
+        })
+        .collect()
+}
+
 /// Clean up orphaned worktrees that have no active coworker.
 ///
 /// Worktrees with no commits beyond the base branch are deleted.
 /// Worktrees with unmerged commits are flagged to the Lead via channel.
-/// Worktrees whose branches have open PRs are skipped — they're tracked work.
+/// Worktrees whose branches have open or recently merged PRs are skipped — they're tracked work.
 pub(super) fn cleanup_orphaned_worktrees(state: &DaemonState) {
     let flagged = state.coworkers.cleanup_orphaned_worktrees();
 
-    // Filter out worktrees whose branches have open PRs
+    // Filter out worktrees whose branches have open PRs (by coworker name).
     let open_pr_owners = {
         let cache = state.pr_coworker_cache.read().unwrap();
         cache.open_pr_owners.clone()
     };
     let flagged = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+
+    // Filter out worktrees whose exact branch matches a recently merged PR.
+    // This handles squash-merge where commit SHAs differ but the branch was merged.
+    // Uses branch-level filtering to avoid hiding genuinely orphaned worktrees
+    // when the same coworker has other merged PRs.
+    let merged_pr_branches = {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        cache.merged_pr_branches.clone()
+    };
+    let flagged = filter_orphans_with_merged_branches(flagged, &merged_pr_branches, |name| {
+        state.coworkers.get_worktree_branch(name)
+    });
+
     for name in &flagged {
-        debug!("Orphan worktree flagged (no open PR): {}", name);
+        debug!("Orphan worktree flagged (no open or merged PR): {}", name);
     }
 
     let mut tracker = state.orphan_tracker.write().unwrap();
@@ -750,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_orphans_with_open_prs() {
+    fn test_filter_orphans_with_open_prs_filters_by_owner() {
         let flagged = vec![
             "amsterdam".to_string(),
             "riverside".to_string(),
@@ -763,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_orphans_all_have_open_prs() {
+    fn test_filter_orphans_with_open_prs_all_have_open_prs() {
         let flagged = vec!["amsterdam".to_string(), "riverside".to_string()];
         let open_pr_owners: HashSet<String> = ["amsterdam".to_string(), "riverside".to_string()]
             .into_iter()
@@ -774,11 +813,62 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_orphans_none_have_open_prs() {
+    fn test_filter_orphans_with_open_prs_none_have_open_prs() {
         let flagged = vec!["amsterdam".to_string(), "park".to_string()];
         let open_pr_owners: HashSet<String> = HashSet::new();
 
         let result = filter_orphans_with_open_prs(flagged, &open_pr_owners);
         assert_eq!(result, vec!["amsterdam", "park"]);
+    }
+
+    #[test]
+    fn test_filter_orphans_with_merged_branches_exact_match() {
+        // Scenario: york has a squash-merged PR on branch "york/feature-a".
+        // The worktree shows "unmerged commits" because commit SHAs differ,
+        // but the PR was actually merged.
+        // This should NOT be flagged as an orphan.
+        let flagged = vec![
+            "amsterdam".to_string(), // genuinely orphaned, branch: amsterdam/abandoned
+            "york".to_string(),      // has merged PR, branch: york/feature-a
+        ];
+        let merged_pr_branches: HashSet<String> =
+            ["york/feature-a".to_string()].into_iter().collect();
+
+        // Mock function that returns branch names for each coworker
+        let get_branch = |name: &str| -> Option<String> {
+            match name {
+                "york" => Some("york/feature-a".to_string()),
+                "amsterdam" => Some("amsterdam/abandoned".to_string()),
+                _ => None,
+            }
+        };
+
+        let result = filter_orphans_with_merged_branches(flagged, &merged_pr_branches, get_branch);
+
+        // Only amsterdam should be flagged - york's exact branch was merged
+        assert_eq!(result, vec!["amsterdam"]);
+    }
+
+    #[test]
+    fn test_filter_orphans_with_merged_branches_different_branch() {
+        // Scenario: york has a merged PR on branch "york/old-feature" but is now
+        // working on "york/new-feature" which is orphaned.
+        // The new branch should STILL be flagged because it's a different branch.
+        let flagged = vec!["york".to_string()];
+        let merged_pr_branches: HashSet<String> =
+            ["york/old-feature".to_string()].into_iter().collect();
+
+        // York's current branch is different from the merged one
+        let get_branch = |name: &str| -> Option<String> {
+            match name {
+                "york" => Some("york/new-feature".to_string()),
+                _ => None,
+            }
+        };
+
+        let result = filter_orphans_with_merged_branches(flagged, &merged_pr_branches, get_branch);
+
+        // york should still be flagged - different branch than the merged one
+        assert_eq!(result, vec!["york"]);
     }
 }

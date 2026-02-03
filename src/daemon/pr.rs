@@ -104,38 +104,45 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
         ])
         .output();
 
-    let result = match output {
+    let (coworker_names, branch_names): (HashSet<String>, HashSet<String>) = match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                prs.iter()
+                let branches: HashSet<String> = prs
+                    .iter()
                     .filter_map(|pr| {
                         pr.get("headRefName")
                             .and_then(|r| r.as_str())
-                            .and_then(coworker_from_branch)
+                            .map(|s| s.to_string())
                     })
-                    .collect()
+                    .collect();
+                let coworkers: HashSet<String> = branches
+                    .iter()
+                    .filter_map(|b| coworker_from_branch(b))
+                    .collect();
+                (coworkers, branches)
             } else {
-                HashSet::new()
+                (HashSet::new(), HashSet::new())
             }
         }
         _ => {
             debug!("Failed to get merged PRs from gh CLI for idle check");
-            HashSet::new()
+            (HashSet::new(), HashSet::new())
         }
     };
 
     // Update cache
     {
         let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.merged_pr_owners = result.clone();
+        cache.merged_pr_owners = coworker_names.clone();
+        cache.merged_pr_branches = branch_names;
     }
     {
         let mut cooldowns = state.cooldowns.lock().unwrap();
         cooldowns.record("merged_pr_fetch", "global");
     }
 
-    result
+    coworker_names
 }
 
 // ============================================================================
