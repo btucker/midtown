@@ -66,7 +66,9 @@ jobs:
         run: cargo test --release --test tmux_e2e -- --ignored --test-threads=1
 
       - name: Run full_stack_e2e
-        run: cargo test --release --test full_stack_e2e -- --ignored --test-threads=1
+        # Skip nudge test - it requires Claude Code to be authenticated to show an empty prompt.
+        # Without auth, the login screen is detected as "user typing" and the nudge is never sent.
+        run: cargo test --release --test full_stack_e2e -- --ignored --test-threads=1 --skip nudge_reaches_real_claude
 
       - name: Run nudge_delivery_e2e
         run: cargo test --release --test nudge_delivery_e2e -- --ignored
