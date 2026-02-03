@@ -394,6 +394,13 @@ pub(crate) struct DaemonState {
     /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
     /// already in-flight. Clear entries when effects complete (success or failure).
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
+    /// Pending nudges sent to coworkers, awaiting confirmation of submission.
+    ///
+    /// Key: coworker name (lowercase), Value: (message text, sent timestamp).
+    /// Used for attribution tracking when recovering stuck queued nudges.
+    /// If the queued text matches a pending nudge, we auto-submit with Enter;
+    /// if it doesn't match (user input), we leave it alone.
+    pending_nudges: std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
 }
 
 impl DaemonState {
@@ -521,6 +528,7 @@ impl DaemonState {
             user_display_name,
             last_webhook_event_at: Mutex::new(None),
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
+            pending_nudges: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -572,6 +580,76 @@ impl DaemonState {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
     }
 
+    /// Record a pending nudge sent to a coworker.
+    ///
+    /// Called after successfully sending a nudge via `NudgeCoworker` or
+    /// `NudgeCoworkerWithCallbacks`. The pending nudge is used for attribution
+    /// tracking: if queued text matches the pending nudge, we know it's
+    /// daemon-sent and can auto-submit with Enter.
+    pub(crate) fn record_pending_nudge(&self, name: &str, message: &str) {
+        let mut pending = self.pending_nudges.lock().unwrap();
+        pending.insert(
+            name.to_lowercase(),
+            (message.to_string(), std::time::Instant::now()),
+        );
+    }
+
+    /// Clear the pending nudge for a coworker.
+    ///
+    /// Called when a queued nudge has been successfully auto-submitted,
+    /// or when the coworker shuts down.
+    pub(crate) fn clear_pending_nudge(&self, name: &str) {
+        let mut pending = self.pending_nudges.lock().unwrap();
+        pending.remove(&name.to_lowercase());
+    }
+
+    /// Check if queued text matches a pending nudge for a coworker.
+    ///
+    /// Returns true if the coworker has a pending nudge and a significant portion
+    /// of the message appears in the queued text. This handles cases where the
+    /// nudge text might be truncated or wrapped in the TUI.
+    ///
+    /// Also clears stale pending nudges older than 5 minutes.
+    pub(crate) fn matches_pending_nudge(&self, name: &str, queued_text: &str) -> bool {
+        const STALE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
+
+        let mut pending = self.pending_nudges.lock().unwrap();
+
+        // Clean up stale entries
+        let now = std::time::Instant::now();
+        pending.retain(|_, (_, sent_at)| now.duration_since(*sent_at) < STALE_THRESHOLD);
+
+        if let Some((pending_msg, _)) = pending.get(&name.to_lowercase()) {
+            check_nudge_text_match(pending_msg, queued_text)
+        } else {
+            false
+        }
+    }
+}
+
+/// Check if queued TUI text matches a pending nudge message.
+///
+/// Uses prefix matching (first 20 chars) to handle truncation in the TUI.
+/// This is a pure function extracted for testability.
+#[inline]
+fn check_nudge_text_match(pending_msg: &str, queued_text: &str) -> bool {
+    const MIN_MATCH_LEN: usize = 20; // Match at least first 20 chars
+
+    // Empty messages never match
+    if pending_msg.is_empty() || queued_text.is_empty() {
+        return false;
+    }
+
+    // Use first N chars for matching (handles truncation)
+    let check_text = if pending_msg.len() > MIN_MATCH_LEN {
+        &pending_msg[..MIN_MATCH_LEN]
+    } else {
+        pending_msg
+    };
+    queued_text.contains(check_text)
+}
+
+impl DaemonState {
     /// Scan effects for `AssignAndSpawn` variants and mark their task IDs as in-flight.
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
@@ -2321,5 +2399,83 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
 
         let decision = decide_usage_limit_expiry(None, now);
         assert_eq!(decision, UsageLimitExpiryDecision::NoNudge);
+    }
+
+    // ─── Nudge Text Matching Tests ───────────────────────────────────────
+
+    #[test]
+    fn test_check_nudge_text_match_exact() {
+        // Exact match
+        assert!(check_nudge_text_match(
+            "github said: @columbus Check 'Test' passed",
+            "github said: @columbus Check 'Test' passed"
+        ));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_prefix() {
+        // Queued text contains the pending message (prefix match with 20+ chars)
+        let pending = "github said: @columbus Check 'Test' passed on PR #529";
+        let queued = "❯ github said: @columbus Check 'Test' passed on PR #529";
+        assert!(check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_truncated() {
+        // Queued text is truncated but first 20 chars match
+        let pending = "github said: @columbus Check 'Test' passed on PR #529";
+        // Only first 20 chars visible: "github said: @columb"
+        let queued = "❯ github said: @columb...";
+        assert!(check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_no_match() {
+        // No match - different message
+        let pending = "github said: @columbus Check 'Test' passed";
+        let queued = "user said: hello world";
+        assert!(!check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_short_message() {
+        // Short message (<20 chars) should match if contained
+        let pending = "Hello there";
+        let queued = "❯ Hello there";
+        assert!(check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_empty_pending() {
+        // Empty pending message should not match
+        let pending = "";
+        let queued = "❯ some text";
+        assert!(!check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_empty_queued() {
+        // Empty queued text should not match
+        let pending = "some message";
+        let queued = "";
+        assert!(!check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_partial_prefix_fail() {
+        // Partial match under 20 chars should fail
+        let pending = "github said: @columbus Check 'Test' passed on PR #529";
+        // Only 10 chars match
+        let queued = "github sai";
+        // First 20 chars of pending: "github said: @columb"
+        assert!(!check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_user_input_different() {
+        // User typing something different from daemon nudge
+        let daemon_nudge = "github said: @columbus CI passed on PR #529";
+        let user_input = "I want to add a new feature";
+        assert!(!check_nudge_text_match(daemon_nudge, user_input));
     }
 }

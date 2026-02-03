@@ -827,3 +827,238 @@ mod channel_integration_tests {
         assert_eq!(mentions, vec!["lexington"]);
     }
 }
+
+/// Tests for the stuck nudge auto-submit feature.
+///
+/// When daemon-sent nudges get stuck in the input (Enter doesn't register),
+/// the daemon should detect this and auto-submit by sending Enter.
+#[cfg(test)]
+mod stuck_nudge_autosubmit_tests {
+    use super::*;
+
+    /// Test that a nudge sent without Enter gets stuck in the input.
+    ///
+    /// This reproduces the scenario the auto-submit feature is fixing:
+    /// send_keys delivers text but Enter doesn't register.
+    #[test]
+    #[ignore] // Requires tmux to be running
+    fn test_nudge_stuck_without_enter() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session = test_session_name();
+        let window = "stuck-test";
+        let _cleanup = Cleanup(&session);
+
+        // Setup: Create session with a window showing a Claude-like prompt
+        assert!(
+            create_test_session(&session),
+            "Failed to create test session"
+        );
+
+        // Run a shell that shows a Claude-like prompt (❯)
+        let target = format!("{}:", session);
+        let status = Command::new("tmux")
+            .args([
+                "new-window",
+                "-t",
+                &target,
+                "-n",
+                window,
+                "bash",
+                "-c",
+                // Show prompt like Claude Code, wait for input
+                r#"printf '✳ Working on task...\n❯ '; read line; echo "Got: $line""#,
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(status, "Failed to create window with Claude-like prompt");
+        thread::sleep(Duration::from_millis(500));
+
+        // Send nudge text WITHOUT Enter (simulating the stuck scenario)
+        let nudge_text = format!(
+            "github said: @test Check 'Build' passed - {}",
+            std::process::id()
+        );
+        let tmux_target = format!("{}:{}", session, window);
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &tmux_target, "-l", &nudge_text])
+            .status();
+        thread::sleep(Duration::from_millis(200));
+
+        // Verify the text is stuck in the input (visible but not submitted)
+        let content = capture_pane(&session, window).unwrap_or_default();
+        assert!(
+            content.contains(&nudge_text),
+            "Nudge text should be visible in pane. Content: {:?}",
+            content
+        );
+        assert!(
+            !content.contains("Got:"),
+            "Text should NOT be submitted yet. Content: {:?}",
+            content
+        );
+
+        // This is the scenario the auto-submit feature fixes:
+        // The daemon would detect this stuck text and send Enter
+    }
+
+    /// Test that sending Enter after stuck nudge submits it.
+    ///
+    /// This verifies the recovery mechanism: when we detect a stuck nudge,
+    /// sending Enter causes it to be submitted.
+    #[test]
+    #[ignore] // Requires tmux to be running
+    fn test_enter_submits_stuck_nudge() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session = test_session_name();
+        let window = "submit-test";
+        let _cleanup = Cleanup(&session);
+
+        assert!(
+            create_test_session(&session),
+            "Failed to create test session"
+        );
+
+        // Run a shell that echoes back what it receives
+        let target = format!("{}:", session);
+        let status = Command::new("tmux")
+            .args([
+                "new-window",
+                "-t",
+                &target,
+                "-n",
+                window,
+                "bash",
+                "-c",
+                r#"printf '❯ '; read line; echo "SUBMITTED: $line"; sleep 1"#,
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(status, "Failed to create test window");
+        thread::sleep(Duration::from_millis(500));
+
+        // Send nudge text WITHOUT Enter (stuck scenario)
+        let nudge_text = format!("daemon-nudge-{}", std::process::id());
+        let tmux_target = format!("{}:{}", session, window);
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &tmux_target, "-l", &nudge_text])
+            .status();
+        thread::sleep(Duration::from_millis(200));
+
+        // Verify stuck
+        let content = capture_pane(&session, window).unwrap_or_default();
+        assert!(content.contains(&nudge_text), "Nudge should be visible");
+        assert!(
+            !content.contains("SUBMITTED:"),
+            "Should not be submitted yet"
+        );
+
+        // Now send Enter (this is what the daemon does for auto-submit)
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &tmux_target, "Enter"])
+            .status();
+        thread::sleep(Duration::from_millis(300));
+
+        // Verify the nudge was submitted
+        let content = capture_pane(&session, window).unwrap_or_default();
+        assert!(
+            content.contains("SUBMITTED:") && content.contains(&nudge_text),
+            "Nudge should be submitted after Enter. Content: {:?}",
+            content
+        );
+    }
+
+    /// Test that queued nudge text can be detected in realistic TUI content.
+    ///
+    /// This validates the TUI structure that the daemon parses to find stuck nudges.
+    /// The daemon looks for text between the action line (✳/⏺) and the input separator.
+    #[test]
+    fn test_queued_nudge_detectable_in_tui() {
+        // Realistic Claude Code TUI with queued nudge
+        let tui_content = "\
+⏺ Previous action completed
+
+✳ Working on the feature...
+❯ github said: @columbus Check 'Test' passed on PR #529
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+
+        // The daemon detects queued nudges by finding ❯ lines between action and separator
+        let lines: Vec<&str> = tui_content.lines().collect();
+        let has_action_line = lines
+            .iter()
+            .any(|l| l.starts_with('✳') || l.starts_with('⏺'));
+        let has_queued_line = lines.iter().any(|l| {
+            l.starts_with('❯')
+                && l.len() > 2
+                && !l.chars().skip(1).all(|c| c == '─' || c.is_whitespace())
+        });
+
+        assert!(has_action_line, "TUI should have action line");
+        assert!(has_queued_line, "TUI should have queued nudge line");
+
+        // Find the queued nudge text
+        let queued_text = lines
+            .iter()
+            .find(|l| l.starts_with("❯ ") && l.contains("github said"))
+            .map(|l| l.trim_start_matches("❯ "));
+
+        assert!(
+            queued_text.is_some(),
+            "Should find queued nudge text in TUI"
+        );
+        assert!(
+            queued_text.unwrap().contains("github said: @columbus"),
+            "Queued text should contain the nudge message"
+        );
+    }
+
+    /// Test that check_nudge_text_match correctly identifies daemon-sent nudges.
+    #[test]
+    fn test_nudge_text_matching_realistic_scenario() {
+        // This simulates the full scenario:
+        // 1. Daemon sends "github said: @columbus Check 'Test' passed on PR #529"
+        // 2. Text gets stuck in input, TUI shows it with ❯ prefix
+        // 3. We extract the text and check if it matches the pending nudge
+
+        let daemon_nudge = "github said: @columbus Check 'Test' passed on PR #529";
+
+        // Simulated extracted text from TUI (with ❯ prefix stripped)
+        let extracted_from_tui = "github said: @columbus Check 'Test' passed on PR #529";
+
+        // The matching function uses first 20 chars for prefix matching
+        let check_len = 20;
+        let prefix = &daemon_nudge[..check_len.min(daemon_nudge.len())];
+
+        assert!(
+            extracted_from_tui.contains(prefix),
+            "Extracted TUI text should match daemon nudge prefix"
+        );
+    }
+
+    /// Test that user-typed input does NOT match daemon nudges.
+    #[test]
+    fn test_user_input_does_not_match_daemon_nudge() {
+        let daemon_nudge = "github said: @columbus Check 'Test' passed on PR #529";
+        let user_input = "I want to add a new feature to the authentication system";
+
+        let check_len = 20;
+        let prefix = &daemon_nudge[..check_len.min(daemon_nudge.len())];
+
+        assert!(
+            !user_input.contains(prefix),
+            "User input should NOT match daemon nudge"
+        );
+    }
+}

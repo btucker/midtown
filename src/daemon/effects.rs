@@ -150,10 +150,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut cooldowns = state.cooldowns.lock().unwrap();
                     cooldowns.clear_for_key(&name);
                 }
+                // Clear any pending nudge for this coworker
+                state.clear_pending_nudge(&name);
             }
             Effect::NudgeCoworker { name, message } => {
-                if let Err(e) = state.coworkers.nudge(&name, &message) {
-                    warn!("Failed to nudge coworker {}: {}", name, e);
+                match state.coworkers.nudge(&name, &message) {
+                    Ok(()) => {
+                        // Record pending nudge for attribution tracking
+                        state.record_pending_nudge(&name, &message);
+                    }
+                    Err(e) => {
+                        warn!("Failed to nudge coworker {}: {}", name, e);
+                    }
                 }
             }
             Effect::PostToChannel { sender, message } => {
@@ -208,6 +216,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut cooldowns = state.cooldowns.lock().unwrap();
                     cooldowns.clear_for_key(&name);
                 }
+                // Clear any pending nudge for this coworker (prevents stale attribution)
+                state.clear_pending_nudge(&name);
                 // Brief delay to let tmux clean up
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 // Respawn with --continue to resume the coworker's conversation
@@ -252,6 +262,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => match state.coworkers.nudge(&name, &message) {
                 Ok(()) => {
                     info!("Nudged coworker {} successfully", name);
+                    // Record pending nudge for attribution tracking
+                    state.record_pending_nudge(&name, &message);
                     Box::pin(execute_effects(on_success, state)).await;
                 }
                 Err(e) => {
