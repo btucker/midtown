@@ -1252,6 +1252,16 @@ pub(crate) fn decide_pending_task_action(
         };
     }
 
+    // Skip invalid coworker names — can't spawn or nudge an invalid name
+    if !crate::coworker::is_coworker_name(&owner.to_lowercase()) {
+        return PendingTaskAction::Skip {
+            reason: format!(
+                "task #{} owner '{}' is not a valid coworker name",
+                task_id, owner
+            ),
+        };
+    }
+
     // Owner is active → nudge (unless on cooldown)
     if active_names.contains(&owner.to_lowercase()) {
         if on_nudge_cooldown {
@@ -1307,6 +1317,11 @@ pub(crate) fn decide_orphan_recovery(
     for (task_id, task_subject, owner) in in_progress {
         let owner_clean = owner.trim().trim_matches('"').to_string();
         if owner_clean.is_empty() || owner_clean.eq_ignore_ascii_case("lead") {
+            continue;
+        }
+        // Skip invalid coworker names — can't spawn a coworker with this name
+        // Use lowercase to match how avenue names are stored
+        if !crate::coworker::is_coworker_name(&owner_clean.to_lowercase()) {
             continue;
         }
         if active_names.contains(&owner_clean.to_lowercase()) {
@@ -2159,6 +2174,14 @@ mod tests {
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
+    #[test]
+    fn pending_task_skips_invalid_coworker_name() {
+        // "fix" is not a valid coworker name (not an avenue name)
+        let names = set(&["york"]);
+        let action = decide_pending_task_action("42", "Fix bug", "fix", &names, false, false);
+        assert!(matches!(action, PendingTaskAction::Skip { .. }));
+    }
+
     // -----------------------------------------------------------------------
     // decide_orphan_recovery tests
     // -----------------------------------------------------------------------
@@ -2215,6 +2238,28 @@ mod tests {
         let active = set(&["amsterdam"]);
         let result = decide_orphan_recovery(&tasks, &active, false);
         assert_eq!(result.unwrap().task_id, "1");
+    }
+
+    #[test]
+    fn orphan_recovery_skips_invalid_coworker_name() {
+        // Bug: task with invalid owner "fix" (not an avenue name) should be skipped,
+        // not returned for recovery, since we can't spawn a coworker named "fix"
+        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "fix".to_string())];
+        let active = set(&["amsterdam"]);
+        let result = decide_orphan_recovery(&tasks, &active, false);
+        // Should be None because "fix" is not a valid coworker name
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn orphan_recovery_handles_uppercase_owner() {
+        // Uppercase owner names should still be recognized as valid coworkers
+        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "YORK".to_string())];
+        let active = set(&["amsterdam"]);
+        let result = decide_orphan_recovery(&tasks, &active, false);
+        // Should return recovery because "YORK" maps to valid coworker "york"
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().owner, "YORK");
     }
 
     // -----------------------------------------------------------------------
