@@ -537,6 +537,9 @@ pub(super) fn check_and_recover_stuck_ui(
     let recoveries = crate::rules::decide_stuck_ui_recoveries(
         &snap.pane_contents,
         MIN_COMPACTION_STUCK_DURATION,
+        &snap.coworker_start_times,
+        snap.now_utc,
+        chrono::Duration::seconds(QUEUED_NUDGE_MIN_AGE_SECS),
     );
 
     let mut effects = Vec::new();
@@ -580,7 +583,7 @@ pub(super) fn check_and_recover_stuck_ui(
                 });
             }
             crate::rules::StuckUiRecovery::InterruptQueuedNudges { name } => {
-                // Skip coworkers being shut down
+                // Skip coworkers being shut down (effect coordination logic stays here)
                 if exclude_names.contains(&name) {
                     debug!(
                         "Skipping queued nudge recovery for {} (being shut down)",
@@ -589,21 +592,8 @@ pub(super) fn check_and_recover_stuck_ui(
                     continue;
                 }
 
-                // Age-based protection: skip coworkers younger than 60 seconds.
-                // During startup, the TUI structure is still forming and
-                // has_queued_nudges() can produce false positives.
-                let coworker_age = snap
-                    .coworker_start_times
-                    .get(&name)
-                    .map(|started| snap.now_utc.signed_duration_since(*started).num_seconds())
-                    .unwrap_or(0);
-                if coworker_age < QUEUED_NUDGE_MIN_AGE_SECS {
-                    debug!(
-                        "Skipping queued nudge recovery for {} (age {}s < {}s threshold)",
-                        name, coworker_age, QUEUED_NUDGE_MIN_AGE_SECS
-                    );
-                    continue;
-                }
+                // Age-based protection is handled in the pure decision function
+                // (decide_stuck_ui_recoveries filters out young coworkers)
 
                 let should_act = {
                     let cooldowns = state.cooldowns.lock().unwrap();
