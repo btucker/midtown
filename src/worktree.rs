@@ -252,6 +252,34 @@ impl WorktreeManager {
     }
 
     /// Check if a coworker's worktree branch has commits beyond the base (detached HEAD).
+    /// Get the branch name checked out in a coworker's worktree.
+    ///
+    /// Returns None if the worktree doesn't exist or is in detached HEAD state.
+    pub fn get_branch(&self, coworker_name: &str) -> Option<String> {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return None;
+        }
+
+        let branch_output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output();
+
+        match branch_output {
+            Ok(output) if output.status.success() => {
+                let b = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if b == "HEAD" {
+                    None // Detached HEAD
+                } else {
+                    Some(b)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if a coworker's branch has commits not on the default branch.
     ///
     /// Returns `true` if the branch has unique commits that are not on the default branch.
     /// Returns `false` if the branch has no commits beyond the base, or if the
