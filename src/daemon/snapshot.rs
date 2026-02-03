@@ -39,6 +39,10 @@ pub struct WorldSnapshot {
     pub session_name: String,
     /// Coworker start times keyed by lowercase name.
     pub coworker_start_times: HashMap<String, DateTime<Utc>>,
+    /// Coworker stop times keyed by lowercase name.
+    /// Tracks when coworkers were sent on a break (shutdown). Used by workflow
+    /// features that need to know the last activity time of inactive coworkers.
+    pub coworker_stop_times: HashMap<String, DateTime<Utc>>,
 
     // ── Pane contents (health checks only) ─────────────────────────────
     /// Captured tmux pane content per coworker (keyed by name).
@@ -130,6 +134,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .iter()
         .map(|cw| (cw.name.to_lowercase(), cw.started_at))
         .collect();
+
+    // Read coworker stop times from DaemonState
+    let coworker_stop_times: HashMap<String, DateTime<Utc>> = {
+        let stop_times = state.coworker_stop_times.read().unwrap();
+        stop_times.clone()
+    };
 
     // ── Pane contents ───────────────────────────────────────────────────
     let mut pane_contents = HashMap::new();
@@ -239,6 +249,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         active_names,
         session_name,
         coworker_start_times,
+        coworker_stop_times,
         pane_contents,
         blank_pane_coworkers,
         in_progress_tasks,
@@ -269,4 +280,57 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     }
 
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that WorldSnapshot has coworker_stop_times field and it serializes correctly.
+    #[test]
+    fn test_world_snapshot_has_coworker_stop_times() {
+        // Create a minimal WorldSnapshot to verify the field exists and serializes
+        let mut stop_times = HashMap::new();
+        stop_times.insert("lexington".to_string(), Utc::now());
+        stop_times.insert("broadway".to_string(), Utc::now());
+
+        let snapshot = WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: stop_times.clone(),
+            pane_contents: HashMap::new(),
+            blank_pane_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            is_at_dev_limit: false,
+            now: Instant::now(),
+            now_utc: Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        // Verify the field exists and has the expected values
+        assert_eq!(snapshot.coworker_stop_times.len(), 2);
+        assert!(snapshot.coworker_stop_times.contains_key("lexington"));
+        assert!(snapshot.coworker_stop_times.contains_key("broadway"));
+
+        // Verify it serializes (WorldSnapshot derives Serialize)
+        let json = serde_json::to_string(&snapshot).expect("should serialize");
+        assert!(json.contains("coworker_stop_times"));
+    }
 }
