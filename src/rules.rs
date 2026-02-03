@@ -541,9 +541,16 @@ pub(crate) enum StuckUiRecovery {
 
 /// Detect coworkers stuck in Claude Code's compaction state.
 ///
-/// Compaction shows a status line like `(esc to interrupt · 18m 50s · ↓ 0 tokens)`.
-/// The verb varies ("Whirlpooling", "Baking", etc.) so we match on the stable
-/// signature `esc to interrupt` instead.
+/// Compaction shows a status line like `Whirlpooling your conversation…`
+/// followed by `(esc to interrupt · 18m 50s · ↓ 0 tokens)`. The key verbs are:
+/// - "Whirlpooling" (active compaction)
+/// - "Baking" (active compaction)
+/// - "Simmering" (active compaction)
+/// - "Sautéed" (completed compaction, still in post-compaction state)
+///
+/// IMPORTANT: Normal "thinking" states also show "esc to interrupt" but are
+/// NOT compaction. For example: "✢ Fixing tmux window naming… (esc to interrupt...)"
+/// We must check for actual compaction verbs, not just "esc to interrupt".
 ///
 /// Only flags coworkers whose compaction has been running for at least
 /// `min_duration` — compaction is a normal, useful operation and we must not
@@ -558,8 +565,21 @@ pub(crate) fn detect_compaction_stuck(
     pane_contents
         .iter()
         .filter(|(_name, content)| {
-            // Find the compaction status line and parse the elapsed time
+            // First check: must have actual compaction indicators in the pane
+            if !has_compaction_indicator(content) {
+                return false;
+            }
+
+            // Second check: find the compaction status line and parse elapsed time
             content.lines().any(|line| {
+                // For "Sautéed for Xm Ys" format (completed compaction)
+                if line.contains("Sautéed for") {
+                    return parse_sauteed_duration(line)
+                        .map(|d| d >= min_duration)
+                        .unwrap_or(false);
+                }
+
+                // For active compaction with "esc to interrupt"
                 if !line.contains("esc to interrupt") {
                     return false;
                 }
@@ -573,6 +593,49 @@ pub(crate) fn detect_compaction_stuck(
         })
         .map(|(name, _content)| name.clone())
         .collect()
+}
+
+/// Check if the pane content contains actual compaction indicators.
+///
+/// Compaction verbs are: Whirlpooling, Baking, Simmering, Sautéed.
+/// These are distinct from normal "thinking" states like "Fixing...",
+/// "Scoring...", "Checking...", etc.
+fn has_compaction_indicator(content: &str) -> bool {
+    // Case-insensitive check for compaction verbs
+    let content_lower = content.to_lowercase();
+    content_lower.contains("whirlpooling")
+        || content_lower.contains("baking")
+        || content_lower.contains("simmering")
+        || content_lower.contains("sautéed")
+        || content_lower.contains("sauteed") // ASCII fallback
+}
+
+/// Parse duration from "Sautéed for Xm Ys" format.
+fn parse_sauteed_duration(line: &str) -> Option<Duration> {
+    let after_for = line.split("for").nth(1)?;
+
+    let mut total_secs: u64 = 0;
+    let mut found_time = false;
+
+    for part in after_for.split_whitespace() {
+        if let Some(m) = part.strip_suffix('m')
+            && let Ok(mins) = m.parse::<u64>()
+        {
+            total_secs += mins * 60;
+            found_time = true;
+        } else if let Some(s) = part.strip_suffix('s')
+            && let Ok(secs) = s.parse::<u64>()
+        {
+            total_secs += secs;
+            found_time = true;
+        }
+    }
+
+    if found_time {
+        Some(Duration::from_secs(total_secs))
+    } else {
+        None
+    }
 }
 
 /// Parse the elapsed duration from a compaction status line.
@@ -2243,9 +2306,11 @@ mod tests {
     fn combined_recovery_returns_both_types() {
         let mut panes = HashMap::new();
         // One coworker stuck in compaction (10 min — well above threshold)
+        // Must include actual compaction verb (Whirlpooling) to be detected
         panes.insert(
             "york".to_string(),
-            "  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
+            "  Whirlpooling your conversation…\n  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n"
+                .to_string(),
         );
         // Another coworker with queued nudges (proper TUI structure)
         let amsterdam_tui = "\
@@ -2276,9 +2341,10 @@ mod tests {
     fn combined_recovery_skips_short_compaction() {
         let mut panes = HashMap::new();
         // Compaction running for only 2 minutes — below threshold
+        // Includes compaction verb (Baking) but duration is too short
         panes.insert(
             "york".to_string(),
-            "  (esc to interrupt · 2m 00s · ↓ 0 tokens)\n".to_string(),
+            "  Baking your conversation…\n  (esc to interrupt · 2m 00s · ↓ 0 tokens)\n".to_string(),
         );
         // Queued nudge with proper TUI structure
         let amsterdam_tui = "\
@@ -2377,5 +2443,152 @@ mod tests {
         record.task_id = None;
 
         assert_eq!(record.display_status(), Some("idle".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Compaction misdetection bug tests (task #7)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compaction_not_detected_for_normal_thinking_with_esc_to_interrupt() {
+        // Bug: The daemon was interrupting coworkers doing normal work because
+        // their "thinking" status shows "esc to interrupt", even though they're
+        // NOT in compaction. Compaction has specific verbs like "Whirlpooling",
+        // "Baking", "Simmering", "Sautéed" - normal thinking says "Fixing...",
+        // "Scoring...", etc.
+        let mut panes = HashMap::new();
+
+        // Normal thinking state - NOT compaction (from actual snapshot)
+        panes.insert(
+            "vernon".to_string(),
+            "✢ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · 6m 11s · ↓ 1.4k tokens · thinking)\n"
+                .to_string(),
+        );
+
+        // Even though duration (6m 11s) exceeds threshold (5m), this is NOT
+        // compaction - it's normal task work. Should NOT trigger.
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(
+            stuck.is_empty(),
+            "normal thinking state should not be detected as compaction, even with 'esc to interrupt'"
+        );
+    }
+
+    #[test]
+    fn compaction_detected_for_actual_compaction_verbs() {
+        // These ARE actual compaction - should be detected
+        let test_cases = vec![
+            (
+                "whirlpool",
+                "  Whirlpooling your conversation…\n  (esc to interrupt · 6m 00s · ↓ 0 tokens)\n",
+            ),
+            (
+                "baking",
+                "  Baking your conversation…\n  (esc to interrupt · 5m 30s · ↓ 100 tokens)\n",
+            ),
+            (
+                "simmering",
+                "  Simmering your conversation…\n  (esc to interrupt · 7m 00s · ↓ 50 tokens)\n",
+            ),
+            ("sauteed", "  ✻ Sautéed for 6m 30s\n"),
+        ];
+
+        for (name, content) in test_cases {
+            let mut panes = HashMap::new();
+            panes.insert(name.to_string(), content.to_string());
+            let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+            assert!(
+                !stuck.is_empty(),
+                "actual compaction '{}' should be detected",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_not_detected_for_various_normal_thinking_states() {
+        // All of these are normal work states, NOT compaction
+        let test_cases = vec![
+            (
+                "scoring",
+                "✢ Scoring issues… (esc to interrupt · ctrl+t to hide tasks · 10m 2s · ↓ 4.2k tokens · thought for 2s)",
+            ),
+            (
+                "fixing",
+                "✳ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · 8m 20s · ↓ 3.5k tokens · thinking)",
+            ),
+            (
+                "checking",
+                "✽ Checking PR eligibility… (esc to interrupt · ctrl+t to hide tasks · 6m 0s · ↓ 784 tokens · thinking)",
+            ),
+            (
+                "reading",
+                "✶ Reading file… (esc to interrupt · ctrl+t to hide tasks · 5m 30s · ↓ 500 tokens · thinking)",
+            ),
+        ];
+
+        for (name, content) in test_cases {
+            let mut panes = HashMap::new();
+            panes.insert(name.to_string(), content.to_string());
+            let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+            assert!(
+                stuck.is_empty(),
+                "normal thinking state '{}' should NOT be detected as compaction",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_20260203_023607_no_false_compaction_detections() {
+        // Test against real snapshot data where 6+ coworkers were incorrectly
+        // interrupted. This snapshot captures the actual bug scenario:
+        // - amsterdam: Scoring PR review issues
+        // - broadway: Scoring PR review issues
+        // - park: Completed scoring agents
+        // - pleasant: Posting to channel after task completion
+        // - riverside: Creating a PR
+        // - york: Running cargo fmt
+        //
+        // None of these are compaction, but they all have "esc to interrupt"
+        // in their pane content because that's shown during normal work.
+
+        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023607.json");
+        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
+
+        let mut panes: HashMap<String, String> = HashMap::new();
+        for (name, content) in pane_contents {
+            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
+        }
+
+        // With the fix, none of these should be detected as stuck compaction
+        // because none of them contain actual compaction verbs
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(
+            stuck.is_empty(),
+            "snapshot should have no compaction detections, but found: {:?}",
+            stuck
+        );
+    }
+
+    #[test]
+    fn snapshot_20260203_023035_no_false_compaction_detections() {
+        // Second snapshot captured during the same incident - broadway mid-review
+        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023035.json");
+        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
+
+        let mut panes: HashMap<String, String> = HashMap::new();
+        for (name, content) in pane_contents {
+            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
+        }
+
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(
+            stuck.is_empty(),
+            "snapshot should have no compaction detections, but found: {:?}",
+            stuck
+        );
     }
 }
