@@ -263,11 +263,14 @@ pub(crate) struct ShutdownDecision {
 ///
 /// A coworker is protected from break if:
 /// - They have in-progress tasks (busy)
-/// - They have open unmerged PRs
+/// - They have open unmerged PRs with CI not yet passed (waiting for CI)
 /// - They are actively reviewing a PR
 /// - They have unblocked dependent tasks
 /// - Their pane content changed recently (within `pane_activity_grace`)
 /// - They have a subagent (Task tool) currently running
+///
+/// Coworkers with open PRs where CI has passed CAN go on break - they're just
+/// waiting for human review, and the daemon will respawn them when feedback arrives.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_idle_shutdowns(
     coworkers: &[CoworkerSnapshot],
@@ -276,7 +279,7 @@ pub(crate) fn decide_idle_shutdowns(
     active_reviewers: &HashSet<String>,
     coworkers_with_unblocked_deps: &HashSet<String>,
     coworkers_with_running_subagents: &HashSet<String>,
-    _ci_passed_pr_coworkers: &HashSet<String>,
+    ci_passed_pr_coworkers: &HashSet<String>,
     records: &HashMap<String, CoworkerRecord>,
     now: Instant,
     now_utc: DateTime<Utc>,
@@ -327,11 +330,19 @@ pub(crate) fn decide_idle_shutdowns(
         let has_running_subagent = coworkers_with_running_subagents
             .iter()
             .any(|s| s.eq_ignore_ascii_case(coworker));
+        let ci_passed = ci_passed_pr_coworkers
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(coworker));
 
-        // Coworkers with open PRs, active tasks, review assignments,
-        // unblocked deps, recent pane activity, or running subagents are never sent on break.
+        // Coworkers with active tasks, review assignments, unblocked deps,
+        // recent pane activity, or running subagents are never sent on break.
+        //
+        // Coworkers with open PRs CAN go on break if their CI has passed
+        // (they're waiting for review feedback, and the daemon will respawn
+        // them when feedback arrives).
+        let protected_by_open_pr = has_open_pr && !ci_passed;
         if is_busy
-            || has_open_pr
+            || protected_by_open_pr
             || is_reviewing
             || has_unblocked_deps
             || pane_recently_active
@@ -1809,39 +1820,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_shutdown_skips_coworker_with_open_pr_even_ci_passed() {
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // york has an open PR AND CI is passing — should still be protected (never break with open PR)
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&["york"]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&["york"]),
-            &phases,
-            Instant::now(),
-            Utc::now(),
-            Duration::from_secs(30),
-            Duration::from_secs(300),
-            Duration::from_secs(120),
-        );
-
-        assert!(
-            decisions.is_empty(),
-            "coworkers with open PRs should never be sent on break"
-        );
-    }
-
-    #[test]
     fn idle_shutdown_skips_coworker_with_open_pr_no_ci() {
         let coworkers = vec![cw("york", 10)];
         let phases = lifecycle_with(
@@ -1990,6 +1968,45 @@ mod tests {
         );
         // Subagent coworker should be cleared from idle tracking
         assert!(get_health(&phases, "madison").is_none());
+    }
+
+    #[test]
+    fn idle_shutdown_allows_coworker_with_ci_passed_pr_to_break() {
+        // Bug #4: Coworkers waiting for PR review (CI passed) should go on break.
+        // The daemon will respawn them when review feedback arrives.
+        let coworkers = vec![cw("york", 10)];
+        let phases = lifecycle_with(
+            "york",
+            SessionHealth::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // york has an open PR AND CI is passing — should be ALLOWED to break
+        // (waiting for review feedback)
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),       // not busy
+            &set(&["york"]), // has open PR
+            &set(&[]),       // not reviewing
+            &set(&[]),       // no unblocked deps
+            &set(&[]),       // no running subagent
+            &set(&["york"]), // CI PASSED
+            &phases,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            Duration::from_secs(120),
+        );
+
+        // The new behavior: coworkers with CI-passed PRs CAN go on break
+        assert_eq!(
+            decisions.len(),
+            1,
+            "coworkers with CI-passed PRs should be sent on break (waiting for review)"
+        );
+        assert_eq!(decisions[0].name, "york");
     }
 
     // -----------------------------------------------------------------------
