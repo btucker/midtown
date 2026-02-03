@@ -363,6 +363,10 @@ pub(crate) struct DaemonState {
     /// session ID here so they can be resumed with `--resume <id>` when PR activity
     /// (review comments, CI failure, etc.) requires them back.
     pr_break_sessions: std::sync::RwLock<HashMap<String, String>>,
+    /// Coworker stop times keyed by lowercase name.
+    /// Tracks when coworkers were sent on a break (shutdown). Used by workflow
+    /// features that need to know the last activity time of inactive coworkers.
+    coworker_stop_times: std::sync::RwLock<HashMap<String, chrono::DateTime<chrono::Utc>>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
     /// Cached GitHub repo full names (owner/repo) by repo path.
@@ -510,6 +514,7 @@ impl DaemonState {
             last_pr_poll_hash: Mutex::new(0),
             pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::new()),
             pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
+            coworker_stop_times: std::sync::RwLock::new(HashMap::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
             user_display_name,
