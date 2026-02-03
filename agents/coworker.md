@@ -264,11 +264,10 @@ TaskCreate with subject: "Add input validation for edge case", description: "Fro
 ## Don't Poll GitHub — The Daemon Notifies You
 We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Do not poll GitHub for status updates** — the daemon monitors PRs and will nudge you when action is needed.
 
-**You will be notified automatically when:**
+**The daemon monitors your PR and will nudge you when:**
 - CI checks pass or fail on your PR
 - Your PR receives review comments
-- Your PR is approved and ready to merge
-- Your PR is merged
+- Your PR is merged (auto-merge happens when approved with passing CI)
 
 **Don't poll for status:**
 - Don't run `gh pr checks` repeatedly to watch CI — wait for the daemon to notify you
