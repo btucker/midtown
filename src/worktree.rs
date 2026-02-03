@@ -251,7 +251,6 @@ impl WorktreeManager {
         &self.repo_name
     }
 
-    /// Check if a coworker's worktree branch has commits beyond the base (detached HEAD).
     /// Get the branch name checked out in a coworker's worktree.
     ///
     /// Returns None if the worktree doesn't exist or is in detached HEAD state.
