@@ -86,10 +86,13 @@ impl CoworkerStateReport {
     /// Format for tmux tab display: "phase" or "phase#task_id".
     ///
     /// Examples: "dev#42", "idle", "PR#7", "claim#13"
+    ///
+    /// Note: Task ID 0 is treated as "no task" since it's often used as a
+    /// placeholder for taskless work (e.g., PR reviews without a formal task).
     pub fn display_status(&self) -> String {
         match self.task_id {
-            Some(id) => format!("{}#{}", self.phase.abbreviation(), id),
-            None => self.phase.abbreviation().to_string(),
+            Some(id) if id > 0 => format!("{}#{}", self.phase.abbreviation(), id),
+            _ => self.phase.abbreviation().to_string(),
         }
     }
 }
@@ -205,5 +208,15 @@ mod tests {
         let parsed: CoworkerStateReport = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.phase, WorkflowPhase::Idle);
         assert_eq!(parsed.task_id, None);
+    }
+
+    #[test]
+    fn test_display_status_with_task_zero_omits_number() {
+        // Task ID 0 is used as a placeholder for taskless work (e.g., PR reviews
+        // without a formal task assignment). It should display without the "#0"
+        // suffix to avoid confusing window names like "PR#0".
+        let report = CoworkerStateReport::new(WorkflowPhase::PullRequest, Some(0));
+        // Should show "PR" not "PR#0"
+        assert_eq!(report.display_status(), "PR");
     }
 }
