@@ -263,11 +263,14 @@ pub(crate) struct ShutdownDecision {
 ///
 /// A coworker is protected from break if:
 /// - They have in-progress tasks (busy)
-/// - They have open unmerged PRs
+/// - They have open unmerged PRs with CI not yet passed (waiting for CI)
 /// - They are actively reviewing a PR
 /// - They have unblocked dependent tasks
 /// - Their pane content changed recently (within `pane_activity_grace`)
 /// - They have a subagent (Task tool) currently running
+///
+/// Coworkers with open PRs where CI has passed CAN go on break - they're just
+/// waiting for human review, and the daemon will respawn them when feedback arrives.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_idle_shutdowns(
     coworkers: &[CoworkerSnapshot],
