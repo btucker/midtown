@@ -395,10 +395,20 @@ fn window_exists(session: &str, window: &str) -> bool {
 /// This test verifies the full daemon → tmux → Claude Code launch path.
 /// The daemon creates a tmux session and spawns a "lead" window running
 /// Claude Code. We verify the window exists and has visible TUI output.
+///
+/// Requires real Claude Code to be installed and authenticated. When
+/// MIDTOWN_LEAD_COMMAND is set (stub mode), this test is skipped since
+/// stub commands don't produce TUI output.
 #[test]
 #[ignore]
 #[timeout(120_000)]
 fn test_daemon_spawns_lead_with_real_claude() {
+    // Skip when using a stub command - this test requires real Claude TUI output
+    if std::env::var("MIDTOWN_LEAD_COMMAND").is_ok() {
+        eprintln!("MIDTOWN_LEAD_COMMAND is set (stub mode), skipping real Claude test");
+        return;
+    }
+
     if !tmux_available() {
         eprintln!("tmux not available, skipping");
         return;
