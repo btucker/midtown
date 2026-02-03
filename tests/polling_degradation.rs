@@ -466,6 +466,34 @@ fn polling_detects_existing_claude_review() {
     ));
 }
 
+/// Test that comment-based reviews are recognized with space after colon.
+///
+/// Bug: Coworkers can't submit formal GitHub reviews because they share the
+/// same GitHub user as the PR author. Instead they post comments with the
+/// `<!-- midtown: <name> -->` marker. The stuck detection should recognize
+/// these as reviews.
+#[test]
+fn polling_recognizes_comment_based_review_with_space() {
+    // Comment-based review with space after colon (actual format used by coworkers)
+    // This is the format mentioned in the task description: <!-- midtown: park -->
+    assert!(
+        text_contains_review_signature("<!-- midtown: park -->\n\n## Code Review\n\nLGTM!"),
+        "should recognize comment-based review with space after colon"
+    );
+
+    // Without space (also valid)
+    assert!(
+        text_contains_review_signature("<!-- midtown:park -->\n\n## Code Review"),
+        "should recognize comment-based review without space"
+    );
+
+    // With additional metadata
+    assert!(
+        text_contains_review_signature("<!-- midtown: broadway reviewer=true -->\n\nLooks good"),
+        "should recognize comment-based review with additional metadata"
+    );
+}
+
 /// Test complete polling flow for a batch of PRs.
 ///
 /// Simulates what happens during a single polling tick with multiple PRs
