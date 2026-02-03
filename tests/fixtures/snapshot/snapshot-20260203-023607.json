@@ -1,0 +1,410 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "1b2a95c4-df59-43f3-bd87-f6b464b481a2",
+      "started_at": "2026-02-03T02:16:01.719342Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "pleasant",
+      "session_id": "5b3cf5ad-ba1f-4872-9141-0e952dc7da43",
+      "started_at": "2026-02-03T02:29:12.649440Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/pleasant"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "madison",
+      "session_id": "3c2aaf05-741a-41d4-a370-05390815e7ec",
+      "started_at": "2026-02-03T02:35:33.229145Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "riverside",
+      "session_id": "33f494ec-67f6-4c82-b9ab-82392b1ef8b2",
+      "started_at": "2026-02-03T02:29:16.302301Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "vernon",
+      "session_id": "dfbbf091-5fb2-4ae4-a9e6-413e999a0323",
+      "started_at": "2026-02-03T02:16:36.754749Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/vernon"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "readme-update",
+      "session_id": "7f4d1b5c-4e60-40b6-9e3a-288b18234de3",
+      "started_at": "2026-02-03T02:12:45.821986Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/readme-update"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "session_id": "d38afbc4-7056-4d93-beb9-b2ff950ee8ab",
+      "started_at": "2026-02-03T02:20:45.027299Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/amsterdam"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "broadway",
+      "session_id": "6f79e67a-b832-4de5-a180-07b07b918160",
+      "started_at": "2026-02-03T02:24:09.047068Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/broadway"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "park",
+      "session_id": "ae50059b-72d7-4745-8d1d-e059bc5d0589",
+      "started_at": "2026-02-03T02:12:19.339195Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/park"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "6d597dfe-7781-45f4-9075-f15ba37dba67",
+      "started_at": "2026-02-03T02:21:36.845220Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    }
+  ],
+  "active_names": [
+    "readme-update",
+    "broadway",
+    "amsterdam",
+    "pleasant",
+    "columbus",
+    "vernon",
+    "york",
+    "park",
+    "madison",
+    "riverside"
+  ],
+  "active_reviewers": [
+    "broadway",
+    "amsterdam",
+    "madison",
+    "park"
+  ],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "The orphan worktree detection is reporting false positives for branches whose PRs were squash-merged. \n\n**Root cause**: When GitHub squash-merges a PR, the original branch commits have different hashes than the merged commit. Git's `origin/main..HEAD` comparison sees these as \"unmerged\" even though the content is identical.\n\n**Example**: york worktree showed as orphaned with \"unmerged commits\" but `e80a476` was actually squash-merged as `fc613bd` in main via PR #496.\n\n**Fix approach**: Instead of checking if branch commits exist in main (which fails for squash merges), check if the associated PR was merged. This could use:\n1. Query GitHub API for PR status of the branch\n2. Or check if the commit message appears in main (less reliable but no API needed)\n3. Or use `gh pr view --json state` to check if the branch's PR is merged\n\nThe detection logic is in `src/rules.rs` or wherever orphan worktree detection happens. The fix should only alert about truly orphaned branches with work that was never merged.",
+      "id": "1",
+      "owner": "columbus",
+      "status": "completed",
+      "subject": "Fix orphan branch detection for squash-merged PRs"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Bug**: Tmux window names show `PR#0` and `dev#0` when coworkers work on PRs without formal task assignments.\n\n**Reproduction**: \n- Coworkers working on PR reviews/fixes without being assigned a numbered task\n- They call `midtown state pull-request --task 0` with 0 as a placeholder\n- Windows show `feat:PR#0-` instead of something meaningful like `feat:PR#504` or `feat:review`\n\n**Current state**:\n- `feat:PR#0-` should be `feat:PR#504` (working on PR #504)\n- `readme-update:test` (correctly shows no task number)\n- `park:idle` (correct)\n\n**Requirements**:\n1. First write a failing test that reproduces the `#0` naming issue\n2. Fix the `midtown state` command to either:\n   - Accept `--pr <number>` separately from `--task`\n   - Or infer the PR number from current branch\n   - Or just omit the task number when 0/unset\n3. Verify coworker prompts guide them to use correct flags\n\nSee CLAUDE.md: \"whenever a bug is discovered, first write a test reproducing it, confirm it fails, fix the code, run the test again\"",
+      "id": "2",
+      "owner": "vernon",
+      "status": "in_progress",
+      "subject": "Fix tmux window naming showing #0 for taskless PR work"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Bug**: When coworkers update their local subtasks, the daemon incorrectly nudges owners of main project tasks with the same ID.\n\n**Example**: Park updates their local task #2 (Find CLAUDE.md files for PR review). The daemon looks up task #2 in the main list (vernon's \"Fix tmux window naming\") and nudges vernon incorrectly.\n\n**Root cause**: `src/bin/midtown/cli/hooks.rs:619-627` sends `task.updated` RPC with just the task ID. The daemon in `src/daemon/rpc.rs:564-630` looks up by ID in the main task list without checking if the update came from the same task storage.\n\n**Fix approach**:\n1. The hook should include the task storage path or CLAUDE_CODE_TASK_ID in the RPC\n2. The daemon's `handle_task_updated` should compare paths before deciding to nudge\n3. Only nudge if the updated task is actually in the main project's task list\n\n**Files to modify**:\n- `src/bin/midtown/cli/hooks.rs` - include task path context in RPC\n- `src/daemon/rpc.rs` - check path before looking up task and nudging\n\nWrite a failing test first per CLAUDE.md.",
+      "id": "3",
+      "owner": "york",
+      "status": "in_progress",
+      "subject": "Fix task.updated RPC to check task storage path before nudging"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Bug**: The daemon sends a bell character (`\\x07`) to the lead's Claude Code pane, which Claude Code interprets as Ctrl+G (open editor shortcut).\n\n**Root cause**: In `src/coworker.rs:613-614`:\n```rust\nlet _ = tmux::send_bell(&self.session_name, \"lead.1\");\ntmux::send_bell(&self.session_name, \"lead.0\")  // sends \\x07 to Claude Code\n```\n\nASCII 7 (`\\x07`) is both the terminal bell AND Ctrl+G. Claude Code's interactive mode binds Ctrl+G to open the default text editor.\n\n**Fix**: Remove the `send_bell` call to pane .0. Only send bell to pane .1 (chat TUI) which can handle it without triggering shortcuts.\n\nWrite a test first per CLAUDE.md.",
+      "id": "4",
+      "owner": "pleasant",
+      "status": "completed",
+      "subject": "Fix send_bell triggering Ctrl+G editor in Claude Code"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Bug**: Stuck condition nudges are delivered twice to the lead - once via channel system message and once via direct tmux nudge.\n\n**Root cause**: `stuck_nudge_effects()` in `src/daemon/pr.rs:723-732` returns two effects:\n```rust\nvec![\n    Effect::PostSystemMessage { message },  // Posted to channel\n    Effect::NudgeLead { message },          // Sent via tmux\n]\n```\n\nThe channel message gets routed to the lead by the daemon's @mention routing, AND the NudgeLead sends it directly via tmux. Result: same message appears twice.\n\n**Fix options**:\n1. Remove NudgeLead and rely on channel @mention routing (simpler, channel becomes single source of truth)\n2. Remove PostSystemMessage and just nudge directly (loses channel record)\n3. Make NudgeLead skip if message was just posted to channel with @lead\n\nRecommend option 1 - the channel already routes @lead mentions to the lead, so the direct NudgeLead is redundant.\n\nWrite a test first per CLAUDE.md.",
+      "id": "5",
+      "owner": "riverside",
+      "status": "in_progress",
+      "subject": "Fix double nudge delivery for stuck conditions"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Bug**: The daemon's stuck detection only looks at `reviewDecision` from formal GitHub reviews, but coworkers can't submit formal reviews because they share the same GitHub user as the PR author.\n\n**Context**: All coworkers use the same GitHub account (btucker), so GitHub won't let them approve their own PRs. They post review comments instead.\n\n**Example**: Park reviewed PR #505 by posting a comment with `<!-- midtown: park -->` marker - the daemon should recognize this as a review.\n\n**Fix**: In the stuck condition check (`src/daemon/pr.rs`), when determining if a PR has been reviewed:\n1. Fetch PR comments via `gh api repos/{owner}/{repo}/issues/{pr}/comments`\n2. Check for comments containing `<!-- midtown: <name> -->` marker\n3. If found, treat the PR as reviewed (don't nudge about missing review)\n\n**Files to modify**:\n- `src/daemon/pr.rs` - `check_stuck_conditions` function\n- May need a helper to fetch and parse PR comments\n\nWrite a test first per CLAUDE.md.",
+      "id": "6",
+      "owner": null,
+      "status": "pending",
+      "subject": "Fix daemon to recognize PR comments as reviews"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Bug**: The daemon sends Escape to coworkers waiting at an empty prompt, incorrectly treating them as \"stuck in compaction\".\n\n**Snapshot to use for test**: `tests/fixtures/snapshot/snapshot-20260203-023035.json`\n\nCopy this file from broadway's worktree:\n```bash\ncp ~/.midtown/coworkers/midtown/broadway/tests/fixtures/snapshot/snapshot-20260203-023035.json tests/fixtures/snapshot/\n```\n\n**Test case requirements**:\n1. Load the snapshot fixture\n2. Parse broadway's pane content from `pane_contents.broadway`\n3. Verify the daemon does NOT detect this as \"stuck compaction\"\n4. Verify the daemon DOES detect this as \"needs nudge to continue\"\n\n**Broadway's pane showed**:\n```\n! midtown e2e capture\n  ⎿  Running…\n  Tasks (4 done, 1 in progress, 1 open)\n  ◼ #5 Score and filter issues (broadway)\n❯ \n```\n\n**Root cause**: The compaction detection logic doesn't distinguish between:\n1. Stuck in compaction (spinner shows \"Compacting...\" or \"Sautéed\")\n2. Waiting at empty prompt after completing work (needs nudge)\n\n**Fix**: Check for actual compaction spinner text before sending Escape. If just at empty prompt with in-progress task, send a continuation nudge instead.\n\nWrite the failing test FIRST, then fix the code.",
+      "id": "7",
+      "owner": null,
+      "status": "pending",
+      "subject": "Fix daemon misidentifying waiting-at-prompt as stuck compaction"
+    }
+  ],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [
+    "vernon",
+    "york",
+    "riverside"
+  ],
+  "ci_passed_pr_coworkers": [],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": false,
+      "name": "columbus",
+      "started_at": "2026-02-03T02:16:01.719342Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "pleasant",
+      "started_at": "2026-02-03T02:29:12.649440Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "madison",
+      "started_at": "2026-02-03T02:35:33.229145Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "riverside",
+      "started_at": "2026-02-03T02:29:16.302301Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "vernon",
+      "started_at": "2026-02-03T02:16:36.754749Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "readme-update",
+      "started_at": "2026-02-03T02:12:45.821986Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "started_at": "2026-02-03T02:20:45.027299Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "broadway",
+      "started_at": "2026-02-03T02:24:09.047068Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "park",
+      "started_at": "2026-02-03T02:12:19.339195Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "york",
+      "started_at": "2026-02-03T02:21:36.845220Z"
+    }
+  ],
+  "coworker_start_times": {
+    "amsterdam": "2026-02-03T02:20:45.027299Z",
+    "broadway": "2026-02-03T02:24:09.047068Z",
+    "columbus": "2026-02-03T02:16:01.719342Z",
+    "madison": "2026-02-03T02:35:33.229145Z",
+    "park": "2026-02-03T02:12:19.339195Z",
+    "pleasant": "2026-02-03T02:29:12.649440Z",
+    "readme-update": "2026-02-03T02:12:45.821986Z",
+    "riverside": "2026-02-03T02:29:16.302301Z",
+    "vernon": "2026-02-03T02:16:36.754749Z",
+    "york": "2026-02-03T02:21:36.845220Z"
+  },
+  "coworkers_with_merged_prs": [
+    "madison",
+    "broadway",
+    "lexington",
+    "pleasant",
+    "york",
+    "amsterdam",
+    "columbus"
+  ],
+  "coworkers_with_open_prs": [
+    "columbus",
+    "pleasant",
+    "vernon"
+  ],
+  "coworkers_with_unblocked_deps": [],
+  "in_progress_tasks": [
+    [
+      "2",
+      "Fix tmux window naming showing #0 for taskless PR work",
+      "vernon"
+    ],
+    [
+      "3",
+      "Fix task.updated RPC to check task storage path before nudging",
+      "york"
+    ],
+    [
+      "5",
+      "Fix double nudge delivery for stuck conditions",
+      "riverside"
+    ]
+  ],
+  "is_at_dev_limit": true,
+  "now_utc": "2026-02-03T02:36:07.694951Z",
+  "pane_contents": {
+    "amsterdam": "   ├─ Review for obvious bugs · 5 tool uses · 22.3k tokens\n   │  ⎿  Done\n   ├─ Review git history context · 26 tool uses · 50.3k tokens\n   │  ⎿  Done\n   ├─ Review previous PR comments · 43 tool uses · 42.9k tokens\n   │  ⎿  Done\n   └─ Review code comments compliance · 13 tool uses · 29.5k tokens\n      ⎿  Done\n\n⏺ Excellent! The parallel agents found some interesting issues. Let me compile and update the tasks:\n✔ Task #4 updated: status → completed\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 updated: status → in progress\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ ★ Insight ─────────────────────────────────────\n  The git history agent found a significant issue: there's a parallel implementation of display_status() in src/rules.rs (CoworkerRecord::display_status()) that has the same bug but wasn't fixed. This is a classic\n  pattern where similar logic exists in multiple places and only one gets updated. The comment in rules.rs even says it should match CoworkerStateReport::display_status().\n  ─────────────────────────────────────────────────\n\n  Now I need to score the issues found. Let me summarize and launch scoring agents:\n\n  Issues found:\n  1. Incomplete fix - CoworkerRecord::display_status() in src/rules.rs not updated (from git history agent)\n  2. Duplicate CI commit - PR will create redundant commit (from previous PR agent)\n  3. Test coverage - Only tests one phase, not all phases (from previous PR agent)\n  ⎿  Interrupted · What should Claude do instead?\n\n❯ lead said: @amsterdam Please continue your PR #506 review - you were interrupted. Score the issues you found and post the review comment.\n\n⏺ Let me continue scoring the issues and complete the review.\n\n  Running 3 Task agents… (ctrl+o to expand)\n   ├─ Score incomplete fix issue · 13 tool uses · 29.3k tokens\n   │  ⎿  Done\n   ├─ Score duplicate CI commit issue · 14 tool uses · 23.5k tokens\n   │  ⎿  Bash: git merge-base --is-ancestor origin/main 743e9ac …\n   └─ Score test coverage issue · 14 tool uses · 26.2k tokens\n      ⎿  Bash: grep -B 5 -A 5 \"Some(0)\" src/daemon/mod.rs\n\n✢ Scoring issues… (esc to interrupt · ctrl+t to hide tasks · 1m 2s · ↓ 4.2k tokens · thought for 2s)\n  ⎿  ◼ #5 Score and filter issues (amsterdam)\n     ◻ #6 Post review comment on PR #506 (amsterdam)\n     ✔ #1 Check PR #506 eligibility for code review (amsterdam)\n     ✔ #2 Find relevant CLAUDE.md files (amsterdam)\n     ✔ #3 Get PR #506 summary (amsterdam)\n     ✔ #4 Run 5 parallel code review agents (amsterdam)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n\n",
+    "broadway": "  The 5 agents have completed. Agent 3 (git history) found a potentially significant issue about coarse-grained filtering. Let me now update the task status and launch scoring agents for the issues found.\n✔ Task #4 updated: status → completed\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 updated: status → in progress\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ I have two issues to score:\n  1. Agent 3: Coarse-grained filter bug - filters by coworker name instead of branch name\n  2. Agent 4: Test naming inconsistency - test names still reference \"open_prs\"\n\n  Let me launch Haiku agents to score both issues.\n\n⏺ 2 Task agents finished (ctrl+o to expand)\n   ├─ Score issue 1: coarse filter · 15 tool uses · 51.3k tokens\n   │  ⎿  Done\n   └─ Score issue 2: test naming · 11 tool uses · 25.8k tokens\n      ⎿  Done\n\n! midtown e2e capture\n  ⎿  Captured WorldSnapshot to: /Users/btucker/.midtown/coworkers/midtown/broadway/tests/fixtures/snapshot/snapshot-20260203-023035.json\n\n     Snapshot summary:\n       Active coworkers: 9\n       Pane contents: 9\n       Tasks: 6\n       File size: 51772 bytes\n\n     Use this fixture in tests by loading from:\n       tests/fixtures/snapshot/snapshot-20260203-023035.json\n\n❯ lead said: @broadway Please continue your PR #507 review - you were interrupted. Complete scoring and post the review comment.\n\n⏺ Let me continue with the scoring agents and complete the review.\n\n⏺ 2 Task agents finished (ctrl+o to expand)\n   ├─ Score issue 1: coarse filter · 11 tool uses · 62.6k tokens\n   │  ⎿  Done\n   └─ Score issue 2: test naming · 11 tool uses · 25.3k tokens\n      ⎿  Done\n\n✢ Scoring issues… (esc to interrupt · ctrl+t to hide tasks · 54s · ↓ 3.6k tokens · thought for 3s)\n  ⎿  ◼ #5 Score and filter issues (broadway)\n     ◻ #6 Post review comment on PR #507 (broadway)\n     ✔ #1 Check PR #507 eligibility (broadway)\n     ✔ #2 Find relevant CLAUDE.md files (broadway)\n     ✔ #3 Get PR #507 summary (broadway)\n     ✔ #4 Run 5 parallel code review agents (broadway)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n\n",
+    "columbus": "  ⎿  (No content)\n\n⏺ Bash(midtown channel post \"Re-ran the failed E2E job - test_nudge_reaches_real_claude is a timing-sensitive test that can be flaky\")\n  ⎿  Message posted to channel\n\n⏺ Bash(midtown state pull-request --task 1)\n  ⎿  columbus → PR#1\n\n❯ github said: @columbus Check 'Test' passed on PR #507\n\n❯ github said: @columbus Check 'Test' passed on PR #507\n\n⏺ Re-ran the failed E2E tests. The failure was test_nudge_reaches_real_claude - a timing-sensitive test unrelated to my orphan detection changes (my PR only modifies dispatch.rs filtering logic). Waiting for the re-run\n   to complete.\n\n✻ Sautéed for 50s\n\n❯ github said: @columbus Check 'Format' passed on PR #507\n\n⏺ Format passed on the re-run. Waiting for the remaining checks (Clippy, Test, E2E Tests) to complete.\n\n❯ github said: @columbus Check 'Format' passed on PR #507\n\n⏺ Noted. Waiting for E2E Tests re-run to complete.\n\n❯ github said: @columbus Check 'Clippy' passed on PR #507\n\n⏺ Clippy passed. Waiting for Test and E2E Tests to complete on the re-run.\n\n❯ github said: @columbus Check 'Clippy' passed on PR #507\n\n⏺ Noted. Waiting for E2E Tests re-run result.\n\n❯ Your task #1 (Fix orphan branch detection for squash-merged PRs) was updated by madison — check the latest changes\n\n⏺ Bash(midtown channel read | tail -20)\n  ⎿  [2026-02-03T02:35:12.164211+00:00] lead: @broadway Please continue your PR #507 review - you were interrupted. Complete scoring and post the review comment.\n     [2026-02-03T02:35:23.599442+00:00] lead: 💡 **Impact of compaction misdetection**: The daemon sending Escape to coworkers waiting at prompts is actively disrupting work. Amsterdam found real issues in PR #506\n     (incomplete fix in `rules.rs`) but couldn't post the review because they were interrupted. This bug (task #7) is higher priority than it initially seemed.\n     … +20 lines (ctrl+o to expand)\n\n✻ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · thinking)\n  ⎿  ◼ #2 Fix tmux window naming showing #0 for taskless PR work (vernon)\n     ◼ #3 Fix task.updated RPC to check task storage path before nudging (york)\n     ◼ #5 Fix double nudge delivery for stuck conditions (riverside)\n     ◻ #7 Fix daemon misidentifying waiting-at-prompt as stuck compaction\n     ✔ #1 Fix orphan branch detection for squash-merged PRs (columbus)\n     ✔ #4 Fix send_bell triggering Ctrl+G editor in Claude Code (pleasant)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n",
+    "madison": "  - \"@lead [Review Note] PR #123: <brief description> (scored 25). Please determine if this warrants a follow-up task and create one if so.\"\n\n  The 40 threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Low-scoring issues may still be real bugs that the scoring agent misjudged.\n\n⏺ Bash(midtown channel post \"/me reviewing PR #508\")\n  ⎿  Message posted to channel\n\n⏺ Bash(midtown state reviewing --task 0)\n  ⎿  madison → review#0\n\n⏺ Skill(code-review:code-review)\n  ⎿  Successfully loaded skill · 7 tools allowed\n\n⏺ I'll create a todo list and work through this code review systematically.\n✔ Task #1 created: Check PR #508 eligibility for code review\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #2 created: Find relevant CLAUDE.md files for PR #508\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #3 created: Get PR #508 summary\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #4 created: Run 5 parallel code review agents on PR #508\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 created: Score and filter issues from PR #508 review\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #6 created: Post review comment on PR #508\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #1 updated: owner, status → in progress\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #2 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #3 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #4 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #6 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ Now let me run the first three tasks in parallel - eligibility check, finding CLAUDE.md files, and getting PR summary:\n\n✽ Checking PR eligibility… (esc to interrupt · ctrl+t to hide tasks · 33s · ↓ 784 tokens · thinking)\n  ⎿  ◼ #1 Check PR #508 eligibility for code review (madison)\n     ◻ #2 Find relevant CLAUDE.md files for PR #508 (madison)\n     ◻ #3 Get PR #508 summary (madison)\n     ◻ #4 Run 5 parallel code review agents on PR #508 (madison)\n     ◻ #5 Score and filter issues from PR #508 review (madison)\n     ◻ #6 Post review comment on PR #508 (madison)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n",
+    "park": "⏺ Read(CLAUDE.md)\n  ⎿  Read 233 lines\n\n⏺ Now let me launch the 5 parallel code review agents:\n\n⏺ 5 Task agents finished (ctrl+o to expand)\n   ├─ Agent #1: CLAUDE.md compliance · 9 tool uses · 24.4k tokens\n   │  ⎿  Done\n   ├─ Agent #2: Obvious bugs scan · 8 tool uses · 21.9k tokens\n   │  ⎿  Done\n   ├─ Agent #3: Git history context · 30 tool uses · 61.9k tokens\n   │  ⎿  Done\n   ├─ Agent #4: Previous PR comments · 34 tool uses · 35.3k tokens\n   │  ⎿  Done\n   └─ Agent #5: Code comments compliance · 19 tool uses · 31.8k tokens\n      ⎿  Done\n✔ Task #4 updated: status → completed\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 updated: status → in progress\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ Now let me score the consolidated issues. The key code issues from all 5 agents are:\n\n  1. Missing comment for installs_required_plugins skip (inconsistency)\n  2. Inaccurate comment for nudge_reaches_real_claude (comment says \"login screen\" but test code says \"suggestion text\")\n  3. Test name uses substring matching (fragile pattern)\n  4. Silent test degradation pattern without addressing root cause\n\n  Let me score these:\n\n⏺ 4 Task agents finished (ctrl+o to expand)\n   ├─ Score issue: missing comment · 9 tool uses · 24.1k tokens\n   │  ⎿  Done\n   ├─ Score issue: inaccurate comment · 11 tool uses · 34.4k tokens\n   │  ⎿  Done\n   ├─ Score issue: substring matching · 12 tool uses · 24.0k tokens\n   │  ⎿  Done\n   └─ Score issue: test degradation · 13 tool uses · 25.2k tokens\n      ⎿  Done\n\n  Tasks (4 done, 1 in progress, 1 open) · ctrl+t to hide tasks\n  ◼ #5 Score and filter issues for PR #504 (park)\n  ◻ #6 Post review comment on PR #504 (park)\n  ✔ #1 Check PR #504 eligibility (park)\n  ✔ #2 Find relevant CLAUDE.md files for PR #504 (park)\n  ✔ #3 Get PR #504 summary (park)\n  ✔ #4 Run 5 parallel code review agents for PR #504 (park)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n\n",
+    "pleasant": "     --- a/src/coworker.rs\n     … +27 lines (ctrl+o to expand)\n\n⏺ Bash(git add src/coworker.rs tests/tmux_e2e.rs && git commit -m \"fix: Only send bell notification to chat pane, not Claude Code…)\n  ⎿  [pleasant/fix-send-bell-ctrl-g 773c27f] fix: Only send bell notification to chat pane, not Claude Code\n      2 files changed, 69 insertions(+), 4 deletions(-)\n     +cargo clippy -- -D warnings\n     … +2 lines (ctrl+o to expand)\n\n⏺ Bash(git push -u origin pleasant/fix-send-bell-ctrl-g 2>&1)\n  ⎿  remote:\n     remote: Create a pull request for 'pleasant/fix-send-bell-ctrl-g' on GitHub by visiting:\n     remote:      https://github.com/btucker/midtown/pull/new/pleasant/fix-send-bell-ctrl-g\n     … +4 lines (ctrl+o to expand)\n\n⏺ Bash(midtown state pull-request --task 4)\n  ⎿  pleasant → PR#4\n\n⏺ Bash(gh pr create --title \"fix: Only send bell notification to chat pane, not Claude Code [Midtown #4]\" --body \"<!-- midtown: pleasant -->…)\n  ⎿  https://github.com/btucker/midtown/pull/508\n     Warning: 1 uncommitted change\n\n⏺ Bash(midtown channel post \"/me PR #508 is ready - the bell now knows its place (chat pane only)!\")\n  ⎿  Message posted to channel\n✔ Task #4 updated: status → completed\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ Bash(midtown state completed --task 4)\n  ⎿  pleasant → done#4\n\n⏺ Bash(midtown channel post \"/me task #4 wrapped up - another scene in the books!\")\n  ⎿  Interrupted · What should Claude do instead?\n\n❯ Your task #4 (Fix send_bell triggering Ctrl+G editor in Claude Code) was updated by madison — check the latest changes\n\n⏺ Bash(midtown channel read 2>/dev/null | tail -20)\n  ⎿  [2026-02-03T02:35:12.164211+00:00] lead: @broadway Please continue your PR #507 review - you were interrupted. Complete scoring and post the review comment.\n     [2026-02-03T02:35:23.599442+00:00] lead: 💡 **Impact of compaction misdetection**: The daemon sending Escape to coworkers waiting at prompts is actively disrupting work. Amsterdam found real issues in PR #506\n     (incomplete fix in `rules.rs`) but couldn't post the review because they were interrupted. This bug (task #7) is higher priority than it initially seemed.\n     … +20 lines (ctrl+o to expand)\n\n✶ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · thinking)\n  ⎿  ◼ #2 Fix tmux window naming showing #0 for taskless PR work (vernon)\n     ◼ #3 Fix task.updated RPC to check task storage path before nudging (york)\n     ◼ #5 Fix double nudge delivery for stuck conditions (riverside)\n     ◻ #7 Fix daemon misidentifying waiting-at-prompt as stuck compaction\n     ✔ #1 Fix orphan branch detection for squash-merged PRs (columbus)\n     ✔ #4 Fix send_bell triggering Ctrl+G editor in Claude Code (pleasant)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 file +0 -1\n\n",
+    "readme-update": "  ⎿  readme-update → test\n\n⏺ Bash(sleep 30 && gh pr checks 505 2>&1) timeout: 1m 0s\n  ⎿  Error: Exit code 8\n     Format     pass    10s     https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958921\n     Clippy     pending 0       https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958948\n     E2E Tests  pending 0       https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958908\n     Test       pending 0       https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958927\n\n⏺ Bash(sleep 60 && gh pr checks 505 2>&1) timeout: 1m 30s\n  ⎿  Error: Exit code 8\n     Format     pass    10s     https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958921\n     Test       pass    36s     https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958927\n     E2E Tests  pending 0       https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958908\n     Clippy     pass    30s     https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958948\n\n⏺ Format, Test, and Clippy passed. E2E still pending.\n\n⏺ Bash(sleep 120 && gh pr checks 505 2>&1) timeout: 2m 30s\n  ⎿  Interrupted · What should Claude do instead?\n\n❯ Your PR #505 (Fix spelling of 'Prerequisites' in RE...) has a completed review — please address any feedback and merge if appropriate.\n\n⏺ Bash(gh pr checks 505 2>&1)\n  ⎿  Error: Exit code 8\n     Format     pass    10s     https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958921\n     Test       pass    36s     https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958927\n     E2E Tests  pending 0       https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958908\n     Clippy     pass    30s     https://github.com/btucker/midtown/actions/runs/21614408702/job/62289958948\n\n⏺ Bash(gh api repos/btucker/midtown/issues/505/comments --jq '.[-1] | {author: .user.login, body: .body}')\n  ⎿ {\"author\":\"btucker\",\"body\":\"## Code Review by park\\n\\u003c!-- midtown: park --\\u003e\\n\\n### Code review\\n\\nNo issues found. This is a straightforward documentation typo fix - correcting the spelling of \\\"Prere\n    quisites\\\" in README.md.\\n\\n🤖 Generated with [Claude Code](https://claude.ai/code)\"}\n\n\n⏺ Review is approved with no issues. E2E Tests still running. Let me wait a bit more.\n\n⏺ Bash(sleep 60 && gh pr checks 505 2>&1) timeout: 1m 30s\n  ⎿  Running…\n     ctrl+b ctrl+b (twice) to run in background\n\n✽ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · 54s · ↓ 323 tokens · thinking)\n  ⎿  ◼ #2 Fix tmux window naming showing #0 for taskless PR work (vernon)\n     ◼ #3 Fix task.updated RPC to check task storage path before nudging (york)\n     ◼ #5 Fix double nudge delivery for stuck conditions (riverside)\n     ◻ #7 Fix daemon misidentifying waiting-at-prompt as stuck compaction\n     ✔ #1 Fix orphan branch detection for squash-merged PRs (columbus)\n     ✔ #4 Fix send_bell triggering Ctrl+G editor in Claude Code (pleasant)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n",
+    "riverside": "     … +10 lines (ctrl+o to expand)\n\n⏺ Bash(cargo test --lib stuck_nudge_effects_returns_only_system_message 2>&1 | tail -15) timeout: 1m 0s\n  ⎿      Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s\n          Running unittests src/lib.rs (target/debug/deps/midtown-e66f5210bd9fe01c)\n     … +4 lines (ctrl+o to expand)\n\n⏺ All checks pass. Let me commit the fix and create a PR.\n\n⏺ Bash(midtown channel post \"/me wrapping up task 5 - the echo chamber is silenced\")\n  ⎿  Message posted to channel\n\n⏺ Bash(git status)\n  ⎿  On branch riverside/fix-double-nudge\n     Changes not staged for commit:\n       (use \"git add <file>...\" to update what will be committed)\n     … +5 lines (ctrl+o to expand)\n\n⏺ Bash(git add src/daemon/effects.rs src/daemon/pr.rs && git commit -m \"fix: Remove double nudge delivery for stuck conditions…) timeout: 30s\n  ⎿  [riverside/fix-double-nudge 18a1cf0] fix: Remove double nudge delivery for stuck conditions\n      2 files changed, 52 insertions(+), 19 deletions(-)\n     +cargo clippy -- -D warnings\n     … +2 lines (ctrl+o to expand)\n\n⏺ Bash(git push -u origin riverside/fix-double-nudge 2>&1) timeout: 30s\n  ⎿  remote:\n     remote: Create a pull request for 'riverside/fix-double-nudge' on GitHub by visiting:\n     remote:      https://github.com/btucker/midtown/pull/new/riverside/fix-double-nudge\n     … +4 lines (ctrl+o to expand)\n\n⏺ Bash(gh pr create --title \"fix: Remove double nudge delivery for stuck conditions [Midtown #5]\" --body \"<!-- midtown: riverside -->…) timeout: 30s\n  ⎿  Interrupted · What should Claude do instead?\n\n❯ Your task #5 (Fix double nudge delivery for stuck conditions) was updated by madison — check the latest changes\n\n⏺ Bash(midtown channel read | tail -20)\n  ⎿  [2026-02-03T02:35:12.164211+00:00] lead: @broadway Please continue your PR #507 review - you were interrupted. Complete scoring and post the review comment.\n     [2026-02-03T02:35:23.599442+00:00] lead: 💡 **Impact of compaction misdetection**: The daemon sending Escape to coworkers waiting at prompts is actively disrupting work. Amsterdam found real issues in PR #506\n     (incomplete fix in `rules.rs`) but couldn't post the review because they were interrupted. This bug (task #7) is higher priority than it initially seemed.\n     … +20 lines (ctrl+o to expand)\n\n✶ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · thinking)\n  ⎿  ◼ #2 Fix tmux window naming showing #0 for taskless PR work (vernon)\n     ◼ #3 Fix task.updated RPC to check task storage path before nudging (york)\n     ◼ #5 Fix double nudge delivery for stuck conditions (riverside)\n     ◻ #7 Fix daemon misidentifying waiting-at-prompt as stuck compaction\n     ✔ #1 Fix orphan branch detection for squash-merged PRs (columbus)\n     ✔ #4 Fix send_bell triggering Ctrl+G editor in Claude Code (pleasant)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n",
+    "vernon": "     Format     pass    8s      https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156187\n     E2E Tests  pending 0       https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156192\n\n⏺ New CI run started - Clippy and Format passed. Waiting on Tests and E2E.\n\n⏺ Bash(sleep 90 && gh pr checks 506 2>&1)\n  ⎿  Error: Exit code 8\n     Clippy     pass    25s     https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156202\n     Format     pass    8s      https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156187\n     Test       pass    49s     https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156196\n     E2E Tests  pending 0       https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156192\n\n⏺ Tests passed. E2E still running.\n\n⏺ Bash(sleep 120 && gh pr checks 506 2>&1)\n  ⎿  Running in the background (↓ to manage)\n\n⏺ Bash(midtown channel read 2>&1 | tail -20)\n  ⎿  The fix honors the architecture principle: \"the channel is for communication\" - let the channel's @mention routing be the single path for notifications.\n     [2026-02-03T02:31:35.857098+00:00] broadway: waiting for input\n     [2026-02-03T02:32:08.245849+00:00] coworker: created task: Fix daemon misidentifying waiting-at-prompt as stuck compaction\n     … +17 lines (ctrl+o to expand)\n\n⏺ Bash(gh pr checks 506 2>&1)\n  ⎿  Error: Exit code 8\n     Clippy     pass    25s     https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156202\n     Format     pass    8s      https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156187\n     Test       pass    49s     https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156196\n     E2E Tests  pending 0       https://github.com/btucker/midtown/actions/runs/21614477113/job/62290156192\n\n⏺ Bash(sleep 60 && gh pr checks 506 2>&1)\n  ⎿  Interrupted · What should Claude do instead?\n\n❯ Your task #2 (Fix tmux window naming showing #0 for taskless PR work) was updated by madison — check the latest changes\n\n⏺ Bash(gh pr checks 506 2>&1)\n  ⎿  Running…\n\n⏺ Bash(midtown channel read 2>&1 | tail -15)\n  ⎿  Waiting…\n\n✳ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · thinking)\n  ⎿  ◼ #2 Fix tmux window naming showing #0 for taskless PR work (vernon)\n     ◼ #3 Fix task.updated RPC to check task storage path before nudging (york)\n     ◼ #5 Fix double nudge delivery for stuck conditions (riverside)\n     ◻ #7 Fix daemon misidentifying waiting-at-prompt as stuck compaction\n     ✔ #1 Fix orphan branch detection for squash-merged PRs (columbus)\n     ✔ #4 Fix send_bell triggering Ctrl+G editor in Claude Code (pleasant)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n",
+    "york": "      629                  }\n      630              }\n      631              _ => {}\n\n⏺ Now let me verify everything compiles and tests pass.\n\n⏺ Bash(midtown state testing --task 3)\n  ⎿  york → test#3\n\n⏺ Bash(midtown channel post \"/me running build and tests to verify the fix\")\n  ⎿  Message posted to channel\n\n⏺ Bash(cargo build 2>&1 | tail -20)\n  ⎿     Compiling rustix v1.1.3\n        Compiling crossterm v0.29.0\n        Compiling midtown v0.4.1 (/Users/btucker/.midtown/coworkers/midtown/york)\n         Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.93s\n\n⏺ Bash(cargo test --lib 2>&1 | tail -30)\n  ⎿  test webserver::tests::test_webserver_config_default ... ok\n     test worktree::tests::test_check_coworker_worktree ... ok\n     test webserver::tests::test_discover_projects_handles_missing_dir ... ok\n     … +26 lines (ctrl+o to expand)\n\n⏺ Bash(cargo clippy -- -D warnings 2>&1 | tail -20)\n  ⎿      Checking fastrand v2.3.0\n         Checking tracing-subscriber v0.3.22\n         Checking hex v0.4.3\n     … +17 lines (ctrl+o to expand)\n\n⏺ Bash(cargo fmt -- --check 2>&1)\n  ⎿  Interrupted · What should Claude do instead?\n\n❯ Your task #3 (Fix task.updated RPC to check task storage path before nudging) was updated by madison — check the latest changes\n\n⏺ Bash(midtown channel read 2>/dev/null | tail -10)\n  ⎿  Running…\n\n⏺ Bash(cargo fmt -- --check 2>&1 | head -20)\n  ⎿  Waiting…\n\n✻ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · thought for 1s)\n  ⎿  ◼ #2 Fix tmux window naming showing #0 for taskless PR work (vernon)\n     ◼ #3 Fix task.updated RPC to check task storage path before nudging (york)\n     ◼ #5 Fix double nudge delivery for stuck conditions (riverside)\n     ◻ #7 Fix daemon misidentifying waiting-at-prompt as stuck compaction\n     ✔ #1 Fix orphan branch detection for squash-merged PRs (columbus)\n     ✔ #4 Fix send_bell triggering Ctrl+G editor in Claude Code (pleasant)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · 3 files +89 -7\n\n"
+  },
+  "pending_tasks_with_owners": [],
+  "pending_tasks_without_owners": [
+    {
+      "blocked_by": [],
+      "description": "**Bug**: The daemon's stuck detection only looks at `reviewDecision` from formal GitHub reviews, but coworkers can't submit formal reviews because they share the same GitHub user as the PR author.\n\n**Context**: All coworkers use the same GitHub account (btucker), so GitHub won't let them approve their own PRs. They post review comments instead.\n\n**Example**: Park reviewed PR #505 by posting a comment with `<!-- midtown: park -->` marker - the daemon should recognize this as a review.\n\n**Fix**: In the stuck condition check (`src/daemon/pr.rs`), when determining if a PR has been reviewed:\n1. Fetch PR comments via `gh api repos/{owner}/{repo}/issues/{pr}/comments`\n2. Check for comments containing `<!-- midtown: <name> -->` marker\n3. If found, treat the PR as reviewed (don't nudge about missing review)\n\n**Files to modify**:\n- `src/daemon/pr.rs` - `check_stuck_conditions` function\n- May need a helper to fetch and parse PR comments\n\nWrite a test first per CLAUDE.md.",
+      "id": "6",
+      "owner": null,
+      "status": "pending",
+      "subject": "Fix daemon to recognize PR comments as reviews"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Bug**: The daemon sends Escape to coworkers waiting at an empty prompt, incorrectly treating them as \"stuck in compaction\".\n\n**Snapshot to use for test**: `tests/fixtures/snapshot/snapshot-20260203-023035.json`\n\nCopy this file from broadway's worktree:\n```bash\ncp ~/.midtown/coworkers/midtown/broadway/tests/fixtures/snapshot/snapshot-20260203-023035.json tests/fixtures/snapshot/\n```\n\n**Test case requirements**:\n1. Load the snapshot fixture\n2. Parse broadway's pane content from `pane_contents.broadway`\n3. Verify the daemon does NOT detect this as \"stuck compaction\"\n4. Verify the daemon DOES detect this as \"needs nudge to continue\"\n\n**Broadway's pane showed**:\n```\n! midtown e2e capture\n  ⎿  Running…\n  Tasks (4 done, 1 in progress, 1 open)\n  ◼ #5 Score and filter issues (broadway)\n❯ \n```\n\n**Root cause**: The compaction detection logic doesn't distinguish between:\n1. Stuck in compaction (spinner shows \"Compacting...\" or \"Sautéed\")\n2. Waiting at empty prompt after completing work (needs nudge)\n\n**Fix**: Check for actual compaction spinner text before sending Escape. If just at empty prompt with in-progress task, send a continuation nudge instead.\n\nWrite the failing test FIRST, then fix the code.",
+      "id": "7",
+      "owner": null,
+      "status": "pending",
+      "subject": "Fix daemon misidentifying waiting-at-prompt as stuck compaction"
+    }
+  ],
+  "repo_name": "midtown",
+  "reviewed_prs": [
+    505
+  ],
+  "reviewer_pr_assignments": {
+    "amsterdam": 506,
+    "broadway": 507,
+    "madison": 508,
+    "park": 505
+  },
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "1b2a95c4-df59-43f3-bd87-f6b464b481a2",
+      "started_at": "2026-02-03T02:16:01.719342Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "pleasant",
+      "session_id": "5b3cf5ad-ba1f-4872-9141-0e952dc7da43",
+      "started_at": "2026-02-03T02:29:12.649440Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/pleasant"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "madison",
+      "session_id": "3c2aaf05-741a-41d4-a370-05390815e7ec",
+      "started_at": "2026-02-03T02:35:33.229145Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "riverside",
+      "session_id": "33f494ec-67f6-4c82-b9ab-82392b1ef8b2",
+      "started_at": "2026-02-03T02:29:16.302301Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "vernon",
+      "session_id": "dfbbf091-5fb2-4ae4-a9e6-413e999a0323",
+      "started_at": "2026-02-03T02:16:36.754749Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/vernon"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "readme-update",
+      "session_id": "7f4d1b5c-4e60-40b6-9e3a-288b18234de3",
+      "started_at": "2026-02-03T02:12:45.821986Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/readme-update"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "session_id": "d38afbc4-7056-4d93-beb9-b2ff950ee8ab",
+      "started_at": "2026-02-03T02:20:45.027299Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/amsterdam"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "broadway",
+      "session_id": "6f79e67a-b832-4de5-a180-07b07b918160",
+      "started_at": "2026-02-03T02:24:09.047068Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/broadway"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "park",
+      "session_id": "ae50059b-72d7-4745-8d1d-e059bc5d0589",
+      "started_at": "2026-02-03T02:12:19.339195Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/park"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "6d597dfe-7781-45f4-9075-f15ba37dba67",
+      "started_at": "2026-02-03T02:21:36.845220Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false
+}
