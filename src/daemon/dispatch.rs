@@ -357,19 +357,21 @@ pub(super) fn check_for_duplicate_task_workers(
 // Pending task auto-spawn
 // ============================================================================
 
-/// Spawn coworkers for pending tasks.
+/// Filter out worktrees that have open or recently merged PRs.
 ///
-/// Filter out worktrees whose branches have open PRs.
+/// A worktree with an open PR is waiting for review/merge.
+/// A worktree with a recently merged PR may show "unmerged commits" due to
+/// squash-merge creating different commit SHAs, but the work was actually merged.
 ///
-/// A worktree with an open PR is not orphaned — it's just waiting for review/merge.
 /// Pure function for testability.
-fn filter_orphans_with_open_prs(
+fn filter_orphans_with_pr_work(
     flagged: Vec<String>,
     open_pr_owners: &HashSet<String>,
+    merged_pr_owners: &HashSet<String>,
 ) -> Vec<String> {
     flagged
         .into_iter()
-        .filter(|name| !open_pr_owners.contains(name))
+        .filter(|name| !open_pr_owners.contains(name) && !merged_pr_owners.contains(name))
         .collect()
 }
 
@@ -377,18 +379,20 @@ fn filter_orphans_with_open_prs(
 ///
 /// Worktrees with no commits beyond the base branch are deleted.
 /// Worktrees with unmerged commits are flagged to the Lead via channel.
-/// Worktrees whose branches have open PRs are skipped — they're tracked work.
+/// Worktrees whose branches have open or recently merged PRs are skipped — they're tracked work.
 pub(super) fn cleanup_orphaned_worktrees(state: &DaemonState) {
     let flagged = state.coworkers.cleanup_orphaned_worktrees();
 
-    // Filter out worktrees whose branches have open PRs
-    let open_pr_owners = {
+    // Filter out worktrees whose branches have open or recently merged PRs.
+    // Merged PRs are checked because squash-merge creates different commit SHAs,
+    // making git think there are "unmerged commits" when the work was actually merged.
+    let (open_pr_owners, merged_pr_owners) = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        cache.open_pr_owners.clone()
+        (cache.open_pr_owners.clone(), cache.merged_pr_owners.clone())
     };
-    let flagged = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+    let flagged = filter_orphans_with_pr_work(flagged, &open_pr_owners, &merged_pr_owners);
     for name in &flagged {
-        debug!("Orphan worktree flagged (no open PR): {}", name);
+        debug!("Orphan worktree flagged (no open or merged PR): {}", name);
     }
 
     let mut tracker = state.orphan_tracker.write().unwrap();
@@ -757,8 +761,9 @@ mod tests {
             "park".to_string(),
         ];
         let open_pr_owners: HashSet<String> = ["riverside".to_string()].into_iter().collect();
+        let merged_pr_owners: HashSet<String> = HashSet::new();
 
-        let result = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+        let result = filter_orphans_with_pr_work(flagged, &open_pr_owners, &merged_pr_owners);
         assert_eq!(result, vec!["amsterdam", "park"]);
     }
 
@@ -768,8 +773,9 @@ mod tests {
         let open_pr_owners: HashSet<String> = ["amsterdam".to_string(), "riverside".to_string()]
             .into_iter()
             .collect();
+        let merged_pr_owners: HashSet<String> = HashSet::new();
 
-        let result = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+        let result = filter_orphans_with_pr_work(flagged, &open_pr_owners, &merged_pr_owners);
         assert!(result.is_empty());
     }
 
@@ -777,8 +783,28 @@ mod tests {
     fn test_filter_orphans_none_have_open_prs() {
         let flagged = vec!["amsterdam".to_string(), "park".to_string()];
         let open_pr_owners: HashSet<String> = HashSet::new();
+        let merged_pr_owners: HashSet<String> = HashSet::new();
 
-        let result = filter_orphans_with_open_prs(flagged, &open_pr_owners);
+        let result = filter_orphans_with_pr_work(flagged, &open_pr_owners, &merged_pr_owners);
         assert_eq!(result, vec!["amsterdam", "park"]);
+    }
+
+    #[test]
+    fn test_filter_orphans_with_merged_prs() {
+        // Scenario: york has a squash-merged PR. The worktree shows "unmerged commits"
+        // because commit SHAs differ, but the PR was actually merged.
+        // This should NOT be flagged as an orphan.
+        let flagged = vec![
+            "amsterdam".to_string(), // genuinely orphaned
+            "york".to_string(),      // has merged PR (squash-merge)
+            "park".to_string(),      // has open PR
+        ];
+        let open_pr_owners: HashSet<String> = ["park".to_string()].into_iter().collect();
+        let merged_pr_owners: HashSet<String> = ["york".to_string()].into_iter().collect();
+
+        let result = filter_orphans_with_pr_work(flagged, &open_pr_owners, &merged_pr_owners);
+
+        // Only amsterdam should be flagged - york's PR was merged, park has open PR
+        assert_eq!(result, vec!["amsterdam"]);
     }
 }
