@@ -263,11 +263,17 @@ impl DaemonClient {
         self.send("daemon.check-pending", None)
     }
 
-    pub fn task_updated(&self, task_id: &str, updater: &str) -> Result<Response, String> {
-        self.send(
-            "task.updated",
-            Some(serde_json::json!({ "task_id": task_id, "updater": updater })),
-        )
+    pub fn task_updated(
+        &self,
+        task_id: &str,
+        updater: &str,
+        task_list_id: Option<&str>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "task_id": task_id, "updater": updater });
+        if let Some(list_id) = task_list_id {
+            params["task_list_id"] = serde_json::json!(list_id);
+        }
+        self.send("task.updated", Some(params))
     }
 
     // Kanban commands

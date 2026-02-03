@@ -272,10 +272,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let updater = params
                 .and_then(|p| p.get("updater"))
                 .and_then(|v| v.as_str());
+            let task_list_id = params
+                .and_then(|p| p.get("task_list_id"))
+                .and_then(|v| v.as_str());
 
             match (task_id, updater) {
                 (Some(task_id), Some(updater)) => {
-                    handle_task_updated(request.id, task_id, updater, state)
+                    handle_task_updated(request.id, task_id, updater, task_list_id, state)
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -565,12 +568,33 @@ fn handle_coworker_asking(
 ///
 /// Looks up the task by ID, checks the owner, and if the updater differs from
 /// the owner, sends a nudge so the owner sees the change immediately.
+///
+/// The `task_list_id` parameter (from `CLAUDE_CODE_TASK_LIST_ID` env var) is used to
+/// verify the update came from the shared team task list. If it refers to a different
+/// session (e.g., a coworker's local subtasks), we skip the lookup to avoid cross-list
+/// ID collisions causing spurious nudges.
 fn handle_task_updated(
     id: RequestId,
     task_id: &str,
     updater: &str,
+    task_list_id: Option<&str>,
     state: &DaemonState,
 ) -> Response {
+    // Check if this update is for the shared team task list
+    if !should_lookup_task(task_list_id, &state.repo_name) {
+        debug!(
+            "task.updated: task_list_id {:?} doesn't match repo {}, skipping lookup",
+            task_list_id, state.repo_name
+        );
+        return Response::success(
+            id,
+            serde_json::json!({
+                "nudged": false,
+                "reason": "task list mismatch",
+            }),
+        );
+    }
+
     let tasks = crate::tasks::read_tasks();
     let task = tasks.iter().find(|t| t.id == task_id);
 
@@ -634,6 +658,22 @@ fn handle_task_updated(
             "owner": owner,
         }),
     )
+}
+
+/// Check whether a task.updated RPC should look up the task in the main project list.
+///
+/// Returns true if:
+/// - `task_list_id` is None (backwards compatibility with old clients)
+/// - `task_list_id` matches `midtown-{repo_name}` (the shared team task list)
+///
+/// Returns false if `task_list_id` refers to a different session (e.g., a coworker's
+/// local subtask list), preventing cross-list ID collisions from causing spurious nudges.
+fn should_lookup_task(task_list_id: Option<&str>, repo_name: &str) -> bool {
+    let expected = crate::paths::task_list_id_for_repo(repo_name);
+    match task_list_id {
+        None => true, // Backwards compatibility
+        Some(id) => id == expected,
+    }
 }
 
 /// Remove shell escaping artifacts from channel messages.
@@ -1630,5 +1670,33 @@ mod tests {
             kanban_ci_status(&[serde_json::json!({"status": "IN_PROGRESS"})]),
             "running"
         );
+    }
+
+    #[test]
+    fn test_should_lookup_task_matching_task_list() {
+        // When task_list_id matches the expected midtown-<repo>, should proceed
+        assert!(should_lookup_task(Some("midtown-myrepo"), "myrepo"));
+    }
+
+    #[test]
+    fn test_should_lookup_task_none_backwards_compat() {
+        // When task_list_id is None (old clients), should proceed for backwards compatibility
+        assert!(should_lookup_task(None, "myrepo"));
+    }
+
+    #[test]
+    fn test_should_lookup_task_different_session() {
+        // When task_list_id is a different session (e.g., local coworker subtasks),
+        // should NOT proceed to avoid cross-list ID collisions
+        assert!(!should_lookup_task(
+            Some("some-random-uuid-session"),
+            "myrepo"
+        ));
+    }
+
+    #[test]
+    fn test_should_lookup_task_different_repo() {
+        // When task_list_id is for a different repo, should NOT proceed
+        assert!(!should_lookup_task(Some("midtown-otherrepo"), "myrepo"));
     }
 }

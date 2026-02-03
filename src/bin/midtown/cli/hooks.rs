@@ -623,7 +623,9 @@ fn handle_task_hook() -> Result<Response, String> {
                     .or_else(|| tool_input["task_id"].as_str())
                     .unwrap_or("");
                 if !task_id.is_empty() {
-                    let _ = client.task_updated(task_id, &agent);
+                    // Include task list ID so daemon can check for cross-list collisions
+                    let task_list_id = std::env::var("CLAUDE_CODE_TASK_LIST_ID").ok();
+                    let _ = client.task_updated(task_id, &agent, task_list_id.as_deref());
                 }
             }
             _ => {}
