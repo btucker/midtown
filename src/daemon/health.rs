@@ -207,6 +207,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &snap.coworkers_with_open_prs,
             &snap.active_reviewers,
             &snap.coworkers_with_unblocked_deps,
+            &snap.coworkers_with_running_subagents,
             &snap.ci_passed_pr_coworkers,
             &records,
             snap.now,
