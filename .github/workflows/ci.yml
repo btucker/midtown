@@ -26,8 +26,30 @@ jobs:
       - name: Run tests
         run: cargo test --all-features
 
+  build-e2e:
+    name: Build E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: midtown-binary
+          path: target/release/midtown
+          retention-days: 1
+
   e2e:
     name: E2E - ${{ matrix.test }}
+    needs: [build-e2e]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -64,6 +86,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Download pre-built binary
+        uses: actions/download-artifact@v4
+        with:
+          name: midtown-binary
+          path: target/release
+
+      - name: Make binary executable
+        run: chmod +x target/release/midtown
+
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
 
@@ -78,9 +109,6 @@ jobs:
 
       - name: Start tmux server
         run: tmux start-server
-
-      - name: Build release binary
-        run: cargo build --release
 
       - name: Run ${{ matrix.test }}
         run: cargo test --release --test ${{ matrix.test }} -- ${{ matrix.flags }}
