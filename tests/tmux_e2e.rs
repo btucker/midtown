@@ -1577,6 +1577,7 @@ fn test_find_orphaned_processes_returns_only_orphans() {
     // Cleanup
     let _ = Command::new("kill").arg(orphan_pid.to_string()).status();
     let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// `kill_orphaned_processes` kills only orphaned processes.
@@ -1638,6 +1639,7 @@ fn test_kill_orphaned_processes_kills_only_orphans() {
 
     // Cleanup the non-orphan
     let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// `kill_orphaned_processes` with midtown settings pattern kills real orphaned Claude.
@@ -1702,12 +1704,12 @@ fn test_kill_orphaned_claude_processes_real() {
         .args(["-P", &claude_pid.to_string()])
         .output();
     let mut all_pids = vec![claude_pid];
-    if let Ok(o) = child_output {
-        if o.status.success() {
-            for line in String::from_utf8_lossy(&o.stdout).lines() {
-                if let Ok(pid) = line.trim().parse::<u32>() {
-                    all_pids.push(pid);
-                }
+    if let Ok(o) = child_output
+        && o.status.success()
+    {
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            if let Ok(pid) = line.trim().parse::<u32>() {
+                all_pids.push(pid);
             }
         }
     }
