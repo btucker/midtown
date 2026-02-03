@@ -291,6 +291,9 @@ pub enum ClientMessage {
     /// Send a nudge (text input) to a coworker or the lead
     #[serde(rename = "nudge")]
     Nudge { target: String, message: String },
+    /// Send a special key (like Escape) to a coworker or the lead
+    #[serde(rename = "send_key")]
+    SendKey { target: String, key: String },
 }
 
 /// Create the web server router
@@ -1084,6 +1087,30 @@ async fn handle_client_message(
             }
             info!("Nudge sent to {} via web UI: {}", target, message);
         }
+        ClientMessage::SendKey { target, key } => {
+            // Validate target name
+            if target.is_empty()
+                || !target
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err("Invalid send_key target".to_string());
+            }
+            // Only allow specific safe keys
+            if key != "Escape" {
+                return Err("Only 'Escape' key is supported".to_string());
+            }
+
+            let coworkers = state
+                .coworkers
+                .as_ref()
+                .ok_or_else(|| "Coworker manager not available".to_string())?;
+
+            coworkers
+                .send_key(&target, &key)
+                .map_err(|e| format!("Failed to send key to {}: {}", target, e))?;
+            info!("Sent {} key to {} via web UI", key, target);
+        }
     }
 
     Ok(())
@@ -1367,6 +1394,32 @@ mod tests {
                 assert_eq!(message, "please review PR #42");
             }
             _ => panic!("Expected Nudge"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_send_key_parsing() {
+        let json = r#"{"type": "send_key", "target": "riverside", "key": "Escape"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::SendKey { target, key } => {
+                assert_eq!(target, "riverside");
+                assert_eq!(key, "Escape");
+            }
+            _ => panic!("Expected SendKey"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_send_key_lead_parsing() {
+        let json = r#"{"type": "send_key", "target": "lead", "key": "Escape"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::SendKey { target, key } => {
+                assert_eq!(target, "lead");
+                assert_eq!(key, "Escape");
+            }
+            _ => panic!("Expected SendKey"),
         }
     }
 
