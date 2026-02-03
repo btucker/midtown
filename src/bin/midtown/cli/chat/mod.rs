@@ -15,7 +15,7 @@ use std::time::Duration;
 use crossterm::{
     cursor::MoveTo,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
         MouseEventKind,
     },
     execute,
@@ -116,22 +116,23 @@ async fn run_app_async(
                             EventResult::Continue => {}
                         }
 
-                        // Drain all pending events before redrawing to prevent scroll lag.
+                        // Drain any immediately available events before redrawing.
                         // This coalesces rapid mouse scroll events into a single batch,
                         // avoiding the overhead of redrawing between each scroll event.
-                        while event::poll(Duration::ZERO).unwrap_or(false) {
-                            if let Ok(event) = event::read() {
-                                match handle_event(app, event) {
-                                    EventResult::Exit => return Ok(()),
-                                    EventResult::ToggleSelectionMode => {
-                                        if app.selection_mode {
-                                            let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
-                                        } else {
-                                            let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
-                                        }
+                        // Uses async timeout(ZERO) to yield to the runtime between attempts.
+                        while let Ok(Some(Ok(event))) =
+                            tokio::time::timeout(Duration::ZERO, event_stream.next()).await
+                        {
+                            match handle_event(app, event) {
+                                EventResult::Exit => return Ok(()),
+                                EventResult::ToggleSelectionMode => {
+                                    if app.selection_mode {
+                                        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+                                    } else {
+                                        let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
                                     }
-                                    EventResult::Continue => {}
                                 }
+                                EventResult::Continue => {}
                             }
                         }
                     }
