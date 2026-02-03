@@ -2727,9 +2727,9 @@ mod tests {
 
     #[test]
     fn queued_prompt_detected_with_multiple_nudges_and_edit_hint() {
-        // When multiple nudges pile up, Claude Code shows "Press up to edit queued messages"
-        // hint. This scenario captured in snapshot-20260203-161629.json shows amsterdam
-        // stuck with multiple queued nudges that need interrupt (Escape) to clear.
+        // When multiple nudges pile up, Claude Code shows queued messages in the input area.
+        // This test constructs a representative TUI state with multiple queued nudges
+        // that need interrupt (Escape) to clear.
         let mut panes = HashMap::new();
         let tui_content = "\
 ⏺ Previous action completed
