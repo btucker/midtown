@@ -73,6 +73,8 @@ jobs:
             flags: ""
           - test: tailf_integration
             flags: ""
+          - test: idle_break_e2e
+            flags: ""
       fail-fast: false
     env:
       MIDTOWN_WEBHOOK_PORT: 0
