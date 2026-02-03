@@ -132,17 +132,19 @@ pub struct ResizeActions {
 
 impl ResizeActions {
     /// Execute all resize/reset actions against tmux.
+    ///
+    /// NOTE: This is intentionally a no-op. The TUI user controls tmux sizing,
+    /// and the web UI adapts to whatever size the terminal is. Web-driven
+    /// resizing was removed because it blocked TUI users from resizing their
+    /// terminal (tmux resize-window commands would override their changes).
+    ///
+    /// The ViewerTracker is retained for potential future analytics/debugging,
+    /// but no actual resize commands are executed.
+    #[allow(unused_variables)]
     pub fn execute(&self, session: &str) {
-        for (window, cols) in &self.resize_windows {
-            if let Err(e) = tmux::resize_window_width(session, window, *cols) {
-                tracing::warn!("Failed to resize window {}: {}", window, e);
-            }
-        }
-        for window in &self.reset_windows {
-            if let Err(e) = tmux::reset_window_size(session, window) {
-                tracing::warn!("Failed to reset window {} size: {}", window, e);
-            }
-        }
+        // Intentionally empty - see doc comment above.
+        // Previously this resized tmux windows to match web viewer viewport,
+        // but that prevented TUI users from controlling their terminal size.
     }
 }
 
