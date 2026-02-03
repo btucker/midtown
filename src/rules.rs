@@ -2707,6 +2707,47 @@ mod tests {
     }
 
     #[test]
+    fn queued_prompt_skipped_when_coworker_not_in_start_times() {
+        // Safety behavior: if a coworker has queued nudges but is NOT in start_times,
+        // we should NOT trigger recovery. This prevents false positives during startup
+        // when the TUI structure is still forming. The unwrap_or(false) at line 896
+        // ensures coworkers missing from start_times are skipped.
+        let mut panes = HashMap::new();
+        let tui_content = "\
+⏺ Completed previous task
+
+✳ Running cargo test...
+  (esc to interrupt · 45s)
+❯ Check the channel for updates
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("amsterdam".to_string(), tui_content.to_string());
+
+        // Empty start_times - amsterdam is NOT tracked (simulates startup scenario)
+        let now = chrono::Utc::now();
+        let start_times = HashMap::new(); // Empty!
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300), // compaction threshold
+            &start_times,
+            now,
+            min_age,
+        );
+
+        // Should NOT trigger recovery - coworker not in start_times means we can't
+        // verify their age, so we skip them to prevent false positives
+        assert!(
+            recoveries.is_empty(),
+            "should skip recovery when coworker not in start_times (safety behavior)"
+        );
+    }
+
+    #[test]
     fn combined_recovery_skips_short_compaction() {
         let mut panes = HashMap::new();
         // Compaction running for only 2 minutes — below threshold
