@@ -89,11 +89,9 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 # Ensure claude is in PATH for subsequent RUN commands
 ENV PATH="/home/testuser/.local/bin:${PATH}"
 
-# Default environment: disable webhook server and chat monitor for tests,
-# stub out the lead command so tests don't need a real Claude session
+# Default environment: disable webhook server and chat monitor for tests
 ENV MIDTOWN_WEBHOOK_PORT=0 \
-    MIDTOWN_CHAT_MONITOR=0 \
-    MIDTOWN_LEAD_COMMAND="sleep 300"
+    MIDTOWN_CHAT_MONITOR=0
 
 COPY --chmod=755 scripts/e2e-entrypoint.sh /usr/local/bin/e2e-entrypoint.sh
 

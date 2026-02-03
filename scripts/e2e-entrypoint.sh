@@ -79,9 +79,6 @@ run_full_tests() {
         exit 1
     fi
 
-    # Unset stub lead command so real Claude runs
-    unset MIDTOWN_LEAD_COMMAND
-
     local test_args=("$@")
 
     echo "--- full_stack_e2e ---"

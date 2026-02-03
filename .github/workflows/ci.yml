@@ -69,7 +69,6 @@ jobs:
     env:
       MIDTOWN_WEBHOOK_PORT: 0
       MIDTOWN_CHAT_MONITOR: 0
-      MIDTOWN_LEAD_COMMAND: "sleep 300"
     steps:
       - uses: actions/checkout@v4
 
