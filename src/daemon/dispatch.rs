@@ -448,8 +448,12 @@ pub(super) fn cleanup_orphaned_worktrees(state: &DaemonState) {
         return;
     }
 
-    // Record warnings
+    // Record warnings and log (rate-limited by OrphanTracker)
     for name in &due_for_warning {
+        warn!(
+            "Orphaned worktree for {} has unmerged commits - flagging to lead",
+            name
+        );
         tracker.record_warn(name);
     }
     drop(tracker);
