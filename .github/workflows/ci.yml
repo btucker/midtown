@@ -83,7 +83,7 @@ jobs:
         run: cargo build --release
 
       - name: Run ${{ matrix.test }}
-        run: cargo test --release --test ${{ matrix.test }} ${{ matrix.flags }}
+        run: cargo test --release --test ${{ matrix.test }} -- ${{ matrix.flags }}
         continue-on-error: ${{ matrix.continue_on_error == true }}
 
   clippy:
