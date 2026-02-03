@@ -9,8 +9,6 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use midtown::{Channel, Message};
 
-use crate::client::DaemonClient;
-
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
     prs: Vec<KanbanPr>,
@@ -118,8 +116,6 @@ pub struct App {
     pub visible_height: usize,
     /// Channel for reading messages
     channel: Option<Channel>,
-    /// Daemon client for posting messages (enables nudge functionality)
-    daemon_client: Option<DaemonClient>,
     /// Whether initial messages have been loaded
     initial_load_done: bool,
     /// Byte position where loaded history starts (0 means all history loaded)
@@ -149,12 +145,6 @@ pub struct App {
     repo_status_receiver: Option<Receiver<Vec<(RepoInfo, RepoStatus)>>>,
     /// Selection mode - when true, mouse capture is disabled for text selection
     pub selection_mode: bool,
-    /// Input mode - when true, keyboard input goes to the text input
-    pub input_mode: bool,
-    /// Current text in the input field
-    pub input_text: String,
-    /// Cursor position within input_text
-    pub input_cursor: usize,
     /// User display name from config (None = "user")
     pub user_display_name: Option<String>,
     /// Cached mapping of coworker name -> current task subject.
@@ -179,9 +169,6 @@ impl App {
 
         let channel = Channel::for_repo(&channel_repo).ok();
 
-        // Connect to daemon for posting messages (optional - falls back to direct write)
-        let daemon_client = DaemonClient::connect().ok();
-
         // Get repo name with owner from gh CLI (e.g., "btucker/midtown")
         let repo_name = fetch_repo_name();
 
@@ -190,7 +177,6 @@ impl App {
             scroll_offset: 0,
             visible_height: 20,
             channel,
-            daemon_client,
             initial_load_done: false,
             history_start_position: 0,
             history_fully_loaded: false,
@@ -205,9 +191,6 @@ impl App {
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
             selection_mode: false,
-            input_mode: false,
-            input_text: String::new(),
-            input_cursor: 0,
             user_display_name: midtown::config::get_user_display_name(),
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
@@ -471,37 +454,6 @@ impl App {
     /// Toggle selection mode (disables mouse capture for text selection)
     pub fn toggle_selection_mode(&mut self) {
         self.selection_mode = !self.selection_mode;
-    }
-
-    /// Send the current input text as a message to the channel
-    ///
-    /// Prefers routing through the daemon RPC so the Lead gets nudged about
-    /// new user messages. Falls back to direct channel write if daemon is unavailable.
-    pub fn send_input(&mut self) {
-        let text = self.input_text.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-
-        let sender = self.user_display_name.as_deref().unwrap_or("user");
-        let sent = if let Some(ref client) = self.daemon_client {
-            // Route through daemon so it can nudge the Lead
-            client.channel_post_as(&text, sender).is_ok()
-        } else if let Some(ref channel) = self.channel {
-            // Fallback: direct write (won't trigger Lead nudge)
-            let message = Message::text(sender, &text);
-            channel.send(&message).is_ok()
-        } else {
-            false
-        };
-
-        if sent {
-            self.input_text.clear();
-            self.input_cursor = 0;
-            // Refresh to pick up the new message
-            self.refresh();
-            self.scroll_to_bottom();
-        }
     }
 
     /// Maximum scroll offset
@@ -1338,7 +1290,6 @@ mod tests {
             scroll_offset: 0,
             visible_height: 20,
             channel: None,
-            daemon_client: None,
             initial_load_done: true,
             history_start_position: 0,
             history_fully_loaded: true,
@@ -1375,9 +1326,6 @@ mod tests {
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             selection_mode: false,
-            input_mode: false,
-            input_text: String::new(),
-            input_cursor: 0,
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
@@ -1411,7 +1359,6 @@ mod tests {
             scroll_offset: 0, // "at bottom" - should show most recent
             visible_height: 10,
             channel: None,
-            daemon_client: None,
             initial_load_done: true,
             history_start_position: 0,
             history_fully_loaded: true,
@@ -1426,9 +1373,6 @@ mod tests {
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             selection_mode: false,
-            input_mode: false,
-            input_text: String::new(),
-            input_cursor: 0,
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
@@ -1560,7 +1504,6 @@ mod tests {
             scroll_offset: 0,
             visible_height: 20,
             channel: None,
-            daemon_client: None,
             initial_load_done: true,
             history_start_position: 0,
             history_fully_loaded: true,
@@ -1575,9 +1518,6 @@ mod tests {
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
             selection_mode: false,
-            input_mode: false,
-            input_text: String::new(),
-            input_cursor: 0,
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
