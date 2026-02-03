@@ -2610,6 +2610,103 @@ mod tests {
     }
 
     #[test]
+    fn queued_prompt_detected_with_multiple_nudges_and_edit_hint() {
+        // When multiple nudges pile up, Claude Code shows "Press up to edit queued messages"
+        // hint. This scenario captured in snapshot-20260203-161629.json shows amsterdam
+        // stuck with multiple queued nudges that need interrupt (Escape) to clear.
+        let mut panes = HashMap::new();
+        let tui_content = "\
+⏺ Previous action completed
+
+✳ Analyzing the authentication module...
+  (esc to interrupt · 1m 30s)
+❯ You have a new task assignment: task #42
+❯ github said: @amsterdam CI failed on PR #123
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("amsterdam".to_string(), tui_content.to_string());
+
+        // Should detect the queued nudges
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert_eq!(
+            stuck,
+            vec!["amsterdam"],
+            "should detect multiple queued nudges with 'Press up to edit' hint"
+        );
+
+        // Should also extract the queued text (first nudge)
+        let extracted = extract_queued_nudge_text(tui_content);
+        assert!(
+            extracted.is_some(),
+            "should extract queued text from multi-nudge scenario"
+        );
+        let text = extracted.unwrap();
+        // Multiple queued lines are joined with space
+        assert!(
+            text.contains("task #42"),
+            "extracted text should contain first nudge: got '{}'",
+            text
+        );
+        assert!(
+            text.contains("CI failed"),
+            "extracted text should contain second nudge: got '{}'",
+            text
+        );
+        assert!(
+            text.contains("Press up to edit"),
+            "extracted text should contain edit hint: got '{}'",
+            text
+        );
+    }
+
+    #[test]
+    fn queued_prompt_triggers_interrupt_for_stuck_queue() {
+        // Verify that decide_stuck_ui_recoveries returns InterruptQueuedNudges
+        // for a coworker with multiple queued nudges needing interrupt.
+        let mut panes = HashMap::new();
+        let tui_content = "\
+⏺ Completed previous task
+
+✳ Running cargo test...
+  (esc to interrupt · 45s)
+❯ Check the channel for updates
+❯ Your PR needs attention
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("amsterdam".to_string(), tui_content.to_string());
+
+        // Set up amsterdam as "old enough" to trigger recovery
+        let now = chrono::Utc::now();
+        let mut start_times = HashMap::new();
+        start_times.insert(
+            "amsterdam".to_string(),
+            now - chrono::Duration::seconds(120),
+        );
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300), // compaction threshold
+            &start_times,
+            now,
+            min_age,
+        );
+
+        // Should trigger InterruptQueuedNudges for amsterdam
+        assert_eq!(recoveries.len(), 1, "should have one recovery action");
+        assert!(matches!(
+            &recoveries[0],
+            StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"
+        ));
+    }
+
+    #[test]
     fn combined_recovery_skips_short_compaction() {
         let mut panes = HashMap::new();
         // Compaction running for only 2 minutes — below threshold
