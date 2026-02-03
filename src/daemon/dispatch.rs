@@ -414,12 +414,23 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
 
     // Run the blocking worktree operations (git commands, gh CLI) in a separate
     // thread pool to avoid blocking the async runtime and RPC handlers.
-    let flagged = tokio::task::spawn_blocking(move || coworkers.cleanup_orphaned_worktrees())
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Worktree cleanup task panicked: {}", e);
-            vec![]
-        });
+    // Also pre-fetch branch names for each flagged worktree to avoid additional
+    // blocking git calls in the async context.
+    let (flagged, branch_map) = tokio::task::spawn_blocking(move || {
+        let flagged = coworkers.cleanup_orphaned_worktrees();
+        // Pre-fetch branch names for all flagged worktrees (avoids blocking git
+        // calls later in the async context during filter_orphans_with_merged_branches)
+        let branch_map: HashMap<String, Option<String>> = flagged
+            .iter()
+            .map(|name| (name.clone(), coworkers.get_worktree_branch(name)))
+            .collect();
+        (flagged, branch_map)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        warn!("Worktree cleanup task panicked: {}", e);
+        (vec![], HashMap::new())
+    });
 
     // Filter out worktrees whose branches have open PRs (by coworker name).
     let open_pr_owners = {
@@ -436,8 +447,10 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
         let cache = state.pr_coworker_cache.read().unwrap();
         cache.merged_pr_branches.clone()
     };
+    // Use pre-fetched branch data from the blocking task instead of calling
+    // get_worktree_branch which would run blocking git commands in async context
     let flagged = filter_orphans_with_merged_branches(flagged, &merged_pr_branches, |name| {
-        state.coworkers.get_worktree_branch(name)
+        branch_map.get(name).cloned().flatten()
     });
 
     for name in &flagged {
