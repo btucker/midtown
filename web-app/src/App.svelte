@@ -112,7 +112,7 @@
         class:active={activeTab === 'tmux'}
         onclick={() => (activeTab = 'tmux')}
       >
-        Tmux
+        tmux
       </button>
     </nav>
 

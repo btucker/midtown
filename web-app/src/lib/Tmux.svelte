@@ -22,8 +22,9 @@
 
   function getViewportCols() {
     if (!paneEl) return 80
-    // Use the pane content element's width minus padding (12px each side)
-    const usable = paneEl.clientWidth - 24
+    // Use the pane content element's width minus padding (12px each side = 24px)
+    // plus extra 20px to account for UI chrome/scrollbars and prevent horizontal scrolling
+    const usable = paneEl.clientWidth - 44
     return Math.max(80, Math.floor(usable / CHAR_WIDTH_PX))
   }
 
