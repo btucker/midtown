@@ -606,6 +606,11 @@ impl CoworkerManager {
     /// This is triggered when someone posts an @user mention in the channel.
     /// The bell is sent to the lead's chat pane (.1) since that's the pane
     /// the human interacts with directly.
+    ///
+    /// NOTE: We only send to the chat pane (.1), NOT the Claude Code pane (.0).
+    /// The bell character (\x07 / ASCII 7) is also Ctrl+G, which Claude Code
+    /// interprets as "open editor" shortcut. Sending it to .0 would trigger
+    /// unwanted editor popups instead of a notification.
     pub fn notify_user(&self) -> crate::Result<()> {
         // Check if lead window exists (the human operates through the lead session)
         if !tmux::window_exists(&self.session_name, "lead")? {
@@ -615,10 +620,9 @@ impl CoworkerManager {
             });
         }
 
-        // Send bell to the lead's chat pane (.1) where the human types.
-        // Also send to pane .0 (Claude Code) to cover both panes.
-        let _ = tmux::send_bell(&self.session_name, "lead.1");
-        tmux::send_bell(&self.session_name, "lead.0")
+        // Send bell only to the chat pane (.1) - NOT to Claude Code pane (.0)
+        // because \x07 triggers Ctrl+G (open editor) in Claude Code.
+        tmux::send_bell(&self.session_name, "lead.1")
     }
 
     /// Spawn a coworker with a specific name using a `ClaudeLaunchConfig`.
