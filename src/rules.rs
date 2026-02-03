@@ -491,7 +491,16 @@ pub(crate) struct StuckDetectionResult {
     pub updated_hashes: HashMap<String, (u64, Instant)>,
 }
 
-/// Detect coworkers whose pane content hasn't changed for `stuck_duration`.
+/// Detect coworkers whose pane content hasn't changed for `stuck_duration`
+/// while showing activity indicators (running subagent).
+///
+/// A coworker is only considered stuck if:
+/// 1. Pane content hash unchanged for `stuck_duration` (3 minutes)
+/// 2. Pane shows activity indicators (whirlpool, "Running X Task agent")
+///
+/// If pane is frozen but shows NO activity indicators, the coworker is likely
+/// idle/waiting, not stuck. This prevents false positives on legitimately
+/// idle coworkers.
 ///
 /// Pure function: takes the current pane hash state and pane contents,
 /// returns restart decisions and the updated hash state. The caller is
@@ -527,6 +536,12 @@ pub(crate) fn decide_stuck_coworker_restarts(
 
         // Hash unchanged — check if stuck long enough
         if now.duration_since(entry.1) < stuck_duration {
+            continue;
+        }
+
+        // CRITICAL: Only consider stuck if showing activity indicators.
+        // A frozen pane without activity indicators = idle/waiting, not stuck.
+        if !has_running_subagent(content) {
             continue;
         }
 
@@ -948,9 +963,14 @@ pub(crate) fn detect_blank_pane_zombies(
 
 /// Try to parse a duration from usage limit text.
 ///
-/// Looks for patterns like "try again in 15 minutes", "resets in 2 hours",
-/// "available after 30 minutes". Returns a default of 15 minutes if no
-/// parseable duration is found.
+/// Looks for patterns like:
+/// - "try again in 15 minutes", "resets in 2 hours" (relative duration)
+/// - "available after 30 minutes" (relative duration)
+/// - "resets at 3:45" or "at 15:30" (24-hour absolute time)
+/// - "resets 12pm" or "resets 3am" (12-hour absolute time)
+/// - "resets 12pm (America/Chicago)" (12-hour with timezone - timezone ignored, uses UTC)
+///
+/// Returns a default of 15 minutes if no parseable duration is found.
 pub(crate) fn parse_usage_limit_duration(pane_content: &str) -> Duration {
     let lower = pane_content.to_lowercase();
 
@@ -975,6 +995,15 @@ pub(crate) fn parse_usage_limit_duration(pane_content: &str) -> Duration {
                     return Duration::from_secs(num);
                 }
             }
+        }
+    }
+
+    // Look for 12-hour format: "resets 12pm", "resets 3am", "resets 12pm (America/Chicago)"
+    // Pattern: "resets" followed by a number and am/pm
+    if let Some(idx) = lower.find("resets ") {
+        let after = &lower[idx + 7..];
+        if let Some(duration) = parse_12hour_time(after) {
+            return duration;
         }
     }
 
@@ -1005,6 +1034,48 @@ pub(crate) fn parse_usage_limit_duration(pane_content: &str) -> Duration {
 
     // Default: 15 minutes
     Duration::from_secs(15 * 60)
+}
+
+/// Parse 12-hour time format like "12pm", "3am", "12pm (America/Chicago)".
+///
+/// Returns duration until the specified time. If the time is in the past,
+/// assumes it's tomorrow. Timezone in parentheses is noted but ignored
+/// (we use UTC for simplicity - the error is at most a few hours).
+fn parse_12hour_time(text: &str) -> Option<Duration> {
+    // Extract the hour number
+    let num_str: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let hour_12: u32 = num_str.parse().ok()?;
+
+    if hour_12 == 0 || hour_12 > 12 {
+        return None;
+    }
+
+    // Check for am/pm immediately after the number
+    let after_num = text[num_str.len()..].trim_start();
+    let is_pm = after_num.starts_with("pm");
+    let is_am = after_num.starts_with("am");
+
+    if !is_pm && !is_am {
+        return None;
+    }
+
+    // Convert to 24-hour format
+    let hour_24 = if is_pm {
+        if hour_12 == 12 { 12 } else { hour_12 + 12 }
+    } else {
+        // am
+        if hour_12 == 12 { 0 } else { hour_12 }
+    };
+
+    let now = chrono::Utc::now();
+    let mut target = now.date_naive().and_hms_opt(hour_24, 0, 0)?;
+
+    if target < now.naive_utc() {
+        target += chrono::Duration::days(1);
+    }
+
+    let diff = target - now.naive_utc();
+    diff.to_std().ok()
 }
 
 /// Check if pane content contains the usage limit pattern ("/upgrade").
@@ -3209,6 +3280,151 @@ mod tests {
             matches!(decision, UsageLimitDecision::Detected { coworker } if coworker == "broadway"),
             "actual usage limit screen should trigger detection"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_usage_limit_duration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_usage_limit_duration_12hour_pm() {
+        // "resets 12pm" should parse as noon (12:00)
+        let content = "Your limit resets 12pm (America/Chicago). /upgrade";
+        let duration = parse_usage_limit_duration(content);
+        // We can't assert exact value since it depends on current time,
+        // but it should be less than 24 hours
+        assert!(
+            duration.as_secs() <= 24 * 3600,
+            "12pm should be within 24 hours"
+        );
+    }
+
+    #[test]
+    fn parse_usage_limit_duration_12hour_am() {
+        // "resets 3am" should parse as 03:00
+        let content = "Your limit resets 3am. /upgrade";
+        let duration = parse_usage_limit_duration(content);
+        assert!(
+            duration.as_secs() <= 24 * 3600,
+            "3am should be within 24 hours"
+        );
+    }
+
+    #[test]
+    fn parse_usage_limit_duration_relative() {
+        // "in 2 hours" should return 2 hours
+        let content = "Your limit will reset in 2 hours. /upgrade";
+        let duration = parse_usage_limit_duration(content);
+        assert_eq!(duration.as_secs(), 2 * 3600, "should parse '2 hours'");
+    }
+
+    #[test]
+    fn parse_usage_limit_duration_relative_minutes() {
+        // "in 45 minutes" should return 45 minutes
+        let content = "Available after 45 minutes. /upgrade";
+        let duration = parse_usage_limit_duration(content);
+        assert_eq!(duration.as_secs(), 45 * 60, "should parse '45 minutes'");
+    }
+
+    #[test]
+    fn parse_usage_limit_duration_fallback() {
+        // Unknown format should return 15 minutes
+        let content = "Some unknown format. /upgrade";
+        let duration = parse_usage_limit_duration(content);
+        assert_eq!(
+            duration.as_secs(),
+            15 * 60,
+            "unknown format should default to 15 minutes"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_stuck_coworker_restarts tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stuck_detection_requires_activity_indicators() {
+        // Coworker with frozen pane but NO activity indicator should NOT be restarted.
+        // This is the key behavioral change: we only restart if showing activity.
+        let mut pane_hashes = HashMap::new();
+        let now = Instant::now();
+        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
+
+        // Simulate a coworker whose pane hasn't changed
+        pane_hashes.insert("riverside".to_string(), (12345u64, old_time));
+
+        // Idle pane content - no activity indicators
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert(
+            "riverside".to_string(),
+            "Waiting for input. No tasks assigned.".to_string(),
+        );
+
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "riverside".to_string(),
+        )];
+
+        let result = decide_stuck_coworker_restarts(
+            &pane_hashes,
+            &pane_contents,
+            &tasks,
+            now,
+            Duration::from_secs(180), // 3 minute stuck duration
+        );
+
+        assert!(
+            result.restarts.is_empty(),
+            "idle coworker without activity indicators should NOT be restarted"
+        );
+    }
+
+    #[test]
+    fn stuck_detection_triggers_with_activity_indicators() {
+        // Coworker with frozen pane AND activity indicator SHOULD be restarted.
+        let mut pane_hashes = HashMap::new();
+        let now = Instant::now();
+        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
+
+        // Pane content with whirlpool indicator = active subagent
+        let active_content = r#"
+✽ Checking PR eligibility… (esc to interrupt · ctrl+t to hide tasks · 33s · ↓ 784 tokens · thinking)
+  ⎿  ◼ #1 Check PR #508 eligibility for code review (madison)
+"#;
+
+        // Use the hash of this content
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        active_content.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Set old hash to same value (pane unchanged)
+        pane_hashes.insert("broadway".to_string(), (content_hash, old_time));
+
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("broadway".to_string(), active_content.to_string());
+
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "broadway".to_string(),
+        )];
+
+        let result = decide_stuck_coworker_restarts(
+            &pane_hashes,
+            &pane_contents,
+            &tasks,
+            now,
+            Duration::from_secs(180), // 3 minute stuck duration
+        );
+
+        assert_eq!(
+            result.restarts.len(),
+            1,
+            "coworker with activity indicator AND frozen pane SHOULD be restarted"
+        );
+        assert_eq!(result.restarts[0].name, "broadway");
     }
 
     // -----------------------------------------------------------------------

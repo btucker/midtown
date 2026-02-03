@@ -107,10 +107,11 @@ pub(super) const ZOMBIE_MIN_AGE_SECS: i64 = 20;
 /// underlying cause persists (e.g., broken worktree, bad prompt).
 pub(super) const MAX_ZOMBIE_RESPAWN_ATTEMPTS: u32 = 3;
 
-/// How long a coworker's pane can remain unchanged before considering it stuck (5 minutes).
-/// If the tmux pane content hash hasn't changed for this duration, the coworker is killed
-/// and restarted with its current task.
-pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(300);
+/// How long a coworker's pane can remain unchanged before considering it stuck (3 minutes).
+/// If the tmux pane content hash hasn't changed for this duration AND the coworker shows
+/// activity indicators (running subagent), it is killed and restarted with its current task.
+/// A frozen pane without activity indicators means the coworker is idle/waiting, not stuck.
+pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(180);
 
 /// Minimum elapsed compaction time before we consider it stuck (5 minutes).
 /// Compaction is a normal, useful operation. Only interrupt if it has been
