@@ -1806,17 +1806,38 @@ mod tests {
             scrolled_content
         );
 
-        // The content should have shifted slightly, not jumped dramatically
-        // If we're using LAST N lines in both cases, the content should be
-        // similar but shifted by roughly 1 message worth of lines
+        // Verify the expected content shift direction.
+        // Key insight: visible_messages() returns different message ranges:
+        // - At bottom (messages 10..20): includes message 19, excludes message 9
+        // - Scrolled up 1 (messages 9..19): excludes message 19, includes message 9
+        //
+        // With LAST N lines truncation, we see the end of each range's rendered content.
+        // The critical test: message 19 should appear at bottom but NOT when scrolled,
+        // proving the message selection shifted correctly.
         let bottom_has_19 = bottom_content.contains("message content 19");
         let scrolled_has_19 = scrolled_content.contains("message content 19");
 
-        // After scrolling up 1, message 19 might not be visible anymore
-        // (it was in messages 10..20 but now we have 9..19, so 19 is not included)
+        // At bottom (messages 10..20) must show message 19
         assert!(
-            !scrolled_has_19 || !bottom_has_19,
-            "Scrolling should change visible content"
+            bottom_has_19,
+            "At bottom should show message 19 (newest in 10..20 range), got: {}",
+            bottom_content
+        );
+
+        // Scrolled view (messages 9..19) must NOT show message 19
+        assert!(
+            !scrolled_has_19,
+            "Scrolled view should NOT show message 19 (not in 9..19 range), got: {}",
+            scrolled_content
+        );
+
+        // Verify smooth scrolling: both views use LAST N lines, so content shifts
+        // proportionally. The scrolled view shows slightly older messages (18, 17, etc.)
+        // rather than jumping to much older content (would show 9, 10, 11 with FIRST N).
+        assert!(
+            scrolled_content.contains("message content 18"),
+            "Scrolled view should show message 18 (near end of 9..19 range), got: {}",
+            scrolled_content
         );
     }
 
