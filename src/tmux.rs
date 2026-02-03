@@ -1209,6 +1209,16 @@ pub enum TaskMode {
     Isolated,
 }
 
+/// The role of a coworker, which determines their system prompt.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum CoworkerRole {
+    /// Standard coworker — uses coworker.md + common.md
+    #[default]
+    Coworker,
+    /// PR reviewer — uses coworker.md + common.md + reviewer.md
+    Reviewer,
+}
+
 /// All configuration needed to launch a Claude CLI process in a tmux window.
 ///
 /// This is the single source of truth for how Claude gets launched. All spawn
@@ -1222,6 +1232,8 @@ pub struct ClaudeLaunchConfig {
     pub session_mode: SessionMode,
     /// Shared vs isolated task list.
     pub task_mode: TaskMode,
+    /// The coworker's role (determines which system prompt to use).
+    pub role: CoworkerRole,
     /// Optional prompt to pre-fill at startup (task instructions, review prompt, etc.).
     pub initial_prompt: Option<String>,
     /// Additional repo directories for multi-repo projects.
@@ -1267,6 +1279,7 @@ impl ClaudeLaunchConfig {
             task_mode: TaskMode::Shared {
                 repo_name: repo_name.into(),
             },
+            role: CoworkerRole::Coworker,
             initial_prompt,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -1274,12 +1287,17 @@ impl ClaudeLaunchConfig {
     }
 
     /// Create a config for an isolated reviewer coworker.
-    pub fn reviewer(name: impl Into<String>, initial_prompt: String) -> Self {
+    ///
+    /// Reviewers get a specialized system prompt that merges coworker.md +
+    /// common.md + reviewer.md, ensuring they follow reviewer instructions
+    /// as behavioral rules rather than just task descriptions.
+    pub fn reviewer(name: impl Into<String>, pr_number: u64) -> Self {
         ClaudeLaunchConfig {
             name: name.into(),
             session_mode: SessionMode::Fresh,
             task_mode: TaskMode::Isolated,
-            initial_prompt: Some(initial_prompt),
+            role: CoworkerRole::Reviewer,
+            initial_prompt: Some(crate::agents::reviewer_launch_prompt(pr_number)),
             additional_dirs: vec![],
             restrict_setting_sources: true,
         }
@@ -1392,8 +1410,12 @@ pub fn spawn_claude(
     config: &ClaudeLaunchConfig,
 ) -> crate::Result<String> {
     // Build the claude command with settings for channel synchronization
-    // and a system prompt for coworker identity and instructions
-    let system_prompt = crate::agents::coworker_system_prompt(&config.name);
+    // and a system prompt for coworker identity and instructions.
+    // Reviewers get a specialized prompt that includes reviewer.md instructions.
+    let system_prompt = match config.role {
+        CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&config.name),
+        CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&config.name),
+    };
 
     // Write system prompt and settings to files (avoids quoting issues)
     let prompt_file = write_coworker_prompt_file(&config.name, &system_prompt)?;
@@ -1609,6 +1631,7 @@ pub fn spawn_lead(
         task_mode: TaskMode::Shared {
             repo_name: project_name.to_string(),
         },
+        role: CoworkerRole::Coworker, // Lead uses its own prompt; role only affects coworker spawns
         initial_prompt: None,
         additional_dirs: additional_dirs.to_vec(),
         restrict_setting_sources: false,
@@ -2329,6 +2352,7 @@ Claude is now processing the request
             task_mode: TaskMode::Shared {
                 repo_name: "myrepo".to_string(),
             },
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: false,
@@ -2360,6 +2384,7 @@ Claude is now processing the request
             task_mode: TaskMode::Shared {
                 repo_name: "myrepo".to_string(),
             },
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2395,6 +2420,7 @@ Claude is now processing the request
             task_mode: TaskMode::Shared {
                 repo_name: "myrepo".to_string(),
             },
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2426,6 +2452,7 @@ Claude is now processing the request
             task_mode: TaskMode::Shared {
                 repo_name: "myrepo".to_string(),
             },
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2451,6 +2478,7 @@ Claude is now processing the request
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
             task_mode: TaskMode::Isolated,
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2478,6 +2506,7 @@ Claude is now processing the request
             task_mode: TaskMode::Shared {
                 repo_name: "myrepo".to_string(),
             },
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2499,6 +2528,7 @@ Claude is now processing the request
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
             task_mode: TaskMode::Isolated,
+            role: CoworkerRole::default(),
             initial_prompt: Some("Do the thing".to_string()),
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2532,6 +2562,7 @@ Claude is now processing the request
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
             task_mode: TaskMode::Isolated,
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2555,6 +2586,7 @@ Claude is now processing the request
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
             task_mode: TaskMode::Isolated,
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
             restrict_setting_sources: true,
@@ -2580,6 +2612,7 @@ Claude is now processing the request
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
             task_mode: TaskMode::Isolated,
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2601,6 +2634,7 @@ Claude is now processing the request
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
             task_mode: TaskMode::Isolated,
+            role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
@@ -2626,6 +2660,7 @@ Claude is now processing the request
             task_mode: TaskMode::Shared {
                 repo_name: "myrepo".to_string(),
             },
+            role: CoworkerRole::default(),
             initial_prompt: Some("task prompt".to_string()),
             additional_dirs: vec![],
             restrict_setting_sources: true,

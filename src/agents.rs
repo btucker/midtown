@@ -274,10 +274,50 @@ pub fn coworker_system_prompt(name: &str) -> String {
     prompt.replace("{name}", name)
 }
 
+/// Load the reviewer agent's system prompt with name substitution.
+///
+/// Combines content from three sources:
+/// - `agents/coworker.md` (base coworker behaviors)
+/// - `agents/common.md` + `MIDTOWN.md` (shared foundations)
+/// - `agents/reviewer.md` (reviewer-specific instructions)
+///
+/// This ensures reviewers follow reviewer.md instructions as part of their
+/// behavioral identity, not just as a task description.
+pub fn reviewer_system_prompt(name: &str) -> String {
+    let coworker_template =
+        load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
+    let common = common_prompt();
+    let reviewer =
+        load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
+    let custom = load_custom_prompt_files("COWORKER.md");
+    let personality = crate::config::get_personality();
+
+    // Merge: coworker + common + reviewer-specific instructions
+    let mut prompt =
+        format!("{coworker_template}\n{common}\n\n## Reviewer Instructions\n\n{reviewer}");
+    if !custom.is_empty() {
+        prompt = format!("{prompt}\n\n{custom}");
+    }
+    prompt.push_str(&personality_section(name, personality));
+    prompt.replace("{name}", name)
+}
+
 /// Build the reviewer launch prompt for a given PR number.
+///
+/// This is just the task description (which PR to review), not the behavioral
+/// instructions. The behavioral instructions are in `reviewer_system_prompt()`.
+pub fn reviewer_launch_prompt(pr_number: u64) -> String {
+    format!("Review PR #{pr_number} using /code-review:code-review {pr_number}")
+}
+
+/// Build the reviewer launch prompt for a given PR number (legacy function).
 ///
 /// Loads `agents/reviewer.md` (or the embedded default) and replaces
 /// `{pr_number}` with the actual PR number.
+///
+/// Note: This is the old approach where reviewer.md was passed as initial_prompt.
+/// New code should use `reviewer_system_prompt()` for the system prompt and
+/// `reviewer_launch_prompt()` for the task.
 pub fn reviewer_prompt(pr_number: u64) -> String {
     let template =
         load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
@@ -583,6 +623,52 @@ mod tests {
         assert!(
             prompt.contains("REFACTOR DETECTION"),
             "Reviewer prompt should contain REFACTOR DETECTION section"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_system_prompt_merges_all_sources() {
+        // Bug: Reviewers weren't following instructions in reviewer.md because it was
+        // passed as initial_prompt (just a task), not as part of the system prompt.
+        //
+        // Fix: reviewer_system_prompt() merges common + coworker + reviewer content
+        // so reviewer instructions become part of the agent's identity/behavior.
+        let prompt = reviewer_system_prompt("lexington");
+
+        // Should contain content from common.md
+        assert!(
+            prompt.contains("GitHub Etiquette"),
+            "Reviewer system prompt should include common.md content"
+        );
+
+        // Should contain content from coworker.md
+        assert!(
+            prompt.contains("Channel Usage"),
+            "Reviewer system prompt should include coworker.md content"
+        );
+
+        // Should contain reviewer-specific instructions from reviewer.md
+        assert!(
+            prompt.contains("THRESHOLD OVERRIDE"),
+            "Reviewer system prompt should include THRESHOLD OVERRIDE from reviewer.md"
+        );
+        assert!(
+            prompt.contains("CHANNEL MESSAGE DISCIPLINE"),
+            "Reviewer system prompt should include CHANNEL MESSAGE DISCIPLINE from reviewer.md"
+        );
+        assert!(
+            prompt.contains("TEST SUGGESTIONS"),
+            "Reviewer system prompt should include TEST SUGGESTIONS from reviewer.md"
+        );
+
+        // Should have name substituted
+        assert!(
+            prompt.contains("**lexington**"),
+            "Reviewer system prompt should substitute {{name}} with actual name"
+        );
+        assert!(
+            !prompt.contains("{name}"),
+            "Reviewer system prompt should not contain unreplaced {{name}}"
         );
     }
 }
