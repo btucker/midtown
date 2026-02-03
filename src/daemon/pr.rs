@@ -387,10 +387,99 @@ pub(super) async fn poll_prs_for_issues(
         reviewed
     };
 
+    // Nudge PR owners when CI turns green and they have review feedback to address.
+    // This covers the case where a coworker is waiting for CI while feedback awaits.
+    effects.extend(
+        collect_green_with_feedback_effects(state, &prs, &reviewed_prs, &active_coworkers).await,
+    );
+
     // Check for stuck conditions and nudge lead if self-healing has failed
     effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
 
     Ok(effects)
+}
+
+/// Collect effects for PRs that are green (all CI passed) and have review feedback.
+///
+/// When a coworker's PR has all CI checks passing and has received a code review,
+/// nudge them to address any feedback and merge. This covers the case where
+/// a coworker is waiting for CI to pass while feedback awaits.
+async fn collect_green_with_feedback_effects(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+    reviewed_prs: &HashSet<u64>,
+    active_coworkers: &[String],
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for pr in prs {
+        let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Only process PRs that have been reviewed
+        if !reviewed_prs.contains(&pr_number) {
+            continue;
+        }
+
+        // Only process PRs where all CI checks have passed
+        if !all_ci_checks_passed(pr) {
+            continue;
+        }
+
+        // Skip if already approved (will be auto-merged or nudged via Approved issue type)
+        let review_decision = pr
+            .get("reviewDecision")
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        if review_decision == "APPROVED" {
+            continue;
+        }
+
+        // Check cooldown to avoid spamming
+        let should_nudge = {
+            let tracker = state.pr_issue_tracker.lock().await;
+            tracker.should_nudge(pr_number, PrIssueType::GreenWithFeedback)
+        };
+        if !should_nudge {
+            continue;
+        }
+
+        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        let owner = head_ref.split('/').next().unwrap_or("");
+
+        if owner.is_empty() {
+            continue;
+        }
+
+        let message = format!(
+            "PR #{} ({}) - {}: {}",
+            pr_number,
+            truncate_str(title, 40),
+            PrIssueType::GreenWithFeedback,
+            get_issue_action(PrIssueType::GreenWithFeedback)
+        );
+
+        // Decide action using pure decision function
+        let action = crate::rules::decide_pr_issue_action(
+            owner,
+            active_coworkers,
+            state.is_at_dev_limit(),
+            &message,
+        );
+
+        effects.extend(pr_action_to_effects(
+            action,
+            pr_number,
+            title,
+            PrIssueType::GreenWithFeedback,
+            state,
+        ));
+    }
+
+    effects
 }
 
 /// Convert a `PrAction` decision into a list of `Effect`s to execute.

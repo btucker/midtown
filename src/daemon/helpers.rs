@@ -226,6 +226,7 @@ pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
         PrIssueType::ReviewComplete => {
             "review is complete — please address feedback and merge if appropriate"
         }
+        PrIssueType::GreenWithFeedback => "CI is green — please address review feedback and merge",
     }
 }
 
