@@ -22,6 +22,11 @@ cargo test --test daemon_e2e -- --ignored --test-threads=1  # E2E (requires tmux
 cargo clippy -- -D warnings
 cargo fmt -- --check
 
+# Code coverage (requires: cargo install cargo-llvm-cov)
+./scripts/coverage.sh           # HTML report → target/llvm-cov/html/
+./scripts/coverage.sh --text    # text summary
+./scripts/coverage.sh --open    # HTML report and open in browser
+
 # Install locally
 cargo install --path .
 ```
