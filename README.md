@@ -1,6 +1,6 @@
-# Midtown
+<div align="center"><img src="docs/images/logo.png" width="100" alt="Midtown logo"></div>
 
-<img src="docs/images/logo.png" width="200" alt="Midtown logo"></img>
+# Midtown
 
 Work with a "lead" to manage your team of **Claude Code** "coworkers" to accomplish tasks following a github PR kanban workflow.
 
@@ -25,7 +25,7 @@ Midtown makes extensive use of the new Claude Code Tasks system to manage the st
 
 ## Quick Start
 
-### 0. Pre-requirements
+### 0. Prereqs
 
 1. Install the [GitHub CLI](https://cli.github.com/).
 2. Install [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
