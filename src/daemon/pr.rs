@@ -368,8 +368,23 @@ pub(super) async fn poll_prs_for_issues(
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(state, &prs).await);
 
+    // Pre-collect review status for all PRs before stuck detection (pure decision logic
+    // should not make async API calls). Coworkers can't submit formal GitHub reviews
+    // since they share the same user as PR authors, so we check for comment-based reviews.
+    let reviewed_prs: HashSet<u64> = {
+        let mut reviewed = HashSet::new();
+        for pr in &prs {
+            if let Some(pr_number) = pr.get("number").and_then(|n| n.as_u64())
+                && state.is_pr_reviewed(pr_number).await
+            {
+                reviewed.insert(pr_number);
+            }
+        }
+        reviewed
+    };
+
     // Check for stuck conditions and nudge lead if self-healing has failed
-    effects.extend(collect_stuck_condition_effects(state, &prs).await);
+    effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
 
     Ok(effects)
 }
@@ -499,9 +514,14 @@ fn pr_action_to_effects(
 /// side effects inline. Each condition has a cooldown tracked via the
 /// stuck_tracker to avoid spamming. For stuck conditions that @mention the lead,
 /// the channel's chat monitor handles routing the nudge.
+///
+/// The `reviewed_prs` parameter contains PR numbers that have Claude reviews
+/// (comment-based or formal), pre-collected before this function to keep
+/// decision logic free of async API calls.
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
+    reviewed_prs: &HashSet<u64>,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -532,8 +552,16 @@ async fn collect_stuck_condition_effects(
         let age_secs = get_pr_age_secs(pr).unwrap_or(0);
         let pr_id = pr_number.to_string();
 
-        // No review decision at all and PR is old enough
-        if review_decision.is_empty() && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs() {
+        // Check for comment-based Claude reviews (coworkers can't submit formal reviews
+        // since they share the same GitHub user as the PR author). Uses pre-collected
+        // data to keep decision logic free of async API calls.
+        let has_claude_review = reviewed_prs.contains(&pr_number);
+
+        // No review decision at all, no Claude review comment, and PR is old enough
+        if review_decision.is_empty()
+            && !has_claude_review
+            && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs()
+        {
             // Check if a reviewer is assigned (daemon tried to self-heal)
             let is_assigned = {
                 let ps = state.persistent_state.lock().await;
