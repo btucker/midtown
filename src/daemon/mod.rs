@@ -2214,11 +2214,13 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
 
     #[test]
     fn test_usage_limit_patterns_detect_common_messages() {
+        // The usage limit pattern is "/upgrade" which appears on Claude Code's
+        // actual usage limit screen. This avoids false positives from code that
+        // mentions "usage limit" in comments.
         let messages = vec![
-            "You've hit your usage limit for claude-3-5-sonnet",
-            "Usage limit reached for this model",
-            "rate_limit_error: too many requests",
-            "Your usage limit resets in 15 minutes",
+            "You've hit your usage limit. /upgrade to increase your limit.",
+            "Usage limit reached for this model. Options: /upgrade or wait.",
+            "Try /upgrade to get more tokens or wait 15 minutes.",
         ];
 
         for msg in messages {
@@ -2256,7 +2258,8 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         panes.insert("park".to_string(), "Working on task...\n".to_string());
         panes.insert(
             "broadway".to_string(),
-            "Usage limit reached. Try again in 15 minutes.\n".to_string(),
+            "Usage limit reached. Try again in 15 minutes. /upgrade to increase limit.\n"
+                .to_string(),
         );
 
         let decision = decide_usage_limit_detection(&panes);
