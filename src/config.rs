@@ -348,7 +348,8 @@ pub struct DaemonSection {
     pub chat_monitor_enabled: Option<bool>,
 
     /// GitHub username for `gh` CLI authentication.
-    /// When set, runs `gh auth switch --user <github_user>` at daemon startup.
+    /// When set, fetches the user's token and sets GH_TOKEN env var at daemon startup.
+    /// This is faster and more reliable than `gh auth switch` (no global state races).
     #[serde(default)]
     pub github_user: Option<String>,
 }
@@ -464,7 +465,7 @@ impl GlobalConfig {
 # chat_monitor_enabled = true
 
 # GitHub username for gh CLI authentication
-# When set, runs `gh auth switch --user <value>` at daemon startup
+# When set, fetches token and sets GH_TOKEN env var at daemon startup
 # github_user = ""
 "#
         .to_string()

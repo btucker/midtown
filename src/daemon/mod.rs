@@ -850,30 +850,55 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Ensure required plugins are installed (non-blocking, logs warnings on failure)
     ensure_plugins_installed().await;
 
-    // Switch gh CLI to the configured GitHub user (fail loudly if switch fails)
+    // Get token for configured GitHub user and set GH_TOKEN env var.
+    // This is faster and more reliable than `gh auth switch`:
+    // - No global state modification (env var is process-local)
+    // - No race conditions with other processes
+    // - Token is fetched once, inherited by all child processes
     if let Some(ref github_user) = config.github_user {
-        info!("Switching gh CLI auth to user: {}", github_user);
-        let status = std::process::Command::new("gh")
-            .args(["auth", "switch", "--user", github_user])
-            .status()
+        info!("Fetching gh CLI token for user: {}", github_user);
+        let output = std::process::Command::new("gh")
+            .args(["auth", "token", "--user", github_user])
+            .output()
             .map_err(|e| crate::Error::Rpc {
                 code: -32603,
                 message: format!(
-                    "Failed to run `gh auth switch --user {}`: {}",
+                    "Failed to run `gh auth token --user {}`: {}",
                     github_user, e
                 ),
             })?;
-        if !status.success() {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(crate::Error::Rpc {
                 code: -32603,
                 message: format!(
-                    "gh auth switch --user {} failed (exit code: {}). Is the user logged in? Run `gh auth login` first.",
+                    "gh auth token --user {} failed: {}. Is the user logged in? Run `gh auth login` first.",
                     github_user,
-                    status.code().unwrap_or(-1)
+                    stderr.trim()
                 ),
             });
         }
-        info!("Successfully switched gh auth to user: {}", github_user);
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "gh auth token --user {} returned empty token. Is the user logged in?",
+                    github_user
+                ),
+            });
+        }
+        // Set GH_TOKEN so all child `gh` processes use this token automatically.
+        // SAFETY: This is called during single-threaded daemon startup before the
+        // async runtime spawns any tasks, so no data races are possible.
+        unsafe {
+            std::env::set_var("GH_TOKEN", &token);
+        }
+        info!(
+            "Set GH_TOKEN for user: {} (token length: {})",
+            github_user,
+            token.len()
+        );
     }
 
     // Acquire exclusive lock on PID file to enforce singleton behavior

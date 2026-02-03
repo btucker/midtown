@@ -71,8 +71,13 @@ pub(super) const LEAD_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 /// tries to respawn the lead window before the tmux session is fully settled.
 pub(super) const LEAD_HEALTH_CHECK_STARTUP_GRACE: Duration = Duration::from_secs(30);
 
-/// Interval for checking orphaned tasks (5 seconds)
-pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
+/// Interval for orphaned worktree cleanup tick (10 seconds)
+///
+/// Worktree cleanup involves expensive git and gh CLI operations for each
+/// orphaned worktree. To avoid saturating the blocking thread pool and causing
+/// RPC timeouts, we process at most one worktree per tick. With a 10-second
+/// interval, 10 orphaned worktrees take ~100 seconds to fully process.
+pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 10;
 
 /// Minimum time a coworker must be alive before being sent on a break (5 minutes)
 /// This prevents spawn storms where coworkers are rapidly sent on breaks.

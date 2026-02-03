@@ -105,10 +105,11 @@ impl DaemonClient {
         // PostToolUse hooks run synchronously — Claude waits for the hook to finish.
         // Without timeouts, a busy daemon causes the hook (and Claude) to hang.
         //
-        // Use short timeouts (500ms) for responsive CLI feedback. The daemon should
-        // respond quickly to RPC calls; if it doesn't, fail fast so the user isn't
-        // left waiting. The retry loop below handles transient EAGAIN errors.
-        let timeout = Some(std::time::Duration::from_millis(500));
+        // The daemon's RPC handlers use spawn_blocking for gh CLI calls (status,
+        // kanban.data) which can take 2-3 seconds due to GitHub API latency and
+        // auth switching. Use a 5-second timeout to accommodate these slow methods
+        // while still providing reasonable CLI feedback.
+        let timeout = Some(std::time::Duration::from_secs(5));
         stream
             .set_write_timeout(timeout)
             .map_err(|e| format!("Failed to set write timeout: {}", e))?;
@@ -127,12 +128,12 @@ impl DaemonClient {
 
         // Read response with retry logic for EAGAIN/EWOULDBLOCK.
         // These errors occur when the socket has no data yet but isn't closed.
-        // We retry briefly (up to 1 second total) to handle transient buffer issues.
+        // We retry up to the socket timeout (5 seconds) to handle slow daemon responses.
         // Note: On macOS, a socket timeout may return WouldBlock instead of TimedOut.
         let mut reader = BufReader::new(stream);
         let mut response_line = String::new();
         let start = std::time::Instant::now();
-        let max_duration = std::time::Duration::from_secs(1);
+        let max_duration = std::time::Duration::from_secs(5);
 
         loop {
             match reader.read_line(&mut response_line) {
