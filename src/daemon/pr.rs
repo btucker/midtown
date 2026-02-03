@@ -712,12 +712,17 @@ async fn collect_stuck_condition_effects(
         let prs_needing_review: usize = prs
             .iter()
             .filter(|pr| {
+                let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
                 let review_decision = pr
                     .get("reviewDecision")
                     .and_then(|r| r.as_str())
                     .unwrap_or("");
                 let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-                !is_draft && review_decision.is_empty()
+                // PR needs review if it's not a draft, has no formal review, and no Claude comment review
+                pr_number != 0
+                    && !is_draft
+                    && review_decision.is_empty()
+                    && !reviewed_prs.contains(&pr_number)
             })
             .count();
 

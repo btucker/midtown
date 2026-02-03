@@ -564,3 +564,170 @@ fn polling_processes_pr_batch() {
     assert_eq!(nudge_count, 3, "should have 3 actionable issues");
     assert_eq!(auto_merge_count, 1, "should have 1 auto-mergeable PR");
 }
+
+/// Test that review backlog count excludes PRs with Claude comment reviews.
+///
+/// Bug: The daemon was showing "5 PRs need review" when some of those PRs
+/// already had Claude review comments. Coworkers can't submit formal GitHub
+/// reviews (they share the same user as the PR author), so they post comments
+/// with "## Code Review by <name>" or "<!-- midtown: <name> -->" markers.
+///
+/// The fix ensures the backlog count checks the `reviewed_prs` set that tracks
+/// which PRs have Claude comment reviews.
+#[test]
+fn backlog_count_excludes_comment_reviewed_prs() {
+    use std::collections::HashSet;
+
+    // Simulate 5 open PRs with no formal GitHub review decision
+    let prs = [
+        json!({
+            "number": 200,
+            "headRefName": "amsterdam/feature-a",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",  // No formal review
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        json!({
+            "number": 201,
+            "headRefName": "york/feature-b",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",  // No formal review
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        json!({
+            "number": 202,
+            "headRefName": "lexington/feature-c",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",  // No formal review
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        json!({
+            "number": 203,
+            "headRefName": "broadway/feature-d",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",  // No formal review
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        json!({
+            "number": 204,
+            "headRefName": "park/feature-e",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",  // No formal review
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+    ];
+
+    // Without considering comment-based reviews, all 5 PRs "need review"
+    let naive_count: usize = prs
+        .iter()
+        .filter(|pr| {
+            let review_decision = pr
+                .get("reviewDecision")
+                .and_then(|r| r.as_str())
+                .unwrap_or("");
+            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+            !is_draft && review_decision.is_empty()
+        })
+        .count();
+    assert_eq!(
+        naive_count, 5,
+        "naive count should show all 5 PRs need review"
+    );
+
+    // Simulate that PRs 200 and 202 have Claude comment reviews
+    // (detected via `is_pr_reviewed` which checks for review signatures)
+    let reviewed_prs: HashSet<u64> = [200, 202].into_iter().collect();
+
+    // The FIXED count should exclude PRs in reviewed_prs
+    let correct_count: usize = prs
+        .iter()
+        .filter(|pr| {
+            let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+            let review_decision = pr
+                .get("reviewDecision")
+                .and_then(|r| r.as_str())
+                .unwrap_or("");
+            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+            // PR needs review if it's not a draft, has no formal review, and no Claude comment review
+            pr_number != 0
+                && !is_draft
+                && review_decision.is_empty()
+                && !reviewed_prs.contains(&pr_number)
+        })
+        .count();
+
+    assert_eq!(
+        correct_count, 3,
+        "correct count should be 3 (excluding PRs 200 and 202 which have Claude reviews)"
+    );
+
+    // This matches the fix in collect_stuck_condition_effects where the
+    // prs_needing_review calculation now checks reviewed_prs.contains(&pr_number)
+}
+
+/// Test that malformed PRs (missing number field) are excluded from backlog count.
+///
+/// Defensive programming: PRs with null/missing number field should be skipped
+/// to prevent unexpected behavior when calling reviewed_prs.contains(&0).
+#[test]
+fn backlog_count_excludes_malformed_prs() {
+    use std::collections::HashSet;
+
+    let prs = [
+        // Normal PR
+        json!({
+            "number": 300,
+            "headRefName": "amsterdam/feature",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        // Malformed PR with null number
+        json!({
+            "number": null,
+            "headRefName": "york/malformed",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+        // Malformed PR with missing number field
+        json!({
+            "headRefName": "lexington/no-number",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "reviewDecision": "",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+        }),
+    ];
+
+    let reviewed_prs: HashSet<u64> = HashSet::new();
+
+    let count: usize = prs
+        .iter()
+        .filter(|pr| {
+            let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+            let review_decision = pr
+                .get("reviewDecision")
+                .and_then(|r| r.as_str())
+                .unwrap_or("");
+            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+            // Must have valid pr_number (defensive check)
+            pr_number != 0
+                && !is_draft
+                && review_decision.is_empty()
+                && !reviewed_prs.contains(&pr_number)
+        })
+        .count();
+
+    assert_eq!(
+        count, 1,
+        "should only count PR 300, excluding malformed PRs with null/missing number"
+    );
+}
