@@ -204,13 +204,15 @@ pub const REQUIRED_PLUGINS: &[&str] = &[
 ///
 /// Checks the hardcoded list of required plugins and installs any missing ones.
 /// Failures are logged as warnings but don't block daemon startup.
+///
+/// Note: Marketplace configuration and plugin installation are now handled by
+/// `midtown start` (in the CLI) for better user experience. This function remains
+/// as a fallback check but typically does nothing if the CLI already set things up.
 async fn ensure_plugins_installed() {
     if REQUIRED_PLUGINS.is_empty() {
         debug!("No required plugins configured");
         return;
     }
-
-    info!("Checking {} required plugins", REQUIRED_PLUGINS.len());
 
     // Get list of installed plugins
     let installed = match get_installed_plugins().await {
@@ -228,19 +230,17 @@ async fn ensure_plugins_installed() {
         .collect();
 
     if missing.is_empty() {
-        info!("All required plugins are installed");
+        debug!("All required plugins are installed");
         return;
     }
 
-    info!("Installing {} missing plugins", missing.len());
-
-    // Install missing plugins
-    for plugin in missing {
-        match install_plugin(plugin).await {
-            Ok(()) => info!("Installed plugin: {}", plugin),
-            Err(e) => warn!("Failed to install plugin {}: {}", plugin, e),
-        }
-    }
+    // Log missing plugins but don't try to install here
+    // (installation should happen in `midtown start` for better UX)
+    warn!(
+        "Missing {} required plugins: {:?}. Run `midtown start` to install them.",
+        missing.len(),
+        missing
+    );
 }
 
 /// Get list of installed plugin IDs.
@@ -268,22 +268,6 @@ async fn get_installed_plugins() -> Result<HashSet<String>, String> {
         .collect();
 
     Ok(ids)
-}
-
-/// Install a plugin by name.
-async fn install_plugin(name: &str) -> Result<(), String> {
-    let output = tokio::process::Command::new("claude")
-        .args(["plugin", "install", name])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run claude plugin install: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(stderr.to_string());
-    }
-
-    Ok(())
 }
 
 /// Unified cache for PR-to-coworker mappings.

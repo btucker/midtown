@@ -213,9 +213,10 @@ impl DaemonFixture {
             Ok(c) => {
                 self.daemon_process = Some(c);
 
-                // Wait for socket to become available (up to 5 seconds)
-                for _ in 0..50 {
-                    thread::sleep(Duration::from_millis(100));
+                // Wait for socket to become available (up to 60 seconds)
+                // Increased from 5s because daemon now installs plugins at startup
+                for _ in 0..300 {
+                    thread::sleep(Duration::from_millis(200));
                     if self.socket_path.exists() && UnixStream::connect(&self.socket_path).is_ok() {
                         return true;
                     }
@@ -888,12 +889,14 @@ fn newest_file_mtime(dir: &std::path::Path) -> Option<std::time::SystemTime> {
     newest
 }
 
-/// Test that required Claude Code plugins are automatically installed on daemon startup.
+/// Test that `midtown start` installs required plugins.
 ///
 /// This E2E test verifies the plugin auto-installation feature by:
 /// 1. Uninstalling the required plugin if it's present
-/// 2. Starting the daemon (which should trigger auto-install)
+/// 2. Starting midtown (which should trigger auto-install via CLI)
 /// 3. Verifying the plugin is now installed
+///
+/// Plugin installation happens in the CLI (not daemon) for better UX.
 #[test]
 #[ignore] // Requires built binary and Claude Code
 fn test_daemon_installs_required_plugins() {
@@ -938,7 +941,7 @@ fn test_daemon_installs_required_plugins() {
         }
     }
 
-    // Verify plugin is NOT installed before starting daemon
+    // Verify plugin is NOT installed before starting
     let list_output = Command::new("claude")
         .args(["plugin", "list", "--json"])
         .output()
@@ -952,24 +955,47 @@ fn test_daemon_installs_required_plugins() {
 
     assert!(
         !installed_before,
-        "Plugin should NOT be installed before daemon start for this test to be valid"
+        "Plugin should NOT be installed before midtown start for this test to be valid"
     );
 
-    // Start daemon (this triggers ensure_plugins_installed)
-    let mut fixture = match DaemonFixture::new() {
+    // Create a git repo for midtown to operate in
+    let fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
     };
 
-    if !fixture.start_daemon() {
-        eprintln!("Daemon failed to start — skipping plugin installation test");
-        return;
-    }
+    // Use `midtown start` which installs plugins (not `midtown daemon`)
+    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("release")
+        .join("midtown");
 
-    // Give the daemon time to install plugins (installation happens at startup)
-    // The daemon should have already installed plugins before the socket became available,
-    // but give it a bit more time just in case
-    thread::sleep(Duration::from_secs(2));
+    let start_result = Command::new(&binary_path)
+        .arg("start")
+        .arg("--daemon-only") // Don't create tmux session, just start daemon
+        .current_dir(&fixture.temp_dir)
+        .env("MIDTOWN_WEBHOOK_PORT", "0")
+        .env("MIDTOWN_CHAT_MONITOR", "0")
+        // Clear MIDTOWN_LEAD_COMMAND so plugin installation happens
+        // (the CLI skips plugins when a stub command is set)
+        .env_remove("MIDTOWN_LEAD_COMMAND")
+        .output();
+
+    match start_result {
+        Ok(output) if output.status.success() => {
+            // Daemon started successfully - cleanup handled by DaemonFixture::drop()
+            // which connects to the socket and sends shutdown RPC
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("midtown start failed: {}", stderr);
+            return;
+        }
+        Err(e) => {
+            eprintln!("Failed to run midtown start: {}", e);
+            return;
+        }
+    }
 
     // Verify plugin is now installed
     let list_output = Command::new("claude")

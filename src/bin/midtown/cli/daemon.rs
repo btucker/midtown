@@ -76,6 +76,129 @@ fn socket_path() -> PathBuf {
     midtown::paths::daemon_socket()
 }
 
+/// Check if the Claude CLI is installed and executable.
+fn claude_cli_available() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// The official Claude plugins marketplace on GitHub.
+const OFFICIAL_MARKETPLACE: &str = "anthropics/claude-plugins-official";
+const OFFICIAL_MARKETPLACE_NAME: &str = "claude-plugins-official";
+
+/// Ensure the official marketplace is configured and required plugins are installed.
+fn ensure_plugins_installed() -> Result<(), String> {
+    use midtown::daemon::REQUIRED_PLUGINS;
+
+    if REQUIRED_PLUGINS.is_empty() {
+        return Ok(());
+    }
+
+    // First ensure marketplace is configured
+    ensure_marketplace_configured()?;
+
+    // Get list of installed plugins
+    let installed = get_installed_plugins()?;
+
+    // Find missing plugins
+    let missing: Vec<_> = REQUIRED_PLUGINS
+        .iter()
+        .filter(|p| !installed.contains(**p))
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("Installing {} required plugins...", missing.len());
+
+    // Install missing plugins
+    for plugin in missing {
+        eprint!("  Installing {}... ", plugin);
+        match install_plugin(plugin) {
+            Ok(()) => eprintln!("done"),
+            Err(e) => eprintln!("failed: {}", e),
+        }
+    }
+
+    Ok(())
+}
+
+/// Ensure the official Claude plugins marketplace is configured.
+fn ensure_marketplace_configured() -> Result<(), String> {
+    let output = Command::new("claude")
+        .args(["plugin", "marketplace", "list"])
+        .output()
+        .map_err(|e| format!("Failed to run claude plugin marketplace list: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Check if official marketplace is in the list
+    if stdout.contains(OFFICIAL_MARKETPLACE_NAME) {
+        return Ok(());
+    }
+
+    // Add the official marketplace
+    eprintln!("Adding official Claude plugins marketplace...");
+    let output = Command::new("claude")
+        .args(["plugin", "marketplace", "add", OFFICIAL_MARKETPLACE])
+        .output()
+        .map_err(|e| format!("Failed to run claude plugin marketplace add: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to add marketplace: {}", stderr));
+    }
+
+    Ok(())
+}
+
+/// Get list of installed plugin IDs.
+fn get_installed_plugins() -> Result<std::collections::HashSet<String>, String> {
+    let output = Command::new("claude")
+        .args(["plugin", "list", "--json"])
+        .output()
+        .map_err(|e| format!("Failed to run claude plugin list: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("claude plugin list failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON output - it's an array of objects with "id" field
+    let plugins: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse plugin list JSON: {}", e))?;
+
+    let ids: std::collections::HashSet<String> = plugins
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|id| id.as_str()).map(String::from))
+        .collect();
+
+    Ok(ids)
+}
+
+/// Install a plugin by name.
+fn install_plugin(name: &str) -> Result<(), String> {
+    let output = Command::new("claude")
+        .args(["plugin", "install", name])
+        .output()
+        .map_err(|e| format!("Failed to run claude plugin install: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.trim().to_string());
+    }
+
+    Ok(())
+}
+
 /// Check if the daemon is running by attempting to connect to its socket.
 fn daemon_is_running() -> bool {
     let path = socket_path();
@@ -359,6 +482,19 @@ pub fn handle_start(
     });
     let additional_repos = resolve_repos(&repos, &project_name);
     let session = session_name_for(&Some(project_name.clone()))?;
+
+    // Verify Claude CLI is installed (unless using a stub command or daemon-only mode)
+    if !daemon_only && std::env::var("MIDTOWN_LEAD_COMMAND").is_err() && !claude_cli_available() {
+        return Err(
+            "Claude CLI is not installed. Install it with: curl -fsSL https://claude.ai/install.sh | bash"
+                .to_string(),
+        );
+    }
+
+    // Ensure required plugins are installed (unless using a stub command)
+    if std::env::var("MIDTOWN_LEAD_COMMAND").is_err() {
+        ensure_plugins_installed()?;
+    }
 
     let mut messages = Vec::new();
 
@@ -1573,5 +1709,13 @@ mod tests {
             cmd.contains("CLAUDE_CODE_TASK_LIST_ID"),
             "Command should set task list env var"
         );
+    }
+
+    #[test]
+    fn test_claude_cli_available_returns_bool() {
+        // This test verifies the function runs without panicking.
+        // The actual result depends on whether claude is installed in the test environment.
+        let _result: bool = claude_cli_available();
+        // If we get here without panicking, the function works correctly
     }
 }
