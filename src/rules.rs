@@ -374,15 +374,16 @@ pub(crate) fn decide_idle_shutdowns(
 // Detection types and functions
 // ---------------------------------------------------------------------------
 
-/// Patterns that indicate a coworker has hit a usage/rate limit.
-const USAGE_LIMIT_PATTERNS: &[&str] = &[
-    "usage limit",
-    "rate limit",
-    "Usage limit reached",
-    "rate_limit_error",
-    "You've hit your",
-    "limit resets",
-];
+/// Pattern that indicates a coworker has hit a usage/rate limit.
+///
+/// When Claude Code hits a usage limit, it displays a message with "/upgrade"
+/// as an action option. This is specific to the actual usage limit screen and
+/// won't match code content that happens to mention "usage limit" or "rate limit"
+/// in comments or variable names.
+///
+/// Previous patterns like "usage limit" caused false positives when coworkers
+/// were editing code with those strings in comments.
+const USAGE_LIMIT_PATTERN: &str = "/upgrade";
 
 /// Decision output for usage limit detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,11 +402,7 @@ pub(crate) fn decide_usage_limit_detection(
     pane_contents: &HashMap<String, String>,
 ) -> UsageLimitDecision {
     for (name, content) in pane_contents {
-        let has_limit = USAGE_LIMIT_PATTERNS
-            .iter()
-            .any(|p| content.to_lowercase().contains(&p.to_lowercase()));
-
-        if has_limit {
+        if content.contains(USAGE_LIMIT_PATTERN) {
             return UsageLimitDecision::Detected {
                 coworker: name.clone(),
             };
@@ -889,15 +886,12 @@ pub(crate) fn parse_usage_limit_duration(pane_content: &str) -> Duration {
     Duration::from_secs(15 * 60)
 }
 
-/// Check if pane content contains any usage/rate limit patterns.
+/// Check if pane content contains the usage limit pattern ("/upgrade").
 ///
 /// Used directly in tests and indirectly via `decide_usage_limit_detection`.
 #[allow(dead_code)]
 pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
-    let lower = pane_content.to_lowercase();
-    USAGE_LIMIT_PATTERNS
-        .iter()
-        .any(|p| lower.contains(&p.to_lowercase()))
+    pane_content.contains(USAGE_LIMIT_PATTERN)
 }
 
 // ---------------------------------------------------------------------------
@@ -2613,6 +2607,84 @@ mod tests {
             stuck.is_empty(),
             "snapshot should have no compaction detections, but found: {:?}",
             stuck
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Usage limit detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn usage_limit_code_content_should_not_trigger_detection() {
+        // This is the false positive case: code with "usage limits" in a comment
+        // should NOT trigger usage limit detection
+        let code_content = r#"
+            // Health checks: idle shutdown, stuck detection, usage limits.
+            fn check_health() {
+                // Handle rate limit errors gracefully
+                if self.rate_limit_exceeded {
+                    return Err("rate limit hit");
+                }
+            }
+        "#;
+
+        assert!(
+            !has_usage_limit_pattern(code_content),
+            "code containing 'usage limits' in comments should NOT trigger detection"
+        );
+    }
+
+    #[test]
+    fn usage_limit_actual_screen_should_trigger_detection() {
+        // This is the true positive case: actual Claude Code usage limit screen
+        // shows "/upgrade" as an action option
+        let actual_usage_limit_screen = r#"
+            You've reached your usage limit for Claude Opus 4.5.
+
+            Your limit will reset in 2 hours 30 minutes.
+
+            Options:
+            - /upgrade to increase your limit
+            - /compact to reduce context
+            - Wait for the limit to reset
+        "#;
+
+        assert!(
+            has_usage_limit_pattern(actual_usage_limit_screen),
+            "actual usage limit screen with '/upgrade' should trigger detection"
+        );
+    }
+
+    #[test]
+    fn usage_limit_decide_detection_false_positive() {
+        // Test the full decision function with code content
+        let mut panes = HashMap::new();
+        panes.insert(
+            "riverside".to_string(),
+            "// Health checks: idle shutdown, stuck detection, usage limits.".to_string(),
+        );
+
+        let decision = decide_usage_limit_detection(&panes);
+        assert_eq!(
+            decision,
+            UsageLimitDecision::NoneDetected,
+            "code content should not trigger usage limit detection"
+        );
+    }
+
+    #[test]
+    fn usage_limit_decide_detection_true_positive() {
+        // Test the full decision function with actual usage limit screen
+        let mut panes = HashMap::new();
+        panes.insert(
+            "broadway".to_string(),
+            "You've reached your usage limit. /upgrade to increase your limit.".to_string(),
+        );
+
+        let decision = decide_usage_limit_detection(&panes);
+        assert!(
+            matches!(decision, UsageLimitDecision::Detected { coworker } if coworker == "broadway"),
+            "actual usage limit screen should trigger detection"
         );
     }
 }
