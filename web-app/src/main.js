@@ -7,12 +7,14 @@ const app = mount(App, {
 })
 
 // Register service worker with auto-update
-// When a new version is available, prompt user before reloading
-registerSW({
+// When a new version is available, prompt user before updating
+const updateSW = registerSW({
   onNeedRefresh() {
     // Let user choose when to update to avoid losing unsaved work
     if (confirm('A new version is available. Reload to update?')) {
-      window.location.reload()
+      // Call updateSW to send SKIP_WAITING message to the new service worker,
+      // which triggers skipWaiting() and then reloads the page
+      updateSW(true)
     }
   },
   onOfflineReady() {
