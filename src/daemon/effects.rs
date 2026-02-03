@@ -216,6 +216,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut cooldowns = state.cooldowns.lock().unwrap();
                     cooldowns.clear_for_key(&name);
                 }
+                // Clear any pending nudge for this coworker (prevents stale attribution)
+                state.clear_pending_nudge(&name);
                 // Brief delay to let tmux clean up
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 // Respawn with --continue to resume the coworker's conversation

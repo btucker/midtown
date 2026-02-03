@@ -531,8 +531,9 @@ pub(crate) fn decide_stuck_coworker_restarts(
 pub(crate) enum StuckUiRecovery {
     /// Coworker is stuck in compaction (whirlpool/baking). Send Escape.
     InterruptCompaction { name: String },
-    /// Coworker has queued nudge messages sitting in the input but is not
-    /// processing them. Send Escape to interrupt and let Claude pick them up.
+    /// Coworker has queued text sitting in the input but is not processing it.
+    /// If the text matches a daemon-sent nudge, send Enter to auto-submit.
+    /// Otherwise, leave it alone (could be user-typed input).
     InterruptQueuedNudges { name: String },
 }
 
