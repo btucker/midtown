@@ -93,6 +93,10 @@ impl DaemonClient {
     /// Uses timeouts on the Unix socket to prevent indefinite blocking when the
     /// daemon is busy. This is critical for hook processes — without timeouts,
     /// a slow daemon response stalls the Claude Code instance that fired the hook.
+    ///
+    /// Includes retry logic for EAGAIN/EWOULDBLOCK errors (os error 35 on macOS,
+    /// 11 on Linux) which can occur transiently when the socket buffer is temporarily
+    /// unavailable.
     fn send_raw(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .map_err(|e| format!("Connection failed: {}", e))?;
@@ -117,12 +121,29 @@ impl DaemonClient {
         writeln!(stream, "{}", request_json).map_err(|e| format!("Write error: {}", e))?;
         stream.flush().map_err(|e| format!("Flush error: {}", e))?;
 
-        // Read response
+        // Read response with retry logic for EAGAIN/EWOULDBLOCK.
+        // These errors occur when the socket has no data yet but isn't closed.
+        // We retry up to the overall timeout duration.
         let mut reader = BufReader::new(stream);
         let mut response_line = String::new();
-        reader
-            .read_line(&mut response_line)
-            .map_err(|e| format!("Read error: {}", e))?;
+        let start = std::time::Instant::now();
+        let max_duration = std::time::Duration::from_secs(5);
+
+        loop {
+            match reader.read_line(&mut response_line) {
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // EAGAIN/EWOULDBLOCK - socket temporarily unavailable
+                    if start.elapsed() >= max_duration {
+                        return Err(format!("Read timeout after {:?}", max_duration));
+                    }
+                    // Brief sleep before retry to avoid busy-spinning
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                Err(e) => return Err(format!("Read error: {}", e)),
+            }
+        }
 
         let rpc_response: JsonRpcResponse = serde_json::from_str(&response_line)
             .map_err(|e| format!("Parse error: {} (response: {})", e, response_line.trim()))?;
