@@ -509,6 +509,14 @@ impl App {
         self.messages.len().saturating_sub(self.visible_height)
     }
 
+    /// Check if we're at the maximum scroll position (viewing oldest messages).
+    /// Used by the UI to determine line truncation strategy.
+    pub fn is_at_max_scroll(&self) -> bool {
+        let max = self.max_scroll();
+        // At max scroll when scroll_offset >= max and we're actually scrolled
+        max > 0 && self.scroll_offset >= max
+    }
+
     /// Check if user is near the top of loaded messages
     fn is_near_top(&self) -> bool {
         let max = self.max_scroll();
@@ -1530,5 +1538,73 @@ mod tests {
         // Empty comments
         let (reviewer, _) = extract_reviewer_from_comments(&[]);
         assert_eq!(reviewer, None);
+    }
+
+    #[test]
+    fn test_is_at_max_scroll() {
+        use std::time::Instant;
+
+        // Create an App with 100 messages and visible_height of 20
+        let messages: VecDeque<Message> = (0..100)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "test".to_string(),
+                content: format!("message {}", i),
+                timestamp: chrono::Utc::now(),
+                message_type: midtown::MessageType::Text,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            scroll_offset: 0,
+            visible_height: 20,
+            channel: None,
+            daemon_client: None,
+            initial_load_done: true,
+            history_start_position: 0,
+            history_fully_loaded: true,
+            tasks: Vec::new(),
+            prs: Vec::new(),
+            merged_prs: Vec::new(),
+            repo_name: "test".to_string(),
+            kanban_last_refresh: Instant::now(),
+            kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
+            repo_status_last_refresh: Instant::now(),
+            repo_status_receiver: None,
+            selection_mode: false,
+            input_mode: false,
+            input_text: String::new(),
+            input_cursor: 0,
+            user_display_name: None,
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
+        };
+
+        // At bottom (scroll_offset=0): not at max scroll
+        assert!(
+            !app.is_at_max_scroll(),
+            "scroll_offset=0 should not be at max"
+        );
+
+        // Somewhere in the middle: not at max scroll
+        app.scroll_offset = 40;
+        assert!(
+            !app.is_at_max_scroll(),
+            "scroll_offset=40 should not be at max"
+        );
+
+        // At max scroll (100 - 20 = 80): should be at max
+        app.scroll_offset = 80;
+        assert!(app.is_at_max_scroll(), "scroll_offset=80 should be at max");
+
+        // Beyond max scroll: should still be considered at max
+        app.scroll_offset = 85;
+        assert!(
+            app.is_at_max_scroll(),
+            "scroll_offset=85 (beyond max) should be at max"
+        );
     }
 }
