@@ -30,8 +30,10 @@ use crate::tmux;
 /// Tracks which WebSocket connections are viewing which tmux windows,
 /// along with each viewer's viewport width in columns.
 ///
-/// Used to resize tmux windows to match the widest web viewer, then
-/// reset to automatic sizing when all viewers disconnect.
+/// NOTE: This tracker no longer performs any tmux resizing. The resize
+/// functionality was removed because it blocked TUI users from controlling
+/// their terminal size. The tracker is retained for potential future
+/// analytics, debugging, or optional resize features.
 #[derive(Debug)]
 pub struct ViewerTracker {
     /// Map of conn_id → (window_name, cols)
@@ -60,8 +62,7 @@ impl ViewerTracker {
 
     /// Register or update a viewer's window and viewport width.
     ///
-    /// Returns the set of windows that need resizing (old window to reset,
-    /// new window to resize).
+    /// Returns ResizeActions (currently unused - resize execution is disabled).
     pub fn set_viewing(&mut self, conn_id: u64, window: String, cols: u16) -> ResizeActions {
         let old_window = self.viewers.get(&conn_id).map(|(w, _)| w.clone());
         self.viewers.insert(conn_id, (window.clone(), cols));
@@ -89,7 +90,7 @@ impl ViewerTracker {
 
     /// Remove a viewer (on disconnect or leave).
     ///
-    /// Returns the window that may need resizing or resetting.
+    /// Returns ResizeActions (currently unused - resize execution is disabled).
     pub fn remove_viewer(&mut self, conn_id: u64) -> ResizeActions {
         let mut actions = ResizeActions::default();
 
@@ -230,8 +231,8 @@ pub struct WebState {
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a session, so we cache indefinitely.
     pub repo_name_cache: std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, String>>,
-    /// Tracks which WebSocket connections are viewing which tmux windows,
-    /// enabling dynamic window resizing to match the web viewport.
+    /// Tracks which WebSocket connections are viewing which tmux windows.
+    /// Note: Resize functionality is disabled; TUI users control terminal size.
     pub viewer_tracker: Mutex<ViewerTracker>,
 }
 
@@ -284,10 +285,10 @@ pub enum ClientMessage {
     /// Request coworker status
     #[serde(rename = "get_status")]
     GetStatus,
-    /// Client is viewing a tmux window — resize it to match their viewport
+    /// Client is viewing a tmux window (resize disabled; for tracking only)
     #[serde(rename = "view_window")]
     ViewWindow { window: String, cols: u16 },
-    /// Client stopped viewing a tmux window — may reset its size
+    /// Client stopped viewing a tmux window (resize disabled; for tracking only)
     #[serde(rename = "leave_window")]
     LeaveWindow,
     /// Send a nudge (text input) to a coworker or the lead
