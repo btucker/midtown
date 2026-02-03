@@ -128,6 +128,11 @@ pub(super) const COMPACTION_RECOVERY_COOLDOWN: Duration = Duration::from_secs(18
 /// can recur quickly after nudges are delivered.
 pub(super) const QUEUED_PROMPT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// Minimum age in seconds before a coworker is eligible for queued nudge detection (60 seconds).
+/// During startup, the TUI structure is still forming and `has_queued_nudges` can produce
+/// false positives. This gives the TUI time to settle before we start detecting queued nudges.
+pub(super) const QUEUED_NUDGE_MIN_AGE_SECS: i64 = 60;
+
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.
 pub(super) const USAGE_LIMIT_NUDGE_BUFFER: Duration = Duration::from_secs(30);

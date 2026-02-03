@@ -521,9 +521,14 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
 /// and send the appropriate recovery keypress (Escape or Enter).
 ///
 /// Uses per-coworker cooldowns to avoid spamming keys on every tick.
+///
+/// `exclude_names` allows the caller to skip coworkers that are already being
+/// shut down (e.g., from idle shutdown effects in the same tick), preventing
+/// race conditions where we interrupt a coworker that's about to terminate.
 pub(super) fn check_and_recover_stuck_ui(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
+    exclude_names: &HashSet<String>,
 ) -> Vec<Effect> {
     if snap.active_coworkers.is_empty() {
         return vec![];
@@ -532,6 +537,9 @@ pub(super) fn check_and_recover_stuck_ui(
     let recoveries = crate::rules::decide_stuck_ui_recoveries(
         &snap.pane_contents,
         MIN_COMPACTION_STUCK_DURATION,
+        &snap.coworker_start_times,
+        snap.now_utc,
+        chrono::Duration::seconds(QUEUED_NUDGE_MIN_AGE_SECS),
     );
 
     let mut effects = Vec::new();
@@ -539,6 +547,15 @@ pub(super) fn check_and_recover_stuck_ui(
     for recovery in recoveries {
         match recovery {
             crate::rules::StuckUiRecovery::InterruptCompaction { name } => {
+                // Skip coworkers being shut down
+                if exclude_names.contains(&name) {
+                    debug!(
+                        "Skipping compaction recovery for {} (being shut down)",
+                        name
+                    );
+                    continue;
+                }
+
                 let should_act = {
                     let cooldowns = state.cooldowns.lock().unwrap();
                     cooldowns.check("compaction_recovery", &name, COMPACTION_RECOVERY_COOLDOWN)
@@ -566,6 +583,18 @@ pub(super) fn check_and_recover_stuck_ui(
                 });
             }
             crate::rules::StuckUiRecovery::InterruptQueuedNudges { name } => {
+                // Skip coworkers being shut down (effect coordination logic stays here)
+                if exclude_names.contains(&name) {
+                    debug!(
+                        "Skipping queued nudge recovery for {} (being shut down)",
+                        name
+                    );
+                    continue;
+                }
+
+                // Age-based protection is handled in the pure decision function
+                // (decide_stuck_ui_recoveries filters out young coworkers)
+
                 let should_act = {
                     let cooldowns = state.cooldowns.lock().unwrap();
                     cooldowns.check(

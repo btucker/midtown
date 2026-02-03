@@ -771,9 +771,16 @@ fn is_input_separator(line: &str) -> bool {
 ///
 /// `min_compaction_duration` sets the minimum elapsed time before a
 /// compaction is considered stuck. Short compactions are normal and useful.
+///
+/// `coworker_start_times` and `now_utc` are used for age-based protection:
+/// coworkers younger than `min_queued_nudge_age` are excluded from queued
+/// nudge detection (the TUI structure is still forming during startup).
 pub(crate) fn decide_stuck_ui_recoveries(
     pane_contents: &HashMap<String, String>,
     min_compaction_duration: Duration,
+    coworker_start_times: &HashMap<String, DateTime<Utc>>,
+    now_utc: DateTime<Utc>,
+    min_queued_nudge_age: chrono::Duration,
 ) -> Vec<StuckUiRecovery> {
     let mut recoveries = Vec::new();
 
@@ -782,7 +789,17 @@ pub(crate) fn decide_stuck_ui_recoveries(
     }
 
     for name in detect_queued_prompt_stuck(pane_contents) {
-        recoveries.push(StuckUiRecovery::InterruptQueuedNudges { name });
+        // Age-based protection: skip coworkers younger than min_queued_nudge_age.
+        // During startup, the TUI structure is still forming and has_queued_nudges()
+        // can produce false positives.
+        let is_old_enough = coworker_start_times
+            .get(&name)
+            .map(|started| now_utc.signed_duration_since(*started) >= min_queued_nudge_age)
+            .unwrap_or(false);
+
+        if is_old_enough {
+            recoveries.push(StuckUiRecovery::InterruptQueuedNudges { name });
+        }
     }
 
     recoveries
@@ -2342,7 +2359,23 @@ mod tests {
   ⏵⏵ bypass permissions on";
         panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
 
-        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        // Set up coworkers as "old enough" (started 2 minutes ago)
+        let now = chrono::Utc::now();
+        let mut start_times = HashMap::new();
+        start_times.insert("york".to_string(), now - chrono::Duration::seconds(120));
+        start_times.insert(
+            "amsterdam".to_string(),
+            now - chrono::Duration::seconds(120),
+        );
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300),
+            &start_times,
+            now,
+            min_age,
+        );
         assert_eq!(recoveries.len(), 2);
 
         let has_compaction = recoveries
@@ -2376,7 +2409,23 @@ mod tests {
   ⏵⏵ bypass permissions on";
         panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
 
-        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        // Set up coworkers as "old enough" (started 2 minutes ago)
+        let now = chrono::Utc::now();
+        let mut start_times = HashMap::new();
+        start_times.insert("york".to_string(), now - chrono::Duration::seconds(120));
+        start_times.insert(
+            "amsterdam".to_string(),
+            now - chrono::Duration::seconds(120),
+        );
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300),
+            &start_times,
+            now,
+            min_age,
+        );
         // Only the queued nudge should trigger, not the short compaction
         assert_eq!(recoveries.len(), 1);
         assert!(matches!(
@@ -2397,15 +2446,148 @@ mod tests {
             "  $ cargo build\n  Compiling midtown v0.4.1\n".to_string(),
         );
 
-        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        let now = chrono::Utc::now();
+        let mut start_times = HashMap::new();
+        start_times.insert("york".to_string(), now - chrono::Duration::seconds(120));
+        start_times.insert(
+            "amsterdam".to_string(),
+            now - chrono::Duration::seconds(120),
+        );
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300),
+            &start_times,
+            now,
+            min_age,
+        );
         assert!(recoveries.is_empty());
     }
 
     #[test]
     fn recovery_empty_for_no_coworkers() {
         let panes: HashMap<String, String> = HashMap::new();
-        let recoveries = decide_stuck_ui_recoveries(&panes, Duration::from_secs(300));
+        let start_times: HashMap<String, DateTime<Utc>> = HashMap::new();
+        let now = chrono::Utc::now();
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300),
+            &start_times,
+            now,
+            min_age,
+        );
         assert!(recoveries.is_empty());
+    }
+
+    #[test]
+    fn queued_nudge_recovery_skips_young_coworkers() {
+        // This test verifies the age-based protection for queued nudge detection.
+        // During startup, the TUI structure is still forming and has_queued_nudges()
+        // can produce false positives.
+        let mut panes = HashMap::new();
+        let amsterdam_tui = "\
+⏺ Previous action
+
+✳ Working on task...
+❯ Check the channel
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
+
+        let now = chrono::Utc::now();
+        let mut start_times = HashMap::new();
+        // Coworker started only 30 seconds ago (below 60s threshold)
+        start_times.insert("amsterdam".to_string(), now - chrono::Duration::seconds(30));
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300),
+            &start_times,
+            now,
+            min_age,
+        );
+
+        // Young coworker should NOT trigger queued nudge recovery
+        assert!(
+            recoveries.is_empty(),
+            "coworkers younger than min_age should be skipped for queued nudge recovery"
+        );
+    }
+
+    #[test]
+    fn queued_nudge_recovery_triggers_for_old_coworkers() {
+        // Verify that queued nudge detection DOES trigger for coworkers old enough.
+        let mut panes = HashMap::new();
+        let amsterdam_tui = "\
+⏺ Previous action
+
+✳ Working on task...
+❯ Check the channel
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
+
+        let now = chrono::Utc::now();
+        let mut start_times = HashMap::new();
+        // Coworker started 90 seconds ago (above 60s threshold)
+        start_times.insert("amsterdam".to_string(), now - chrono::Duration::seconds(90));
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300),
+            &start_times,
+            now,
+            min_age,
+        );
+
+        // Old enough coworker SHOULD trigger queued nudge recovery
+        assert_eq!(recoveries.len(), 1);
+        assert!(matches!(
+            &recoveries[0],
+            StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"
+        ));
+    }
+
+    #[test]
+    fn compaction_recovery_not_affected_by_age() {
+        // Compaction recovery should NOT use age-based protection
+        // (only queued nudge detection has this protection).
+        let mut panes = HashMap::new();
+        panes.insert(
+            "york".to_string(),
+            "  Whirlpooling your conversation…\n  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n"
+                .to_string(),
+        );
+
+        let now = chrono::Utc::now();
+        let mut start_times = HashMap::new();
+        // Coworker is young (30 seconds), but compaction should still trigger
+        start_times.insert("york".to_string(), now - chrono::Duration::seconds(30));
+        let min_age = chrono::Duration::seconds(60);
+
+        let recoveries = decide_stuck_ui_recoveries(
+            &panes,
+            Duration::from_secs(300),
+            &start_times,
+            now,
+            min_age,
+        );
+
+        // Young coworker SHOULD still trigger compaction recovery
+        assert_eq!(recoveries.len(), 1);
+        assert!(matches!(
+            &recoveries[0],
+            StuckUiRecovery::InterruptCompaction { name } if name == "york"
+        ));
     }
 
     #[test]
