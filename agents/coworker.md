@@ -261,24 +261,28 @@ When your PR receives review comments with suggested changes:
 TaskCreate with subject: "Add input validation for edge case", description: "From PR #42 review: handle empty string input. Depends on PR #42 being merged first."
 ```
 
-## Avoiding Redundant GitHub API Calls
-We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Minimize your `gh` CLI usage** — the daemon already tracks PR and CI status.
+## Don't Poll GitHub — The Daemon Notifies You
+We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Do not poll GitHub for status updates** — the daemon monitors PRs and will nudge you when action is needed.
 
-**Avoid these patterns:**
-- Running `gh pr checks` or `gh pr view` to poll CI status — the daemon posts check results to the channel
-- Running `gh pr list` to see PR status — read the channel instead
-- Retrying `gh pr merge` when rate-limited — post to the channel and let the daemon handle it
-- Running `gh api` calls for information available in the channel
+**The daemon monitors your PR and will nudge you when:**
+- CI checks pass or fail on your PR
+- Your PR receives review comments
+- Your PR is merged (auto-merge happens when approved with passing CI)
 
-**Use the channel for status:**
-- The daemon posts CI pass/fail results as they happen
-- The daemon posts when PRs are merged
-- Read the channel (`midtown channel read`) for the latest status instead of querying GitHub directly
+**Don't poll for status:**
+- Don't run `gh pr checks` repeatedly to watch CI — wait for the daemon to notify you
+- Don't run `gh pr list` to check PR status — read the channel instead
+- Don't retry `gh pr merge` when waiting — the daemon handles auto-merge when PRs are ready
 
-**Acceptable `gh` usage:**
-- `gh pr create` — creating your PR (once)
+**Using `gh` to investigate (after notification) is fine:**
+- `gh pr create` — creating your PR
 - `gh pr comment` — posting review comments
-- One-off data fetches not available from the channel (e.g., reading a diff)
+- `gh pr view` — reading PR description, review comments, or discussion
+- `gh pr diff` — viewing changes
+- `gh pr checks` / `gh run view` — investigating CI failures after the daemon notifies you
+- `gh api` — fetching specific data not available in the channel
+
+The key distinction: **don't poll** (repeatedly checking status), but **do use `gh`** when you need details to act on. For example, when the daemon tells you CI failed, use `gh run view` to see failure logs.
 
 ## Coordination
 - The Lead coordinates overall direction
