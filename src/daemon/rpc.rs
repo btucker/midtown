@@ -473,6 +473,14 @@ async fn handle_coworker_report_state(
             .unwrap_or_default()
     };
 
+    // Persist state to file for recovery across daemon restarts.
+    // The daemon is the authority for state, but we write to disk so that
+    // if the daemon restarts, it can recover the last known workflow phase.
+    let report = crate::coworker_state::CoworkerStateReport::new(phase, task_id);
+    if let Err(e) = crate::coworker_state::write_state(&state.repo_name, name, &report) {
+        debug!("Failed to persist state file for {}: {}", name, e);
+    }
+
     // Update tmux tab display
     if let Err(e) = state
         .coworkers
