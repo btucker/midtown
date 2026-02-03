@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:sw": "npm run build && TEST_SW=1 playwright test sw-update"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.0",

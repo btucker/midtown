@@ -1,7 +1,22 @@
-import { precacheAndRoute } from 'workbox-precaching'
+import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching'
+import { clientsClaim } from 'workbox-core'
+
+// Take control of all pages immediately when activated
+clientsClaim()
+
+// Clean up old caches from previous versions
+cleanupOutdatedCaches()
 
 // Workbox precaching - the manifest is injected by vite-plugin-pwa at build time
 precacheAndRoute(self.__WB_MANIFEST)
+
+// Listen for SKIP_WAITING message from the client (sent by vite-plugin-pwa's registerSW)
+// This allows immediate activation of new service workers
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting()
+  }
+})
 
 // Handle incoming push notifications
 self.addEventListener('push', (event) => {
