@@ -1090,6 +1090,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Skip the first tick (which fires immediately)
     channel_rotation_interval.tick().await;
 
+    // Timer for periodic orphan process cleanup (every 5 minutes)
+    // This catches claude processes that were orphaned when tmux sessions were
+    // killed directly without going through `midtown stop`.
+    let mut orphan_process_interval = interval(std::time::Duration::from_secs(300));
+    // Skip the first tick (which fires immediately)
+    orphan_process_interval.tick().await;
+
     // Nudge any coworkers discovered from tmux to continue their tasks.
     // This runs once at startup after the daemon has fully initialized.
     {
@@ -1315,6 +1322,18 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                             error!("Channel rotation failed: {}", e);
                         }
                     }
+                }
+            }
+
+            // Periodic orphan process cleanup: kill claude processes that were
+            // orphaned (PPID=1) when tmux sessions were killed directly.
+            _ = orphan_process_interval.tick() => {
+                // Only kill truly orphaned processes (PPID=1) to avoid killing
+                // claude sessions the user started manually or in other projects.
+                let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
+                let killed = crate::tmux::kill_orphaned_processes(pattern);
+                if killed > 0 {
+                    info!("Cleaned up {} orphaned claude process(es)", killed);
                 }
             }
 

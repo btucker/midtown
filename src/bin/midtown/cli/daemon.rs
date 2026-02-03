@@ -724,7 +724,12 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     // if the daemon exited uncleanly they may be left behind.
     kill_orphaned_webhook_forwarders(&mut messages);
 
-    // Step 4: Stop the standalone webserver
+    // Step 4: Kill any orphaned claude processes.
+    // Claude Code handles SIGHUP, so if the tmux session was killed directly
+    // (without going through `midtown stop`), processes may still be running.
+    kill_orphaned_claude_processes(&mut messages);
+
+    // Step 5: Stop the standalone webserver
     if webserver_is_running() {
         match stop_webserver() {
             Ok(true) => messages.push("Stopped webserver".to_string()),
@@ -736,6 +741,27 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     Ok(Response::Message {
         message: messages.join(". "),
     })
+}
+
+/// Kill any orphaned Claude processes that were started by midtown.
+///
+/// Claude Code (node) handles SIGHUP, so when a tmux session is killed directly
+/// (without going through `midtown stop`), claude processes survive and become
+/// orphaned (PPID=1). This function finds and kills only those orphans.
+///
+/// We're conservative here: only kill processes that:
+/// 1. Match midtown's settings file pattern
+/// 2. Have PPID=1 (truly orphaned, no legitimate parent)
+///
+/// This avoids killing claude processes the user started manually or in other projects.
+fn kill_orphaned_claude_processes(messages: &mut Vec<String>) {
+    // Pattern matches claude processes using midtown settings files
+    let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
+
+    let count = midtown::tmux::kill_orphaned_processes(pattern);
+    if count > 0 {
+        messages.push(format!("Killed {} orphaned claude process(es)", count));
+    }
 }
 
 /// Kill any orphaned `gh webhook forward` processes for the current project.
@@ -1124,6 +1150,9 @@ mod tests {
     // Mutex to serialize tests that change CWD
     static CWD_MUTEX: Mutex<()> = Mutex::new(());
 
+    // Mutex to serialize tests that change env vars (MIDTOWN_LEAD_COMMAND)
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
     /// Helper to create a fake git repo in a temp directory
     fn create_git_repo(dir: &std::path::Path) {
         fs::create_dir_all(dir.join(".git")).unwrap();
@@ -1265,6 +1294,13 @@ mod tests {
 
     #[test]
     fn test_build_lead_claude_command_includes_system_prompt() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Ensure env var override is not set
+        // SAFETY: Protected by mutex
+        unsafe {
+            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
+        }
+
         let task_list_id = "midtown-test";
 
         let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
@@ -1278,6 +1314,13 @@ mod tests {
 
     #[test]
     fn test_build_lead_claude_command_no_resume_flag() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Ensure env var override is not set
+        // SAFETY: Protected by mutex
+        unsafe {
+            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
+        }
+
         let task_list_id = "midtown-test";
 
         let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
@@ -1325,6 +1368,13 @@ mod tests {
 
     #[test]
     fn test_build_lead_claude_command_includes_task_list_id() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Ensure env var override is not set
+        // SAFETY: Protected by mutex
+        unsafe {
+            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
+        }
+
         let task_list_id = "midtown-myrepo";
 
         let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
@@ -1373,6 +1423,13 @@ mod tests {
 
     #[test]
     fn test_build_lead_claude_command_with_additional_repos() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Ensure env var override is not set
+        // SAFETY: Protected by mutex
+        unsafe {
+            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
+        }
+
         let task_list_id = "midtown-multi";
         let additional_repos = vec![
             PathBuf::from("/path/to/repo-a"),
@@ -1395,6 +1452,13 @@ mod tests {
 
     #[test]
     fn test_build_lead_claude_command_no_additional_repos() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Ensure env var override is not set
+        // SAFETY: Protected by mutex
+        unsafe {
+            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
+        }
+
         let task_list_id = "midtown-single";
 
         let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
@@ -1468,8 +1532,9 @@ mod tests {
 
     #[test]
     fn test_build_lead_claude_command_respects_env_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // Set the override env var
-        // SAFETY: Test runs single-threaded with test mutex
+        // SAFETY: Protected by mutex
         unsafe {
             std::env::set_var("MIDTOWN_LEAD_COMMAND", "sleep 300");
         }
@@ -1480,7 +1545,7 @@ mod tests {
         assert_eq!(result.unwrap(), "sleep 300");
 
         // Clean up
-        // SAFETY: Test cleanup
+        // SAFETY: Protected by mutex
         unsafe {
             std::env::remove_var("MIDTOWN_LEAD_COMMAND");
         }
@@ -1488,8 +1553,9 @@ mod tests {
 
     #[test]
     fn test_build_lead_claude_command_builds_real_command_without_env() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         // Ensure env var is not set
-        // SAFETY: Test runs single-threaded with test mutex
+        // SAFETY: Protected by mutex
         unsafe {
             std::env::remove_var("MIDTOWN_LEAD_COMMAND");
         }
