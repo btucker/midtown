@@ -1454,3 +1454,321 @@ fn test_send_bell_only_targets_chat_pane() {
     // from notify_user entirely. This test documents the expected behavior:
     // only the chat pane (lead.1) should receive bell notifications.
 }
+
+// ── Orphan process cleanup tests ────────────────────────────────────
+
+/// Helper to create an orphaned process that matches a pattern.
+///
+/// Uses a shell script that forks, has the child exec a long-running process,
+/// and the parent exits immediately. This creates a true orphan (PPID=1).
+fn spawn_orphan(pattern_arg: &str) -> Option<u32> {
+    // Create a script that orphans itself
+    // The grandchild runs sh -c with a loop that has the pattern in its command line
+    // Parent (subshell) exits immediately, making the grandchild an orphan
+    let loop_cmd = format!(
+        "while true; do sleep 1; done # orphan-marker {}",
+        pattern_arg
+    );
+    let script = format!(r#"( sh -c '{}' & ) &"#, loop_cmd.replace("'", "'\\''"));
+
+    // Use status() not output() - output() blocks waiting for stdout EOF
+    // which can hang when background processes are involved
+    let status = Command::new("sh")
+        .args(["-c", &script])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+
+    if !status.success() {
+        return None;
+    }
+
+    // Wait for the orphan to be created
+    thread::sleep(Duration::from_millis(300));
+
+    // Find the orphan by pattern
+    let search_pattern = format!("orphan-marker {}", pattern_arg);
+    let pgrep_output = Command::new("pgrep")
+        .args(["-f", &search_pattern])
+        .output()
+        .ok()?;
+
+    String::from_utf8_lossy(&pgrep_output.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse().ok())
+}
+
+/// Helper to spawn a non-orphaned process (has a real parent).
+fn spawn_with_parent(pattern_arg: &str) -> Option<std::process::Child> {
+    // Use sh -c to run a command with the same pattern as orphan
+    // The difference is this one will have a real parent (the test process)
+    Command::new("sh")
+        .args([
+            "-c",
+            &format!(
+                "while true; do sleep 1; done # orphan-marker {}",
+                pattern_arg
+            ),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+}
+
+/// `find_orphaned_processes` returns only processes with PPID=1.
+///
+/// Verifies that the function correctly identifies orphans while ignoring
+/// processes that have a legitimate parent.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_find_orphaned_processes_returns_only_orphans() {
+    let test_marker = format!("orphan-test-{}", std::process::id());
+
+    // Spawn an orphan with our test marker
+    let orphan_pid = spawn_orphan(&test_marker);
+    assert!(orphan_pid.is_some(), "Failed to spawn orphan process");
+    let orphan_pid = orphan_pid.unwrap();
+
+    // Spawn a non-orphan with the same marker
+    let mut child = spawn_with_parent(&test_marker).expect("Failed to spawn child");
+
+    // Give processes time to settle
+    thread::sleep(Duration::from_millis(200));
+
+    // Verify the orphan has PPID=1
+    let orphan_ppid = midtown::tmux::get_ppid(orphan_pid);
+    assert_eq!(
+        orphan_ppid,
+        Some(1),
+        "Orphan should have PPID=1, got {:?}",
+        orphan_ppid
+    );
+
+    // Verify the non-orphan has a real parent
+    let child_ppid = midtown::tmux::get_ppid(child.id());
+    assert_ne!(
+        child_ppid,
+        Some(1),
+        "Non-orphan should not have PPID=1, got {:?}",
+        child_ppid
+    );
+
+    // find_orphaned_processes should only return the orphan
+    let pattern = format!("orphan-marker {}", test_marker);
+    let orphans = midtown::tmux::find_orphaned_processes(&pattern);
+
+    assert!(
+        orphans.contains(&orphan_pid),
+        "Orphan PID {} should be in results: {:?}",
+        orphan_pid,
+        orphans
+    );
+    assert!(
+        !orphans.contains(&child.id()),
+        "Non-orphan PID {} should NOT be in results: {:?}",
+        child.id(),
+        orphans
+    );
+
+    // Cleanup
+    let _ = Command::new("kill").arg(orphan_pid.to_string()).status();
+    let _ = child.kill();
+}
+
+/// `kill_orphaned_processes` kills only orphaned processes.
+///
+/// Verifies that:
+/// 1. Orphaned processes matching the pattern are killed
+/// 2. Non-orphaned processes matching the pattern are NOT killed
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_kill_orphaned_processes_kills_only_orphans() {
+    let test_marker = format!("kill-orphan-test-{}", std::process::id());
+
+    // Spawn an orphan with our test marker
+    let orphan_pid = spawn_orphan(&test_marker);
+    assert!(orphan_pid.is_some(), "Failed to spawn orphan process");
+    let orphan_pid = orphan_pid.unwrap();
+
+    // Spawn a non-orphan with the same marker
+    let mut child = spawn_with_parent(&test_marker).expect("Failed to spawn child");
+    let child_pid = child.id();
+
+    // Give processes time to settle
+    thread::sleep(Duration::from_millis(200));
+
+    // Verify both are alive before cleanup
+    assert!(
+        midtown::tmux::is_pid_alive(orphan_pid),
+        "Orphan should be alive before cleanup"
+    );
+    assert!(
+        midtown::tmux::is_pid_alive(child_pid),
+        "Non-orphan should be alive before cleanup"
+    );
+
+    // Kill orphaned processes (only matches orphan-marker, not non-orphan-marker)
+    let pattern = format!("orphan-marker {}", test_marker);
+    let killed = midtown::tmux::kill_orphaned_processes(&pattern);
+
+    // Should have killed exactly 1 (the orphan)
+    assert_eq!(killed, 1, "Should have killed exactly 1 orphan");
+
+    // Give time for processes to die
+    thread::sleep(Duration::from_millis(600));
+
+    // Verify orphan is dead
+    assert!(
+        !midtown::tmux::is_pid_alive(orphan_pid),
+        "Orphan PID {} should be dead after cleanup",
+        orphan_pid
+    );
+
+    // Verify non-orphan is still alive
+    assert!(
+        midtown::tmux::is_pid_alive(child_pid),
+        "Non-orphan PID {} should still be alive after cleanup",
+        child_pid
+    );
+
+    // Cleanup the non-orphan
+    let _ = child.kill();
+}
+
+/// `kill_orphaned_processes` with midtown settings pattern kills real orphaned Claude.
+///
+/// This test spawns a real claude process, orphans it by killing the parent session
+/// without using terminate_session_processes, then verifies the cleanup function
+/// finds and kills it.
+#[test]
+#[ignore]
+#[timeout(60_000)]
+fn test_kill_orphaned_claude_processes_real() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Check if claude is available
+    let claude_available = Command::new("claude")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !claude_available {
+        eprintln!("claude not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_string_lossy().to_string();
+
+    // Spawn a real claude process
+    let config = midtown::tmux::ClaudeLaunchConfig {
+        name: "orphan-test".to_string(),
+        session_mode: midtown::tmux::SessionMode::Fresh,
+        task_mode: midtown::tmux::TaskMode::Isolated,
+        role: midtown::tmux::CoworkerRole::default(),
+        initial_prompt: Some("Say 'ready' and wait.".to_string()),
+        additional_dirs: vec![],
+        restrict_setting_sources: true,
+    };
+    let result = midtown::tmux::spawn_claude(&session, &dir, &config);
+    assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
+
+    // Wait for claude to start
+    thread::sleep(Duration::from_secs(5));
+
+    // Get the claude process PID
+    let pids = midtown::tmux::session_pane_pids(&session);
+    let claude_pid = pids
+        .iter()
+        .find(|(name, _)| name.contains("orphan-test"))
+        .map(|(_, pid)| *pid)
+        .expect("Couldn't find claude pane");
+
+    // Also get child PIDs
+    let child_output = Command::new("pgrep")
+        .args(["-P", &claude_pid.to_string()])
+        .output();
+    let mut all_pids = vec![claude_pid];
+    if let Ok(o) = child_output {
+        if o.status.success() {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    all_pids.push(pid);
+                }
+            }
+        }
+    }
+
+    println!("Claude PIDs before orphaning: {:?}", all_pids);
+
+    // Kill the tmux session WITHOUT using terminate_session_processes
+    // This simulates someone running `tmux kill-session` directly
+    kill_test_session(&session);
+
+    // Wait for processes to become orphaned (PPID -> 1)
+    thread::sleep(Duration::from_secs(1));
+
+    // Verify at least one process survived and is orphaned
+    let survivors: Vec<u32> = all_pids
+        .iter()
+        .copied()
+        .filter(|&pid| midtown::tmux::is_pid_alive(pid))
+        .collect();
+
+    println!("Survivors after killing session: {:?}", survivors);
+
+    // Claude should have survived (handles SIGHUP)
+    // If no survivors, the test can't verify cleanup
+    if survivors.is_empty() {
+        eprintln!("No survivors after kill-session, test inconclusive");
+        return;
+    }
+
+    // Verify at least one survivor is orphaned
+    let orphaned_survivors: Vec<u32> = survivors
+        .iter()
+        .copied()
+        .filter(|&pid| midtown::tmux::get_ppid(pid) == Some(1))
+        .collect();
+
+    println!("Orphaned survivors: {:?}", orphaned_survivors);
+
+    if orphaned_survivors.is_empty() {
+        eprintln!("No orphaned survivors, test inconclusive");
+        // Clean up any non-orphaned survivors
+        for pid in &survivors {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
+        return;
+    }
+
+    // Now test the cleanup function
+    let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
+    let killed = midtown::tmux::kill_orphaned_processes(pattern);
+
+    println!("Killed {} orphaned processes", killed);
+    assert!(killed > 0, "Should have killed at least one orphan");
+
+    // Verify all orphans are dead
+    thread::sleep(Duration::from_millis(600));
+    for pid in &orphaned_survivors {
+        assert!(
+            !midtown::tmux::is_pid_alive(*pid),
+            "Orphan {} should be dead after cleanup",
+            pid
+        );
+    }
+}
