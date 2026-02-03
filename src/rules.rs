@@ -3159,7 +3159,7 @@ midtown channel post "/me finished task 27"
     #[test]
     fn subagent_detection_code_with_task_agent_string() {
         // Code that mentions "Task agent" in comments should NOT trigger
-        let code_content = r#"
+        let _code_content = r#"
 ⏺ Let me update the documentation.
 
 /// Launch a Task agent to handle the work.
