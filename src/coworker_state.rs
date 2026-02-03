@@ -219,4 +219,37 @@ mod tests {
         // Should show "PR" not "PR#0"
         assert_eq!(report.display_status(), "PR");
     }
+
+    #[test]
+    fn test_state_file_roundtrip() {
+        // Test that state can be written to disk and read back correctly.
+        // This is critical for daemon restart recovery.
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let coworkers_base = temp_dir.path().join("coworkers");
+        std::fs::create_dir_all(&coworkers_base).expect("create coworkers dir");
+
+        // Temporarily override the coworkers_dir_for_repo to use our temp directory
+        // by writing directly to the path we construct
+        let repo = "test-repo";
+        let coworker = "amsterdam";
+        let state_dir = coworkers_base.join(repo).join(coworker);
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        let state_path = state_dir.join("state.json");
+
+        // Create a state report with phase and task
+        let original = CoworkerStateReport::new(WorkflowPhase::Developing, Some(42));
+        let json = serde_json::to_string(&original).expect("serialize");
+        std::fs::write(&state_path, &json).expect("write state");
+
+        // Read it back
+        let content = std::fs::read_to_string(&state_path).expect("read state");
+        let recovered: CoworkerStateReport = serde_json::from_str(&content).expect("deserialize");
+
+        // Verify the state was recovered correctly
+        assert_eq!(recovered.phase, WorkflowPhase::Developing);
+        assert_eq!(recovered.task_id, Some(42));
+        assert_eq!(recovered.display_status(), "dev#42");
+    }
 }
