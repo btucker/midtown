@@ -488,9 +488,10 @@ fn pr_action_to_effects(
 /// 4. Coworkers who are silent (no channel activity) for too long
 /// 5. Review backlog (more PRs need review than slots available)
 ///
-/// Returns effects (NudgeLead, NudgeCoworker, PostSystemMessage) instead of
-/// executing side effects inline. Each condition has a cooldown tracked via
-/// the stuck_tracker to avoid spamming.
+/// Returns effects (NudgeCoworker, PostSystemMessage) instead of executing
+/// side effects inline. Each condition has a cooldown tracked via the
+/// stuck_tracker to avoid spamming. For stuck conditions that @mention the lead,
+/// the channel's chat monitor handles routing the nudge.
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -719,16 +720,16 @@ async fn collect_stuck_condition_effects(
     effects
 }
 
-/// Convert a stuck condition nudge message into effects (system message + lead nudge).
+/// Convert a stuck condition nudge message into effects (system message only).
+///
+/// The message should contain "@lead" which the chat monitor will detect and
+/// route to the lead via tmux nudge. We don't return NudgeLead here because
+/// that would cause double delivery (the channel @mention routing already
+/// handles it).
 fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
-    vec![
-        Effect::PostSystemMessage {
-            message: format!("⚠️ {}", message),
-        },
-        Effect::NudgeLead {
-            message: message.to_string(),
-        },
-    ]
+    vec![Effect::PostSystemMessage {
+        message: format!("⚠️ {}", message),
+    }]
 }
 
 /// Collect effects for spawning reviewers for PRs that need code review.
@@ -1749,5 +1750,44 @@ pub(super) async fn handle_webhook_ci_failure(
     if nudged {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.record_nudge(pr_number, PrIssueType::CiFailed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stuck_nudge_effects_returns_only_system_message() {
+        // Bug: stuck_nudge_effects was returning both PostSystemMessage and NudgeLead,
+        // causing double delivery because the chat monitor already routes @lead mentions
+        // in system messages to the lead.
+        //
+        // The fix is to only return PostSystemMessage and let the channel's @mention
+        // routing handle the nudge.
+        let message = "@lead PR #42 (Add feature) has been open for 60 minutes without a review";
+        let effects = stuck_nudge_effects(message);
+
+        // Should only return one effect (PostSystemMessage)
+        assert_eq!(
+            effects.len(),
+            1,
+            "stuck_nudge_effects should return exactly 1 effect, not 2 (double nudge bug)"
+        );
+
+        // That effect should be PostSystemMessage with the warning emoji prefix
+        match &effects[0] {
+            Effect::PostSystemMessage { message: msg } => {
+                assert!(
+                    msg.starts_with("⚠️"),
+                    "System message should have warning prefix"
+                );
+                assert!(
+                    msg.contains("@lead"),
+                    "System message should preserve @lead mention"
+                );
+            }
+            _ => panic!("Expected PostSystemMessage effect, got {:?}", effects[0]),
+        }
     }
 }

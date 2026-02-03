@@ -18,8 +18,6 @@ pub enum Effect {
     ShutdownCoworker { name: String, message: String },
     /// Nudge a coworker by sending a message to their tmux pane.
     NudgeCoworker { name: String, message: String },
-    /// Nudge the lead by sending a message to the lead's tmux pane.
-    NudgeLead { message: String },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     PostToChannel { sender: String, message: String },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
@@ -151,11 +149,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::NudgeCoworker { name, message } => {
                 if let Err(e) = state.coworkers.nudge(&name, &message) {
                     warn!("Failed to nudge coworker {}: {}", name, e);
-                }
-            }
-            Effect::NudgeLead { message } => {
-                if let Err(e) = state.coworkers.nudge_lead(&message) {
-                    warn!("Failed to nudge lead: {}", e);
                 }
             }
             Effect::PostToChannel { sender, message } => {
