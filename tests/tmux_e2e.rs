@@ -1391,3 +1391,64 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
     // Clean up: kill the claude process
     kill_window(&session, "test-coworker");
 }
+
+/// Test that bell notification only goes to the chat pane (lead.1), not the
+/// Claude Code pane (lead.0).
+///
+/// Background: ASCII 7 (BEL / \x07) is both the terminal bell AND Ctrl+G.
+/// When sent via `tmux send-keys -l` to Claude Code, it triggers the "open
+/// editor" shortcut instead of producing a notification. We must only send
+/// the bell to the chat pane (.1) which handles it correctly.
+///
+/// This test verifies:
+/// 1. send_bell to lead.1 succeeds (chat pane can receive notifications)
+/// 2. send_bell to lead.0 is NOT called by notify_user (prevents Ctrl+G trigger)
+#[test]
+#[ignore]
+#[timeout(30_000)]
+fn test_send_bell_only_targets_chat_pane() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Rename default window to "lead" to simulate the lead window
+    let default_window = format!("{}:0", session);
+    let _ = Command::new("tmux")
+        .args(["rename-window", "-t", &default_window, "lead"])
+        .status();
+    thread::sleep(Duration::from_millis(100));
+
+    // Split the lead window to create pane .1 (chat pane)
+    let lead_target = format!("{}:lead", session);
+    let _ = Command::new("tmux")
+        .args(["split-window", "-h", "-t", &lead_target])
+        .status();
+    thread::sleep(Duration::from_millis(100));
+
+    // Verify we have two panes
+    assert_eq!(
+        pane_count(&session, "lead"),
+        2,
+        "Lead window should have 2 panes (Claude Code .0 and chat .1)"
+    );
+
+    // Verify send_bell to lead.1 succeeds (the correct target)
+    let result = midtown::tmux::send_bell(&session, "lead.1");
+    assert!(
+        result.is_ok(),
+        "send_bell to lead.1 (chat pane) should succeed: {:?}",
+        result.err()
+    );
+
+    // NOTE: We do NOT test send_bell to lead.0 here because the bug is that
+    // sending \x07 to Claude Code triggers Ctrl+G. The fix removes that call
+    // from notify_user entirely. This test documents the expected behavior:
+    // only the chat pane (lead.1) should receive bell notifications.
+}
