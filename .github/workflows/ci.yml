@@ -20,11 +20,23 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --all-features
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run tests with coverage
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          fail_ci_if_error: false
 
   build-e2e:
     name: Build E2E
@@ -145,57 +157,3 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    env:
-      CARGO_TERM_COLOR: always
-      MIDTOWN_WEBHOOK_PORT: 0
-      MIDTOWN_CHAT_MONITOR: 0
-      MIDTOWN_LEAD_COMMAND: "sleep 300"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
-      - name: Install Claude Code
-        run: curl -fsSL https://claude.ai/install.sh | bash
-
-      - name: Configure git
-        run: |
-          git config --global user.email "coverage@midtown.test"
-          git config --global user.name "Midtown Coverage"
-          git config --global init.defaultBranch main
-
-      - name: Start tmux server
-        run: tmux start-server
-
-      - name: Generate coverage (unit + E2E tests)
-        run: |
-          # Run unit tests with coverage
-          cargo llvm-cov --no-report --all-features
-          # Run select E2E tests with coverage (fast ones only to avoid timeout)
-          cargo llvm-cov --no-report --test daemon_e2e -- --ignored --test-threads=1 --skip installs_required_plugins || true
-          cargo llvm-cov --no-report --test task_sharing || true
-          cargo llvm-cov --no-report --test spawn_race_test || true
-          # Generate combined report
-          cargo llvm-cov report --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          fail_ci_if_error: false
