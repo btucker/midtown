@@ -408,6 +408,13 @@ pub(crate) struct DaemonState {
     /// non-owner comments and nudge PR owners. Uses the same cooldown as webhooks
     /// (`PrIssueType::ReviewComment`) to avoid duplicate notifications.
     comment_tracker: Mutex<trackers::CommentTracker>,
+    /// GitHub username for token refresh. When set, enables automatic token refresh
+    /// when `gh` CLI commands fail with authentication errors.
+    ///
+    /// Infrastructure for future auto-refresh. Currently unused - callers should
+    /// invoke `refresh_gh_token()` when auth errors are detected.
+    #[allow(dead_code)]
+    github_user: Option<String>,
 }
 
 impl DaemonState {
@@ -499,6 +506,7 @@ impl DaemonState {
         max_coworkers: usize,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
+        github_user: Option<String>,
     ) -> crate::Result<Self> {
         // Load unified persistent state (migrates from legacy files if needed)
         let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
@@ -537,6 +545,7 @@ impl DaemonState {
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
+            github_user,
         })
     }
 
@@ -708,6 +717,68 @@ impl DaemonState {
         if let Some(ref tx) = self.web_updates_tx {
             web::broadcast_coworker_status(tx, name, status, current_task);
         }
+    }
+
+    /// Refresh the GitHub auth token and update GH_TOKEN env var.
+    ///
+    /// Called when `gh` CLI commands fail with authentication errors (401, "Bad credentials").
+    /// Runs `gh auth refresh` to get a fresh OAuth token, then updates the process
+    /// environment so subsequent `gh` calls use the new token.
+    ///
+    /// Returns Ok(()) if refresh succeeded, Err with message if it failed.
+    ///
+    /// Infrastructure for future auto-refresh. Callers should detect auth errors using
+    /// `helpers::is_gh_auth_error()` and invoke this method to recover.
+    #[allow(dead_code)]
+    pub(crate) fn refresh_gh_token(&self) -> Result<(), String> {
+        let github_user = match &self.github_user {
+            Some(u) => u,
+            None => return Err("No github_user configured for token refresh".to_string()),
+        };
+
+        info!("Refreshing GitHub auth token for user: {}", github_user);
+
+        // Step 1: Refresh the OAuth token
+        let refresh_status = std::process::Command::new("gh")
+            .args(["auth", "refresh", "--hostname", "github.com"])
+            .status()
+            .map_err(|e| format!("Failed to run gh auth refresh: {}", e))?;
+
+        if !refresh_status.success() {
+            return Err(format!(
+                "gh auth refresh failed (exit code: {})",
+                refresh_status.code().unwrap_or(-1)
+            ));
+        }
+
+        // Step 2: Get the new token
+        let output = std::process::Command::new("gh")
+            .args(["auth", "token", "--user", github_user])
+            .output()
+            .map_err(|e| format!("Failed to run gh auth token: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("gh auth token failed: {}", stderr.trim()));
+        }
+
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            return Err("gh auth token returned empty token".to_string());
+        }
+
+        // Step 3: Update GH_TOKEN env var
+        // SAFETY: Called from single-threaded context (RPC handler via spawn_blocking)
+        unsafe {
+            std::env::set_var("GH_TOKEN", &token);
+        }
+
+        info!(
+            "Refreshed GH_TOKEN for user: {} (token length: {})",
+            github_user,
+            token.len()
+        );
+        Ok(())
     }
 }
 
@@ -1060,6 +1131,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         config.max_coworkers,
         shared_push_manager,
         default_branch,
+        config.github_user.clone(),
     )?);
     info!(
         "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",

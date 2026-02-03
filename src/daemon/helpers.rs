@@ -317,6 +317,25 @@ fn coworker_from_frontmatter(body: &str) -> Option<&str> {
         .copied()
 }
 
+// ---------------------------------------------------------------------------
+// GitHub CLI helpers
+// ---------------------------------------------------------------------------
+
+/// Check if gh CLI output indicates an authentication error.
+///
+/// Returns true for errors like:
+/// - "Bad credentials" (invalid or expired token)
+/// - HTTP 401 responses
+/// - "authentication required" messages
+pub fn is_gh_auth_error(stderr: &str) -> bool {
+    let stderr_lower = stderr.to_lowercase();
+    stderr_lower.contains("bad credentials")
+        || stderr_lower.contains("401")
+        || stderr_lower.contains("authentication required")
+        || stderr_lower.contains("requires authentication")
+        || stderr_lower.contains("not logged in")
+}
+
 /// Extract PR number from a message content.
 ///
 /// Looks for patterns like "PR #42", "#42", "PR #123".
