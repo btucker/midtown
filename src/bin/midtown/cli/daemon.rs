@@ -302,13 +302,10 @@ fn update_project_config(
 
 /// Build the claude command for the Lead session.
 ///
-/// Returns the full command string to launch Claude Code with appropriate flags.
-/// Always includes the system prompt via --append-system-prompt, whether new or resuming.
-/// Also includes settings file with stop hook for channel sync.
-/// Sets CLAUDE_CODE_TASK_LIST_ID so Lead shares tasks with coworkers.
-///
-/// In tests/CI, set MIDTOWN_LEAD_COMMAND to override (e.g., "sleep 300" when
-/// Claude isn't available).
+/// Returns either:
+/// - The value of `MIDTOWN_LEAD_COMMAND` env var if set (for tests/CI stubs)
+/// - Otherwise, the full Claude Code command with system prompt, settings, and
+///   CLAUDE_CODE_TASK_LIST_ID for task sharing with coworkers
 fn build_lead_claude_command(
     task_list_id: &str,
     additional_repos: &[PathBuf],
@@ -1467,5 +1464,48 @@ mod tests {
         assert!(validate_project_name("my/project").is_err());
         assert!(validate_project_name("my;project").is_err());
         assert!(validate_project_name("$(whoami)").is_err());
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_respects_env_override() {
+        // Set the override env var
+        // SAFETY: Test runs single-threaded with test mutex
+        unsafe {
+            std::env::set_var("MIDTOWN_LEAD_COMMAND", "sleep 300");
+        }
+
+        let result = build_lead_claude_command("test-task-list", &[]);
+
+        // Should return the env var value directly
+        assert_eq!(result.unwrap(), "sleep 300");
+
+        // Clean up
+        // SAFETY: Test cleanup
+        unsafe {
+            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
+        }
+    }
+
+    #[test]
+    fn test_build_lead_claude_command_builds_real_command_without_env() {
+        // Ensure env var is not set
+        // SAFETY: Test runs single-threaded with test mutex
+        unsafe {
+            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
+        }
+
+        let result = build_lead_claude_command("test-task-list", &[]);
+
+        // Should return a command containing claude and the task list ID
+        let cmd = result.unwrap();
+        assert!(cmd.contains("claude"), "Command should contain 'claude'");
+        assert!(
+            cmd.contains("test-task-list"),
+            "Command should contain task list ID"
+        );
+        assert!(
+            cmd.contains("CLAUDE_CODE_TASK_LIST_ID"),
+            "Command should set task list env var"
+        );
     }
 }
