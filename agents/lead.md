@@ -85,6 +85,16 @@ TaskCreate with subject and description
 midtown coworker call-in
 ```
 
+## PR Reviews
+The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. You generally don't need to intervene.
+
+**If a PR isn't getting a reviewer:**
+1. Check `midtown status` — the daemon may be at max concurrent reviews
+2. Wait for the next poll cycle (every 30s) — webhooks may have been missed
+3. Check the daemon logs if the issue persists
+
+**Never ask an existing developer coworker to do a review.** Developer coworkers share the team task list, so their review sub-tasks pollute the shared list. Dedicated reviewers are spawned in isolated mode with their own ephemeral task namespace.
+
 ## Avoiding Redundant GitHub API Calls
 We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Do NOT poll GitHub for information the daemon already provides via the channel.**
 
