@@ -103,10 +103,10 @@ async fn run_app_async(
             maybe_event = event_stream.next() => {
                 match maybe_event {
                     Some(Ok(event)) => {
+                        // Handle the first event
                         match handle_event(app, event) {
                             EventResult::Exit => return Ok(()),
                             EventResult::ToggleSelectionMode => {
-                                // Toggle mouse capture based on selection mode
                                 if app.selection_mode {
                                     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
                                 } else {
@@ -114,6 +114,26 @@ async fn run_app_async(
                                 }
                             }
                             EventResult::Continue => {}
+                        }
+
+                        // Drain any immediately available events before redrawing.
+                        // This coalesces rapid mouse scroll events into a single batch,
+                        // avoiding the overhead of redrawing between each scroll event.
+                        // Uses async timeout(ZERO) to yield to the runtime between attempts.
+                        while let Ok(Some(Ok(event))) =
+                            tokio::time::timeout(Duration::ZERO, event_stream.next()).await
+                        {
+                            match handle_event(app, event) {
+                                EventResult::Exit => return Ok(()),
+                                EventResult::ToggleSelectionMode => {
+                                    if app.selection_mode {
+                                        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+                                    } else {
+                                        let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+                                    }
+                                }
+                                EventResult::Continue => {}
+                            }
                         }
                     }
                     Some(Err(_)) => {
