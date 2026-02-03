@@ -913,8 +913,6 @@ async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        let review_prompt = crate::agents::reviewer_prompt(pr_number);
-
         let reviewer_name = match state.coworkers.next_available_name() {
             Some(name) => name,
             None => {
@@ -923,8 +921,9 @@ async fn collect_reviewer_effects_with_source(
             }
         };
 
-        let config =
-            crate::tmux::ClaudeLaunchConfig::reviewer(reviewer_name.clone(), review_prompt);
+        // reviewer() now takes the PR number and generates both the system prompt
+        // (with merged reviewer.md instructions) and the launch prompt internally
+        let config = crate::tmux::ClaudeLaunchConfig::reviewer(reviewer_name.clone(), pr_number);
 
         let on_success = vec![
             Effect::BroadcastCoworkerUpdate {

@@ -338,6 +338,7 @@ fn handle_coworker_spawn(
         task_mode: crate::tmux::TaskMode::Shared {
             repo_name: state.repo_name.clone(),
         },
+        role: crate::tmux::CoworkerRole::Coworker,
         initial_prompt: prompt,
         additional_dirs: vec![],
         restrict_setting_sources: true,
