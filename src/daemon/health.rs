@@ -608,25 +608,47 @@ pub(super) fn check_and_recover_stuck_ui(
                     continue;
                 }
 
-                info!(
-                    "Coworker {} has queued nudges not being processed — sending Escape to interrupt",
-                    name
-                );
-                effects.push(Effect::SendRawKeys {
-                    name: name.clone(),
-                    keys: "Escape".to_string(),
-                });
-                effects.push(Effect::RecordCooldown {
-                    category: "queued_prompt_recovery".to_string(),
-                    key: name.clone(),
-                });
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "📨 Interrupted {} to process queued nudges (sent Escape)",
+                // Extract the queued text and check if it matches a daemon-sent nudge
+                let pane_content = snap.pane_contents.get(&name);
+                let queued_text = pane_content
+                    .and_then(|content| crate::rules::extract_queued_nudge_text(content));
+
+                let is_daemon_nudge = queued_text
+                    .as_ref()
+                    .is_some_and(|text| state.matches_pending_nudge(&name, text));
+
+                if is_daemon_nudge {
+                    // Daemon-sent nudge: send Enter to auto-submit
+                    info!(
+                        "Coworker {} has daemon-sent nudge stuck in queue — sending Enter to submit",
                         name
-                    ),
-                });
+                    );
+                    effects.push(Effect::SendRawKeys {
+                        name: name.clone(),
+                        keys: "Enter".to_string(),
+                    });
+                    effects.push(Effect::RecordCooldown {
+                        category: "queued_prompt_recovery".to_string(),
+                        key: name.clone(),
+                    });
+                    effects.push(Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: format!("📨 Auto-submitted stuck nudge for {} (sent Enter)", name),
+                    });
+                    // Clear the pending nudge since we're submitting it
+                    state.clear_pending_nudge(&name);
+                } else {
+                    // Not a daemon-sent nudge (user input): don't auto-submit
+                    // Just log and record cooldown to avoid spamming
+                    debug!(
+                        "Coworker {} has queued text that doesn't match pending nudge — leaving alone",
+                        name
+                    );
+                    effects.push(Effect::RecordCooldown {
+                        category: "queued_prompt_recovery".to_string(),
+                        key: name.clone(),
+                    });
+                }
             }
         }
     }

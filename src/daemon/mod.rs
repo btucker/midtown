@@ -393,6 +393,13 @@ pub(crate) struct DaemonState {
     /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
     /// already in-flight. Clear entries when effects complete (success or failure).
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
+    /// Pending nudges sent to coworkers, awaiting confirmation of submission.
+    ///
+    /// Key: coworker name (lowercase), Value: (message text, sent timestamp).
+    /// Used for attribution tracking when recovering stuck queued nudges.
+    /// If the queued text matches a pending nudge, we auto-submit with Enter;
+    /// if it doesn't match (user input), we leave it alone.
+    pending_nudges: std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
 }
 
 impl DaemonState {
@@ -520,6 +527,7 @@ impl DaemonState {
             user_display_name,
             last_webhook_event_at: Mutex::new(None),
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
+            pending_nudges: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -569,6 +577,59 @@ impl DaemonState {
     /// Called from `execute_effects` when the effect succeeds or fails.
     pub(crate) fn clear_task_spawn_in_flight(&self, task_id: &str) {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
+    }
+
+    /// Record a pending nudge sent to a coworker.
+    ///
+    /// Called after successfully sending a nudge via `NudgeCoworker` or
+    /// `NudgeCoworkerWithCallbacks`. The pending nudge is used for attribution
+    /// tracking: if queued text matches the pending nudge, we know it's
+    /// daemon-sent and can auto-submit with Enter.
+    pub(crate) fn record_pending_nudge(&self, name: &str, message: &str) {
+        let mut pending = self.pending_nudges.lock().unwrap();
+        pending.insert(
+            name.to_lowercase(),
+            (message.to_string(), std::time::Instant::now()),
+        );
+    }
+
+    /// Clear the pending nudge for a coworker.
+    ///
+    /// Called when a queued nudge has been successfully auto-submitted,
+    /// or when the coworker shuts down.
+    pub(crate) fn clear_pending_nudge(&self, name: &str) {
+        let mut pending = self.pending_nudges.lock().unwrap();
+        pending.remove(&name.to_lowercase());
+    }
+
+    /// Check if queued text matches a pending nudge for a coworker.
+    ///
+    /// Returns true if the coworker has a pending nudge and a significant portion
+    /// of the message appears in the queued text. This handles cases where the
+    /// nudge text might be truncated or wrapped in the TUI.
+    ///
+    /// Also clears stale pending nudges older than 5 minutes.
+    pub(crate) fn matches_pending_nudge(&self, name: &str, queued_text: &str) -> bool {
+        const STALE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
+        const MIN_MATCH_LEN: usize = 20; // Match at least first 20 chars
+
+        let mut pending = self.pending_nudges.lock().unwrap();
+
+        // Clean up stale entries
+        let now = std::time::Instant::now();
+        pending.retain(|_, (_, sent_at)| now.duration_since(*sent_at) < STALE_THRESHOLD);
+
+        if let Some((pending_msg, _)) = pending.get(&name.to_lowercase()) {
+            // Use first N chars for matching (handles truncation)
+            let check_text = if pending_msg.len() > MIN_MATCH_LEN {
+                &pending_msg[..MIN_MATCH_LEN]
+            } else {
+                pending_msg.as_str()
+            };
+            queued_text.contains(check_text)
+        } else {
+            false
+        }
     }
 
     /// Scan effects for `AssignAndSpawn` variants and mark their task IDs as in-flight.

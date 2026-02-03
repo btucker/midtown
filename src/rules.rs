@@ -753,6 +753,73 @@ fn has_queued_nudges(content: &str) -> bool {
     false
 }
 
+/// Extract the text content of queued nudges from pane content.
+///
+/// Uses the same TUI parsing logic as `has_queued_nudges` but returns the actual
+/// text content, which can be used to verify if it matches a daemon-sent nudge.
+/// Returns None if no queued nudges are found.
+pub(crate) fn extract_queued_nudge_text(content: &str) -> Option<String> {
+    // Don't check during actual compaction (separate recovery mechanism).
+    if has_compaction_indicator(content) {
+        return None;
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Find the input separator (line of mostly ─ characters) scanning from bottom
+    let mut separator_indices: Vec<usize> = Vec::new();
+    for (i, line) in lines.iter().enumerate().rev() {
+        if is_input_separator(line) {
+            separator_indices.push(i);
+            if separator_indices.len() >= 2 {
+                break;
+            }
+        }
+    }
+
+    // Need at least the top input separator to locate the queued area
+    let top_separator_idx = match separator_indices.last() {
+        Some(&idx) => idx,
+        None => return None,
+    };
+
+    // Find the action line (starts with ✳ or ⏺) scanning upward from separator
+    let mut action_line_idx = None;
+    for i in (0..top_separator_idx).rev() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with('✳') || trimmed.starts_with('⏺') {
+            action_line_idx = Some(i);
+            break;
+        }
+    }
+
+    let action_idx = action_line_idx?;
+
+    // Collect all queued nudge text between action line and top separator
+    let mut queued_texts = Vec::new();
+    for line in lines
+        .iter()
+        .skip(action_idx + 1)
+        .take(top_separator_idx.saturating_sub(action_idx + 1))
+    {
+        let trimmed = line.trim();
+        if trimmed.starts_with('❯') && trimmed.len() > "❯".len() + 1 {
+            // Extract text after the ❯ symbol (skip ❯ and any following space)
+            let text = trimmed.trim_start_matches('❯').trim();
+            if !text.is_empty() {
+                queued_texts.push(text.to_string());
+            }
+        }
+    }
+
+    if queued_texts.is_empty() {
+        None
+    } else {
+        // Join multiple queued lines (rare but possible)
+        Some(queued_texts.join(" "))
+    }
+}
+
 /// Check if a line is an input separator (horizontal line of ─ characters).
 fn is_input_separator(line: &str) -> bool {
     let trimmed = line.trim();
@@ -2386,6 +2453,74 @@ mod tests {
         );
         assert!(has_compaction, "should detect york's compaction");
         assert!(has_queued, "should detect amsterdam's queued nudges");
+    }
+
+    #[test]
+    fn extract_queued_text_returns_content_when_present() {
+        let tui_content = "\
+⏺ Previous completed action
+
+✳ Current action in progress...
+❯ You have a new task assignment: task #42
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        let result = extract_queued_nudge_text(tui_content);
+        assert_eq!(
+            result,
+            Some("You have a new task assignment: task #42".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_queued_text_returns_none_when_empty_prompt() {
+        let tui_content = "\
+⏺ Completed action
+
+✳ Working on something...
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        let result = extract_queued_nudge_text(tui_content);
+        assert!(
+            result.is_none(),
+            "should return None when no queued nudge text"
+        );
+    }
+
+    #[test]
+    fn extract_queued_text_returns_none_during_compaction() {
+        let tui_content = "\
+  Whirlpooling your conversation…
+  (esc to interrupt · 5m 00s · ↓ 0 tokens)
+❯ pending nudge
+";
+        let result = extract_queued_nudge_text(tui_content);
+        assert!(
+            result.is_none(),
+            "should return None during compaction (separate recovery mechanism)"
+        );
+    }
+
+    #[test]
+    fn extract_queued_text_ignores_conversation_history() {
+        let tui_content = "\
+❯ Previous user message in history
+
+⏺ Claude's response to that message
+
+✳ Current action in progress...
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        let result = extract_queued_nudge_text(tui_content);
+        assert!(
+            result.is_none(),
+            "should ignore ❯ lines in conversation history (above action line)"
+        );
     }
 
     #[test]
