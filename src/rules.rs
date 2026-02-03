@@ -698,8 +698,10 @@ pub(crate) fn detect_queued_prompt_stuck(pane_contents: &HashMap<String, String>
 /// Returns true if there are `❯ text` lines between the action line and
 /// the input separator, indicating nudges that were sent but not submitted.
 fn has_queued_nudges(content: &str) -> bool {
-    // Don't check during compaction (separate recovery mechanism)
-    if content.contains("esc to interrupt") {
+    // Don't check during actual compaction (separate recovery mechanism).
+    // Note: "esc to interrupt" appears in ALL thinking states, not just compaction,
+    // so we must check for actual compaction verbs (Whirlpooling, Baking, etc.)
+    if has_compaction_indicator(content) {
         return false;
     }
 
@@ -2245,6 +2247,28 @@ mod tests {
         assert!(
             stuck.is_empty(),
             "should not flag queued prompt during compaction"
+        );
+    }
+
+    #[test]
+    fn queued_prompt_detected_during_normal_thinking_state() {
+        // Normal thinking state shows "esc to interrupt" but is NOT compaction.
+        // Queued nudges SHOULD be detected in this case (bug fix for PR #515 follow-up).
+        let mut panes = HashMap::new();
+        let tui_content = "\
+✳ Fixing tmux window naming…
+  (esc to interrupt · 2m 30s)
+❯ You have a new task assignment
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on";
+        panes.insert("york".to_string(), tui_content.to_string());
+        let stuck = detect_queued_prompt_stuck(&panes);
+        assert_eq!(
+            stuck,
+            vec!["york"],
+            "should detect queued nudges during normal thinking (not compaction)"
         );
     }
 
