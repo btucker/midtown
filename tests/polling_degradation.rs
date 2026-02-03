@@ -579,7 +579,7 @@ fn backlog_count_excludes_comment_reviewed_prs() {
     use std::collections::HashSet;
 
     // Simulate 5 open PRs with no formal GitHub review decision
-    let prs = vec![
+    let prs = [
         json!({
             "number": 200,
             "headRefName": "amsterdam/feature-a",
@@ -678,7 +678,7 @@ fn backlog_count_excludes_comment_reviewed_prs() {
 fn backlog_count_excludes_malformed_prs() {
     use std::collections::HashSet;
 
-    let prs = vec![
+    let prs = [
         // Normal PR
         json!({
             "number": 300,
