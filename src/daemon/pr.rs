@@ -171,6 +171,7 @@ pub(super) async fn poll_prs_for_issues(
 
     // Run gh pr list command (include createdAt and isDraft for review filtering)
     // Include state field to filter out merged/closed PRs after restart
+    // Include comments and author for polling-based review comment detection
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
@@ -178,7 +179,7 @@ pub(super) async fn poll_prs_for_issues(
             "--state",
             "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,comments,author",
         ])
         .output()
         .await?;
@@ -364,6 +365,9 @@ pub(super) async fn poll_prs_for_issues(
             ));
         }
     }
+
+    // Polling fallback for review comment notifications (when webhooks are degraded)
+    effects.extend(collect_comment_notification_effects(state, &prs, &active_coworkers).await);
 
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(state, &prs).await);
@@ -770,6 +774,220 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
     vec![Effect::PostSystemMessage {
         message: format!("⚠️ {}", message),
     }]
+}
+
+/// Polling fallback for review comment notifications.
+///
+/// When webhooks are degraded, this detects new review comments by comparing
+/// comment counts with tracked state. Uses the same cooldown as webhooks
+/// (`PrIssueType::ReviewComment`) to avoid duplicate notifications.
+///
+/// For each coworker-owned PR:
+/// 1. Count non-owner comments (excludes PR author and coworker's own comments)
+/// 2. If count increased since last poll, check cooldown and nudge owner
+///
+/// This enables the polling path to fill the gap identified in graceful degradation:
+/// webhooks handle real-time notifications, polling handles the fallback case.
+async fn collect_comment_notification_effects(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+    active_coworkers: &[String],
+) -> Vec<Effect> {
+    let mut effects: Vec<Effect> = Vec::new();
+
+    // Get open PR numbers for tracker cleanup
+    let open_pr_numbers: Vec<u64> = prs
+        .iter()
+        .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+        .collect();
+
+    // Clean up tracker entries for closed PRs
+    {
+        let mut tracker = state.comment_tracker.lock().await;
+        tracker.cleanup(&open_pr_numbers);
+    }
+
+    for pr in prs {
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        if pr_number == 0 {
+            continue;
+        }
+
+        // Only check coworker-owned PRs
+        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+        let owner = match coworker_from_branch(head_ref) {
+            Some(o) => o,
+            None => continue, // Not a coworker PR
+        };
+
+        // Count non-owner comments
+        let non_owner_count = count_non_owner_comments(pr, Some(&owner));
+
+        // Check if there are new comments since last poll
+        let has_new = {
+            let tracker = state.comment_tracker.lock().await;
+            tracker.has_new_comments(pr_number, non_owner_count)
+        };
+
+        if !has_new {
+            // Update tracker and continue
+            let mut tracker = state.comment_tracker.lock().await;
+            tracker.record(pr_number, non_owner_count);
+            continue;
+        }
+
+        // New comments detected — check cooldown before nudging
+        let should_nudge = {
+            let tracker = state.pr_issue_tracker.lock().await;
+            tracker.should_nudge(pr_number, PrIssueType::ReviewComment)
+        };
+
+        // Update comment tracker regardless of cooldown
+        {
+            let mut tracker = state.comment_tracker.lock().await;
+            tracker.record(pr_number, non_owner_count);
+        }
+
+        if !should_nudge {
+            debug!(
+                "PR #{} has new comments but nudge is on cooldown",
+                pr_number
+            );
+            continue;
+        }
+
+        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        let nudge_msg = format!(
+            "Your PR #{} ({}) has new review comments — please address feedback.",
+            pr_number,
+            truncate_str(title, 40)
+        );
+
+        debug!(
+            "Polling detected new review comments on PR #{}, nudging {}",
+            pr_number, owner
+        );
+
+        // Decide action using pure decision function (same as webhook path)
+        let action = crate::rules::decide_pr_comment_action(
+            &owner,
+            "reviewer", // Generic actor since we don't know the specific commenter from polling
+            active_coworkers.contains(&owner),
+            state.is_at_dev_limit(),
+            &nudge_msg,
+        );
+
+        effects.extend(comment_action_to_effects(action, pr_number, title, state));
+    }
+
+    effects
+}
+
+/// Convert a comment notification `PrAction` into effects.
+///
+/// Similar to `pr_action_to_effects` but uses the comment-specific cooldown
+/// and messages.
+fn comment_action_to_effects(
+    action: crate::rules::PrAction,
+    pr_number: u64,
+    title: &str,
+    state: &DaemonState,
+) -> Vec<Effect> {
+    use crate::rules::PrAction;
+    let issue_type = PrIssueType::ReviewComment;
+
+    match action {
+        PrAction::NudgeOwner { owner, message } => {
+            vec![Effect::NudgeCoworkerWithCallbacks {
+                name: owner,
+                message,
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                }],
+            }]
+        }
+        PrAction::SpawnOwner { owner, message } => {
+            let saved_session = {
+                let sessions = state.pr_break_sessions.read().unwrap();
+                sessions.get(&owner).cloned()
+            };
+            let session_mode = match saved_session.as_deref() {
+                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::tmux::SessionMode::Resume,
+            };
+            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                owner.clone(),
+                state.repo_name.clone(),
+                session_mode,
+                Some(message),
+            );
+
+            let mut on_success = vec![
+                Effect::BroadcastCoworkerUpdate {
+                    name: owner.clone(),
+                    status: "running".to_string(),
+                    current_task: None,
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: crate::daemon_messages::called_in_review_feedback(
+                        &owner,
+                        pr_number,
+                        crate::config::get_personality(),
+                    ),
+                },
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                },
+            ];
+            if saved_session.is_some() {
+                on_success.push(Effect::ClearPrBreakSession {
+                    name: owner.clone(),
+                });
+            }
+
+            let on_failure = vec![
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "PR #{} ({}) owned by {} - review comment: {} (call-in failed)",
+                        pr_number,
+                        truncate_str(title, 40),
+                        owner,
+                        get_issue_action(PrIssueType::ReviewComment)
+                    ),
+                },
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                },
+            ];
+
+            vec![Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success,
+                on_failure,
+            }]
+        }
+        PrAction::PostToChannel { message } => {
+            vec![
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message,
+                },
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                },
+            ]
+        }
+        PrAction::Skip { reason } => {
+            debug!("Polling comment notification skipped: {}", reason);
+            vec![]
+        }
+    }
 }
 
 /// Collect effects for spawning reviewers for PRs that need code review.

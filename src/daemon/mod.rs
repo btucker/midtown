@@ -27,7 +27,8 @@ pub use constants::{
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
 pub use trackers::{
-    OrphanTracker, PrIssueTracker, PrIssueType, StuckConditionTracker, StuckConditionType,
+    CommentTracker, OrphanTracker, PrIssueTracker, PrIssueType, StuckConditionTracker,
+    StuckConditionType,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -401,6 +402,12 @@ pub(crate) struct DaemonState {
     /// If the queued text matches a pending nudge, we auto-submit with Enter;
     /// if it doesn't match (user input), we leave it alone.
     pending_nudges: std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
+    /// Tracks comment counts per PR for polling-based detection of new review comments.
+    ///
+    /// When webhooks are degraded, this allows the polling path to detect new
+    /// non-owner comments and nudge PR owners. Uses the same cooldown as webhooks
+    /// (`PrIssueType::ReviewComment`) to avoid duplicate notifications.
+    comment_tracker: Mutex<trackers::CommentTracker>,
 }
 
 impl DaemonState {
@@ -529,6 +536,7 @@ impl DaemonState {
             last_webhook_event_at: Mutex::new(None),
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
+            comment_tracker: Mutex::new(trackers::CommentTracker::new()),
         })
     }
 
