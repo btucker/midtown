@@ -947,6 +947,7 @@ fn is_review_comment(body: &str) -> bool {
     body.contains("🤖 Reviewed by")
         || body.contains("## Code Review by")
         || body.contains("## No Issues Found")
+        || body.contains("<!-- midtown:")
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
@@ -1770,5 +1771,45 @@ mod tests {
         // PR opened events should not produce review state changes or CI failures
         assert!(event.review_state_change.is_none());
         assert!(event.pr_ci_failure.is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // is_review_comment — detects Claude reviews from webhook payloads
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_review_comment_detects_midtown_marker() {
+        // Coworkers include <!-- midtown: name --> markers in their reviews
+        assert!(is_review_comment(
+            "<!-- midtown: park -->\n\n## Code Review"
+        ));
+        assert!(is_review_comment(
+            "<!-- midtown:reviewer=lexington -->\n\nLGTM!"
+        ));
+    }
+
+    #[test]
+    fn test_is_review_comment_detects_emoji_signature() {
+        assert!(is_review_comment(
+            "## Summary\n\nLGTM!\n\n🤖 Reviewed by amsterdam"
+        ));
+    }
+
+    #[test]
+    fn test_is_review_comment_detects_code_review_header() {
+        assert!(is_review_comment(
+            "## Code Review by columbus\n\nLooks good!"
+        ));
+    }
+
+    #[test]
+    fn test_is_review_comment_detects_no_issues_found() {
+        assert!(is_review_comment("## No Issues Found\n\nCode looks clean."));
+    }
+
+    #[test]
+    fn test_is_review_comment_returns_false_for_normal_comment() {
+        assert!(!is_review_comment("Thanks for the PR! I'll take a look."));
+        assert!(!is_review_comment("Can you add some tests for this?"));
     }
 }
