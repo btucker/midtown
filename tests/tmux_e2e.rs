@@ -1081,7 +1081,9 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
     let config = midtown::tmux::ClaudeLaunchConfig {
         name: "test-claude".to_string(),
         session_mode: midtown::tmux::SessionMode::Fresh,
-        task_mode: midtown::tmux::TaskMode::Isolated,
+        task_mode: midtown::tmux::TaskMode::Isolated {
+            coworker_name: "test-claude".to_string(),
+        },
         role: midtown::tmux::CoworkerRole::default(),
         initial_prompt: Some("Say 'ready' and wait.".to_string()),
         additional_dirs: vec![],
@@ -1368,7 +1370,9 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
     let config = midtown::tmux::ClaudeLaunchConfig {
         name: "test-coworker".to_string(),
         session_mode: midtown::tmux::SessionMode::Fresh,
-        task_mode: midtown::tmux::TaskMode::Isolated,
+        task_mode: midtown::tmux::TaskMode::Isolated {
+            coworker_name: "test-coworker".to_string(),
+        },
         role: midtown::tmux::CoworkerRole::default(),
         initial_prompt: Some("Say hello and wait for instructions.".to_string()),
         additional_dirs: vec![],

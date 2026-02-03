@@ -1200,13 +1200,14 @@ pub enum SessionMode {
     ResumeSession(String),
 }
 
-/// Whether this coworker shares the team task list or is isolated.
+/// Whether this coworker shares the team task list or has a private one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskMode {
     /// Shares the team task list via CLAUDE_CODE_TASK_LIST_ID env var.
     Shared { repo_name: String },
-    /// Private task list — no shared env var (used for reviewers).
-    Isolated,
+    /// Private task list — uses a unique CLAUDE_CODE_TASK_LIST_ID to isolate tasks.
+    /// This prevents reviewers from polluting the shared team task list.
+    Isolated { coworker_name: String },
 }
 
 /// The role of a coworker, which determines their system prompt.
@@ -1292,10 +1293,13 @@ impl ClaudeLaunchConfig {
     /// common.md + reviewer.md, ensuring they follow reviewer instructions
     /// as behavioral rules rather than just task descriptions.
     pub fn reviewer(name: impl Into<String>, pr_number: u64) -> Self {
+        let name = name.into();
         ClaudeLaunchConfig {
-            name: name.into(),
+            task_mode: TaskMode::Isolated {
+                coworker_name: name.clone(),
+            },
+            name,
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Reviewer,
             initial_prompt: Some(crate::agents::reviewer_launch_prompt(pr_number)),
             additional_dirs: vec![],
@@ -1322,9 +1326,21 @@ impl ClaudeLaunchConfig {
             format!("MIDTOWN_AGENT='{}'", self.name),
             "DISABLE_AUTOUPDATER=1".to_string(),
         ];
-        if let TaskMode::Shared { ref repo_name } = self.task_mode {
-            let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
-            env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
+        // Set task list ID based on task mode:
+        // - Shared: uses the team-wide task list (midtown-<repo>)
+        // - Isolated: uses a coworker-specific task list to prevent polluting shared tasks
+        match &self.task_mode {
+            TaskMode::Shared { repo_name } => {
+                let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+                env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
+            }
+            TaskMode::Isolated { coworker_name } => {
+                // Use a unique task list ID for isolated coworkers (e.g., reviewers)
+                // Format: midtown-isolated-<coworker_name> to ensure tasks don't
+                // pollute the shared team list
+                let task_list_id = format!("midtown-isolated-{}", coworker_name);
+                env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
+            }
         }
         let env_export = format!("export {}", env_parts.join(" "));
 
@@ -2473,11 +2489,13 @@ Claude is now processing the request
     }
 
     #[test]
-    fn test_launch_config_isolated_omits_task_list_env() {
+    fn test_launch_config_isolated_uses_unique_task_list() {
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
+            task_mode: TaskMode::Isolated {
+                coworker_name: "park".to_string(),
+            },
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2488,9 +2506,13 @@ Claude is now processing the request
             std::path::Path::new("/tmp/prompt.md"),
             None,
         );
+        // Isolated coworkers get a unique task list to avoid polluting the shared list
         assert!(
-            !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID"),
-            "isolated must not set task list ID"
+            result
+                .shell_command
+                .contains("CLAUDE_CODE_TASK_LIST_ID='midtown-isolated-park'"),
+            "isolated must set unique task list ID, got: {}",
+            result.shell_command
         );
         assert!(
             result.shell_command.contains("MIDTOWN_AGENT='park'"),
@@ -2527,7 +2549,9 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
+            task_mode: TaskMode::Isolated {
+                coworker_name: "park".to_string(),
+            },
             role: CoworkerRole::default(),
             initial_prompt: Some("Do the thing".to_string()),
             additional_dirs: vec![],
@@ -2561,7 +2585,9 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
+            task_mode: TaskMode::Isolated {
+                coworker_name: "park".to_string(),
+            },
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2585,7 +2611,9 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
+            task_mode: TaskMode::Isolated {
+                coworker_name: "park".to_string(),
+            },
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
@@ -2611,7 +2639,9 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
+            task_mode: TaskMode::Isolated {
+                coworker_name: "park".to_string(),
+            },
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2633,7 +2663,9 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
+            task_mode: TaskMode::Isolated {
+                coworker_name: "park".to_string(),
+            },
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],

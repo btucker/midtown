@@ -677,7 +677,7 @@ impl CoworkerManager {
     /// Returns the coworker name on success.
     pub fn spawn_with_name(&self, config: &tmux::ClaudeLaunchConfig) -> crate::Result<String> {
         let name = &config.name;
-        let isolated_tasks = matches!(config.task_mode, tmux::TaskMode::Isolated);
+        let isolated_tasks = matches!(config.task_mode, tmux::TaskMode::Isolated { .. });
 
         // Check if already running
         {
