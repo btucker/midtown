@@ -1313,6 +1313,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     ps.github.mark_reviewed_pr(pr_number);
                 }
 
+                // Record CI check duration for statistics tracking
+                if let Some(duration) = webhook_event.check_duration {
+                    debug!(
+                        "Webhook: recording CI check duration for '{}': {}s",
+                        duration.check_name, duration.duration_secs
+                    );
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.ci_stats.record_duration(&duration.check_name, duration.duration_secs);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!("Failed to save daemon-state.json after recording CI duration: {}", e);
+                    }
+                }
+
                 // Route @mentions in webhook messages directly (chat monitor skips
                 // "github" sender for loop protection, so we handle it here)
                 chat::route_mentions(&state, &webhook_event.message).await;

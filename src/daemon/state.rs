@@ -9,6 +9,7 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use tracing::{debug, warn};
 
+use crate::ci_stats::CiCheckStats;
 use crate::github_state::GitHubState;
 use crate::reminders::ReminderState;
 
@@ -26,6 +27,10 @@ pub struct DaemonPersistentState {
     /// One-shot condition-based reminders.
     #[serde(default)]
     pub reminders: ReminderState,
+
+    /// CI check duration statistics for auto-retry of stale checks.
+    #[serde(default)]
+    pub ci_stats: CiCheckStats,
 }
 
 impl DaemonPersistentState {
@@ -43,9 +48,10 @@ impl DaemonPersistentState {
                     io::Error::new(ErrorKind::InvalidData, e)
                 })?;
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}",
                     state.github.pr_reviewers.len(),
-                    state.reminders.reminders.len()
+                    state.reminders.reminders.len(),
+                    state.ci_stats.summary()
                 );
                 Ok(state)
             }
@@ -68,9 +74,10 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         fs::rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}",
             self.github.pr_reviewers.len(),
-            self.reminders.reminders.len()
+            self.reminders.reminders.len(),
+            self.ci_stats.summary()
         );
         Ok(())
     }
@@ -102,7 +109,11 @@ impl DaemonPersistentState {
             ReminderState::default()
         });
 
-        let state = Self { github, reminders };
+        let state = Self {
+            github,
+            reminders,
+            ci_stats: CiCheckStats::default(),
+        };
 
         // Save the unified file
         if let Err(e) = state.save_for_repo(repo) {

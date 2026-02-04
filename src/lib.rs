@@ -89,6 +89,9 @@ pub mod paths;
 // Persistent GitHub state (PR reviewer assignments)
 pub mod github_state;
 
+// CI check duration statistics (for auto-retry of stale checks)
+pub mod ci_stats;
+
 // Reminder system (one-shot condition-based reminders)
 pub mod reminders;
 

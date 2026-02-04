@@ -103,6 +103,33 @@ pub enum Effect {
     },
     /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
     ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
+    /// Re-run a GitHub Actions workflow that appears to be stuck.
+    ///
+    /// Used when a CI check has been pending for > 4x its typical duration.
+    ///
+    /// Used when a CI check has been pending for > 4x its typical duration.
+    RerunWorkflow {
+        run_id: u64,
+        check_name: String,
+        pr_number: u64,
+    },
+    /// Rebase a PR on main to pick up workflow changes.
+    ///
+    /// Used when a PR is missing a required CI check because it predates
+    /// a workflow change. Rebasing pulls in the new workflow definition.
+    /// TODO: Implement missing check detection logic.
+    #[allow(dead_code)]
+    RebasePrOnMain { pr_number: u64, reason: String },
+    /// Record a CI check duration for statistics tracking.
+    ///
+    /// Note: Duration recording is currently done inline in the webhook handler
+    /// rather than through effects for simplicity. This variant is kept for
+    /// potential future use with effect-based recording.
+    #[allow(dead_code)]
+    RecordCiCheckDuration {
+        check_name: String,
+        duration_secs: u64,
+    },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -418,6 +445,187 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
+            Effect::RerunWorkflow {
+                run_id,
+                check_name,
+                pr_number,
+            } => {
+                rerun_workflow(state, run_id, &check_name, pr_number).await;
+            }
+            Effect::RebasePrOnMain { pr_number, reason } => {
+                rebase_pr_on_main(state, pr_number, &reason).await;
+            }
+            Effect::RecordCiCheckDuration {
+                check_name,
+                duration_secs,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.ci_stats.record_duration(&check_name, duration_secs);
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to save daemon-state.json after recording CI duration: {}",
+                        e
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Re-run a GitHub Actions workflow using `gh run rerun`.
+///
+/// Posts a channel message on success or failure.
+async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_number: u64) {
+    // Record cooldown before attempting (to prevent rapid retries on failure)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.ci_stats.record_rerun(run_id);
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!("Failed to save CI stats after recording rerun: {}", e);
+        }
+    }
+
+    let output = match tokio::process::Command::new("gh")
+        .args(["run", "rerun", &run_id.to_string()])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!("Failed to run gh run rerun for workflow {}: {}", run_id, e);
+            return;
+        }
+    };
+
+    if output.status.success() {
+        info!(
+            "Re-ran workflow {} (check '{}') for PR #{}",
+            run_id, check_name, pr_number
+        );
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "🔄 Re-running stale CI check '{}' on PR #{} (workflow {})",
+                check_name, pr_number, run_id
+            ),
+            crate::message::MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post workflow rerun message: {}", e);
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "gh run rerun failed for workflow {}: {}",
+            run_id,
+            stderr.trim()
+        );
+    }
+}
+
+/// Rebase a PR on main to pick up workflow changes using `gh pr rebase`.
+///
+/// Posts a channel message on success or failure.
+async fn rebase_pr_on_main(state: &DaemonState, pr_number: u64, reason: &str) {
+    // Note: There isn't a direct `gh pr rebase` command. We'll use the Git approach
+    // via the PR owner's branch. For now, we'll post a nudge to the PR owner instead
+    // since rebasing requires pushing to their branch.
+    //
+    // Alternative: Use GitHub's update branch API if the repo allows it:
+    // gh api repos/{owner}/{repo}/pulls/{pr}/update-branch -X PUT
+
+    // Try using GitHub's update branch API first (requires repo to allow it)
+    let output = match tokio::process::Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{{owner}}/{{repo}}/pulls/{}/update-branch", pr_number),
+            "-X",
+            "PUT",
+        ])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!(
+                "Failed to run gh api update-branch for PR #{}: {}",
+                pr_number, e
+            );
+            return;
+        }
+    };
+
+    if output.status.success() {
+        info!("Updated PR #{} branch to include latest main", pr_number);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "🔄 Updated PR #{} to include latest main ({})",
+                pr_number, reason
+            ),
+            crate::message::MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post branch update message: {}", e);
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // If the API fails (e.g., branch protection), log it but don't spam
+        info!(
+            "Could not auto-update PR #{} branch (may need manual rebase): {}",
+            pr_number,
+            stderr.trim()
+        );
+    }
+}
+
+/// Auto-merge a PR using `gh pr merge --squash`.
+///
+/// Posts a channel message on success or failure.
+async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
+    use super::helpers::truncate_str;
+
+    let output = match tokio::process::Command::new("gh")
+        .args(["pr", "merge", &pr_number.to_string(), "--squash", "--auto"])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!("Failed to run gh pr merge for PR #{}: {}", pr_number, e);
+            return;
+        }
+    };
+
+    if output.status.success() {
+        info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
+                pr_number,
+                truncate_str(title, 40)
+            ),
+            crate::message::MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge message: {}", e);
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
+        let msg = Message::new(
+            "midtown",
+            format!(
+                "⚠️ Auto-merge failed for PR #{} ({}) — {}",
+                pr_number,
+                truncate_str(title, 40),
+                truncate_str(stderr.trim(), 80)
+            ),
+            crate::message::MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast(&msg) {
+            warn!("Failed to post auto-merge failure message: {}", e);
         }
     }
 }

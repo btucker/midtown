@@ -388,6 +388,9 @@ pub(super) async fn poll_prs_for_issues(
     // Check for stuck conditions and nudge lead if self-healing has failed
     effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
 
+    // Detect stale CI checks and trigger re-runs
+    effects.extend(collect_stale_check_effects(state, &prs).await);
+
     Ok(effects)
 }
 
@@ -2089,6 +2092,113 @@ pub(super) async fn handle_webhook_ci_failure(
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.record_nudge(pr_number, PrIssueType::CiFailed);
     }
+}
+
+/// Detect CI checks that are stuck (running > 4x typical duration) and collect re-run effects.
+///
+/// This function examines `statusCheckRollup` for each PR to find checks that have been
+/// running for an unusually long time. When detected, it returns effects to re-run the
+/// workflow. Uses historical check durations to determine "typical" time.
+async fn collect_stale_check_effects(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+) -> Vec<Effect> {
+    use crate::ci_stats::extract_run_id_from_url;
+    use chrono::{DateTime, Utc};
+
+    let mut effects = Vec::new();
+
+    // Get CI stats for duration comparisons
+    let ci_stats = {
+        let ps = state.persistent_state.lock().await;
+        ps.ci_stats.clone()
+    };
+
+    for pr in prs {
+        let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let checks = match pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        for check in checks {
+            let status = check.get("status").and_then(|s| s.as_str()).unwrap_or("");
+
+            // Only consider checks that are in progress
+            if status != "IN_PROGRESS" {
+                continue;
+            }
+
+            let check_name = match check.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            let started_at_str = match check.get("startedAt").and_then(|s| s.as_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Parse the started_at timestamp
+            let started_at: DateTime<Utc> = match started_at_str.parse() {
+                Ok(dt) => dt,
+                Err(_) => continue,
+            };
+
+            // Calculate how long the check has been running
+            let running_duration = Utc::now()
+                .signed_duration_since(started_at)
+                .num_seconds()
+                .max(0) as u64;
+
+            // Check if it exceeds the stale threshold (4x typical)
+            if !ci_stats.is_stale(check_name, running_duration) {
+                continue;
+            }
+
+            // Extract run ID from the details URL
+            let details_url = match check.get("detailsUrl").and_then(|u| u.as_str()) {
+                Some(u) => u,
+                None => continue,
+            };
+
+            let run_id = match extract_run_id_from_url(details_url) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Check cooldown to prevent re-running the same workflow repeatedly
+            if !ci_stats.can_rerun(run_id) {
+                debug!(
+                    "Skipping re-run of workflow {} for '{}' on PR #{} (on cooldown)",
+                    run_id, check_name, pr_number
+                );
+                continue;
+            }
+
+            let typical_duration = ci_stats.typical_duration_or_default(check_name);
+            info!(
+                "Detected stale CI check '{}' on PR #{}: running {}s (typical: {}s, threshold: {}s)",
+                check_name,
+                pr_number,
+                running_duration,
+                typical_duration,
+                (typical_duration as f64 * crate::ci_stats::STALE_THRESHOLD_MULTIPLIER) as u64
+            );
+
+            effects.push(Effect::RerunWorkflow {
+                run_id,
+                check_name: check_name.to_string(),
+                pr_number,
+            });
+        }
+    }
+
+    effects
 }
 
 #[cfg(test)]

@@ -60,6 +60,20 @@ pub struct WebhookEvent {
     pub review_state_change: Option<PrReviewStateChange>,
     /// A CI check failure on a PR branch — triggers immediate nudge of the PR owner.
     pub pr_ci_failure: Option<PrCiFailure>,
+    /// A completed CI check with its duration — used for tracking typical check times.
+    pub check_duration: Option<CheckDuration>,
+}
+
+/// Structured data about a completed CI check's duration.
+///
+/// Used to track historical check durations so the daemon can detect stale checks
+/// (running > 4x typical duration).
+#[derive(Debug, Clone)]
+pub struct CheckDuration {
+    /// Name of the check (e.g., "Test", "E2E - idle_break_e2e")
+    pub check_name: String,
+    /// Duration in seconds
+    pub duration_secs: u64,
 }
 
 /// Structured data about a formal PR review state change (approved or changes requested).
@@ -452,6 +466,10 @@ struct CheckRun {
     status: String,
     conclusion: Option<String>,
     check_suite: Option<CheckSuite>,
+    /// When the check started (ISO 8601 timestamp)
+    started_at: Option<String>,
+    /// When the check completed (ISO 8601 timestamp)
+    completed_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -631,6 +649,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         reviewed_pr: None,
         review_state_change: None,
         pr_ci_failure: None,
+        check_duration: None,
     }))
 }
 
@@ -700,6 +719,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         reviewed_pr: None,
         review_state_change,
         pr_ci_failure: None,
+        check_duration: None,
     }))
 }
 
@@ -751,6 +771,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
         reviewed_pr,
         review_state_change: None,
         pr_ci_failure: None,
+        check_duration: None,
     }))
 }
 
@@ -795,6 +816,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         reviewed_pr: None,
         review_state_change: None,
         pr_ci_failure: None,
+        check_duration: None,
     }))
 }
 
@@ -840,6 +862,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
         reviewed_pr: None,
         review_state_change: None,
         pr_ci_failure: None,
+        check_duration: None,
     }))
 }
 
@@ -926,6 +949,17 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         None
     };
 
+    // Calculate check duration for stats tracking (only for successful completions)
+    let check_duration = if event.check_run.conclusion.as_deref() == Some("success") {
+        compute_check_duration(
+            event.check_run.started_at.as_deref(),
+            event.check_run.completed_at.as_deref(),
+            &event.check_run.name,
+        )
+    } else {
+        None
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
@@ -936,7 +970,33 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         reviewed_pr: None,
         review_state_change: None,
         pr_ci_failure,
+        check_duration,
     }))
+}
+
+/// Compute the duration of a check run from started_at and completed_at timestamps.
+fn compute_check_duration(
+    started_at: Option<&str>,
+    completed_at: Option<&str>,
+    check_name: &str,
+) -> Option<CheckDuration> {
+    use chrono::DateTime;
+
+    let started: DateTime<chrono::Utc> = started_at?.parse().ok()?;
+    let completed: DateTime<chrono::Utc> = completed_at?.parse().ok()?;
+
+    let duration = completed.signed_duration_since(started);
+    let duration_secs = duration.num_seconds().max(0) as u64;
+
+    // Sanity check: ignore durations over 24 hours (likely bad data)
+    if duration_secs > 86400 {
+        return None;
+    }
+
+    Some(CheckDuration {
+        check_name: check_name.to_string(),
+        duration_secs,
+    })
 }
 
 /// Check if a comment body contains a Claude code review signature.
