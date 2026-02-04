@@ -423,6 +423,10 @@ impl App {
         if self.scroll_offset < max_scroll {
             self.scroll_offset += 1;
         }
+        // Mark as intentionally at top if we've scrolled to max
+        if self.scroll_offset >= max_scroll {
+            self.intentionally_at_top = true;
+        }
         self.maybe_load_more_history();
     }
 
@@ -440,6 +444,10 @@ impl App {
         let page_size = self.visible_height.saturating_sub(2);
         let max_scroll = self.max_scroll();
         self.scroll_offset = (self.scroll_offset + page_size).min(max_scroll);
+        // Mark as intentionally at top if we've paged to max
+        if self.scroll_offset >= max_scroll {
+            self.intentionally_at_top = true;
+        }
         self.maybe_load_more_history();
     }
 
@@ -1688,6 +1696,82 @@ mod tests {
         assert_eq!(
             app.scroll_offset, 40,
             "scroll_offset should be clamped to max_scroll"
+        );
+    }
+
+    #[test]
+    fn test_incremental_scroll_up_to_top_sets_intentionally_at_top() {
+        use std::time::Instant;
+
+        // Verify that scrolling up incrementally (not via scroll_to_top) still
+        // sets intentionally_at_top when reaching max_scroll.
+        let messages: VecDeque<Message> = (0..20)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "test".to_string(),
+                content: format!("message {}", i),
+                timestamp: chrono::Utc::now(),
+                message_type: midtown::MessageType::Text,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            scroll_offset: 0, // Start at bottom (newest)
+            visible_height: 10,
+            channel: None,
+            initial_load_done: true,
+            history_start_position: 0,
+            history_fully_loaded: true,
+            tasks: Vec::new(),
+            prs: Vec::new(),
+            merged_prs: Vec::new(),
+            repo_name: "test".to_string(),
+            kanban_last_refresh: Instant::now(),
+            kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
+            repo_status_last_refresh: Instant::now(),
+            repo_status_receiver: None,
+            selection_mode: false,
+            user_display_name: None,
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
+            intentionally_at_top: false,
+        };
+
+        // max_scroll = 20 - 10 = 10
+        assert_eq!(app.max_scroll(), 10);
+        assert!(!app.is_at_max_scroll(), "Should not be at max initially");
+
+        // Scroll up incrementally until we reach max
+        for _ in 0..10 {
+            app.scroll_up();
+        }
+
+        // Should now be at max scroll
+        assert_eq!(app.scroll_offset, 10);
+        assert!(
+            app.is_at_max_scroll(),
+            "Incremental scroll_up to max should set intentionally_at_top"
+        );
+
+        // Reset and test page_up
+        app.scroll_offset = 0;
+        app.intentionally_at_top = false;
+        assert!(!app.is_at_max_scroll());
+
+        // Page up should also set the flag when reaching max
+        app.page_up(); // page_size = 10 - 2 = 8, so scroll_offset = 8
+        assert!(
+            !app.is_at_max_scroll(),
+            "First page_up should not reach max"
+        );
+
+        app.page_up(); // scroll_offset = min(8 + 8, 10) = 10
+        assert!(
+            app.is_at_max_scroll(),
+            "page_up to max should set intentionally_at_top"
         );
     }
 }
