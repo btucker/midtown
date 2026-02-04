@@ -459,16 +459,7 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
         (vec![], vec![], HashMap::new())
     });
 
-    // Queue effect to clear reviewer assignments for orphaned coworkers.
-    // When a coworker's tmux session ends unexpectedly, their reviewer assignment
-    // should be freed so another coworker can be assigned to review the PR.
-    if !all_orphaned.is_empty() {
-        effects.push(Effect::ClearOrphanedReviewerAssignments {
-            orphaned_coworkers: all_orphaned,
-        });
-    }
-
-    // Skip orphan flagging until the first PR poll completes.
+    // Skip orphan flagging and reviewer assignment clearing until the first PR poll completes.
     let (pr_poll_initialized, open_pr_owners) = {
         let cache = state.pr_coworker_cache.read().unwrap();
         (cache.pr_poll_initialized, cache.open_pr_owners.clone())
@@ -476,6 +467,17 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
     if should_skip_orphan_flagging(pr_poll_initialized) {
         debug!("Skipping orphan flagging - PR poll not yet initialized");
         return effects;
+    }
+
+    // Queue effect to clear reviewer assignments for orphaned coworkers.
+    // When a coworker's tmux session ends unexpectedly, their reviewer assignment
+    // should be freed so another coworker can be assigned to review the PR.
+    // Filter out coworkers with open PRs - they may be "on break" waiting for reviews.
+    let orphans_for_reviewer_clearing = filter_orphans_with_open_prs(all_orphaned, &open_pr_owners);
+    if !orphans_for_reviewer_clearing.is_empty() {
+        effects.push(Effect::ClearOrphanedReviewerAssignments {
+            orphaned_coworkers: orphans_for_reviewer_clearing,
+        });
     }
 
     // Filter out worktrees whose branches have open PRs (by coworker name).
