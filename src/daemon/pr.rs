@@ -169,9 +169,9 @@ pub(super) async fn poll_prs_for_issues(
         .map(|c| c.name.clone())
         .collect();
 
-    // Get running coworkers for reviewer assignment cleanup.
-    // Used by cleanup_expired_preserving to avoid removing assignments for still-running
-    // reviewers in edge cases (e.g., reviewer still posting comment when cleanup runs).
+    // Get running coworkers for cleanup_expired_preserving, which removes timed-out
+    // reviewer assignments but preserves those for still-running reviewers (i.e., reviews
+    // that are taking longer than the timeout but the reviewer is still actively working).
     let running_coworker_names: HashSet<String> = snap
         .running_coworkers
         .iter()
