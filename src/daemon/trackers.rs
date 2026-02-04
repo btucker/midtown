@@ -29,6 +29,8 @@ pub enum PrIssueType {
     ReviewComment,
     /// PR review is complete (Claude review posted), author should act
     ReviewComplete,
+    /// PR has all CI checks passing and has review feedback to address
+    GreenWithFeedback,
 }
 
 impl std::fmt::Display for PrIssueType {
@@ -41,6 +43,7 @@ impl std::fmt::Display for PrIssueType {
             PrIssueType::NeedsReview => write!(f, "needs review"),
             PrIssueType::ReviewComment => write!(f, "review comment"),
             PrIssueType::ReviewComplete => write!(f, "review complete"),
+            PrIssueType::GreenWithFeedback => write!(f, "CI green with feedback"),
         }
     }
 }

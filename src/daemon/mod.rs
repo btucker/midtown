@@ -1688,7 +1688,12 @@ mod tests {
         );
         assert_eq!(PrIssueType::Approved.to_string(), "approved");
         assert_eq!(PrIssueType::NeedsReview.to_string(), "needs review");
+        assert_eq!(PrIssueType::ReviewComment.to_string(), "review comment");
         assert_eq!(PrIssueType::ReviewComplete.to_string(), "review complete");
+        assert_eq!(
+            PrIssueType::GreenWithFeedback.to_string(),
+            "CI green with feedback"
+        );
     }
 
     #[test]
@@ -1885,8 +1890,16 @@ mod tests {
             "calling in reviewer"
         );
         assert_eq!(
+            get_issue_action(PrIssueType::ReviewComment),
+            "please address review feedback and merge if appropriate"
+        );
+        assert_eq!(
             get_issue_action(PrIssueType::ReviewComplete),
             "review is complete — please address feedback and merge if appropriate"
+        );
+        assert_eq!(
+            get_issue_action(PrIssueType::GreenWithFeedback),
+            "CI is green — please address review feedback and merge"
         );
     }
 
