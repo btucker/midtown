@@ -178,6 +178,22 @@ pub(super) async fn poll_prs_for_issues(
         .map(|c| c.name.clone())
         .collect();
 
+    // Get list of idle coworkers for handoff decisions
+    let idle_coworkers: Vec<String> = {
+        let records = state.coworker_records.read().await;
+        records
+            .iter()
+            .filter(|(name, record)| {
+                // Must be an active coworker
+                active_coworkers.contains(name)
+                    // Must have reported Idle phase
+                    && record.workflow_phase
+                        == Some(crate::coworker_state::WorkflowPhase::Idle)
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+
     // Run gh pr list command (include createdAt and isDraft for review filtering)
     // Include state field to filter out merged/closed PRs after restart
     // Include comments and author for polling-based review comment detection
@@ -341,7 +357,7 @@ pub(super) async fn poll_prs_for_issues(
             // Author-driven merge decisions: Instead of auto-merging approved PRs,
             // nudge the author so THEY can decide to merge. This keeps merge decisions
             // with the agent who has full context of the PR and review feedback.
-            use crate::rules::decide_pr_issue_action;
+            use crate::rules::{PrSessionContext, decide_pr_issue_action_with_handoff};
 
             // Format the nudge message
             let message = format!(
@@ -352,11 +368,26 @@ pub(super) async fn poll_prs_for_issues(
                 get_issue_action(issue_type)
             );
 
-            // Decide action using pure decision function
-            let action = decide_pr_issue_action(
+            // Get session context for potential handoff (if available)
+            let session_context: Option<PrSessionContext> = {
+                let ps = state.persistent_state.lock().await;
+                ps.github
+                    .get_pr_author_session(pr_number)
+                    .map(|s| PrSessionContext {
+                        session_id: s.session_id.clone(),
+                        branch: s.branch.clone(),
+                        original_author: s.original_author.clone(),
+                        pr_number,
+                    })
+            };
+
+            // Decide action using pure decision function with handoff support
+            let action = decide_pr_issue_action_with_handoff(
                 &owner,
                 &active_coworkers,
+                &idle_coworkers,
                 state.is_at_dev_limit(),
+                session_context.as_ref(),
                 &message,
             );
 
