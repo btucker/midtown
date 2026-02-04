@@ -1366,9 +1366,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     let workdir = lead_workdir.clone();
                     let project = lead_project_name.clone();
                     let additional = lead_additional_dirs.clone();
-                    tokio::task::spawn_blocking(move || {
-                        health::check_and_respawn_lead(&session, &workdir, &project, &additional);
-                    }).await.ok();
+                    let tmux_server_gone = tokio::task::spawn_blocking(move || {
+                        health::check_and_respawn_lead(&session, &workdir, &project, &additional)
+                    }).await.unwrap_or(false);
+
+                    if tmux_server_gone {
+                        error!("Tmux server died unexpectedly. Daemon shutting down.");
+                        let _ = shutdown_tx.send(());
+                        break;
+                    }
                 }
             }
 

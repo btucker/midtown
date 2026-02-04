@@ -80,20 +80,40 @@ pub(super) async fn check_lead_typing(state: &DaemonState) {
 /// This runs on a blocking thread since it calls tmux commands.
 /// If the tmux session still exists but the lead window is gone, recreates
 /// the lead window using `spawn_lead` (which handles --resume fallback).
+///
+/// Returns `true` if the tmux server is gone (daemon should shut down),
+/// `false` otherwise.
 pub(super) fn check_and_respawn_lead(
     session: &str,
     workdir: &Path,
     project_name: &str,
     additional_dirs: &[PathBuf],
-) {
-    // First check if the tmux session itself exists. If the entire session
-    // is gone (e.g., user killed it), don't try to recreate — that's intentional.
+) -> bool {
+    // First check if the tmux session itself exists.
     let session_check = std::process::Command::new("tmux")
         .args(["has-session", "-t", session])
         .output();
     match session_check {
         Ok(o) if o.status.success() => {}
-        _ => return, // session gone entirely, don't interfere
+        Ok(o) => {
+            // Session check failed - check if it's because the server is gone
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("no server running") {
+                // Tmux server died unexpectedly - signal daemon to shut down
+                error!(
+                    "Tmux server is not running. The daemon cannot operate without tmux. \
+                     Run `midtown start` to restart."
+                );
+                return true;
+            }
+            // Session was killed by user (intentional) - don't interfere
+            return false;
+        }
+        Err(e) => {
+            // Failed to run tmux command at all
+            error!("Failed to check tmux session: {}", e);
+            return false;
+        }
     }
 
     // Session exists — check how many lead windows are present.
@@ -129,6 +149,8 @@ pub(super) fn check_and_respawn_lead(
             warn!("Failed to check lead window status: {}", e);
         }
     }
+
+    false // Tmux server is running normally
 }
 
 /// Pure decision function: is the lead still working?
