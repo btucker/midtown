@@ -238,10 +238,10 @@ impl GitHubState {
     /// Same as `cleanup_expired_assignments` but skips removal of assignments
     /// where the reviewer coworker is still running. This prevents losing track
     /// of a reviewer just because the review is taking longer than the timeout.
-    /// Active coworkers' assignments are refreshed to the current time.
+    /// Running coworkers' assignments are preserved regardless of timeout.
     pub fn cleanup_expired_preserving(
         &mut self,
-        active_coworkers: &std::collections::HashSet<String>,
+        running_coworkers: &std::collections::HashSet<String>,
     ) {
         let now = Utc::now();
         let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
@@ -250,23 +250,23 @@ impl GitHubState {
             .iter()
             .filter(|(_, a)| {
                 now.signed_duration_since(a.assigned_at) > timeout
-                    && !active_coworkers.contains(&a.reviewer)
+                    && !running_coworkers.contains(&a.reviewer)
             })
             .map(|(pr, _)| *pr)
             .collect();
 
         for pr in to_remove {
             debug!(
-                "Cleaning up expired reviewer assignment for PR #{} (timed out, coworker inactive)",
+                "Cleaning up expired reviewer assignment for PR #{} (timed out, coworker not running)",
                 pr
             );
             self.pr_reviewers.remove(&pr);
         }
 
-        // Refresh timestamps for active coworkers whose assignments would have expired
+        // Refresh timestamps for running coworkers whose assignments would have expired
         for assignment in self.pr_reviewers.values_mut() {
             if now.signed_duration_since(assignment.assigned_at) > timeout
-                && active_coworkers.contains(&assignment.reviewer)
+                && running_coworkers.contains(&assignment.reviewer)
             {
                 assignment.assigned_at = now;
             }

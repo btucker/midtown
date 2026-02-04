@@ -169,6 +169,15 @@ pub(super) async fn poll_prs_for_issues(
         .map(|c| c.name.clone())
         .collect();
 
+    // Get running coworkers for reviewer assignment cleanup and reviewer-still-running checks.
+    // Using running_coworkers (not active_coworkers) ensures that idle/stopped reviewers
+    // have their assignments cleaned up, freeing slots for new reviews.
+    let running_coworker_names: HashSet<String> = snap
+        .running_coworkers
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
     // Run gh pr list command (include createdAt and isDraft for review filtering)
     // Include state field to filter out merged/closed PRs after restart
     // Include comments and author for polling-based review comment detection
@@ -213,11 +222,6 @@ pub(super) async fn poll_prs_for_issues(
     // so reviewers don't lose their PR tracking while actively reviewing.
     // Using running_coworkers (not active_coworkers) ensures that idle/stopped
     // reviewers have their assignments cleaned up, freeing slots for new reviews.
-    let running_coworker_names: HashSet<String> = snap
-        .running_coworkers
-        .iter()
-        .map(|cw| cw.name.clone())
-        .collect();
     {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.cleanup();
@@ -366,7 +370,7 @@ pub(super) async fn poll_prs_for_issues(
     effects.extend(collect_comment_notification_effects(state, &prs, &active_coworkers).await);
 
     // Auto-spawn reviewers for PRs that need review
-    effects.extend(collect_reviewer_effects(state, &prs).await);
+    effects.extend(collect_reviewer_effects(state, &prs, &running_coworker_names).await);
 
     // Pre-collect review status for all PRs before stuck detection (pure decision logic
     // should not make async API calls). Coworkers can't submit formal GitHub reviews
@@ -1085,10 +1089,15 @@ fn comment_action_to_effects(
 /// not already assigned) and returns effects to spawn reviewer coworkers.
 /// Uses `SpawnCoworkerWithCallbacks` so that reviewer assignment and channel
 /// messages only happen on successful spawn.
-async fn collect_reviewer_effects(state: &DaemonState, prs: &[serde_json::Value]) -> Vec<Effect> {
+async fn collect_reviewer_effects(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+    running_coworker_names: &HashSet<String>,
+) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
         state,
         prs,
+        running_coworker_names,
         crate::github_state::AssignmentSource::PollingFallback,
     )
     .await
@@ -1097,6 +1106,7 @@ async fn collect_reviewer_effects(state: &DaemonState, prs: &[serde_json::Value]
 async fn collect_reviewer_effects_with_source(
     state: &DaemonState,
     prs: &[serde_json::Value],
+    running_coworker_names: &HashSet<String>,
     source: crate::github_state::AssignmentSource,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
@@ -1168,16 +1178,12 @@ async fn collect_reviewer_effects_with_source(
             debug!("PR #{} already has a Claude review", pr_number);
 
             // Before cleaning up the assignment, check if the reviewer is still running.
-            // IMPORTANT: Check for Running status specifically, not just presence.
-            // A reviewer that finished and went idle should have their assignment
-            // cleaned up so the slot becomes available for new reviews.
+            // Use snapshot-derived running_coworker_names for consistency with other
+            // decision functions (avoids querying state.coworkers directly).
             let reviewer_still_running = {
                 let ps = state.persistent_state.lock().await;
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    state
-                        .coworkers
-                        .get(reviewer_name)
-                        .is_some_and(|cw| cw.status == crate::coworker::CoworkerStatus::Running)
+                    running_coworker_names.contains(reviewer_name)
                 } else {
                     false
                 }
@@ -1437,6 +1443,17 @@ fn review_complete_action_to_effects(
 pub(super) async fn process_pending_review_spawns(state: &DaemonState) -> Vec<Effect> {
     let mut all_effects = Vec::new();
 
+    // Get running coworker names for reviewer assignment cleanup.
+    // Unlike the polling path which uses snapshot data, we get this directly from state
+    // since this webhook handler doesn't have access to the tick's snapshot.
+    let running_coworker_names: HashSet<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .filter(|cw| cw.status == crate::coworker::CoworkerStatus::Running)
+        .map(|cw| cw.name.clone())
+        .collect();
+
     // Drain ready spawns from persistent state
     let ready_prs = {
         let mut ps = state.persistent_state.lock().await;
@@ -1508,6 +1525,7 @@ pub(super) async fn process_pending_review_spawns(state: &DaemonState) -> Vec<Ef
         let effects = collect_reviewer_effects_with_source(
             state,
             &[pr],
+            &running_coworker_names,
             crate::github_state::AssignmentSource::Webhook,
         )
         .await;
