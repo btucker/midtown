@@ -627,21 +627,23 @@ pub(crate) fn detect_compaction_stuck(
     pane_contents
         .iter()
         .filter(|(_name, content)| {
-            // First check: must have actual compaction indicators in the pane
-            if !has_compaction_indicator(content) {
-                return false;
-            }
-
-            // Second check: find the compaction status line and parse elapsed time
+            // Find a status line that has BOTH a compaction verb AND sufficient duration.
+            // This prevents false positives when compaction verbs appear in displayed code
+            // while an unrelated "esc to interrupt" thinking line shows elapsed time.
             content.lines().any(|line| {
                 // For "Sautéed for Xm Ys" format (completed compaction)
-                if line.contains("Sautéed for") {
+                if line.contains("Sautéed for") || line.contains("Sauteed for") {
                     return parse_sauteed_duration(line)
                         .map(|d| d >= min_duration)
                         .unwrap_or(false);
                 }
 
-                // For active compaction with "esc to interrupt"
+                // For active compaction: the line must contain BOTH:
+                // 1. A compaction verb (Whirlpooling, Baking, Simmering)
+                // 2. "esc to interrupt" with parseable duration
+                if !has_compaction_indicator_on_line(line) {
+                    return false;
+                }
                 if !line.contains("esc to interrupt") {
                     return false;
                 }
@@ -657,19 +659,34 @@ pub(crate) fn detect_compaction_stuck(
         .collect()
 }
 
-/// Check if the pane content contains actual compaction indicators.
+/// Check if a single line contains actual compaction indicators.
 ///
 /// Compaction verbs are: Whirlpooling, Baking, Simmering, Sautéed.
 /// These are distinct from normal "thinking" states like "Fixing...",
 /// "Scoring...", "Checking...", etc.
-fn has_compaction_indicator(content: &str) -> bool {
+///
+/// IMPORTANT: Use this on individual status lines for stuck detection,
+/// to avoid false positives when compaction verbs appear in displayed code.
+fn has_compaction_indicator_on_line(line: &str) -> bool {
     // Case-insensitive check for compaction verbs
-    let content_lower = content.to_lowercase();
-    content_lower.contains("whirlpooling")
-        || content_lower.contains("baking")
-        || content_lower.contains("simmering")
-        || content_lower.contains("sautéed")
-        || content_lower.contains("sauteed") // ASCII fallback
+    let line_lower = line.to_lowercase();
+    line_lower.contains("whirlpooling")
+        || line_lower.contains("baking")
+        || line_lower.contains("simmering")
+        || line_lower.contains("sautéed")
+        || line_lower.contains("sauteed") // ASCII fallback
+}
+
+/// Check if the pane content contains any compaction indicators.
+///
+/// This checks the entire content for compaction verbs. Use this when you need
+/// to know if compaction is happening anywhere in the pane (e.g., to skip
+/// certain operations during compaction).
+///
+/// For stuck detection, use `has_compaction_indicator_on_line` on individual
+/// status lines to avoid false positives from code containing compaction verbs.
+fn has_compaction_indicator(content: &str) -> bool {
+    content.lines().any(has_compaction_indicator_on_line)
 }
 
 /// Parse duration from "Sautéed for Xm Ys" format.
@@ -2414,10 +2431,10 @@ mod tests {
     #[test]
     fn compaction_detected_with_whirlpool_verb_long_duration() {
         let mut panes = HashMap::new();
+        // Single-line format matches real Claude Code compaction status
         panes.insert(
             "york".to_string(),
-            "  Whirlpooling your conversation…\n  (esc to interrupt · 18m 50s · ↓ 0 tokens)\n"
-                .to_string(),
+            "✶ Whirlpooling… (esc to interrupt · 18m 50s · ↓ 0 tokens)\n".to_string(),
         );
         // 18m 50s > 5 min threshold — should trigger
         let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
@@ -2427,10 +2444,10 @@ mod tests {
     #[test]
     fn compaction_not_detected_with_short_duration() {
         let mut panes = HashMap::new();
+        // Single-line format matches real Claude Code compaction status
         panes.insert(
             "amsterdam".to_string(),
-            "  Baking your conversation…\n  (esc to interrupt · 3m 12s · ↓ 42 tokens)\n"
-                .to_string(),
+            "✶ Baking… (esc to interrupt · 3m 12s · ↓ 42 tokens)\n".to_string(),
         );
         // 3m 12s < 5 min threshold — should NOT trigger (compaction is normal)
         let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
@@ -2443,10 +2460,10 @@ mod tests {
     #[test]
     fn compaction_detected_at_exact_threshold() {
         let mut panes = HashMap::new();
+        // Single-line format matches real Claude Code compaction status
         panes.insert(
             "park".to_string(),
-            "  Simmering your conversation…\n  (esc to interrupt · 5m 00s · ↓ 100 tokens)\n"
-                .to_string(),
+            "✶ Simmering… (esc to interrupt · 5m 00s · ↓ 100 tokens)\n".to_string(),
         );
         // 5m 00s = 5 min threshold — should trigger
         let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
@@ -2456,10 +2473,10 @@ mod tests {
     #[test]
     fn compaction_not_detected_just_under_threshold() {
         let mut panes = HashMap::new();
+        // Single-line format matches real Claude Code compaction status
         panes.insert(
             "park".to_string(),
-            "  Simmering your conversation…\n  (esc to interrupt · 4m 59s · ↓ 100 tokens)\n"
-                .to_string(),
+            "✶ Simmering… (esc to interrupt · 4m 59s · ↓ 100 tokens)\n".to_string(),
         );
         let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
         assert!(
@@ -2629,11 +2646,10 @@ mod tests {
     fn combined_recovery_returns_both_types() {
         let mut panes = HashMap::new();
         // One coworker stuck in compaction (10 min — well above threshold)
-        // Must include actual compaction verb (Whirlpooling) to be detected
+        // Single-line format matches real Claude Code compaction status
         panes.insert(
             "york".to_string(),
-            "  Whirlpooling your conversation…\n  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n"
-                .to_string(),
+            "✶ Whirlpooling… (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
         );
         // Another coworker with queued nudges (proper TUI structure)
         let amsterdam_tui = "\
@@ -3056,10 +3072,10 @@ mod tests {
         // Compaction recovery should NOT use age-based protection
         // (only queued nudge detection has this protection).
         let mut panes = HashMap::new();
+        // Single-line format matches real Claude Code compaction status
         panes.insert(
             "york".to_string(),
-            "  Whirlpooling your conversation…\n  (esc to interrupt · 10m 00s · ↓ 0 tokens)\n"
-                .to_string(),
+            "✶ Whirlpooling… (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
         );
 
         let now = chrono::Utc::now();
@@ -3171,18 +3187,19 @@ mod tests {
     #[test]
     fn compaction_detected_for_actual_compaction_verbs() {
         // These ARE actual compaction - should be detected
+        // Real Claude Code compaction status has verb + duration on same line
         let test_cases = vec![
             (
                 "whirlpool",
-                "  Whirlpooling your conversation…\n  (esc to interrupt · 6m 00s · ↓ 0 tokens)\n",
+                "✶ Whirlpooling… (esc to interrupt · 6m 00s · ↓ 0 tokens)\n",
             ),
             (
                 "baking",
-                "  Baking your conversation…\n  (esc to interrupt · 5m 30s · ↓ 100 tokens)\n",
+                "✶ Baking… (esc to interrupt · 5m 30s · ↓ 100 tokens)\n",
             ),
             (
                 "simmering",
-                "  Simmering your conversation…\n  (esc to interrupt · 7m 00s · ↓ 50 tokens)\n",
+                "✶ Simmering… (esc to interrupt · 7m 00s · ↓ 50 tokens)\n",
             ),
             ("sauteed", "  ✻ Sautéed for 6m 30s\n"),
         ];
@@ -3197,6 +3214,47 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn compaction_false_positive_from_verb_in_displayed_code() {
+        // BUG REPRODUCTION: Cross-contamination between compaction verb in
+        // displayed code and duration from unrelated thinking status line.
+        //
+        // Scenario: Coworker is doing normal thinking work (6+ minutes), and
+        // the pane content includes code that happens to contain a compaction
+        // verb like "simmering" in a comment or string.
+        //
+        // Current bug: has_compaction_indicator() finds "simmering" anywhere
+        // in the content, then duration parsing finds "esc to interrupt" from
+        // the thinking line, causing a false positive.
+        let mut panes = HashMap::new();
+
+        // Normal thinking status line (not compaction) + code with "simmering" verb
+        let pane_content = r#"
+⏺ Read(src/rules.rs)
+  ⎿  Read 50 lines
+     /// Compaction verbs are: Whirlpooling, Baking, Simmering, Sautéed.
+
+⏺ Let me implement the fix for this bug.
+
+✶ Fixing false positive detection… (esc to interrupt · ctrl+t to hide tasks · 6m 30s · ↓ 12.4k tokens · thinking)
+  ⎿  ◼ #10 Fix false positive stuck compaction detection (york)
+
+─────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────
+"#;
+        panes.insert("york".to_string(), pane_content.to_string());
+
+        // This should NOT be detected as stuck compaction because:
+        // 1. The "Simmering" is in displayed code, not an actual compaction status
+        // 2. The "esc to interrupt" is from normal thinking, not compaction
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(
+            stuck.is_empty(),
+            "compaction verb in displayed code should not cause false positive"
+        );
     }
 
     #[test]
