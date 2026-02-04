@@ -83,6 +83,15 @@ impl CooldownTracker {
     pub fn clear_for_key(&mut self, key: &str) {
         self.entries.retain(|(_, k), _| k != key);
     }
+
+    /// Check if an entry exists for a given rule/key pair.
+    ///
+    /// Returns true if there's an entry (regardless of whether cooldown expired).
+    /// Useful for distinguishing "first detection" from "cooldown expired".
+    pub fn has_entry(&self, rule_name: &str, key: &str) -> bool {
+        self.entries
+            .contains_key(&(rule_name.to_owned(), key.to_owned()))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +302,7 @@ pub(crate) fn decide_idle_shutdowns(
     coworkers_with_running_subagents: &HashSet<String>,
     ci_passed_pr_coworkers: &HashSet<String>,
     usage_limited_coworkers: &HashSet<String>,
+    api_error_coworkers: &HashSet<String>,
     records: &HashMap<String, CoworkerRecord>,
     now_utc: DateTime<Utc>,
     minimum_lifetime: Duration,
@@ -336,9 +346,10 @@ pub(crate) fn decide_idle_shutdowns(
             .iter()
             .any(|c| c.eq_ignore_ascii_case(coworker));
         let is_usage_limited = usage_limited_coworkers.contains(&coworker.to_lowercase());
+        let has_api_error = api_error_coworkers.contains(&coworker.to_lowercase());
 
         // Coworkers with active tasks, review assignments, unblocked deps,
-        // running subagents, or usage limits are never sent on break.
+        // running subagents, usage limits, or API errors are never sent on break.
         //
         // Coworkers with open PRs CAN go on break if their CI has passed
         // (they're waiting for review feedback, and the daemon will respawn
@@ -355,6 +366,7 @@ pub(crate) fn decide_idle_shutdowns(
             || has_unblocked_deps
             || has_running_subagent
             || is_usage_limited
+            || has_api_error
         {
             if matches!(
                 get_health(records, coworker),
@@ -405,6 +417,27 @@ pub(crate) fn decide_idle_shutdowns(
 /// Previous patterns like "usage limit" caused false positives when coworkers
 /// were editing code with those strings in comments.
 const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade or"];
+
+/// Patterns that indicate a Claude API error in pane content.
+///
+/// API errors are transient failures (500s, network issues, etc.) that may resolve
+/// on retry. Unlike usage limits which have a known reset time, API errors should
+/// trigger periodic nudges to encourage retry.
+///
+/// Patterns detected:
+/// - `API Error: 500` - HTTP 500 status code
+/// - `"type":"api_error"` - JSON response type field
+/// - `"type":"error"` with `api_error` - Structured error response
+/// - `Internal server error` - Common error message
+const API_ERROR_PATTERNS: &[&str] = &[
+    "API Error: 500",
+    "API Error: 502",
+    "API Error: 503",
+    "API Error: 529",
+    r#""type":"api_error""#,
+    r#""type":"overloaded_error""#,
+    "Internal server error",
+];
 
 /// Detect whether pane content indicates a subagent (Task tool) is running.
 ///
@@ -624,6 +657,7 @@ pub(crate) fn decide_stuck_coworker_restarts(
     pane_contents: &HashMap<String, String>,
     in_progress_tasks: &[(String, String, String)],
     usage_limited_coworkers: &HashSet<String>,
+    api_error_coworkers: &HashSet<String>,
     now: Instant,
     stuck_duration: Duration,
 ) -> StuckDetectionResult {
@@ -635,6 +669,10 @@ pub(crate) fn decide_stuck_coworker_restarts(
     for (name, content) in pane_contents {
         // Skip coworkers at usage limit — they're frozen but not stuck
         if usage_limited_coworkers.contains(&name.to_lowercase()) {
+            continue;
+        }
+        // Skip coworkers with API errors — they're waiting but may recover on retry
+        if api_error_coworkers.contains(&name.to_lowercase()) {
             continue;
         }
         // Hash the pane content for cheap comparison
@@ -1250,6 +1288,54 @@ fn parse_12hour_time(text: &str) -> Option<Duration> {
 /// Used directly in tests and indirectly via `decide_usage_limit_detection`.
 pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
     is_at_usage_limit(pane_content)
+}
+
+/// Check if pane content indicates an API error (transient failure).
+///
+/// Returns true if an API error pattern is present AND the coworker hasn't
+/// recovered (no significant activity after the error message).
+///
+/// API errors differ from usage limits:
+/// - Usage limits have a known reset time; API errors are transient
+/// - Usage limit nudges happen once at reset; API error nudges are periodic
+/// - Both should skip stuck detection and idle shutdown
+pub(crate) fn has_api_error_pattern(pane_content: &str) -> bool {
+    is_at_api_error(pane_content)
+}
+
+/// Check if pane content indicates an active (not recovered) API error.
+///
+/// Uses the same recovery detection as usage limits: if there's significant
+/// activity after the error message, the coworker has recovered.
+fn is_at_api_error(content: &str) -> bool {
+    // Find the last occurrence of any API error pattern (case-insensitive)
+    let content_lower = content.to_lowercase();
+    let Some((error_pos, pattern_len)) = API_ERROR_PATTERNS
+        .iter()
+        .filter_map(|pattern| {
+            content_lower
+                .find(&pattern.to_lowercase())
+                .map(|pos| (pos, pattern.len()))
+        })
+        .max_by_key(|(pos, _)| *pos)
+    else {
+        return false;
+    };
+
+    // Get content after the API error message
+    let after_error = &content[error_pos + pattern_len..];
+
+    // Count significant lines after the error (same logic as usage limit recovery)
+    let significant_lines: usize = after_error
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !is_ui_chrome(trimmed)
+        })
+        .count();
+
+    // If there are more than 5 significant lines after the error, coworker has recovered
+    significant_lines <= 5
 }
 
 // ---------------------------------------------------------------------------
@@ -1943,6 +2029,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -1974,6 +2061,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2004,6 +2092,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2031,6 +2120,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2058,6 +2148,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2088,6 +2179,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2113,6 +2205,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2138,6 +2231,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2168,6 +2262,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2210,6 +2305,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2253,6 +2349,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
+            &set(&[]), // api_error_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2283,6 +2380,7 @@ mod tests {
             &set(&["madison"]), // HAS RUNNING SUBAGENT
             &set(&[]),          // ci_passed
             &set(&[]),          // usage_limited
+            &set(&[]),          // api_error
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2320,6 +2418,7 @@ mod tests {
             &set(&[]),       // no running subagent
             &set(&["york"]), // CI PASSED
             &set(&[]),       // usage_limited
+            &set(&[]),       // api_error
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2356,6 +2455,7 @@ mod tests {
             &set(&[]),       // no running subagent
             &set(&[]),       // no ci_passed
             &set(&["york"]), // usage_limited
+            &set(&[]),       // api_error
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2364,6 +2464,40 @@ mod tests {
         assert!(
             decisions.is_empty(),
             "usage-limited coworker should be protected from idle shutdown"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_skips_api_error_coworker() {
+        // Coworkers with API errors should be protected from idle shutdown.
+        // They're waiting for the API to recover, not truly idle.
+        let coworkers = vec![cw("york", 10)];
+        let phases = lifecycle_with(
+            "york",
+            SessionHealth::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // york has API error — should NOT be sent on break
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),       // not busy
+            &set(&[]),       // no open PR
+            &set(&[]),       // not reviewing
+            &set(&[]),       // no unblocked deps
+            &set(&[]),       // no running subagent
+            &set(&[]),       // no ci_passed
+            &set(&[]),       // not usage_limited
+            &set(&["york"]), // HAS API ERROR
+            &phases,
+            Utc::now(),
+            Duration::from_secs(300),
+        );
+
+        assert!(
+            decisions.is_empty(),
+            "API error coworker should be protected from idle shutdown"
         );
     }
 
@@ -2937,6 +3071,35 @@ mod tests {
         );
 
         assert!(tracker.check("spawn_failure", "park", Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn has_entry_returns_false_when_no_entry() {
+        let tracker = CooldownTracker::new();
+        assert!(!tracker.has_entry("api_error_nudge", "york"));
+    }
+
+    #[test]
+    fn has_entry_returns_true_after_record() {
+        let mut tracker = CooldownTracker::new();
+        tracker.record("api_error_nudge", "york");
+        assert!(tracker.has_entry("api_error_nudge", "york"));
+    }
+
+    #[test]
+    fn has_entry_returns_true_even_when_cooldown_expired() {
+        let mut tracker = CooldownTracker::new();
+        tracker.record("api_error_nudge", "york");
+
+        // Overwrite with an old timestamp (entry expired but still exists)
+        tracker.entries.insert(
+            ("api_error_nudge".to_string(), "york".to_string()),
+            Instant::now() - Duration::from_secs(300),
+        );
+
+        // has_entry returns true because entry still exists (even if expired)
+        // This is intentional - cleanup removes entries, not expiration
+        assert!(tracker.has_entry("api_error_nudge", "york"));
     }
 
     // -----------------------------------------------------------------------
@@ -4180,6 +4343,7 @@ mod tests {
             &coworkers_with_running_subagents, // madison HAS running subagent
             &set(&[]),                         // ci_passed
             &set(&[]),                         // usage_limited
+            &set(&[]),                         // api_error
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -4367,11 +4531,13 @@ mod tests {
         )];
 
         let usage_limited = HashSet::new();
+        let api_error = HashSet::new();
         let result = decide_stuck_coworker_restarts(
             &pane_hashes,
             &pane_contents,
             &tasks,
             &usage_limited,
+            &api_error,
             now,
             Duration::from_secs(180), // 3 minute stuck duration
         );
@@ -4416,11 +4582,13 @@ Reading files...
         )];
 
         let usage_limited = HashSet::new();
+        let api_error = HashSet::new();
         let result = decide_stuck_coworker_restarts(
             &pane_hashes,
             &pane_contents,
             &tasks,
             &usage_limited,
+            &api_error,
             now,
             Duration::from_secs(180), // 3 minute stuck duration
         );
@@ -4468,12 +4636,14 @@ Options:
         // Mark york as usage-limited
         let mut usage_limited = HashSet::new();
         usage_limited.insert("york".to_string());
+        let api_error = HashSet::new();
 
         let result = decide_stuck_coworker_restarts(
             &pane_hashes,
             &pane_contents,
             &tasks,
             &usage_limited,
+            &api_error,
             now,
             Duration::from_secs(180), // 3 minute stuck duration
         );
@@ -4481,6 +4651,59 @@ Options:
         assert!(
             result.restarts.is_empty(),
             "usage-limited coworker should be skipped from stuck detection"
+        );
+    }
+
+    #[test]
+    fn stuck_detection_skips_api_error_coworkers() {
+        // Coworkers with API errors should be skipped from stuck detection.
+        // Their pane is frozen waiting for the API to recover, not stuck.
+        let mut pane_hashes = HashMap::new();
+        let now = Instant::now();
+        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
+
+        // Pane content showing API error
+        let api_error_content = r#"
+Working on task #42...
+
+API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":"req_123"}
+"#;
+
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        api_error_content.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Set old hash to same value (pane unchanged for 6+ minutes)
+        pane_hashes.insert("madison".to_string(), (content_hash, old_time));
+
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("madison".to_string(), api_error_content.to_string());
+
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "madison".to_string(),
+        )];
+
+        // Mark madison as having API error
+        let usage_limited = HashSet::new();
+        let mut api_error = HashSet::new();
+        api_error.insert("madison".to_string());
+
+        let result = decide_stuck_coworker_restarts(
+            &pane_hashes,
+            &pane_contents,
+            &tasks,
+            &usage_limited,
+            &api_error,
+            now,
+            Duration::from_secs(180), // 3 minute stuck duration
+        );
+
+        assert!(
+            result.restarts.is_empty(),
+            "API error coworker should be skipped from stuck detection"
         );
     }
 
@@ -4841,5 +5064,135 @@ Now implementing the fix.
                 reason
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // API error detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn api_error_detects_500_error() {
+        let api_error_pane = r#"
+I'll read the file now.
+⏺ Read(file_path: "/src/main.rs")
+
+API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":"req_123"}
+"#;
+
+        assert!(
+            has_api_error_pattern(api_error_pane),
+            "should detect API Error: 500 pattern"
+        );
+    }
+
+    #[test]
+    fn api_error_detects_overloaded_error() {
+        let overloaded_pane = r#"
+Working on the task.
+
+API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_456"}
+"#;
+
+        assert!(
+            has_api_error_pattern(overloaded_pane),
+            "should detect overloaded_error pattern"
+        );
+    }
+
+    #[test]
+    fn api_error_detects_internal_server_error_message() {
+        let internal_error_pane = "Something went wrong. Internal server error. Please try again.";
+
+        assert!(
+            has_api_error_pattern(internal_error_pane),
+            "should detect 'Internal server error' message"
+        );
+    }
+
+    #[test]
+    fn api_error_detection_is_case_insensitive() {
+        // Test various case variations to ensure detection works
+        assert!(
+            has_api_error_pattern("API ERROR: 500"),
+            "should detect uppercase 'API ERROR'"
+        );
+        assert!(
+            has_api_error_pattern("api error: 500"),
+            "should detect lowercase 'api error'"
+        );
+        assert!(
+            has_api_error_pattern("INTERNAL SERVER ERROR"),
+            "should detect uppercase 'INTERNAL SERVER ERROR'"
+        );
+        assert!(
+            has_api_error_pattern("internal server error"),
+            "should detect lowercase 'internal server error'"
+        );
+    }
+
+    #[test]
+    fn api_error_code_content_should_not_trigger_detection() {
+        // Code containing API error strings in comments should NOT trigger detection
+        // if there's significant activity after
+        let code_content = r#"
+// Handle API errors gracefully
+// API Error: 500 is a server error
+fn handle_api_error(status: u16) {
+    match status {
+        500 => log!("Internal server error"),
+        _ => log!("Unknown error"),
+    }
+}
+
+// Now implement the actual handler
+fn process_request() {
+    let result = make_api_call();
+    handle_response(result);
+    validate_output();
+    send_notification();
+    cleanup_resources();
+}
+"#;
+
+        assert!(
+            !has_api_error_pattern(code_content),
+            "code with API error strings followed by activity should NOT trigger detection"
+        );
+    }
+
+    #[test]
+    fn api_error_recovers_after_real_activity() {
+        // If coworker continues working after API error, they've recovered
+        let recovered_pane = r#"
+API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}
+
+Retrying the request...
+⏺ Read(file_path: "/src/main.rs")
+Got the file contents.
+Now editing.
+⏺ Edit(file_path: "/src/main.rs")
+Done with the edit.
+"#;
+
+        assert!(
+            !has_api_error_pattern(recovered_pane),
+            "real activity after API error should indicate recovery"
+        );
+    }
+
+    #[test]
+    fn api_error_still_stuck_with_only_ui_chrome() {
+        // If only UI chrome follows the error, coworker is still stuck
+        let stuck_with_chrome = r#"
+API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gateway"}}
+
+───────────────────────────
+❯
+"#;
+
+        assert!(
+            has_api_error_pattern(stuck_with_chrome),
+            "UI chrome after API error should not count as recovery"
+        );
     }
 }

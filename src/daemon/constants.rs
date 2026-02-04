@@ -135,6 +135,12 @@ pub(super) const QUEUED_NUDGE_MIN_AGE_SECS: i64 = 60;
 /// Gives the API a moment to actually reset before we ask coworkers to retry.
 pub(super) const USAGE_LIMIT_NUDGE_BUFFER: Duration = Duration::from_secs(30);
 
+/// Cooldown between API error retry nudges for the same coworker (90 seconds).
+/// API errors are transient, so we periodically nudge to encourage retry.
+/// Unlike usage limits (which have a known reset time), API errors may resolve
+/// at any moment, so periodic nudging is more appropriate.
+pub(super) const API_ERROR_NUDGE_COOLDOWN: Duration = Duration::from_secs(90);
+
 /// Number of coworker slots reserved for reviewers.
 pub(super) const REVIEW_HEADROOM: usize = 2;
 
