@@ -375,15 +375,70 @@ pub fn create_window(
 ///
 /// Sends SIGTERM to the pane process before killing the window, because
 /// Claude Code survives the SIGHUP that tmux sends on window destruction.
+///
+/// SAFETY: Refuses to kill the last window in a session, as that would
+/// terminate the session (and potentially the tmux server if it's the only session).
 pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
+    // Safety check: don't kill the last window in the session
+    let window_count = count_session_windows(session);
+    if window_count <= 1 {
+        tracing::warn!(
+            "Refusing to kill window {}:{} - it's the last window in the session (count={})",
+            session,
+            name,
+            window_count
+        );
+        return Ok(());
+    }
+
     let target = format!("{}:{}", session, name);
-    kill_window_by_target(&target)
+    kill_window_by_target_unchecked(&target)
+}
+
+/// Count the number of windows in a tmux session.
+fn count_session_windows(session: &str) -> usize {
+    let output = match Command::new("tmux")
+        .args(["list-windows", "-t", session, "-F", "#{window_id}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return 0,
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .count()
 }
 
 /// Kill a tmux window by its fully-qualified target string (e.g., "session:@0").
 ///
 /// SIGTERMs pane processes first (Claude Code ignores SIGHUP), then kills the window.
+///
+/// SAFETY: Refuses to kill the last window in a session, as that would
+/// terminate the session (and potentially the tmux server if it's the only session).
 pub fn kill_window_by_target(target: &str) -> crate::Result<()> {
+    // Extract session name from target (format: "session:window" or "session:@id")
+    if let Some(session) = target.split(':').next() {
+        let window_count = count_session_windows(session);
+        if window_count <= 1 {
+            tracing::warn!(
+                "Refusing to kill window {} - it's the last window in session {} (count={})",
+                target,
+                session,
+                window_count
+            );
+            return Ok(());
+        }
+    }
+
+    kill_window_by_target_unchecked(target)
+}
+
+/// Kill a tmux window by target WITHOUT the last-window safety check.
+///
+/// Only use this when you've already verified the safety constraint.
+fn kill_window_by_target_unchecked(target: &str) -> crate::Result<()> {
     // SIGTERM the pane process first — Claude Code ignores SIGHUP
     if let Ok(output) = Command::new("tmux")
         .args(["list-panes", "-t", target, "-F", "#{pane_pid}"])
