@@ -68,6 +68,32 @@ pub struct WebhookEvent {
     pub ci_check_passed: Option<CiCheckPassed>,
 }
 
+impl WebhookEvent {
+    /// Create a new WebhookEvent with the given message, defaulting all optional fields to None.
+    ///
+    /// Use struct update syntax to override specific fields:
+    /// ```ignore
+    /// WebhookEvent {
+    ///     needs_review: Some(42),
+    ///     ..WebhookEvent::new(message)
+    /// }
+    /// ```
+    pub fn new(message: Message) -> Self {
+        Self {
+            message,
+            pr_activity: None,
+            needs_review: None,
+            merged_pr: None,
+            ci_failed_on_default_branch: None,
+            reviewed_pr: None,
+            review_state_change: None,
+            pr_ci_failure: None,
+            check_duration: None,
+            ci_check_passed: None,
+        }
+    }
+}
+
 /// Structured data about a completed CI check's duration.
 ///
 /// Used to track historical check durations so the daemon can detect stale checks
@@ -659,16 +685,9 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
 
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
-        message: Message::new("github", content, MessageType::Text),
-        pr_activity: None,
         needs_review,
         merged_pr,
-        ci_failed_on_default_branch: None,
-        reviewed_pr: None,
-        review_state_change: None,
-        pr_ci_failure: None,
-        check_duration: None,
-        ci_check_passed: None,
+        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
     }))
 }
 
@@ -721,7 +740,6 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
 
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
-        message: Message::new("github", content, MessageType::Text),
         pr_activity: Some(PrActivity {
             pr_number: event.pull_request.number,
             owner_coworker: coworker.map(|s| s.to_string()),
@@ -732,14 +750,8 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
             }),
             repo_full_name: Some(event.repository.full_name),
         }),
-        needs_review: None,
-        merged_pr: None,
-        ci_failed_on_default_branch: None,
-        reviewed_pr: None,
         review_state_change,
-        pr_ci_failure: None,
-        check_duration: None,
-        ci_check_passed: None,
+        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
     }))
 }
 
@@ -777,7 +789,6 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     // For issue_comment, the payload doesn't include the PR branch,
     // so owner_coworker is None. The daemon will look it up asynchronously.
     Ok(Some(WebhookEvent {
-        message: Message::new("github", content, MessageType::Text),
         pr_activity: Some(PrActivity {
             pr_number: event.issue.number,
             owner_coworker: None,
@@ -785,14 +796,8 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
             comment_node: Some(CommentNode::IssueComment(event.comment.id)),
             repo_full_name: Some(event.repository.full_name),
         }),
-        needs_review: None,
-        merged_pr: None,
-        ci_failed_on_default_branch: None,
         reviewed_pr,
-        review_state_change: None,
-        pr_ci_failure: None,
-        check_duration: None,
-        ci_check_passed: None,
+        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
     }))
 }
 
@@ -823,7 +828,6 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
 
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
-        message: Message::new("github", content, MessageType::Text),
         pr_activity: Some(PrActivity {
             pr_number: event.pull_request.number,
             owner_coworker: coworker.map(|s| s.to_string()),
@@ -831,14 +835,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
             comment_node: Some(CommentNode::ReviewComment(event.comment.id)),
             repo_full_name: Some(event.repository.full_name),
         }),
-        needs_review: None,
-        merged_pr: None,
-        ci_failed_on_default_branch: None,
-        reviewed_pr: None,
-        review_state_change: None,
-        pr_ci_failure: None,
-        check_duration: None,
-        ci_check_passed: None,
+        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
     }))
 }
 
@@ -875,18 +872,11 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
     };
 
     let content = format!("{}{}", mention, action_text);
-    Ok(Some(WebhookEvent {
-        message: Message::new("github", content, MessageType::Text),
-        pr_activity: None,
-        needs_review: None,
-        merged_pr: None,
-        ci_failed_on_default_branch: None,
-        reviewed_pr: None,
-        review_state_change: None,
-        pr_ci_failure: None,
-        check_duration: None,
-        ci_check_passed: None,
-    }))
+    Ok(Some(WebhookEvent::new(Message::new(
+        "github",
+        content,
+        MessageType::Text,
+    ))))
 }
 
 fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
@@ -1007,16 +997,11 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
 
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
-        message: Message::new("github", content, MessageType::Text),
-        pr_activity: None,
-        needs_review: None,
-        merged_pr: None,
         ci_failed_on_default_branch,
-        reviewed_pr: None,
-        review_state_change: None,
         pr_ci_failure,
         check_duration,
         ci_check_passed,
+        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
     }))
 }
 
