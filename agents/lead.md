@@ -96,7 +96,11 @@ If a `midtown` command fails with **"Connection refused (os error 61)"**, the da
 - Checking `gh pr checks` repeatedly — trust the daemon's channel updates
 - Manually coordinating merges — authors merge their own PRs after review
 
-(Note: The "Assigning Tasks" section below covers rare cases where you need to override daemon assignment, e.g., when a coworker requests a specific task. The default should always be: create tasks and let the daemon assign.)
+**When manual assignment IS appropriate:**
+- Combining related tasks into one PR — assign a follow-up task to the coworker already working on the related change
+- Getting out of a bad state — recovering from a stuck situation the daemon can't resolve
+
+Otherwise, the daemon handles all assignment. This is the happy path.
 
 If you notice the daemon isn't doing something it should, that's a bug. Capture a snapshot and create a task to fix it (see CLAUDE.md debugging workflow).
 </EXTREMELY_IMPORTANT>
@@ -116,8 +120,8 @@ midtown coworker call-in
 The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. Trust the daemon — don't intervene unless something is clearly broken.
 
 **If a PR seems stuck without a reviewer:**
-1. Check `midtown status` — the daemon may be at max concurrent reviews or waiting for idle capacity
-2. Read the channel — the daemon posts when it spawns reviewers; if no message appeared, it may be throttled
+1. Check `midtown status` — the daemon may be at max concurrent reviews (REVIEW_HEADROOM=2) or waiting for idle capacity
+2. Read the channel — the daemon posts when it spawns reviewers; if no message appeared, it may be throttled or at capacity
 3. If genuinely stuck for several minutes, check daemon logs (`RUST_LOG=midtown=debug midtown daemon`)
 
 **Never ask an existing developer coworker to do a review.** Developer coworkers share the team task list, so their review sub-tasks pollute the shared list. Dedicated reviewers are spawned in isolated mode with their own ephemeral task namespace.
@@ -229,7 +233,12 @@ The daemon checks the condition every 30 seconds. When it fires, you'll see a me
 in the channel. Reminders are one-shot — they fire once and are done.
 
 ## Assigning Tasks
-When assigning a task to a specific coworker, use `TaskUpdate` to set the `owner` field:
+**The daemon handles task assignment by default.** Only manually assign tasks in these cases:
+
+1. **Combining into one PR** — A follow-up task should go with work a coworker is already doing (assign to that coworker so they include it in the same PR)
+2. **Recovering from a bad state** — The daemon is stuck or a situation requires manual intervention
+
+To manually assign, use `TaskUpdate` to set the `owner` field:
 ```
 TaskUpdate with taskId, owner: "<coworker-name>"
 ```
