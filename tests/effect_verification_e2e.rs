@@ -326,17 +326,17 @@ impl Drop for EffectTestFixture {
 /// result in the message appearing in the channel file on disk.
 #[test]
 #[ignore] // Requires built binary
-fn effect_post_to_channel_writes_file() {
+fn test_effect_post_to_channel_writes_file() {
     let mut fixture = match EffectTestFixture::new() {
         Some(f) => f,
         None => {
-            eprintln!("Skipping: fixture creation failed");
+            eprintln!("SKIPPED: fixture creation failed");
             return;
         }
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping: daemon failed to start");
+        eprintln!("SKIPPED: daemon failed to start");
         return;
     }
 
@@ -392,22 +392,22 @@ fn effect_post_to_channel_writes_file() {
 /// the window creation attempt.
 #[test]
 #[ignore] // Requires tmux and built binary (may require claude CLI)
-fn effect_spawn_coworker_creates_window() {
+fn test_effect_spawn_coworker_creates_window() {
     if !tmux_available() {
-        eprintln!("Skipping: tmux not available");
+        eprintln!("SKIPPED: tmux not available");
         return;
     }
 
     let mut fixture = match EffectTestFixture::new() {
         Some(f) => f,
         None => {
-            eprintln!("Skipping: fixture creation failed");
+            eprintln!("SKIPPED: fixture creation failed");
             return;
         }
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping: daemon failed to start");
+        eprintln!("SKIPPED: daemon failed to start");
         return;
     }
 
@@ -432,12 +432,11 @@ fn effect_spawn_coworker_creates_window() {
         let error_msg = response["error"]["message"]
             .as_str()
             .unwrap_or("unknown error");
+        // Use "SKIPPED:" prefix so CI logs clearly distinguish skipped from passed
         eprintln!(
-            "Note: coworker.spawn returned error (expected in some test environments): {}",
+            "SKIPPED: coworker.spawn returned error (expected in test environments without Claude CLI): {}",
             error_msg
         );
-        // If it's a "no claude" or "command not found" error, that's expected
-        // in test environments without Claude CLI installed
         return;
     }
 
@@ -484,22 +483,22 @@ fn effect_spawn_coworker_creates_window() {
 /// then nudge it. If Claude is not available, this test is skipped.
 #[test]
 #[ignore] // Requires tmux, built binary, and claude CLI
-fn effect_nudge_coworker_sends_keys() {
+fn test_effect_nudge_coworker_sends_keys() {
     if !tmux_available() {
-        eprintln!("Skipping: tmux not available");
+        eprintln!("SKIPPED: tmux not available");
         return;
     }
 
     let mut fixture = match EffectTestFixture::new() {
         Some(f) => f,
         None => {
-            eprintln!("Skipping: fixture creation failed");
+            eprintln!("SKIPPED: fixture creation failed");
             return;
         }
     };
 
     if !fixture.start_daemon() {
-        eprintln!("Skipping: daemon failed to start");
+        eprintln!("SKIPPED: daemon failed to start");
         return;
     }
 
@@ -519,7 +518,7 @@ fn effect_nudge_coworker_sends_keys() {
     let spawn_response = spawn_response.unwrap();
     if spawn_response["error"].is_object() {
         eprintln!(
-            "Skipping: coworker.spawn failed (expected without Claude CLI): {:?}",
+            "SKIPPED: coworker.spawn failed (expected without Claude CLI): {:?}",
             spawn_response["error"]
         );
         return;
@@ -599,11 +598,11 @@ fn effect_nudge_coworker_sends_keys() {
 /// Verify the test fixture can start a daemon and connect to it.
 #[test]
 #[ignore] // Requires built binary
-fn fixture_can_start_daemon() {
+fn test_fixture_can_start_daemon() {
     let mut fixture = match EffectTestFixture::new() {
         Some(f) => f,
         None => {
-            eprintln!("Skipping: fixture creation failed");
+            eprintln!("SKIPPED: fixture creation failed");
             return;
         }
     };
