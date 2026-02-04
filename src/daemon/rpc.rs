@@ -349,6 +349,7 @@ fn handle_coworker_spawn(
         initial_prompt: prompt,
         additional_dirs: vec![],
         restrict_setting_sources: true,
+        pr_number: None,
     };
     match state.coworkers.spawn(&config) {
         Ok(name) => {
