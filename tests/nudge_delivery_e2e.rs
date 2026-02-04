@@ -1298,18 +1298,27 @@ mod coworker_input_stability_tests {
         assert!(status, "Failed to create coworker window");
         thread::sleep(Duration::from_millis(500));
 
-        // Type user content that never matches any nudge
+        // Spawn a thread that keeps typing to simulate active user input
+        // This prevents the input from ever becoming "stable"
         let tmux_target = format!("{}:{}", session, coworker_name);
-        let _ = Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                &tmux_target,
-                "-l",
-                "writing a long detailed message that is not a nudge",
-            ])
-            .status();
-        thread::sleep(Duration::from_millis(200));
+        let typing_target = tmux_target.clone();
+        let typing_handle = std::thread::spawn(move || {
+            for i in 0..10 {
+                let _ = Command::new("tmux")
+                    .args([
+                        "send-keys",
+                        "-t",
+                        &typing_target,
+                        "-l",
+                        &format!("typing-{} ", i),
+                    ])
+                    .status();
+                thread::sleep(Duration::from_millis(800)); // Type every 800ms
+            }
+        });
+
+        // Give time for initial typing to register
+        thread::sleep(Duration::from_millis(500));
 
         // Use short timeouts for test
         let start = std::time::Instant::now();
@@ -1321,8 +1330,14 @@ mod coworker_input_stability_tests {
         );
         let elapsed = start.elapsed();
 
-        // Should return false (timeout) after max_wait
-        assert!(!result, "Should return false after timeout");
+        // Stop the typing thread
+        drop(typing_handle);
+
+        // Should return false (timeout) because input keeps changing
+        assert!(
+            !result,
+            "Should return false after timeout with active typing"
+        );
         // Should take roughly max_wait (5s)
         assert!(
             elapsed >= Duration::from_secs(4),
