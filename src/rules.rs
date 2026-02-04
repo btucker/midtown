@@ -4810,4 +4810,36 @@ Now implementing the fix.
             action
         );
     }
+
+    #[test]
+    fn pending_task_action_skips_isolated_inactive_owner() {
+        // Regression test from PR #614 review: isolation check fires before active check.
+        // An inactive isolated owner should still be skipped, not spawned.
+        let active_names: HashSet<String> = HashSet::new(); // madison is NOT active
+
+        let action = decide_pending_task_action(
+            "6",
+            "Prevent coworkers from checking out default branch",
+            "madison",
+            &active_names,
+            false, // not at dev limit
+            false, // not on cooldown
+            true,  // IS isolated (even though inactive)
+        );
+
+        assert!(
+            matches!(action, PendingTaskAction::Skip { .. }),
+            "inactive isolated owner should still be skipped, got: {:?}",
+            action
+        );
+
+        // Verify the skip reason mentions isolation
+        if let PendingTaskAction::Skip { reason } = action {
+            assert!(
+                reason.contains("isolated"),
+                "skip reason should mention isolation: {}",
+                reason
+            );
+        }
+    }
 }
