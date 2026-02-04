@@ -2698,4 +2698,39 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         let user_input = "I want to add a new feature";
         assert!(!check_nudge_text_match(daemon_nudge, user_input));
     }
+
+    // -------------------------------------------------------------------------
+    // Stuck escalation constant tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_stuck_escalation_threshold_is_reasonable() {
+        use super::constants::{STUCK_ESCALATION_NUDGE_COUNT, STUCK_NUDGE_COOLDOWN_SECS};
+
+        // Verify the escalation threshold results in a reasonable time before escalation.
+        // With STUCK_ESCALATION_NUDGE_COUNT=2 and STUCK_NUDGE_COOLDOWN_SECS=1800 (30 min),
+        // escalation happens after 2 nudges, meaning at least 45+ minutes have elapsed
+        // (15 min initial detection + 30 min cooldown before second nudge).
+        assert_eq!(
+            STUCK_ESCALATION_NUDGE_COUNT, 2,
+            "escalation should trigger after 2 nudges (45+ min)"
+        );
+
+        // Verify the cooldown is long enough to avoid spam but short enough to escalate
+        // within a reasonable timeframe (30 minutes between nudges).
+        assert_eq!(
+            STUCK_NUDGE_COOLDOWN_SECS,
+            30 * 60,
+            "nudge cooldown should be 30 minutes"
+        );
+
+        // Calculate minimum time before escalation:
+        // Initial stuck detection (15 min) + 1 cooldown (30 min) = 45 min minimum
+        let min_escalation_minutes =
+            15 + (STUCK_ESCALATION_NUDGE_COUNT - 1) as u64 * (STUCK_NUDGE_COOLDOWN_SECS / 60);
+        assert!(
+            min_escalation_minutes >= 45,
+            "escalation should not trigger before 45 minutes"
+        );
+    }
 }

@@ -163,6 +163,12 @@ pub(super) const STUCK_SILENT_COWORKER_DURATION: Duration = Duration::from_secs(
 /// Longer than PR_NUDGE_COOLDOWN_SECS because these go to the lead, not coworkers.
 pub const STUCK_NUDGE_COOLDOWN_SECS: u64 = 30 * 60;
 
+/// Number of repeated nudges before escalating to a bug report.
+/// With 30-minute cooldown, 2 nudges means the issue has persisted for 45+ minutes
+/// (15 min initial + 30 min cooldown). At this point, repeated warnings become
+/// an escalation suggesting the lead investigate as a potential daemon bug.
+pub(super) const STUCK_ESCALATION_NUDGE_COUNT: u32 = 2;
+
 // ---------------------------------------------------------------------------
 // Name / sender lists
 // ---------------------------------------------------------------------------
