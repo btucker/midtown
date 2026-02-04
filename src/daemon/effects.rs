@@ -120,16 +120,6 @@ pub enum Effect {
     /// TODO: Implement missing check detection logic.
     #[allow(dead_code)]
     RebasePrOnMain { pr_number: u64, reason: String },
-    /// Record a CI check duration for statistics tracking.
-    ///
-    /// Note: Duration recording is currently done inline in the webhook handler
-    /// rather than through effects for simplicity. This variant is kept for
-    /// potential future use with effect-based recording.
-    #[allow(dead_code)]
-    RecordCiCheckDuration {
-        check_name: String,
-        duration_secs: u64,
-    },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -454,19 +444,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RebasePrOnMain { pr_number, reason } => {
                 rebase_pr_on_main(state, pr_number, &reason).await;
-            }
-            Effect::RecordCiCheckDuration {
-                check_name,
-                duration_secs,
-            } => {
-                let mut ps = state.persistent_state.lock().await;
-                ps.ci_stats.record_duration(&check_name, duration_secs);
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                    warn!(
-                        "Failed to save daemon-state.json after recording CI duration: {}",
-                        e
-                    );
-                }
             }
         }
     }

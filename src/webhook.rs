@@ -1872,4 +1872,108 @@ mod tests {
         assert!(!is_review_comment("Thanks for the PR! I'll take a look."));
         assert!(!is_review_comment("Can you add some tests for this?"));
     }
+
+    #[test]
+    fn test_compute_check_duration_valid_timestamps() {
+        let result = compute_check_duration(
+            Some("2026-02-04T12:00:00Z"),
+            Some("2026-02-04T12:05:30Z"),
+            "Test",
+        );
+        let duration = result.expect("should return duration for valid timestamps");
+        assert_eq!(duration.check_name, "Test");
+        assert_eq!(duration.duration_secs, 330); // 5 minutes 30 seconds
+    }
+
+    #[test]
+    fn test_compute_check_duration_missing_started_at() {
+        let result = compute_check_duration(None, Some("2026-02-04T12:05:30Z"), "Test");
+        assert!(
+            result.is_none(),
+            "should return None when started_at is missing"
+        );
+    }
+
+    #[test]
+    fn test_compute_check_duration_missing_completed_at() {
+        let result = compute_check_duration(Some("2026-02-04T12:00:00Z"), None, "Test");
+        assert!(
+            result.is_none(),
+            "should return None when completed_at is missing"
+        );
+    }
+
+    #[test]
+    fn test_compute_check_duration_invalid_started_at() {
+        let result = compute_check_duration(
+            Some("not-a-timestamp"),
+            Some("2026-02-04T12:05:30Z"),
+            "Test",
+        );
+        assert!(
+            result.is_none(),
+            "should return None for invalid started_at"
+        );
+    }
+
+    #[test]
+    fn test_compute_check_duration_invalid_completed_at() {
+        let result = compute_check_duration(Some("2026-02-04T12:00:00Z"), Some("invalid"), "Test");
+        assert!(
+            result.is_none(),
+            "should return None for invalid completed_at"
+        );
+    }
+
+    #[test]
+    fn test_compute_check_duration_reversed_timestamps_clamps_to_zero() {
+        // completed_at before started_at - should clamp to 0
+        let result = compute_check_duration(
+            Some("2026-02-04T12:10:00Z"),
+            Some("2026-02-04T12:00:00Z"),
+            "Test",
+        );
+        let duration = result.expect("should return duration even for reversed timestamps");
+        assert_eq!(
+            duration.duration_secs, 0,
+            "negative duration should clamp to 0"
+        );
+    }
+
+    #[test]
+    fn test_compute_check_duration_over_24_hours_returns_none() {
+        // 25 hours = 90000 seconds, exceeds 86400 limit
+        let result = compute_check_duration(
+            Some("2026-02-03T11:00:00Z"),
+            Some("2026-02-04T12:00:00Z"),
+            "Test",
+        );
+        assert!(
+            result.is_none(),
+            "should return None for durations over 24 hours"
+        );
+    }
+
+    #[test]
+    fn test_compute_check_duration_exactly_24_hours_returns_none() {
+        // exactly 86400 seconds - should be rejected (> check is strict)
+        let result = compute_check_duration(
+            Some("2026-02-03T12:00:00Z"),
+            Some("2026-02-04T12:00:01Z"),
+            "Test",
+        );
+        assert!(result.is_none(), "should return None for duration > 86400s");
+    }
+
+    #[test]
+    fn test_compute_check_duration_just_under_24_hours_is_valid() {
+        // 86399 seconds - should be accepted
+        let result = compute_check_duration(
+            Some("2026-02-03T12:00:01Z"),
+            Some("2026-02-04T12:00:00Z"),
+            "Test",
+        );
+        let duration = result.expect("should accept duration just under 24 hours");
+        assert_eq!(duration.duration_secs, 86399);
+    }
 }
