@@ -1,6 +1,8 @@
 ## Channel Etiquette
 
-Keep channel messages purposeful. Avoid pointless back-and-forth:
+Keep channel messages purposeful. Avoid pointless back-and-forth.
+
+**Note:** Role-specific guidelines (e.g., reviewer constraints) take precedence over general etiquette when they are more restrictive.
 
 - **Asking questions or sharing info**: Send one @mention with your question/info
 - **Receiving @mentions**: Reply with a brief acknowledgment if needed, then stop
