@@ -773,6 +773,35 @@ impl CoworkerManager {
                     // coworker keeps its existing branch and any uncommitted work
                     // (important for orphan recovery and PR break-and-resume).
                     tracing::info!("Reusing existing valid worktree for {}", name);
+
+                    // Safety check: ensure the worktree is not on the default branch.
+                    // Coworkers must never work on main/master to avoid conflicts.
+                    if self.worktree_manager.is_on_default_branch(name) {
+                        tracing::warn!(
+                            "Coworker {} worktree is on default branch - creating recovery branch",
+                            name
+                        );
+                        // Create a recovery feature branch to get off the default branch
+                        match self.worktree_manager.checkout_new_branch(name, "recovery") {
+                            Ok(branch) => {
+                                tracing::info!(
+                                    "Created recovery branch {} for coworker {}",
+                                    branch,
+                                    name
+                                );
+                            }
+                            Err(e) => {
+                                return Err(crate::Error::Rpc {
+                                    code: -32603,
+                                    message: format!(
+                                        "Coworker {} is on default branch and recovery failed: {}",
+                                        name, e
+                                    ),
+                                });
+                            }
+                        }
+                    }
+
                     worktree_path
                 }
             }

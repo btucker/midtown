@@ -278,6 +278,55 @@ impl WorktreeManager {
         }
     }
 
+    /// Check if a coworker's worktree is on the default branch (main/master).
+    ///
+    /// This is used to prevent coworkers from working on the default branch,
+    /// which can cause conflicts with other worktrees and accidental commits to main.
+    ///
+    /// Returns `true` if the worktree is checked out on the default branch.
+    /// Returns `false` if the worktree doesn't exist, is detached, or is on a feature branch.
+    pub fn is_on_default_branch(&self, coworker_name: &str) -> bool {
+        let Some(branch) = self.get_branch(coworker_name) else {
+            return false;
+        };
+
+        let default_branch =
+            detect_default_branch(&self.repo_root).unwrap_or_else(|| "main".to_string());
+        branch == default_branch
+    }
+
+    /// Create a new feature branch in a coworker's worktree.
+    ///
+    /// This is used to recover from situations where a coworker's worktree is on
+    /// the default branch. The branch name follows the pattern `<coworker>/<suffix>`.
+    ///
+    /// Returns the name of the created branch, or an error if the operation fails.
+    pub fn checkout_new_branch(
+        &self,
+        coworker_name: &str,
+        branch_suffix: &str,
+    ) -> WorktreeResult<String> {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return Err(WorktreeError::NotFound(worktree_path));
+        }
+
+        let branch_name = format!("{}/{}", coworker_name, branch_suffix);
+
+        let output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["checkout", "-b", &branch_name])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(WorktreeError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(branch_name)
+    }
+
     /// Check if a coworker's branch has commits not on the default branch.
     ///
     /// Returns `true` if the branch has unique commits that are not on the default branch.
@@ -911,5 +960,153 @@ branch refs/heads/bob/work
             result.err()
         );
         assert!(wt_path.exists(), "worktree should be recreated on disk");
+    }
+
+    #[test]
+    fn test_is_on_default_branch_detached() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree (detached HEAD by default)
+        manager.create("testworker").expect("create worktree");
+
+        // Detached HEAD should not be considered on default branch
+        assert!(!manager.is_on_default_branch("testworker"));
+    }
+
+    #[test]
+    fn test_is_on_default_branch_feature_branch() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Create a feature branch
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+
+        // Feature branch should not be considered on default branch
+        assert!(!manager.is_on_default_branch("testworker"));
+    }
+
+    #[test]
+    fn test_is_on_default_branch_on_main() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Get the default branch name (usually "main" or "master")
+        let default_branch =
+            detect_default_branch(manager.repo_root()).unwrap_or_else(|| "main".to_string());
+
+        // First, move the main repo OFF the default branch so a worktree can use it.
+        // This simulates the scenario where the Lead is on a feature branch.
+        TestCommand::new("git")
+            .args(["checkout", "-b", "lead-feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("create lead branch");
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Checkout the default branch in the worktree (now possible since main repo is on feature branch)
+        TestCommand::new("git")
+            .args(["checkout", &default_branch])
+            .current_dir(&wt_path)
+            .output()
+            .expect("checkout default branch");
+
+        // Should now be on default branch
+        assert!(manager.is_on_default_branch("testworker"));
+    }
+
+    #[test]
+    fn test_is_on_default_branch_nonexistent() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Non-existent worktree should return false
+        assert!(!manager.is_on_default_branch("nonexistent"));
+    }
+
+    #[test]
+    fn test_checkout_new_branch() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Create a new branch
+        let branch = manager
+            .checkout_new_branch("testworker", "feature-a")
+            .expect("create branch");
+
+        assert_eq!(branch, "testworker/feature-a");
+
+        // Verify the worktree is now on that branch
+        let current = manager.get_branch("testworker");
+        assert_eq!(current, Some("testworker/feature-a".to_string()));
+
+        // Also verify via git directly
+        let output = TestCommand::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("get branch");
+        let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(actual, "testworker/feature-a");
+    }
+
+    #[test]
+    fn test_checkout_new_branch_nonexistent_worktree() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Should fail for non-existent worktree
+        let result = manager.checkout_new_branch("nonexistent", "feature");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_checkout_new_branch_recovery_from_main() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Get the default branch name (usually "main" or "master")
+        let default_branch =
+            detect_default_branch(manager.repo_root()).unwrap_or_else(|| "main".to_string());
+
+        // First, move the main repo OFF the default branch so a worktree can use it.
+        // This simulates the scenario where the Lead is on a feature branch.
+        TestCommand::new("git")
+            .args(["checkout", "-b", "lead-feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("create lead branch");
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Checkout the default branch in the worktree
+        TestCommand::new("git")
+            .args(["checkout", &default_branch])
+            .current_dir(&wt_path)
+            .output()
+            .expect("checkout default branch");
+
+        // Verify we're on main
+        assert!(manager.is_on_default_branch("testworker"));
+
+        // Create a recovery branch to get off main
+        let branch = manager
+            .checkout_new_branch("testworker", "recovery")
+            .expect("create recovery branch");
+
+        assert_eq!(branch, "testworker/recovery");
+
+        // Should no longer be on default branch
+        assert!(!manager.is_on_default_branch("testworker"));
+        assert_eq!(
+            manager.get_branch("testworker"),
+            Some("testworker/recovery".to_string())
+        );
     }
 }
