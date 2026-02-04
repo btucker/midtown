@@ -189,23 +189,38 @@ midtown channel post "Pulled main, rebuilt release, and restarted midtown."
 
 ## Debugging & Test Fixtures
 
-### Capturing WorldSnapshots
+### Debugging Unexpected Daemon Behavior (Lead Workflow)
 
-When debugging daemon behavior or creating test cases, capture the daemon's `WorldSnapshot`:
+**IMPORTANT: The Lead should do this PROACTIVELY whenever noticing daemon misbehavior — don't wait for the user to ask.**
 
-```bash
-midtown e2e capture                      # capture current state
-midtown e2e capture --label usage-limit  # include descriptive label
-```
+When the Lead notices the daemon doing something unexpected (wrong decisions, missed task assignments, incorrect stuck detection, false positive warnings, reviewer not spawning, etc.):
 
-This saves a JSON file to `tests/fixtures/snapshot/` containing:
-- All pane contents (tmux screen captures)
-- Coworker state and start times
-- Task state (in-progress, pending, ownership)
-- PR state (open, merged, CI status)
-- Reviewer assignments
+1. **Capture the state immediately** before it changes:
+   ```bash
+   midtown e2e capture --label <brief-bug-description>
+   ```
 
-Use these fixtures in unit tests to verify daemon decisions without running real Claude Code.
+2. **Create a task for a coworker** to write a failing E2E test and fix the bug:
+   ```
+   TaskCreate with:
+   - subject: "Fix <bug description>"
+   - description: "Captured snapshot: snapshot-<label>-<timestamp>.json
+
+     Expected: <what should have happened>
+     Actual: <what happened instead>
+
+     Write a failing E2E test using the captured snapshot, then fix the bug."
+   ```
+
+3. **Post to the channel** so the team is aware of the issue.
+
+4. **The coworker should**:
+   - Load the captured snapshot in a test
+   - Write assertions that fail with the current behavior
+   - Fix the bug
+   - Verify the test passes
+
+This ensures bugs get test coverage before fixes, preventing regressions. **Act immediately** — the daemon state changes quickly and valuable debug info is lost if not captured promptly.
 
 ### Debug Logging
 
