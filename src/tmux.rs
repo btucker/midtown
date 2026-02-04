@@ -688,9 +688,33 @@ pub fn find_orphaned_processes(pattern: &str) -> Vec<u32> {
         .filter_map(|l| l.trim().parse().ok())
         .collect();
 
-    // Filter to only orphaned processes (PPID=1)
+    // Filter to only orphaned processes (PPID=1) that are NOT tmux
+    // Bug fix: The pattern may match tmux server processes because the
+    // `tmux new-session` command line includes "claude" in its arguments.
+    // Killing the tmux server would destroy all windows, so we must exclude it.
     pids.into_iter()
-        .filter(|&pid| get_ppid(pid) == Some(1))
+        .filter(|&pid| {
+            // Must be orphaned (PPID=1)
+            if get_ppid(pid) != Some(1) {
+                return false;
+            }
+            // Must NOT be a tmux process
+            let is_tmux = Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "comm="])
+                .output()
+                .ok()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .starts_with("tmux")
+                })
+                .unwrap_or(false);
+            if is_tmux {
+                tracing::debug!(pid = pid, "Skipping tmux process in orphan cleanup");
+                return false;
+            }
+            true
+        })
         .collect()
 }
 
