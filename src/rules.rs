@@ -1308,10 +1308,15 @@ pub(crate) fn has_api_error_pattern(pane_content: &str) -> bool {
 /// Uses the same recovery detection as usage limits: if there's significant
 /// activity after the error message, the coworker has recovered.
 fn is_at_api_error(content: &str) -> bool {
-    // Find the last occurrence of any API error pattern
+    // Find the last occurrence of any API error pattern (case-insensitive)
+    let content_lower = content.to_lowercase();
     let Some((error_pos, pattern_len)) = API_ERROR_PATTERNS
         .iter()
-        .filter_map(|pattern| content.find(pattern).map(|pos| (pos, pattern.len())))
+        .filter_map(|pattern| {
+            content_lower
+                .find(&pattern.to_lowercase())
+                .map(|pos| (pos, pattern.len()))
+        })
         .max_by_key(|(pos, _)| *pos)
     else {
         return false;
@@ -3066,6 +3071,35 @@ mod tests {
         );
 
         assert!(tracker.check("spawn_failure", "park", Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn has_entry_returns_false_when_no_entry() {
+        let tracker = CooldownTracker::new();
+        assert!(!tracker.has_entry("api_error_nudge", "york"));
+    }
+
+    #[test]
+    fn has_entry_returns_true_after_record() {
+        let mut tracker = CooldownTracker::new();
+        tracker.record("api_error_nudge", "york");
+        assert!(tracker.has_entry("api_error_nudge", "york"));
+    }
+
+    #[test]
+    fn has_entry_returns_true_even_when_cooldown_expired() {
+        let mut tracker = CooldownTracker::new();
+        tracker.record("api_error_nudge", "york");
+
+        // Overwrite with an old timestamp (entry expired but still exists)
+        tracker.entries.insert(
+            ("api_error_nudge".to_string(), "york".to_string()),
+            Instant::now() - Duration::from_secs(300),
+        );
+
+        // has_entry returns true because entry still exists (even if expired)
+        // This is intentional - cleanup removes entries, not expiration
+        assert!(tracker.has_entry("api_error_nudge", "york"));
     }
 
     // -----------------------------------------------------------------------

@@ -204,8 +204,10 @@ pub(super) fn determine_lead_working(
 /// IMPORTANT: Coworkers are NEVER sent on a break if any of these apply:
 /// - They have open unmerged PRs (must stay available for review feedback)
 /// - They have active review assignments
-/// - Their tmux pane content changed recently (actively working)
 /// - They have unblocked dependent tasks
+/// - They have running subagents (Task tool agents)
+/// - They are usage-limited (waiting for usage limit reset)
+/// - They have API errors (will be nudged to retry instead)
 ///
 /// Also enforces a minimum lifetime check - coworkers must be alive for at least
 /// 5 minutes before they can be sent on a break. This prevents spawn storms where
@@ -642,8 +644,12 @@ pub(super) fn check_and_nudge_api_errors(
             continue;
         }
 
-        // Check if this is the first time we're seeing this coworker with API error
-        // (no prior cooldown entry means first detection)
+        // Check if this is the first time we're seeing this coworker with API error.
+        // First detection = no prior cooldown entry exists.
+        // Note: entries persist until cleanup (2× cooldown duration), so if an error
+        // clears briefly and recurs within that window, it won't be considered "first".
+        // This is acceptable because nudging continues regardless, and the channel
+        // message is only for widespread outages (2+ coworkers) anyway.
         let is_first = {
             let cooldowns = state.cooldowns.lock().unwrap();
             !cooldowns.has_entry("api_error_nudge", name)
@@ -669,8 +675,10 @@ pub(super) fn check_and_nudge_api_errors(
         });
     }
 
-    // Post a channel message on first detection
-    if first_detection {
+    // Post a channel message when API errors are widespread (2+ coworkers affected)
+    // Only post on first detection of a widespread outage to avoid spam.
+    let affected_count = snap.api_error_coworkers.len();
+    if first_detection && affected_count >= 2 {
         let names: Vec<&str> = snap
             .api_error_coworkers
             .iter()
@@ -681,7 +689,8 @@ pub(super) fn check_and_nudge_api_errors(
             Effect::PostToChannel {
                 sender: "system".to_string(),
                 message: format!(
-                    "⚠️ API errors detected for: {}. Will periodically nudge to retry.",
+                    "⚠️ Widespread API errors affecting {} coworkers: {}. Will periodically nudge to retry.",
+                    affected_count,
                     names.join(", ")
                 ),
             },
