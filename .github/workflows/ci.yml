@@ -63,8 +63,11 @@ jobs:
             flags: ""
           - test: tailf_integration
             flags: ""
-          - test: idle_break_e2e
+          - test: health_e2e
             flags: ""
+          - test: workflow_e2e
+            flags: "--ignored --test-threads=1"
+            continue_on_error: true
       fail-fast: false
     env:
       MIDTOWN_WEBHOOK_PORT: 0
