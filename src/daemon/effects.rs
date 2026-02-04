@@ -124,6 +124,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::ShutdownCoworker { name, message } => {
+                // Log the shutdown with current window state for debugging
+                let session = state.coworkers.session_name();
+                let windows = crate::tmux::list_windows(session).unwrap_or_default();
+                info!(
+                    coworker = %name,
+                    session = %session,
+                    window_count = windows.len(),
+                    windows = ?windows,
+                    message_preview = %message.chars().take(50).collect::<String>(),
+                    "SHUTDOWN_COWORKER: executing shutdown effect"
+                );
+
                 // Nudge the goodbye message first, then shut down
                 if !message.is_empty()
                     && let Err(e) = state.coworkers.nudge(&name, &message)
@@ -132,6 +144,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 if let Err(e) = state.coworkers.shutdown(&name) {
                     warn!("Failed to shut down coworker {}: {}", name, e);
+                } else {
+                    info!(coworker = %name, "SHUTDOWN_COWORKER: shutdown completed");
                 }
                 // Record stop time for workflow features that need to track coworker lifecycle
                 {
