@@ -62,6 +62,10 @@ pub struct WebhookEvent {
     pub pr_ci_failure: Option<PrCiFailure>,
     /// A completed CI check with its duration — used for tracking typical check times.
     pub check_duration: Option<CheckDuration>,
+    /// A successful CI check that can be batched with others for the same target.
+    /// When set, the daemon buffers this notification instead of posting `message`
+    /// immediately — `message` is ignored in favor of a later batched message.
+    pub ci_check_passed: Option<CiCheckPassed>,
 }
 
 /// Structured data about a completed CI check's duration.
@@ -74,6 +78,20 @@ pub struct CheckDuration {
     pub check_name: String,
     /// Duration in seconds
     pub duration_secs: u64,
+}
+
+/// Structured data about a successful CI check that can be batched.
+///
+/// When multiple CI checks pass within a short window on the same target
+/// (PR or branch), the daemon batches them into a single channel message.
+#[derive(Debug, Clone)]
+pub struct CiCheckPassed {
+    /// Name of the check that passed
+    pub check_name: String,
+    /// Target reference: "main", "PR #42", etc.
+    pub target: String,
+    /// Mention prefix for the coworker (e.g., "@columbus ") or empty string
+    pub mention_prefix: String,
 }
 
 /// Structured data about a formal PR review state change (approved or changes requested).
@@ -650,6 +668,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         review_state_change: None,
         pr_ci_failure: None,
         check_duration: None,
+        ci_check_passed: None,
     }))
 }
 
@@ -720,6 +739,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         review_state_change,
         pr_ci_failure: None,
         check_duration: None,
+        ci_check_passed: None,
     }))
 }
 
@@ -772,6 +792,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
         review_state_change: None,
         pr_ci_failure: None,
         check_duration: None,
+        ci_check_passed: None,
     }))
 }
 
@@ -817,6 +838,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         review_state_change: None,
         pr_ci_failure: None,
         check_duration: None,
+        ci_check_passed: None,
     }))
 }
 
@@ -863,6 +885,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
         review_state_change: None,
         pr_ci_failure: None,
         check_duration: None,
+        ci_check_passed: None,
     }))
 }
 
@@ -960,6 +983,28 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         None
     };
 
+    // Produce a batchable CI success for the daemon to aggregate.
+    // Note: We still construct the message above for consistency, but when ci_check_passed
+    // is set, the daemon buffers this check and posts a batched message later instead.
+    let ci_check_passed = if event.check_run.conclusion.as_deref() == Some("success") {
+        // Extract target from pr_info: "main", "PR #42", etc.
+        let target = event
+            .check_run
+            .check_suite
+            .as_ref()
+            .and_then(|cs| cs.pull_requests.first())
+            .map(|pr| format!("PR #{}", pr.number))
+            .or_else(|| branch.map(|b| b.to_string()));
+
+        target.map(|t| CiCheckPassed {
+            check_name: event.check_run.name.clone(),
+            target: t,
+            mention_prefix: mention.clone(),
+        })
+    } else {
+        None
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         message: Message::new("github", content, MessageType::Text),
@@ -971,6 +1016,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         review_state_change: None,
         pr_ci_failure,
         check_duration,
+        ci_check_passed,
     }))
 }
 
