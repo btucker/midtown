@@ -285,8 +285,12 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "snapshot" => {
-            // Collect and return the full WorldSnapshot for debugging/testing
-            let snapshot = super::snapshot::collect_world_snapshot(state).await;
+            // Collect and return the full WorldSnapshot for debugging/testing.
+            // Debug context (channel messages, daemon logs) is only populated here,
+            // not during normal tick collection, to avoid I/O overhead on the hot path.
+            let snapshot = super::snapshot::collect_world_snapshot(state)
+                .await
+                .with_debug_context(&state.channel);
             match serde_json::to_value(&snapshot) {
                 Ok(value) => Response::success(request.id, value),
                 Err(e) => Response::error(

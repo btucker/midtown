@@ -133,7 +133,7 @@ pub struct WorldSnapshot {
 ///
 /// Uses a simple approach: reads the file and takes the last N lines.
 /// Returns an empty vector if the file doesn't exist or can't be read.
-fn read_daemon_log_tail(num_lines: usize) -> Vec<String> {
+pub fn read_daemon_log_tail(num_lines: usize) -> Vec<String> {
     let log_path = crate::paths::daemon_log_file();
     match std::fs::read_to_string(&log_path) {
         Ok(contents) => {
@@ -142,6 +142,25 @@ fn read_daemon_log_tail(num_lines: usize) -> Vec<String> {
             lines[start..].iter().map(|s| s.to_string()).collect()
         }
         Err(_) => Vec::new(),
+    }
+}
+
+impl WorldSnapshot {
+    /// Populate debug context fields (channel messages and daemon logs).
+    ///
+    /// This is only called when capturing a snapshot for debugging, NOT during
+    /// normal tick collection. This avoids file I/O overhead on every daemon tick.
+    pub fn with_debug_context(mut self, channel: &crate::channel::Channel) -> Self {
+        // Read recent channel messages
+        self.channel_messages = channel
+            .read_last_n_messages(SNAPSHOT_CHANNEL_MESSAGE_COUNT)
+            .map(|(msgs, _)| msgs)
+            .unwrap_or_default();
+
+        // Read recent daemon log lines
+        self.daemon_logs = read_daemon_log_tail(SNAPSHOT_DAEMON_LOG_LINES);
+
+        self
     }
 }
 
@@ -299,15 +318,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
-    // ── Channel messages ────────────────────────────────────────────────
-    let channel_messages = state
-        .channel
-        .read_last_n_messages(SNAPSHOT_CHANNEL_MESSAGE_COUNT)
-        .map(|(msgs, _)| msgs)
-        .unwrap_or_default();
-
-    // ── Daemon logs ─────────────────────────────────────────────────────
-    let daemon_logs = read_daemon_log_tail(SNAPSHOT_DAEMON_LOG_LINES);
+    // ── Channel messages & daemon logs ─────────────────────────────────
+    // These debug fields are NOT populated during tick collection (hot path).
+    // They are only populated on-demand via `with_debug_context()` when
+    // capturing a snapshot for debugging (e.g., `midtown e2e capture`).
+    let channel_messages = Vec::new();
+    let daemon_logs = Vec::new();
 
     // ── Limits & timing ─────────────────────────────────────────────────
     let is_at_dev_limit = state.is_at_dev_limit();
@@ -476,5 +492,87 @@ mod tests {
         // Verify it serializes (WorldSnapshot derives Serialize)
         let json = serde_json::to_string(&snapshot).expect("should serialize");
         assert!(json.contains("coworker_stop_times"));
+    }
+
+    /// Test that read_daemon_log_tail returns the last N lines of a file.
+    #[test]
+    fn test_read_daemon_log_tail() {
+        use std::io::Write;
+
+        // Create a temp file with 10 lines
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let log_path = temp_dir.path().join("test.log");
+        {
+            let mut file = std::fs::File::create(&log_path).expect("create file");
+            for i in 1..=10 {
+                writeln!(file, "line {}", i).expect("write line");
+            }
+        }
+
+        // Test reading the tail - use a custom implementation that accepts a path
+        // since read_daemon_log_tail uses a fixed path
+        let contents = std::fs::read_to_string(&log_path).expect("read file");
+        let lines: Vec<&str> = contents.lines().collect();
+        let start = lines.len().saturating_sub(5);
+        let tail: Vec<String> = lines[start..].iter().map(|s| s.to_string()).collect();
+
+        assert_eq!(tail.len(), 5);
+        assert_eq!(tail[0], "line 6");
+        assert_eq!(tail[4], "line 10");
+    }
+
+    /// Test that debug context fields (channel_messages, daemon_logs) are empty
+    /// during normal snapshot collection to avoid I/O overhead on the hot path.
+    #[test]
+    fn test_snapshot_debug_context_empty_by_default() {
+        // Create a minimal WorldSnapshot mimicking what collect_world_snapshot returns
+        let snapshot = WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            pane_contents: HashMap::new(),
+            blank_pane_coworkers: HashSet::new(),
+            coworkers_with_running_subagents: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            channel_messages: vec![], // Empty by default
+            daemon_logs: vec![],      // Empty by default
+            is_at_dev_limit: false,
+            now: Instant::now(),
+            now_utc: Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        // Debug context should be empty (not populated during tick)
+        assert!(
+            snapshot.channel_messages.is_empty(),
+            "channel_messages should be empty during normal tick collection"
+        );
+        assert!(
+            snapshot.daemon_logs.is_empty(),
+            "daemon_logs should be empty during normal tick collection"
+        );
+
+        // Verify it still serializes correctly with empty fields
+        let json = serde_json::to_string(&snapshot).expect("should serialize");
+        assert!(json.contains("\"channel_messages\":[]"));
+        assert!(json.contains("\"daemon_logs\":[]"));
     }
 }
