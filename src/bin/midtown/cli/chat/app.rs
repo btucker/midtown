@@ -152,6 +152,12 @@ pub struct App {
     current_tasks_cache: HashMap<String, String>,
     /// Hash of task state used to detect when cache needs rebuilding
     tasks_cache_hash: u64,
+    /// Whether user intentionally scrolled to view oldest messages (Home/g key).
+    /// This flag distinguishes intentional "view top of history" from scroll_offset
+    /// exceeding max_scroll due to visible_height changes (e.g., kanban resizing).
+    /// When true AND at max_scroll, line truncation shows oldest content.
+    /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
+    intentionally_at_top: bool,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -194,6 +200,7 @@ impl App {
             user_display_name: midtown::config::get_user_display_name(),
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
+            intentionally_at_top: false,
         };
 
         // Initial load
@@ -416,6 +423,10 @@ impl App {
         if self.scroll_offset < max_scroll {
             self.scroll_offset += 1;
         }
+        // Mark as intentionally at top if we've scrolled to max
+        if self.scroll_offset >= max_scroll {
+            self.intentionally_at_top = true;
+        }
         self.maybe_load_more_history();
     }
 
@@ -423,6 +434,8 @@ impl App {
     pub fn scroll_down(&mut self) {
         if self.scroll_offset > 0 {
             self.scroll_offset -= 1;
+            // No longer at top when scrolling down
+            self.intentionally_at_top = false;
         }
     }
 
@@ -431,6 +444,10 @@ impl App {
         let page_size = self.visible_height.saturating_sub(2);
         let max_scroll = self.max_scroll();
         self.scroll_offset = (self.scroll_offset + page_size).min(max_scroll);
+        // Mark as intentionally at top if we've paged to max
+        if self.scroll_offset >= max_scroll {
+            self.intentionally_at_top = true;
+        }
         self.maybe_load_more_history();
     }
 
@@ -438,17 +455,21 @@ impl App {
     pub fn page_down(&mut self) {
         let page_size = self.visible_height.saturating_sub(2);
         self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
+        // No longer at top when paging down
+        self.intentionally_at_top = false;
     }
 
     /// Scroll to top (oldest messages)
     pub fn scroll_to_top(&mut self) {
         self.scroll_offset = self.max_scroll();
+        self.intentionally_at_top = true;
         self.maybe_load_more_history();
     }
 
     /// Scroll to bottom (newest messages)
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
+        self.intentionally_at_top = false;
     }
 
     /// Toggle selection mode (disables mouse capture for text selection)
@@ -461,12 +482,37 @@ impl App {
         self.messages.len().saturating_sub(self.visible_height)
     }
 
-    /// Check if we're at the maximum scroll position (viewing oldest messages).
-    /// Used by the UI to determine line truncation strategy.
+    /// Clamp scroll_offset to valid bounds.
+    ///
+    /// This should be called after visible_height changes (e.g., when the kanban
+    /// board resizes) to prevent scroll_offset from exceeding max_scroll, which
+    /// could cause unexpected behavior in is_at_max_scroll().
+    ///
+    /// When clamping occurs, intentionally_at_top is cleared because the user
+    /// didn't explicitly scroll to the new position.
+    pub fn clamp_scroll_offset(&mut self) {
+        let max = self.max_scroll();
+        if self.scroll_offset > max {
+            self.scroll_offset = max;
+            // Clear intentional flag since we're being forced to a new position
+            self.intentionally_at_top = false;
+        }
+    }
+
+    /// Check if we're intentionally viewing oldest messages (user scrolled to top).
+    ///
+    /// Used by the UI to determine line truncation strategy:
+    /// - When true: show FIRST N lines (oldest content at top of visible area)
+    /// - When false: show LAST N lines (smooth scrolling, current view at bottom)
+    ///
+    /// This distinguishes intentional "view history from beginning" (Home/g key)
+    /// from scroll_offset accidentally exceeding max_scroll due to visible_height
+    /// changes (e.g., kanban board resizing).
     pub fn is_at_max_scroll(&self) -> bool {
         let max = self.max_scroll();
-        // At max scroll when scroll_offset >= max and we're actually scrolled
-        max > 0 && self.scroll_offset >= max
+        // Only consider "at max" if user intentionally scrolled there
+        // AND we're actually at or beyond max scroll position
+        max > 0 && self.intentionally_at_top && self.scroll_offset >= max
     }
 
     /// Check if user is near the top of loaded messages
@@ -1329,6 +1375,7 @@ mod tests {
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
+            intentionally_at_top: false,
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -1376,6 +1423,7 @@ mod tests {
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
+            intentionally_at_top: false,
         };
 
         let visible = app.visible_messages();
@@ -1521,6 +1569,7 @@ mod tests {
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
+            intentionally_at_top: false,
         };
 
         // At bottom (scroll_offset=0): not at max scroll
@@ -1536,15 +1585,193 @@ mod tests {
             "scroll_offset=40 should not be at max"
         );
 
-        // At max scroll (100 - 20 = 80): should be at max
+        // At max scroll position but NOT intentionally - should NOT be considered at max
+        // This is the key behavior change: scroll_offset >= max is not enough,
+        // we must have intentionally scrolled there
         app.scroll_offset = 80;
-        assert!(app.is_at_max_scroll(), "scroll_offset=80 should be at max");
+        assert!(
+            !app.is_at_max_scroll(),
+            "scroll_offset=80 without intentionally_at_top should NOT be at max"
+        );
 
-        // Beyond max scroll: should still be considered at max
-        app.scroll_offset = 85;
+        // Use scroll_to_top() to INTENTIONALLY scroll to max
+        app.scroll_to_top();
         assert!(
             app.is_at_max_scroll(),
-            "scroll_offset=85 (beyond max) should be at max"
+            "After scroll_to_top(), should be at max"
+        );
+
+        // Beyond max scroll with intentional flag: should still be considered at max
+        app.scroll_offset = 85;
+        app.intentionally_at_top = true;
+        assert!(
+            app.is_at_max_scroll(),
+            "scroll_offset=85 (beyond max) with intentional flag should be at max"
+        );
+
+        // Scrolling down clears the intentional flag
+        app.scroll_down();
+        assert!(
+            !app.is_at_max_scroll(),
+            "After scroll_down, should no longer be at max"
+        );
+    }
+
+    #[test]
+    fn test_visible_height_increase_should_not_trigger_max_scroll() {
+        use std::time::Instant;
+
+        // BUG REPRODUCTION: When visible_height increases (e.g., kanban shrinks),
+        // a previously mid-scroll position can suddenly become "at max scroll",
+        // causing the display to jump to showing oldest messages.
+        //
+        // Scenario:
+        // - 100 messages, visible_height=20, user scrolled to offset=50 (middle)
+        // - max_scroll = 100 - 20 = 80, so scroll_offset=50 < 80, NOT at max
+        // - Kanban shrinks, visible_height increases to 60
+        // - max_scroll = 100 - 60 = 40, now scroll_offset=50 >= 40, AT MAX!
+        // - Display suddenly shows oldest messages instead of middle
+
+        let messages: VecDeque<Message> = (0..100)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "test".to_string(),
+                content: format!("message {}", i),
+                timestamp: chrono::Utc::now(),
+                message_type: midtown::MessageType::Text,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            scroll_offset: 50, // User scrolled to middle
+            visible_height: 20,
+            channel: None,
+            initial_load_done: true,
+            history_start_position: 0,
+            history_fully_loaded: true,
+            tasks: Vec::new(),
+            prs: Vec::new(),
+            merged_prs: Vec::new(),
+            repo_name: "test".to_string(),
+            kanban_last_refresh: Instant::now(),
+            kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
+            repo_status_last_refresh: Instant::now(),
+            repo_status_receiver: None,
+            selection_mode: false,
+            user_display_name: None,
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
+            intentionally_at_top: false,
+        };
+
+        // Verify initial state: NOT at max scroll
+        assert!(
+            !app.is_at_max_scroll(),
+            "scroll_offset=50 with visible_height=20 should NOT be at max (max=80)"
+        );
+
+        // Simulate kanban shrinking: visible_height increases from 20 to 60
+        app.visible_height = 60;
+
+        // BUG: After this change, is_at_max_scroll would return TRUE because
+        // scroll_offset=50 >= max_scroll=40. This causes the display to jump
+        // to showing oldest messages.
+        //
+        // FIX: After updating visible_height, clamp scroll_offset to stay within
+        // valid bounds, preventing unexpected "at max scroll" state.
+        app.clamp_scroll_offset();
+
+        // After the fix, we should NOT be at max scroll
+        // (scroll_offset should be clamped to max, and is_at_max_scroll should
+        // only return true when we're intentionally viewing the oldest messages)
+        assert!(
+            !app.is_at_max_scroll(),
+            "After visible_height increase and clamping, should NOT suddenly be at max scroll"
+        );
+
+        // The scroll_offset should be clamped to max_scroll
+        assert_eq!(
+            app.scroll_offset, 40,
+            "scroll_offset should be clamped to max_scroll"
+        );
+    }
+
+    #[test]
+    fn test_incremental_scroll_up_to_top_sets_intentionally_at_top() {
+        use std::time::Instant;
+
+        // Verify that scrolling up incrementally (not via scroll_to_top) still
+        // sets intentionally_at_top when reaching max_scroll.
+        let messages: VecDeque<Message> = (0..20)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "test".to_string(),
+                content: format!("message {}", i),
+                timestamp: chrono::Utc::now(),
+                message_type: midtown::MessageType::Text,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            scroll_offset: 0, // Start at bottom (newest)
+            visible_height: 10,
+            channel: None,
+            initial_load_done: true,
+            history_start_position: 0,
+            history_fully_loaded: true,
+            tasks: Vec::new(),
+            prs: Vec::new(),
+            merged_prs: Vec::new(),
+            repo_name: "test".to_string(),
+            kanban_last_refresh: Instant::now(),
+            kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
+            repo_status_last_refresh: Instant::now(),
+            repo_status_receiver: None,
+            selection_mode: false,
+            user_display_name: None,
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
+            intentionally_at_top: false,
+        };
+
+        // max_scroll = 20 - 10 = 10
+        assert_eq!(app.max_scroll(), 10);
+        assert!(!app.is_at_max_scroll(), "Should not be at max initially");
+
+        // Scroll up incrementally until we reach max
+        for _ in 0..10 {
+            app.scroll_up();
+        }
+
+        // Should now be at max scroll
+        assert_eq!(app.scroll_offset, 10);
+        assert!(
+            app.is_at_max_scroll(),
+            "Incremental scroll_up to max should set intentionally_at_top"
+        );
+
+        // Reset and test page_up
+        app.scroll_offset = 0;
+        app.intentionally_at_top = false;
+        assert!(!app.is_at_max_scroll());
+
+        // Page up should also set the flag when reaching max
+        app.page_up(); // page_size = 10 - 2 = 8, so scroll_offset = 8
+        assert!(
+            !app.is_at_max_scroll(),
+            "First page_up should not reach max"
+        );
+
+        app.page_up(); // scroll_offset = min(8 + 8, 10) = 10
+        assert!(
+            app.is_at_max_scroll(),
+            "page_up to max should set intentionally_at_top"
         );
     }
 }
