@@ -550,9 +550,11 @@ pub(crate) fn decide_stuck_coworker_restarts(
             continue;
         }
 
-        // CRITICAL: Only consider stuck if showing activity indicators.
-        // A frozen pane without activity indicators = idle/waiting, not stuck.
-        if !has_running_subagent(content) {
+        // CRITICAL: Skip if coworker has running subagents.
+        // The pane will be frozen while waiting for Task agents to complete,
+        // which is normal behavior — not stuck. Only consider stuck if the
+        // pane is frozen AND there are NO running subagents (true hang).
+        if has_running_subagent(content) {
             continue;
         }
 
@@ -3543,46 +3545,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn stuck_detection_requires_activity_indicators() {
-        // Coworker with frozen pane but NO activity indicator should NOT be restarted.
-        // This is the key behavioral change: we only restart if showing activity.
-        let mut pane_hashes = HashMap::new();
-        let now = Instant::now();
-        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
-
-        // Simulate a coworker whose pane hasn't changed
-        pane_hashes.insert("riverside".to_string(), (12345u64, old_time));
-
-        // Idle pane content - no activity indicators
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert(
-            "riverside".to_string(),
-            "Waiting for input. No tasks assigned.".to_string(),
-        );
-
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix bug".to_string(),
-            "riverside".to_string(),
-        )];
-
-        let result = decide_stuck_coworker_restarts(
-            &pane_hashes,
-            &pane_contents,
-            &tasks,
-            now,
-            Duration::from_secs(180), // 3 minute stuck duration
-        );
-
-        assert!(
-            result.restarts.is_empty(),
-            "idle coworker without activity indicators should NOT be restarted"
-        );
-    }
-
-    #[test]
-    fn stuck_detection_triggers_with_activity_indicators() {
-        // Coworker with frozen pane AND activity indicator SHOULD be restarted.
+    fn stuck_detection_skips_coworkers_with_running_subagents() {
+        // Coworker with running subagents should be PROTECTED from stuck detection.
+        // The pane is frozen because it's waiting for Task agents to complete,
+        // which is normal behavior, not stuck.
         let mut pane_hashes = HashMap::new();
         let now = Instant::now();
         let old_time = now - Duration::from_secs(400); // 6+ minutes ago
@@ -3599,7 +3565,7 @@ mod tests {
         active_content.hash(&mut hasher);
         let content_hash = hasher.finish();
 
-        // Set old hash to same value (pane unchanged)
+        // Set old hash to same value (pane unchanged for 6+ minutes)
         pane_hashes.insert("broadway".to_string(), (content_hash, old_time));
 
         let mut pane_contents = HashMap::new();
@@ -3619,12 +3585,59 @@ mod tests {
             Duration::from_secs(180), // 3 minute stuck duration
         );
 
+        assert!(
+            result.restarts.is_empty(),
+            "coworker with running subagents should be PROTECTED from stuck detection"
+        );
+    }
+
+    #[test]
+    fn stuck_detection_triggers_for_frozen_pane_without_subagents() {
+        // Coworker with frozen pane AND no activity indicators = truly stuck.
+        // This could be a hung Claude Code process that needs restart.
+        let mut pane_hashes = HashMap::new();
+        let now = Instant::now();
+        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
+
+        // Pane content showing it's working but no subagent indicator
+        // (e.g., Claude Code froze mid-thinking)
+        let stuck_content = r#"
+⏺ Working on task #42
+
+Reading files...
+"#;
+
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        stuck_content.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Set old hash to same value (pane unchanged)
+        pane_hashes.insert("riverside".to_string(), (content_hash, old_time));
+
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("riverside".to_string(), stuck_content.to_string());
+
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "riverside".to_string(),
+        )];
+
+        let result = decide_stuck_coworker_restarts(
+            &pane_hashes,
+            &pane_contents,
+            &tasks,
+            now,
+            Duration::from_secs(180), // 3 minute stuck duration
+        );
+
         assert_eq!(
             result.restarts.len(),
             1,
-            "coworker with activity indicator AND frozen pane SHOULD be restarted"
+            "coworker with frozen pane and NO subagents SHOULD be restarted"
         );
-        assert_eq!(result.restarts[0].name, "broadway");
+        assert_eq!(result.restarts[0].name, "riverside");
     }
 
     // -----------------------------------------------------------------------
