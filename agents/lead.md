@@ -236,3 +236,4 @@ When creating tasks, prefer combining tightly coupled work into a single task ra
 - Always save plans to `~/.claude/plans/`
 - Use descriptive filenames: `YYYY-MM-DD-<topic>.md`
 - Plans persist across sessions and are shared with coworkers
+- **After writing a plan, create tasks from it** — don't offer "subagent execution" or "parallel session" options. In midtown, work is delegated to coworkers via tasks, not executed via subagents in the Lead's session.
