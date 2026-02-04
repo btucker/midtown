@@ -1016,16 +1016,74 @@ impl CoworkerManager {
         Ok(name.to_string())
     }
 
-    /// Sync state with actual tmux windows.
+    /// Sync state with actual tmux windows (bidirectional).
     ///
-    /// Removes coworkers whose tmux windows no longer exist.
+    /// 1. Removes coworkers whose tmux windows no longer exist.
+    /// 2. Adds coworkers whose tmux windows exist but aren't tracked.
+    ///
+    /// The second case handles coworkers that were missed during startup discovery
+    /// (e.g., due to timing issues or transient tmux failures). Without this,
+    /// orphan cleanup would incorrectly delete worktrees for running coworkers.
     pub fn sync_with_tmux(&self) -> crate::Result<()> {
         let active_windows = tmux::list_windows(&self.session_name)?;
+
+        // Get all known coworker names for validation
+        let all_names: std::collections::HashSet<&str> = AVENUE_NAMES
+            .iter()
+            .chain(OVERFLOW_NAMES.iter())
+            .copied()
+            .collect();
 
         let mut coworkers = self.coworkers.write().unwrap();
 
         // Remove coworkers whose windows are gone
         coworkers.retain(|name, _| active_windows.contains(name));
+
+        // Add coworkers whose windows exist but aren't tracked.
+        // This prevents orphan cleanup from deleting worktrees for coworkers
+        // that were missed during startup discovery.
+        for window_name in &active_windows {
+            // Only track windows that are valid coworker names
+            if !all_names.contains(window_name.as_str()) {
+                continue;
+            }
+
+            // Skip if already tracked
+            if coworkers.contains_key(window_name) {
+                continue;
+            }
+
+            // Verify the worktree actually exists and is valid before tracking.
+            // If a tmux window exists but its worktree was deleted, we shouldn't
+            // create an entry with an invalid working_dir path.
+            let worktree_path = self.worktree_manager.worktree_path(window_name);
+            if !is_valid_git_worktree(&worktree_path) {
+                tracing::warn!(
+                    "Tmux window {} exists but worktree is missing or invalid - not tracking",
+                    window_name
+                );
+                continue;
+            }
+
+            let working_dir = worktree_path.to_string_lossy().to_string();
+
+            // Create a coworker entry for this undiscovered coworker
+            let coworker = Coworker {
+                name: window_name.clone(),
+                status: CoworkerStatus::Running,
+                working_dir,
+                started_at: chrono::Utc::now(), // Unknown, use now as approximation
+                current_task: None,             // Will be discovered via task tracking
+                session_id: None,               // Will be set when coworker registers
+                isolated_tasks: false,          // Assume shared task list (conservative default)
+            };
+
+            coworkers.insert(window_name.clone(), coworker);
+            tracing::info!(
+                "Recovered undiscovered coworker from tmux: {} (preventing worktree deletion)",
+                window_name
+            );
+        }
 
         Ok(())
     }
