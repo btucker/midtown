@@ -11,10 +11,17 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 
 use crate::coworker::Coworker;
+use crate::message::Message;
 use crate::rules::CoworkerSnapshot;
 use crate::tasks::Task;
 
 use super::DaemonState;
+
+/// Number of recent channel messages to include in WorldSnapshot captures.
+const SNAPSHOT_CHANNEL_MESSAGE_COUNT: usize = 50;
+
+/// Number of recent daemon log lines to include in WorldSnapshot captures.
+const SNAPSHOT_DAEMON_LOG_LINES: usize = 100;
 
 /// Immutable snapshot of the daemon's world, collected once per tick.
 ///
@@ -100,6 +107,16 @@ pub struct WorldSnapshot {
     /// and task assignment until the limit expires.
     pub usage_limited_coworkers: HashSet<String>,
 
+    // ── Channel messages ─────────────────────────────────────────────────
+    /// Recent channel messages for debugging context.
+    /// Includes the last N messages from the channel log.
+    pub channel_messages: Vec<Message>,
+
+    // ── Daemon logs ──────────────────────────────────────────────────────
+    /// Recent daemon log lines for debugging context.
+    /// Includes the last N lines from the daemon.log file.
+    pub daemon_logs: Vec<String>,
+
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the dev coworker limit.
     pub is_at_dev_limit: bool,
@@ -110,6 +127,22 @@ pub struct WorldSnapshot {
     pub now_utc: DateTime<Utc>,
     /// Repository name.
     pub repo_name: String,
+}
+
+/// Read the last N lines from the daemon log file.
+///
+/// Uses a simple approach: reads the file and takes the last N lines.
+/// Returns an empty vector if the file doesn't exist or can't be read.
+fn read_daemon_log_tail(num_lines: usize) -> Vec<String> {
+    let log_path = crate::paths::daemon_log_file();
+    match std::fs::read_to_string(&log_path) {
+        Ok(contents) => {
+            let lines: Vec<&str> = contents.lines().collect();
+            let start = lines.len().saturating_sub(num_lines);
+            lines[start..].iter().map(|s| s.to_string()).collect()
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Collect a full world snapshot from the daemon state.
@@ -266,6 +299,16 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
+    // ── Channel messages ────────────────────────────────────────────────
+    let channel_messages = state
+        .channel
+        .read_last_n_messages(SNAPSHOT_CHANNEL_MESSAGE_COUNT)
+        .map(|(msgs, _)| msgs)
+        .unwrap_or_default();
+
+    // ── Daemon logs ─────────────────────────────────────────────────────
+    let daemon_logs = read_daemon_log_tail(SNAPSHOT_DAEMON_LOG_LINES);
+
     // ── Limits & timing ─────────────────────────────────────────────────
     let is_at_dev_limit = state.is_at_dev_limit();
     let now = Instant::now();
@@ -298,6 +341,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
         usage_limited_coworkers,
+        channel_messages,
+        daemon_logs,
         is_at_dev_limit,
         now,
         now_utc,
@@ -415,6 +460,8 @@ mod tests {
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
             is_at_dev_limit: false,
             now: Instant::now(),
             now_utc: Utc::now(),

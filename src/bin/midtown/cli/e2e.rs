@@ -216,6 +216,16 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
+    let channel_message_count = snapshot
+        .get("channel_messages")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let daemon_log_count = snapshot
+        .get("daemon_logs")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
 
     println!("Captured WorldSnapshot to: {}", path.display());
     println!();
@@ -223,6 +233,8 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
     println!("  Active coworkers: {}", coworker_count);
     println!("  Pane contents: {}", pane_count);
     println!("  Tasks: {}", task_count);
+    println!("  Channel messages: {}", channel_message_count);
+    println!("  Daemon log lines: {}", daemon_log_count);
     println!("  File size: {} bytes", content.len());
     println!();
     println!("Use this fixture in tests by loading from:");
