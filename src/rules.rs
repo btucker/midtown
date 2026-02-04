@@ -675,8 +675,12 @@ fn has_active_compaction_verb(line: &str) -> bool {
 /// Active compaction has BOTH the verb AND "esc to interrupt" on the same line.
 /// This distinguishes actual compaction from compaction verbs appearing in
 /// displayed code (comments, strings, etc.).
+///
+/// Case-insensitive matching for "esc to interrupt" handles both "esc" and "Esc"
+/// variants that Claude Code may output.
 fn is_active_compaction_line(line: &str) -> bool {
-    has_active_compaction_verb(line) && line.contains("esc to interrupt")
+    let line_lower = line.to_lowercase();
+    has_active_compaction_verb(line) && line_lower.contains("esc to interrupt")
 }
 
 /// Check if a line is a completed compaction status line.
@@ -738,9 +742,14 @@ fn parse_sauteed_duration(line: &str) -> Option<Duration> {
 ///
 /// Expected format: `(esc to interrupt · 18m 50s · ↓ 0 tokens)`
 /// Returns the parsed duration, or None if the format doesn't match.
+///
+/// Case-insensitive matching for "esc to interrupt" handles both "esc" and "Esc"
+/// variants that Claude Code may output.
 fn parse_compaction_duration(line: &str) -> Option<Duration> {
-    // Look for the pattern "· Xm Ys ·" after "esc to interrupt"
-    let after_esc = line.split("esc to interrupt").nth(1)?;
+    // Look for the pattern "· Xm Ys ·" after "esc to interrupt" (case-insensitive)
+    let line_lower = line.to_lowercase();
+    let split_pos = line_lower.find("esc to interrupt")?;
+    let after_esc = &line[split_pos + "esc to interrupt".len()..];
 
     let mut total_secs: u64 = 0;
     let mut found_time = false;
@@ -2550,6 +2559,39 @@ mod tests {
     }
 
     #[test]
+    fn compaction_detected_with_capital_esc() {
+        // Task #36: Claude Code may output "Esc to interrupt" (capital E) instead of
+        // "esc to interrupt" (lowercase). Detection should be case-insensitive.
+        let mut panes = HashMap::new();
+        // Real Claude Code output uses capital E in "Esc to interrupt"
+        panes.insert(
+            "park".to_string(),
+            "✶ Whirlpooling… (Esc to interrupt · 6m 30s · ↓ 0 tokens)\n".to_string(),
+        );
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert_eq!(
+            stuck,
+            vec!["park"],
+            "compaction detection should be case-insensitive for 'Esc to interrupt'"
+        );
+    }
+
+    #[test]
+    fn parse_compaction_duration_case_insensitive() {
+        // Task #36: Duration parsing should handle both "esc" and "Esc" variants
+        assert_eq!(
+            parse_compaction_duration("  (Esc to interrupt · 10m 00s · ↓ 0 tokens)"),
+            Some(Duration::from_secs(600)),
+            "duration parsing should work with capital 'Esc'"
+        );
+        assert_eq!(
+            parse_compaction_duration("  (ESC TO INTERRUPT · 5m 30s · ↓ 0 tokens)"),
+            Some(Duration::from_secs(330)),
+            "duration parsing should work with uppercase 'ESC TO INTERRUPT'"
+        );
+    }
+
+    #[test]
     fn queued_prompt_detected_with_nudge_messages() {
         // Realistic TUI: queued nudge between action line and input separator
         let mut panes = HashMap::new();
@@ -3429,6 +3471,31 @@ mod tests {
         assert!(
             stuck.is_empty(),
             "snapshot should have no compaction detections, but found: {:?}",
+            stuck
+        );
+    }
+
+    #[test]
+    fn snapshot_20260204_175139_compaction_investigation_no_false_positives() {
+        // Task #36: This snapshot was captured while investigating compaction false positives.
+        // The pane content includes "✻ Investigating stuck compaction false positives…"
+        // which has the ✻ marker but is NOT actual compaction (no "Sautéed for" text).
+        // The detection logic should correctly ignore this.
+        let fixture = include_str!(
+            "../tests/fixtures/snapshot/snapshot-compaction-investigation-20260204-175139.json"
+        );
+        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
+
+        let mut panes: HashMap<String, String> = HashMap::new();
+        for (name, content) in pane_contents {
+            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
+        }
+
+        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
+        assert!(
+            stuck.is_empty(),
+            "snapshot should have no compaction detections (task status lines with ✻ are not compaction), but found: {:?}",
             stuck
         );
     }
