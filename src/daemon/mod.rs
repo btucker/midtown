@@ -292,6 +292,10 @@ struct PrCoworkerCache {
     /// Count of open PRs that need review (not draft, no Claude review, no formal review).
     /// Updated every PR poll tick. Used to prioritize PR reviews over new task pickup.
     prs_needing_review: usize,
+    /// Whether the first PR poll has completed. Used to delay orphan worktree
+    /// flagging until we have PR data - otherwise we'd incorrectly flag worktrees
+    /// with open PRs during startup when the cache is empty.
+    pr_poll_initialized: bool,
 }
 
 impl PrCoworkerCache {
@@ -302,6 +306,7 @@ impl PrCoworkerCache {
             merged_pr_branches: HashSet::new(),
             ci_passed_pr_owners: HashSet::new(),
             prs_needing_review: 0,
+            pr_poll_initialized: false,
         }
     }
 }
