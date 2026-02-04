@@ -196,9 +196,10 @@ pub fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
 /// Check if a PR has a positive review comment from a non-owner coworker.
 ///
 /// A positive review comment must:
-/// 1. Have a coworker review signature (frontmatter or header)
-/// 2. NOT be from the PR owner (determined by branch prefix vs frontmatter)
-/// 3. Contain positive language ("No issues found", "LGTM") without issues
+/// 1. Have a coworker review signature (frontmatter, header, or "Reviewed by")
+/// 2. Have a valid coworker identity (validated against COWORKER_NAMES)
+/// 3. NOT be from the PR owner (determined by branch prefix vs extracted name)
+/// 4. Contain positive language ("No issues found", "LGTM") without issues
 fn has_positive_review_comment(pr: &serde_json::Value) -> bool {
     let comments = match pr.get("comments").and_then(|c| c.as_array()) {
         Some(c) => c,
@@ -217,19 +218,22 @@ fn has_positive_review_comment(pr: &serde_json::Value) -> bool {
             continue;
         }
 
+        // Extract reviewer identity from all possible sources
+        // Must have at least one valid coworker name to verify it's not a self-review
+        let reviewer = coworker_from_frontmatter(body)
+            .or_else(|| extract_reviewer_from_header(body))
+            .or_else(|| extract_reviewer_from_signature(body));
+
+        // Require valid coworker identity (reject unknown reviewers)
+        let Some(reviewer_name) = reviewer else {
+            continue;
+        };
+
         // Must NOT be from the PR owner (self-review not allowed)
-        if let Some(ref owner) = pr_owner {
-            if let Some(commenter) = coworker_from_frontmatter(body)
-                && commenter.eq_ignore_ascii_case(owner)
-            {
-                continue; // Skip self-reviews
-            }
-            // Also check "## Code Review by <name>" header
-            if let Some(reviewer) = extract_reviewer_from_header(body)
-                && reviewer.eq_ignore_ascii_case(owner)
-            {
-                continue; // Skip self-reviews
-            }
+        if let Some(ref owner) = pr_owner
+            && reviewer_name.eq_ignore_ascii_case(owner)
+        {
+            continue; // Skip self-reviews
         }
 
         // Check for positive review indicators
@@ -242,15 +246,46 @@ fn has_positive_review_comment(pr: &serde_json::Value) -> bool {
 }
 
 /// Extract reviewer name from "## Code Review by <name>" header.
-fn extract_reviewer_from_header(body: &str) -> Option<&str> {
+///
+/// Only returns valid coworker names (validated against COWORKER_NAMES).
+fn extract_reviewer_from_header(body: &str) -> Option<&'static str> {
     let marker = "## Code Review by ";
     if let Some(idx) = body.find(marker) {
         let after = &body[idx + marker.len()..];
         // Take until newline or end of string
         let name_end = after.find('\n').unwrap_or(after.len());
         let name = after[..name_end].trim();
-        if !name.is_empty() {
-            return Some(name);
+
+        // Validate against COWORKER_NAMES (consistent with coworker_from_frontmatter)
+        return COWORKER_NAMES
+            .iter()
+            .find(|&&n| n.eq_ignore_ascii_case(name))
+            .copied();
+    }
+    None
+}
+
+/// Extract reviewer name from "Reviewed by <name>" or "🤖 Reviewed by <name>" signature.
+///
+/// Only returns valid coworker names (validated against COWORKER_NAMES).
+fn extract_reviewer_from_signature(body: &str) -> Option<&'static str> {
+    // Try emoji version first, then plain version
+    for marker in ["🤖 Reviewed by ", "Reviewed by "] {
+        if let Some(idx) = body.find(marker) {
+            let after = &body[idx + marker.len()..];
+            // Take until newline, end of string, or non-alphanumeric
+            let name_end = after
+                .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                .unwrap_or(after.len());
+            let name = after[..name_end].trim();
+
+            // Validate against COWORKER_NAMES
+            if let Some(coworker) = COWORKER_NAMES
+                .iter()
+                .find(|&&n| n.eq_ignore_ascii_case(name))
+            {
+                return Some(*coworker);
+            }
         }
     }
     None
@@ -789,6 +824,53 @@ mod tests {
         assert!(
             !is_auto_mergeable(&pr),
             "non-review comments should not trigger auto-merge"
+        );
+    }
+
+    #[test]
+    fn auto_merge_rejects_non_coworker_reviewer_name() {
+        // "## Code Review by dependabot" should not trigger auto-merge
+        // because "dependabot" is not in COWORKER_NAMES
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "headRefName": "lexington/fix-auth",
+            "comments": [
+                {
+                    "author": {"login": "dependabot"},
+                    "body": "## Code Review by dependabot\n\nLGTM! All dependencies look good."
+                }
+            ]
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "non-coworker reviewer names should not trigger auto-merge"
+        );
+    }
+
+    #[test]
+    fn auto_merge_rejects_self_review_via_reviewed_by_signature() {
+        // "🤖 Reviewed by lexington" should be rejected as self-review
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "headRefName": "lexington/fix-auth",
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "🤖 Reviewed by lexington\n\nNo issues found."
+                }
+            ]
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "self-review via 'Reviewed by' signature should not trigger auto-merge"
         );
     }
 
