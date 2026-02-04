@@ -615,7 +615,7 @@ fn test_daemon_channel_post_endpoint() {
 /// storage. Each task should have id, subject, status, and assignee fields.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_status_returns_tasks_array() {
+fn test_daemon_rpc_status_returns_tasks_array() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return, // Skip silently if fixture creation fails
@@ -678,7 +678,7 @@ fn rpc_status_returns_tasks_array() {
 /// needed by clients (CLI, web UI) to display daemon state.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_status_returns_complete_daemon_state() {
+fn test_daemon_rpc_status_returns_complete_daemon_state() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
@@ -752,7 +752,7 @@ fn rpc_status_returns_complete_daemon_state() {
 /// Each coworker entry should have name, status, current_task, and started_at.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_coworker_list_returns_expected_structure() {
+fn test_daemon_rpc_coworker_list_returns_expected_structure() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
@@ -816,7 +816,7 @@ fn rpc_coworker_list_returns_expected_structure() {
 /// captures, which can be used for debugging and coworker view.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_snapshot_returns_pane_contents() {
+fn test_daemon_rpc_snapshot_returns_pane_contents() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
@@ -872,7 +872,7 @@ fn rpc_snapshot_returns_pane_contents() {
 /// from, message, and timestamp fields.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_channel_read_returns_messages() {
+fn test_daemon_rpc_channel_read_returns_messages() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
@@ -945,7 +945,7 @@ fn rpc_channel_read_returns_messages() {
 /// create a reminder, list it, then cancel it.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_reminder_lifecycle() {
+fn test_daemon_rpc_reminder_lifecycle() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
@@ -988,8 +988,13 @@ fn rpc_reminder_lifecycle() {
     );
 
     // Extract the ID from the message (format: "Reminder set (id: abc123): ...")
-    let id_start = message.find("(id: ").expect("Message should contain ID") + 5;
-    let id_end = message[id_start..].find(')').expect("ID should end with )");
+    let id_start = message
+        .find("(id: ")
+        .unwrap_or_else(|| panic!("Expected '(id: ' in message but got: {}", message))
+        + 5;
+    let id_end = message[id_start..]
+        .find(')')
+        .unwrap_or_else(|| panic!("Expected ')' after ID in message: {}", message));
     let reminder_id = &message[id_start..id_start + id_end];
 
     // List reminders - should include our new one
@@ -1061,7 +1066,7 @@ fn rpc_reminder_lifecycle() {
 /// including open PRs, merged PRs, and repository information.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_kanban_data_returns_structure() {
+fn test_daemon_rpc_kanban_data_returns_structure() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
@@ -1108,13 +1113,13 @@ fn rpc_kanban_data_returns_structure() {
     );
 }
 
-/// Test that coworker.spawn returns proper error when at limit.
+/// Test that coworker.spawn returns a valid JSON-RPC response.
 ///
-/// When max_coworkers is reached, spawn should return a clear error
-/// rather than silently failing or hanging.
+/// In test environment without tmux, spawn will fail, but should return
+/// a proper JSON-RPC error response rather than hanging or crashing.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_coworker_spawn_at_limit_returns_error() {
+fn test_daemon_rpc_coworker_spawn_returns_response() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
@@ -1124,8 +1129,8 @@ fn rpc_coworker_spawn_at_limit_returns_error() {
         return;
     }
 
-    // In test environment, we don't have tmux set up so spawn will fail
-    // The important thing is that it returns a proper error response
+    // In test environment without tmux, spawn will fail
+    // We verify it returns a proper JSON-RPC response (not hang/crash)
     let response = fixture.rpc_call("coworker.spawn", Some(serde_json::json!({})));
     assert!(
         response.is_some(),
@@ -1133,12 +1138,24 @@ fn rpc_coworker_spawn_at_limit_returns_error() {
     );
 
     let response = response.unwrap();
-    // Either it succeeds (unlikely in test env) or returns a proper error
-    // We're testing that it doesn't hang or crash
-    assert!(
-        response["result"].is_object() || response["error"].is_object(),
-        "coworker.spawn should return either result or error"
-    );
+    // Without tmux, we expect an error response
+    // Verify it's a proper JSON-RPC error with expected structure
+    if response["error"].is_object() {
+        assert!(
+            response["error"]["code"].is_number(),
+            "Error should have numeric code"
+        );
+        assert!(
+            response["error"]["message"].is_string(),
+            "Error should have message string"
+        );
+    } else {
+        // If somehow it succeeds, verify result structure
+        assert!(
+            response["result"].is_object(),
+            "Success should return result object"
+        );
+    }
 }
 
 /// Test that RPCs with invalid params return proper errors.
@@ -1147,7 +1164,7 @@ fn rpc_coworker_spawn_at_limit_returns_error() {
 /// when called without required params.
 #[test]
 #[ignore] // Requires built binary
-fn rpc_invalid_params_returns_error() {
+fn test_daemon_rpc_invalid_params_returns_error() {
     let mut fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
