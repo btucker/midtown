@@ -1,8 +1,8 @@
-//! PR management — polling, auto-merge, reviewer spawning, comment nudging.
+//! PR management — polling, reviewer spawning, comment nudging.
 //!
 //! This module runs in the background to:
 //! - Poll open PRs for merge conflicts, CI failures, and review status
-//! - Auto-merge approved PRs with all checks passing
+//! - Nudge PR authors when approved (author-driven merge decisions)
 //! - Spawn reviewer coworkers for unreviewed PRs
 //! - Process pending review spawns from webhook-triggered delays
 //! - Nudge PR owners when their PR receives comments
@@ -706,7 +706,7 @@ async fn collect_stuck_condition_effects(
                 && tracker.should_nudge(&pr_id, StuckConditionType::MergeReady)
             {
                 let nudge = format!(
-                    "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — auto-merge may have failed",
+                    "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
                     pr_number,
                     truncate_str(title, 40),
                     stuck_duration.as_secs() / 60,

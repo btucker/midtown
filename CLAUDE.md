@@ -130,7 +130,7 @@ Webhooks handle real-time GitHub events. Polling runs at a relaxed cadence (~2 m
 | CI failure → notify owner | Webhook | Polling detects time-based stuck conditions |
 | Review comment → nudge owner | Webhook | Polling reconciles if missed |
 | Merge conflict → nudge owner | Polling | GitHub doesn't webhook this reliably |
-| Auto-merge eligibility | Polling | Time-based: approved + green + no conflicts |
+| Approved PR → nudge author | Polling | Author-driven merge decisions |
 | Stuck detection | Polling | Inherently time-based |
 
 ### Three Communication Paths, Distinct Purposes
