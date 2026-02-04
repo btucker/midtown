@@ -84,8 +84,6 @@ pub enum Effect {
         fired_ids: Vec<String>,
         repo_name: String,
     },
-    /// Auto-merge a PR using `gh pr merge --squash --auto`.
-    AutoMergePr { pr_number: u64, title: String },
     /// Record a PR issue nudge in the tracker (prevents repeated nudges).
     RecordPrNudge {
         pr_number: u64,
@@ -360,9 +358,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-            Effect::AutoMergePr { pr_number, title } => {
-                auto_merge_pr(state, pr_number, &title).await;
-            }
             Effect::RecordPrNudge {
                 pr_number,
                 issue_type,
@@ -423,57 +418,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-        }
-    }
-}
-
-/// Auto-merge a PR using `gh pr merge --squash`.
-///
-/// Posts a channel message on success or failure.
-async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
-    use super::helpers::truncate_str;
-
-    let output = match tokio::process::Command::new("gh")
-        .args(["pr", "merge", &pr_number.to_string(), "--squash", "--auto"])
-        .output()
-        .await
-    {
-        Ok(output) => output,
-        Err(e) => {
-            warn!("Failed to run gh pr merge for PR #{}: {}", pr_number, e);
-            return;
-        }
-    };
-
-    if output.status.success() {
-        info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
-        let msg = Message::new(
-            "midtown",
-            format!(
-                "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
-                pr_number,
-                truncate_str(title, 40)
-            ),
-            crate::message::MessageType::Text,
-        );
-        if let Err(e) = state.send_and_broadcast(&msg) {
-            warn!("Failed to post auto-merge message: {}", e);
-        }
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
-        let msg = Message::new(
-            "midtown",
-            format!(
-                "⚠️ Auto-merge failed for PR #{} ({}) — {}",
-                pr_number,
-                truncate_str(title, 40),
-                truncate_str(stderr.trim(), 80)
-            ),
-            crate::message::MessageType::Text,
-        );
-        if let Err(e) = state.send_and_broadcast(&msg) {
-            warn!("Failed to post auto-merge failure message: {}", e);
         }
     }
 }

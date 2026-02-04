@@ -159,7 +159,7 @@ When your task has a `blockedBy` dependency whose work is done but not yet merge
 Before starting your own work on a blocked task:
 1. **Check if the blocking task has an open PR** — read the channel (`midtown channel read`) to find the PR number for the blocking task
 2. **If the PR needs review, review it** — use the `/code-review:code-review <PR number>` skill to review and post a GitHub comment
-3. **Wait for the PR to merge** — once the PR is approved and CI is green, auto-merge will handle it. Read the channel to confirm it merged.
+3. **Wait for the PR to merge** — once approved with green CI, the author will merge (they'll be nudged). Read the channel to confirm it merged.
 4. **Pull main and start fresh** — after the dependency merges, update your branch from main before beginning your work:
    ```bash
    git fetch origin main
@@ -267,12 +267,12 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 **The daemon monitors your PR and will nudge you when:**
 - CI checks pass or fail on your PR
 - Your PR receives review comments
-- Your PR is merged (auto-merge happens when approved with passing CI)
+- Your PR is approved and ready to merge (you decide when to merge)
 
 **Don't poll for status:**
 - Don't run `gh pr checks` repeatedly to watch CI — wait for the daemon to notify you
 - Don't run `gh pr list` to check PR status — read the channel instead
-- Don't retry `gh pr merge` when waiting — the daemon handles auto-merge when PRs are ready
+- When approved with green CI, merge using `gh pr merge --auto` or `gh pr merge`
 
 **Using `gh` to investigate (after notification) is fine:**
 - `gh pr create` — creating your PR

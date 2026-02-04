@@ -1,8 +1,8 @@
-//! PR management — polling, auto-merge, reviewer spawning, comment nudging.
+//! PR management — polling, reviewer spawning, comment nudging.
 //!
 //! This module runs in the background to:
 //! - Poll open PRs for merge conflicts, CI failures, and review status
-//! - Auto-merge approved PRs with all checks passing
+//! - Nudge PR authors when approved (author-driven merge decisions)
 //! - Spawn reviewer coworkers for unreviewed PRs
 //! - Process pending review spawns from webhook-triggered delays
 //! - Nudge PR owners when their PR receives comments
@@ -330,25 +330,10 @@ pub(super) async fn poll_prs_for_issues(
                 continue;
             }
 
-            // For approved PRs with all checks passing, auto-merge instead of nudging
+            // Author-driven merge decisions: Instead of auto-merging approved PRs,
+            // nudge the author so THEY can decide to merge. This keeps merge decisions
+            // with the agent who has full context of the PR and review feedback.
             use crate::rules::decide_pr_issue_action;
-            if issue_type == PrIssueType::Approved && is_auto_mergeable(pr) {
-                info!(
-                    "PR #{} ({}) is approved with all checks passing — auto-merging",
-                    pr_number, title
-                );
-                effects.push(Effect::AutoMergePr {
-                    pr_number,
-                    title: title.to_string(),
-                });
-                // Always record the cooldown, even on failure, to prevent
-                // retrying every poll interval (30s) for persistent failures.
-                effects.push(Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                });
-                continue;
-            }
 
             // Format the nudge message
             let message = format!(
@@ -721,7 +706,7 @@ async fn collect_stuck_condition_effects(
                 && tracker.should_nudge(&pr_id, StuckConditionType::MergeReady)
             {
                 let nudge = format!(
-                    "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — auto-merge may have failed",
+                    "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
                     pr_number,
                     truncate_str(title, 40),
                     stuck_duration.as_secs() / 60,
