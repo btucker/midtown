@@ -141,16 +141,22 @@ pub fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
 /// Check if a PR is eligible for daemon-assisted auto-merge.
 ///
 /// A PR is auto-mergeable when:
-/// - It has an `APPROVED` review decision
+/// - It has an `APPROVED` review decision OR a positive comment-based review
 /// - It has no CI failures
 /// - It has no merge conflicts (mergeable != "CONFLICTING")
 /// - All status checks have completed (no pending checks)
+///
+/// Comment-based reviews are recognized because formal GitHub approval is
+/// impossible when the same account (btucker) authors PRs and runs coworkers.
 pub fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
     let review_decision = pr
         .get("reviewDecision")
         .and_then(|r| r.as_str())
         .unwrap_or("");
-    if review_decision != "APPROVED" {
+
+    // Check for formal approval OR positive comment-based review
+    let has_approval = review_decision == "APPROVED" || has_positive_review_comment(pr);
+    if !has_approval {
         return false;
     }
 
@@ -185,6 +191,90 @@ pub fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
     }
 
     true
+}
+
+/// Check if a PR has a positive review comment from a non-owner coworker.
+///
+/// A positive review comment must:
+/// 1. Have a coworker review signature (frontmatter or header)
+/// 2. NOT be from the PR owner (determined by branch prefix vs frontmatter)
+/// 3. Contain positive language ("No issues found", "LGTM") without issues
+fn has_positive_review_comment(pr: &serde_json::Value) -> bool {
+    let comments = match pr.get("comments").and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    // Get the PR owner from branch prefix (e.g., "lexington/fix-auth" -> "lexington")
+    let branch = pr.get("headRefName").and_then(|h| h.as_str()).unwrap_or("");
+    let pr_owner = coworker_from_branch(branch);
+
+    for comment in comments {
+        let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
+
+        // Must have a coworker review signature
+        if !text_contains_review_signature(body) {
+            continue;
+        }
+
+        // Must NOT be from the PR owner (self-review not allowed)
+        if let Some(ref owner) = pr_owner {
+            if let Some(commenter) = coworker_from_frontmatter(body)
+                && commenter.eq_ignore_ascii_case(owner)
+            {
+                continue; // Skip self-reviews
+            }
+            // Also check "## Code Review by <name>" header
+            if let Some(reviewer) = extract_reviewer_from_header(body)
+                && reviewer.eq_ignore_ascii_case(owner)
+            {
+                continue; // Skip self-reviews
+            }
+        }
+
+        // Check for positive review indicators
+        if is_positive_review(body) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Extract reviewer name from "## Code Review by <name>" header.
+fn extract_reviewer_from_header(body: &str) -> Option<&str> {
+    let marker = "## Code Review by ";
+    if let Some(idx) = body.find(marker) {
+        let after = &body[idx + marker.len()..];
+        // Take until newline or end of string
+        let name_end = after.find('\n').unwrap_or(after.len());
+        let name = after[..name_end].trim();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// Check if a review comment body indicates positive approval.
+///
+/// Positive indicators: "No issues found", "LGTM", "looks good"
+/// Negative indicators: "Issues Found", "### Issues" (with issues listed)
+fn is_positive_review(body: &str) -> bool {
+    let body_lower = body.to_lowercase();
+
+    // Check for positive indicators
+    let has_no_issues = body_lower.contains("no issues found");
+    let has_lgtm = body_lower.contains("lgtm");
+    let has_looks_good = body_lower.contains("looks good");
+
+    // Check for negative indicators (review found issues)
+    let has_issues_found =
+        body_lower.contains("issues found") && !body_lower.contains("no issues found");
+    let has_issues_section = body_lower.contains("### issues") || body_lower.contains("## issues");
+
+    // Positive if has positive indicator and no negative indicators
+    (has_no_issues || has_lgtm || has_looks_good) && !has_issues_found && !has_issues_section
 }
 
 /// Check if a PR has all CI checks passing (no failures, no pending).
@@ -581,6 +671,124 @@ mod tests {
         assert!(
             is_auto_mergeable(&pr),
             "approved PR with green CI should be auto-mergeable"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Comment-based review approval (when formal GitHub approval not possible)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn auto_merge_accepts_comment_based_approval_no_issues_found() {
+        // PR has no formal APPROVED status but has a positive review comment
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "", // No formal approval
+            "headRefName": "lexington/fix-auth",
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "<!-- midtown: amsterdam -->\n\n## Code Review by amsterdam\n\n**No issues found.** The code changes look good."
+                }
+            ]
+        });
+
+        assert!(
+            is_auto_mergeable(&pr),
+            "PR with positive coworker review comment should be auto-mergeable"
+        );
+    }
+
+    #[test]
+    fn auto_merge_accepts_comment_based_approval_lgtm() {
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "headRefName": "broadway/add-feature",
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "## Code Review by york\n\nLGTM! Great work."
+                }
+            ]
+        });
+
+        assert!(
+            is_auto_mergeable(&pr),
+            "PR with LGTM review comment should be auto-mergeable"
+        );
+    }
+
+    #[test]
+    fn auto_merge_rejects_owner_self_review() {
+        // PR owner cannot approve their own PR via comment
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "headRefName": "lexington/fix-auth",
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "<!-- midtown: lexington -->\n\n## Code Review by lexington\n\nNo issues found."
+                }
+            ]
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "PR owner cannot self-approve via comment"
+        );
+    }
+
+    #[test]
+    fn auto_merge_rejects_review_with_issues() {
+        // Review comments that flag issues are not approval
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "headRefName": "lexington/fix-auth",
+            "comments": [
+                {
+                    "author": {"login": "btucker"},
+                    "body": "## Code Review by amsterdam\n\n### Issues Found\n\n1. Missing error handling"
+                }
+            ]
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "PR with review issues should not be auto-mergeable"
+        );
+    }
+
+    #[test]
+    fn auto_merge_rejects_non_review_comments() {
+        // Regular comments without review signature don't count
+        let pr = json!({
+            "number": 42,
+            "mergeable": "MERGEABLE",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "headRefName": "lexington/fix-auth",
+            "comments": [
+                {
+                    "author": {"login": "external"},
+                    "body": "LGTM! Looks good to me."
+                }
+            ]
+        });
+
+        assert!(
+            !is_auto_mergeable(&pr),
+            "non-review comments should not trigger auto-merge"
         );
     }
 
