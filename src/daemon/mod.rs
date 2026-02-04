@@ -1278,21 +1278,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
                 // Nudge lead to pull main when a PR merges
                 if let Some(pr_number) = webhook_event.merged_pr {
-                    let nudge_text = format!(
-                        "@lead PR #{} merged into {}. Run `git pull` to stay current.",
+                    // Channel message is informational only (no @lead to avoid
+                    // chat monitor triggering a duplicate nudge)
+                    let channel_text = format!(
+                        "PR #{} merged into {}.",
                         pr_number, state.default_branch
                     );
-                    let nudge_msg = Message::text("system", nudge_text.clone());
-                    if let Err(e) = state.send_and_broadcast(&nudge_msg) {
-                        warn!("Failed to post merge nudge for PR #{}: {}", pr_number, e);
+                    let channel_msg = Message::text("system", channel_text);
+                    if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                        warn!("Failed to post merge notification for PR #{}: {}", pr_number, e);
                     }
-                    // Directly nudge the lead (don't rely solely on chat monitor)
+                    // Direct nudge includes the actionable instruction
+                    let nudge_text = format!(
+                        "PR #{} merged into {}. Run `git pull` to stay current.",
+                        pr_number, state.default_branch
+                    );
                     if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
                         warn!("Failed to nudge lead for PR #{} merge: {}", pr_number, e);
                     } else {
                         info!("Nudged lead about PR #{} merge", pr_number);
                     }
-                    chat::route_mentions(&state, &nudge_msg).await;
                 }
 
                 // Nudge lead when a CI check fails on the default branch
@@ -1690,6 +1695,39 @@ mod tests {
 
         // Coworker messages should NOT be in SKIP_SENDERS at all
         assert!(!should_nudge("lexington", "@lead can you review this?"));
+    }
+
+    #[test]
+    fn test_pr_merge_channel_message_no_at_lead() {
+        // The PR merge channel message should NOT contain @lead.
+        // This prevents a double-nudge: one from the direct nudge_lead() call,
+        // and another from the chat monitor detecting @lead in the system message.
+        //
+        // The channel message is informational only:
+        //   "PR #42 merged into main."
+        // The direct nudge includes the actionable instruction:
+        //   "PR #42 merged into main. Run `git pull` to stay current."
+        let pr_number = 42u64;
+        let default_branch = "main";
+
+        // Channel message format (should NOT contain @lead)
+        let channel_text = format!("PR #{} merged into {}.", pr_number, default_branch);
+        assert!(
+            !channel_text.to_lowercase().contains("@lead"),
+            "PR merge channel message should not contain @lead: {}",
+            channel_text
+        );
+
+        // Nudge text format (used for direct nudge, includes instruction)
+        let nudge_text = format!(
+            "PR #{} merged into {}. Run `git pull` to stay current.",
+            pr_number, default_branch
+        );
+        assert!(
+            !nudge_text.to_lowercase().contains("@lead"),
+            "PR merge nudge text should not contain @lead (it's for direct nudge): {}",
+            nudge_text
+        );
     }
 
     #[test]
