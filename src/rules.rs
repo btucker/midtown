@@ -280,6 +280,7 @@ pub(crate) fn decide_idle_shutdowns(
     coworkers_with_unblocked_deps: &HashSet<String>,
     coworkers_with_running_subagents: &HashSet<String>,
     ci_passed_pr_coworkers: &HashSet<String>,
+    usage_limited_coworkers: &HashSet<String>,
     records: &HashMap<String, CoworkerRecord>,
     now: Instant,
     now_utc: DateTime<Utc>,
@@ -332,9 +333,13 @@ pub(crate) fn decide_idle_shutdowns(
         let ci_passed = ci_passed_pr_coworkers
             .iter()
             .any(|c| c.eq_ignore_ascii_case(coworker));
+        let is_usage_limited = usage_limited_coworkers
+            .iter()
+            .any(|u| u.eq_ignore_ascii_case(coworker));
 
         // Coworkers with active tasks, review assignments, unblocked deps,
-        // recent pane activity, or running subagents are never sent on break.
+        // recent pane activity, running subagents, or usage limits are never
+        // sent on break.
         //
         // Coworkers with open PRs CAN go on break if their CI has passed
         // (they're waiting for review feedback, and the daemon will respawn
@@ -346,6 +351,7 @@ pub(crate) fn decide_idle_shutdowns(
             || has_unblocked_deps
             || pane_recently_active
             || has_running_subagent
+            || is_usage_limited
         {
             if matches!(
                 get_health(records, coworker),
@@ -520,6 +526,7 @@ pub(crate) fn decide_stuck_coworker_restarts(
     pane_hashes: &HashMap<String, (u64, Instant)>,
     pane_contents: &HashMap<String, String>,
     in_progress_tasks: &[(String, String, String)],
+    usage_limited_coworkers: &HashSet<String>,
     now: Instant,
     stuck_duration: Duration,
 ) -> StuckDetectionResult {
@@ -529,6 +536,10 @@ pub(crate) fn decide_stuck_coworker_restarts(
     let mut updated_hashes = pane_hashes.clone();
 
     for (name, content) in pane_contents {
+        // Skip coworkers at usage limit — they're frozen but not stuck
+        if usage_limited_coworkers.contains(name) {
+            continue;
+        }
         // Hash the pane content for cheap comparison
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         content.hash(&mut hasher);
@@ -1633,6 +1644,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1666,6 +1678,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1698,6 +1711,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1727,6 +1741,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1756,6 +1771,7 @@ mod tests {
             &set(&["york"]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1788,6 +1804,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1815,6 +1832,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1841,6 +1859,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1874,6 +1893,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1914,6 +1934,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1957,6 +1978,7 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
+            &set(&[]), // usage_limited_coworkers
             &phases,
             Instant::now(),
             Utc::now(),
@@ -1989,6 +2011,7 @@ mod tests {
             &set(&[]),          // no unblocked deps
             &set(&["madison"]), // HAS RUNNING SUBAGENT
             &set(&[]),          // ci_passed
+            &set(&[]),          // usage_limited
             &phases,
             Instant::now(),
             Utc::now(),
@@ -2028,6 +2051,7 @@ mod tests {
             &set(&[]),       // no unblocked deps
             &set(&[]),       // no running subagent
             &set(&["york"]), // CI PASSED
+            &set(&[]),       // usage_limited
             &phases,
             Instant::now(),
             Utc::now(),
@@ -3535,6 +3559,7 @@ mod tests {
             &set(&[]),                         // no unblocked deps
             &coworkers_with_running_subagents, // madison HAS running subagent
             &set(&[]),                         // ci_passed
+            &set(&[]),                         // usage_limited
             &phases,
             Instant::now(),
             Utc::now(),
@@ -3724,10 +3749,12 @@ mod tests {
             "broadway".to_string(),
         )];
 
+        let usage_limited = HashSet::new();
         let result = decide_stuck_coworker_restarts(
             &pane_hashes,
             &pane_contents,
             &tasks,
+            &usage_limited,
             now,
             Duration::from_secs(180), // 3 minute stuck duration
         );
@@ -3771,10 +3798,12 @@ Reading files...
             "riverside".to_string(),
         )];
 
+        let usage_limited = HashSet::new();
         let result = decide_stuck_coworker_restarts(
             &pane_hashes,
             &pane_contents,
             &tasks,
+            &usage_limited,
             now,
             Duration::from_secs(180), // 3 minute stuck duration
         );
@@ -3785,6 +3814,57 @@ Reading files...
             "coworker with frozen pane and NO subagents SHOULD be restarted"
         );
         assert_eq!(result.restarts[0].name, "riverside");
+    }
+
+    #[test]
+    fn stuck_detection_skips_usage_limited_coworkers() {
+        // Coworkers at usage limit should be skipped from stuck detection.
+        // Their pane is frozen waiting for the limit to reset, not stuck.
+        let mut pane_hashes = HashMap::new();
+        let now = Instant::now();
+        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
+
+        // Pane content showing usage limit screen
+        let usage_limit_content = r#"
+You've reached your usage limit for Claude Opus 4.5.
+
+Your limit will reset in 2 hours.
+
+Options:
+- /upgrade to increase your limit
+- /compact to reduce context
+"#;
+
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        usage_limit_content.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Set old hash to same value (pane unchanged for 6+ minutes)
+        pane_hashes.insert("york".to_string(), (content_hash, old_time));
+
+        let mut pane_contents = HashMap::new();
+        pane_contents.insert("york".to_string(), usage_limit_content.to_string());
+
+        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "york".to_string())];
+
+        // Mark york as usage-limited
+        let mut usage_limited = HashSet::new();
+        usage_limited.insert("york".to_string());
+
+        let result = decide_stuck_coworker_restarts(
+            &pane_hashes,
+            &pane_contents,
+            &tasks,
+            &usage_limited,
+            now,
+            Duration::from_secs(180), // 3 minute stuck duration
+        );
+
+        assert!(
+            result.restarts.is_empty(),
+            "usage-limited coworker should be skipped from stuck detection"
+        );
     }
 
     // -----------------------------------------------------------------------
