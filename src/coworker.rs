@@ -459,12 +459,32 @@ impl CoworkerManager {
         let orphaned = self.worktree_manager.find_orphaned_worktrees(&active_names);
         let mut flagged = Vec::new();
 
+        // Defense-in-depth: Before cleaning up any worktrees, verify which tmux
+        // windows actually exist. This prevents deleting worktrees for coworkers
+        // that are running but weren't tracked due to a sync failure.
+        let active_windows: std::collections::HashSet<String> =
+            tmux::list_windows(&self.session_name)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
         // Limit how many worktrees we process per tick to avoid blocking the
         // thread pool for too long. Each cleanup involves multiple git/gh calls.
         let limit = max_per_tick.unwrap_or(usize::MAX);
         let to_process = orphaned.into_iter().take(limit);
 
         for name in to_process {
+            // Safety check: if a tmux window exists for this coworker, don't
+            // clean up their worktree even if they weren't tracked in memory.
+            if active_windows.contains(&name) {
+                tracing::warn!(
+                    "Skipping cleanup for {} - tmux window exists but coworker wasn't tracked",
+                    name
+                );
+                // Don't flag it - they're still running
+                continue;
+            }
+
             match self.worktree_manager.safe_cleanup(&name) {
                 Ok(true) => {
                     tracing::info!("Cleaned up empty orphaned worktree for {}", name);
@@ -853,16 +873,67 @@ impl CoworkerManager {
         Ok(name.to_string())
     }
 
-    /// Sync state with actual tmux windows.
+    /// Sync state with actual tmux windows (bidirectional).
     ///
-    /// Removes coworkers whose tmux windows no longer exist.
+    /// 1. Removes coworkers whose tmux windows no longer exist.
+    /// 2. Adds coworkers whose tmux windows exist but aren't tracked.
+    ///
+    /// The second case handles coworkers that were missed during startup discovery
+    /// (e.g., due to timing issues or transient tmux failures). Without this,
+    /// orphan cleanup would incorrectly delete worktrees for running coworkers.
     pub fn sync_with_tmux(&self) -> crate::Result<()> {
         let active_windows = tmux::list_windows(&self.session_name)?;
+
+        // Get all known coworker names for validation
+        let all_names: std::collections::HashSet<&str> = AVENUE_NAMES
+            .iter()
+            .chain(OVERFLOW_NAMES.iter())
+            .copied()
+            .collect();
 
         let mut coworkers = self.coworkers.write().unwrap();
 
         // Remove coworkers whose windows are gone
         coworkers.retain(|name, _| active_windows.contains(name));
+
+        // Add coworkers whose windows exist but aren't tracked.
+        // This prevents orphan cleanup from deleting worktrees for coworkers
+        // that were missed during startup discovery.
+        for window_name in &active_windows {
+            // Only track windows that are valid coworker names
+            if !all_names.contains(window_name.as_str()) {
+                continue;
+            }
+
+            // Skip if already tracked
+            if coworkers.contains_key(window_name) {
+                continue;
+            }
+
+            // Get the working directory from the worktree
+            let working_dir = self
+                .worktree_manager
+                .worktree_path(window_name)
+                .to_string_lossy()
+                .to_string();
+
+            // Create a coworker entry for this undiscovered coworker
+            let coworker = Coworker {
+                name: window_name.clone(),
+                status: CoworkerStatus::Running,
+                working_dir,
+                started_at: chrono::Utc::now(), // Unknown, use now as approximation
+                current_task: None,             // Will be discovered via task tracking
+                session_id: None,               // Will be set when coworker registers
+                isolated_tasks: false,          // Assume shared task list (conservative default)
+            };
+
+            coworkers.insert(window_name.clone(), coworker);
+            tracing::info!(
+                "Recovered undiscovered coworker from tmux: {} (preventing worktree deletion)",
+                window_name
+            );
+        }
 
         Ok(())
     }
