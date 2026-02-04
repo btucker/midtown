@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{config, daemon_messages, web};
 
@@ -662,6 +662,16 @@ pub(super) fn check_and_recover_stuck_ui(
                     "Coworker {} stuck in compaction — sending Escape to interrupt",
                     name
                 );
+                // Trace log pane content for debugging false positives
+                if let Some(pane_content) = snap.pane_contents.get(&name) {
+                    // Log last 20 lines to see what triggered detection
+                    let last_lines: Vec<&str> = pane_content.lines().rev().take(20).collect();
+                    trace!(
+                        coworker = %name,
+                        pane_tail = ?last_lines,
+                        "Compaction detection triggered - last 20 pane lines (reversed)"
+                    );
+                }
                 effects.push(Effect::SendRawKeys {
                     name: name.clone(),
                     keys: "Escape".to_string(),
