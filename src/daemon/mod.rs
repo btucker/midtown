@@ -1260,15 +1260,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
                 // Nudge lead to pull main when a PR merges
                 if let Some(pr_number) = webhook_event.merged_pr {
-                    let nudge_msg = Message::text(
-                        "system",
-                        format!(
-                            "@lead PR #{} merged into {}. Run `git pull` to stay current.",
-                            pr_number, state.default_branch
-                        ),
+                    let nudge_text = format!(
+                        "@lead PR #{} merged into {}. Run `git pull` to stay current.",
+                        pr_number, state.default_branch
                     );
+                    let nudge_msg = Message::text("system", nudge_text.clone());
                     if let Err(e) = state.send_and_broadcast(&nudge_msg) {
                         warn!("Failed to post merge nudge for PR #{}: {}", pr_number, e);
+                    }
+                    // Directly nudge the lead (don't rely solely on chat monitor)
+                    if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
+                        warn!("Failed to nudge lead for PR #{} merge: {}", pr_number, e);
+                    } else {
+                        info!("Nudged lead about PR #{} merge", pr_number);
                     }
                     chat::route_mentions(&state, &nudge_msg).await;
                 }
