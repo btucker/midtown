@@ -41,9 +41,6 @@ pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
 // Internal timing constants
 // ---------------------------------------------------------------------------
 
-/// How long a coworker must be idle before being sent on a break (30 seconds)
-pub(super) const IDLE_BREAK_DURATION: Duration = Duration::from_secs(30);
-
 /// How often to check for idle coworkers (30 seconds)
 pub(super) const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
