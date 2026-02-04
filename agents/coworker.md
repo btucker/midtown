@@ -125,7 +125,8 @@ midtown channel read
 ```
 
 If you see another coworker also claimed the same task:
-- **First to notice** should post: `@{other} you continue with task #X, I'll abandon and find another`
+- Check the timestamps of the claim messages in the channel
+- **The later claimer** should post: `@{other} you claimed first, I'll find another task`
 - Then pick a different task from the list
 
 This prevents wasted effort from duplicate work.
