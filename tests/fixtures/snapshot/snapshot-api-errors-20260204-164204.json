@@ -1,0 +1,373 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "vernon",
+      "session_id": "09d2fae2-6435-434b-b895-6eaa5cfae190",
+      "started_at": "2026-02-04T16:39:09.896490Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/vernon"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "41bd9fe6-0b27-4e6a-84e5-95c597167d07",
+      "started_at": "2026-02-04T16:40:09.206746Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": "87ccabb2-6f2a-402a-99f0-bfafe2ed95b0",
+      "started_at": "2026-02-04T16:36:09.539774Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    }
+  ],
+  "active_names": [
+    "madison",
+    "vernon",
+    "columbus"
+  ],
+  "active_reviewers": [],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "Bug: `is_auto_mergeable()` in src/daemon/helpers.rs only accepts formal GitHub APPROVED reviewDecision. It should also recognize positive review comments (e.g., \"No issues found\") as approval for auto-merge purposes.\n\nCurrent behavior (line 153):\n```rust\nif review_decision != \"APPROVED\" {\n    return false;\n}\n```\n\nExpected behavior:\n- Keep APPROVED as valid\n- Also check PR comments for positive review indicators from coworkers (look for midtown markers and \"No issues found\" or similar patterns)\n\nContext: We use comment-based reviews because the same GitHub account (btucker) authors PRs and runs coworkers, making formal self-approval impossible.",
+      "id": "3",
+      "owner": "park",
+      "status": "completed",
+      "subject": "Update auto-merge to recognize comment-based reviews"
+    },
+    {
+      "blocked_by": [],
+      "description": "Feature: The daemon should track typical CI check durations and handle stuck/missing checks intelligently.\n\n**Scenarios to handle:**\n\n1. **Stuck check** (pending > 4x typical duration): Re-run the specific check\n2. **Missing/new check** (required check not in PR's CI run): The PR predates the CI workflow change. Daemon should rebase the PR on main to pick up the new workflow, then CI will include the new check.\n\n**Implementation:**\n1. Track historical completion times per CI check name (e.g., \"E2E - idle_break_e2e\" typically takes 2m)\n2. Store rolling average or median of recent runs\n3. For stuck checks: If pending > 4x typical duration, trigger re-run\n4. For missing checks: If a required check never appears in the PR's status checks but exists in main's CI workflow, rebase the PR on main\n5. Add cooldowns to prevent spam\n\n**Key points:**\n- NOT overly aggressive - only at 4x typical time for stuck checks\n- Data-driven based on actual historical times\n- Detect \"new\" required checks that the PR doesn't have and auto-rebase\n\nUse case: PRs #566 and #570 were blocked by missing \"E2E - idle_break_e2e\" - they predated the workflow change. Daemon should have detected this and rebased automatically.",
+      "id": "4",
+      "owner": "broadway",
+      "status": "completed",
+      "subject": "Add daemon auto-retry for stale/missing CI checks"
+    },
+    {
+      "blocked_by": [],
+      "description": "Instead of the daemon parsing review comments to auto-merge, the author coworker should handle merge decisions themselves.\n\nWhen a PR receives a comment or review:\n1. If the author coworker is idle/shutdown, call them in\n2. Nudge the author coworker about the new comment/review\n3. Author reads the feedback and decides whether to merge, address feedback, or take other action\n\nThis is simpler than daemon comment parsing and keeps the merge decision with the agent who has full context of the PR.\n\nReplaces the approach in closed PR #571.\n\nPR #573 is ready - removes auto-merge, author-driven approach. Clean commit without state.json.",
+      "id": "5",
+      "owner": "park",
+      "status": "completed",
+      "subject": "Call-in and nudge PR authors on comments/reviews"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: Park had main checked out in their worktree. Coworkers should NEVER checkout the default branch (main/master).\n\nThis can cause issues:\n1. Multiple worktrees can't share the same branch\n2. Coworkers might accidentally commit directly to main\n3. Blocks other worktrees from using main\n\nFix needed:\n- Add validation when spawning coworkers to ensure they're on a feature branch\n- Add validation in coworker prompts/hooks to prevent `git checkout main`\n- If a coworker somehow ends up on main, detect and fix it (checkout a new feature branch)\n\nCheck how park ended up on main and prevent it from happening.",
+      "id": "6",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Prevent coworkers from checking out default branch"
+    },
+    {
+      "blocked_by": [
+        "8"
+      ],
+      "description": "The `midtown chat` TUI should check every 30 seconds whether it's at the end of the channel. If it got stuck further up (e.g., user scrolled up and forgot), it should auto-scroll back to the end.\n\nThis prevents the chat from appearing frozen/stuck when it's actually just scrolled up in history.",
+      "id": "7",
+      "owner": "vernon",
+      "status": "completed",
+      "subject": "Chat TUI should auto-scroll to end every 30 seconds"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: The `midtown chat` TUI spontaneously scrolled to the beginning of the channel on its own. This should never happen.\n\nThis is a higher priority than the auto-scroll-to-end feature (task #7) - we need to fix this regression/bug first.\n\nInvestigate what's causing unexpected scroll position changes in the chat TUI. Could be:\n- A render loop resetting scroll state\n- File watcher event causing re-render from top\n- State management issue with scroll position\n- Race condition in the async event handling\n\nThe chat should maintain its scroll position unless the user explicitly scrolls or it auto-scrolls to follow new messages at the bottom.",
+      "id": "8",
+      "owner": "york",
+      "status": "completed",
+      "subject": "Fix chat TUI unexpectedly scrolling to beginning"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: The daemon is warning \"Reviewer pleasant is idle but hasn't posted review for PR #572 yet\" but pleasant DID post a review comment (visible via `gh pr view 572 --json comments`).\n\nThe daemon's review detection is not recognizing that the review comment was posted. It should:\n1. Check PR comments for review signatures from the assigned reviewer\n2. Once a review comment is detected, stop warning about missing reviews\n3. Clear the reviewer assignment from the \"pending\" state\n\nThis might be related to how the daemon checks for reviews - it may be looking for formal GitHub reviews instead of comment-based reviews.",
+      "id": "9",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Fix daemon not detecting posted review comments"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: The daemon incorrectly detects coworkers as \"stuck compacting\" when they're not.\n\n**Test cases captured:**\n1. `snapshot-false-positive-bugs-20260204-135417.json` - riverside false positive\n2. `snapshot-20260204-144326.json` - york detected as \"stuck compacting\" but actually had a backlog of nudges in its input box\n\n**Two types of nudge backlogs to distinguish:**\n1. **In the input box** - nudges stacked up IN the input box → needs Enter to process\n2. **Above the input box** - nudges stacked up ABOVE the input box (permission dialogs, etc.) → needs Escape to dismiss\n\n**Root cause:** The daemon may be misinterpreting these nudge backlog states as stuck compaction.\n\n**Fix needed:**\n- Detect and differentiate between:\n  - Actual stuck compaction\n  - Nudge backlog in input box (Enter needed)\n  - Nudge backlog above input box (Escape needed)\n- Don't treat nudge backlogs as stuck state\n- May need different remediation for each backlog type\n- Coordinate with task #11 (smart nudge timing) to prevent backlogs in the first place",
+      "id": "10",
+      "owner": "york",
+      "status": "completed",
+      "subject": "Fix false positive stuck compaction detection"
+    },
+    {
+      "blocked_by": [],
+      "description": "UX Bug: Nudges inject text via tmux send-keys while the user is trying to type, disrupting their input.\n\n**Two types of nudge backlogs to prevent:**\n1. **In the input box** - nudges stacking up IN the input box → needs Enter to clear\n2. **Above the input box** - nudges stacking up ABOVE the input box (permission dialogs, etc.) → needs Escape to dismiss\n\n**New nudge behavior:**\n\n1. Before nudging, check if the input box is empty\n2. If empty → safe to nudge immediately\n3. If not empty, check if the content is mostly from the daemon's last nudge\n   - If yes → safe to nudge (can overwrite stale nudge text)\n   - If no → user is typing something, DON'T nudge yet\n4. When user content detected:\n   - Wait 10 seconds, check again\n   - If input has changed → user still typing, wait another 10 seconds\n   - Repeat this process\n5. Only append onto unrecognized input content if it hasn't changed for 20 seconds\n\nAlso consider:\n- Detecting and handling existing backlog before adding more nudges\n- Different handling for \"above input\" backlog vs \"in input\" backlog\n\nThe daemon should track:\n- Last nudge content sent to each coworker/lead\n- Input box state before nudging\n- Timestamps of input changes\n\n**IMPORTANT: Create an E2E test for this using real Claude to verify the behavior works correctly in practice.**",
+      "id": "11",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Make nudges respect user input in progress"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: York received a nudge about PR #577 but that PR was authored by btucker, not york.\n\nThe daemon is sending PR-related nudges to the wrong coworkers. It should:\n1. Correctly identify the PR author (the coworker who created the PR)\n2. Only nudge that author about review feedback, CI status, etc.\n3. Not confuse GitHub username (btucker) with coworker names\n\nThis may be related to the author-driven merge changes (PR #573/task #5) - need to verify the author identification logic is correct.",
+      "id": "12",
+      "owner": "amsterdam",
+      "status": "completed",
+      "subject": "Fix misdirected PR nudges to wrong coworkers"
+    },
+    {
+      "blocked_by": [],
+      "description": "The GitHub CI check notifications in the channel are noisy when many checks complete around the same time:\n\n```\n08:47 Check 'Clippy' passed on main\n08:48 Check 'E2E - idle_break_e2e' passed on main\n08:48 Check 'Test' passed on main\n08:48 Check 'E2E - tailf_integration' passed on main\n08:48 Check 'E2E - spawn_race_test' passed on main\n```\n\n**Improvement:** Batch these into a single message when multiple checks complete within a short window (e.g., 30-60 seconds):\n\n```\n08:48 5 checks passed on main: Clippy, Test, E2E - idle_break_e2e, E2E - tailf_integration, E2E - spawn_race_test\n```\n\nOr even more condensed:\n```\n08:48 All CI checks passed on main\n```\n\n**Implementation ideas:**\n- Buffer CI check events for a short window before posting to channel\n- If multiple checks for the same ref/PR complete, batch them\n- Keep important events (PR opened, failures) as individual messages\n- Only batch \"passed\" checks, always show failures immediately\n\n**IMPORTANT:** This is purely a channel display change. The underlying webhook/event handling and PR author nudging logic should NOT be affected. The daemon should still process each CI event individually for nudge decisions - only the channel message posting gets batched.",
+      "id": "13",
+      "owner": "broadway",
+      "status": "completed",
+      "subject": "Batch repetitive GitHub CI notifications in channel"
+    },
+    {
+      "blocked_by": [],
+      "description": "Fixed: Added direct nudge_lead() calls in dispatch.rs and mod.rs. PR #584 opened.",
+      "id": "14",
+      "owner": "vernon",
+      "status": "completed",
+      "subject": "Investigate broken lead nudges for @lead mentions"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/effects.rs at 0%\n\nAdd E2E tests that exercise the effect execution layer:\n- Effect::SpawnCoworker - test coworker spawning via real daemon\n- Effect::ShutdownCoworker - test coworker shutdown\n- Effect::NudgeCoworker / Effect::NudgeLead - test nudge delivery\n- Effect::PostChannelMessage - test channel posting\n- Effect::AutoMergePr - test PR merge triggering\n\nUse the containerized E2E approach with real Claude where needed. Tests should verify effects actually execute (tmux windows created, messages posted, etc.).",
+      "id": "15",
+      "owner": "lexington",
+      "status": "completed",
+      "subject": "E2E tests for daemon effects execution"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/pr.rs at 0.94%\n\nAdd E2E tests for PR management flows:\n- PR polling and state detection\n- CI status tracking and stale check detection\n- Review comment detection\n- PR author identification and nudging\n- Auto-merge eligibility checking\n- Merge conflict detection\n\nUse real GitHub PRs in test repo or mock webhook events to exercise the PR handling code paths.",
+      "id": "16",
+      "owner": "columbus",
+      "status": "completed",
+      "subject": "E2E tests for daemon PR management"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/health.rs at 8.89%\n\nAdd E2E tests for coworker health monitoring:\n- Stuck detection (various stuck states)\n- Idle detection\n- Compaction detection (avoiding false positives - see task #10)\n- Usage limit detection\n- Orphan worktree detection\n- Session crash detection\n\nUse captured snapshots as test fixtures and verify health decisions match expected behavior.",
+      "id": "17",
+      "owner": "amsterdam",
+      "status": "completed",
+      "subject": "E2E tests for daemon health checks"
+    },
+    {
+      "blocked_by": [],
+      "description": "**COMPLETED - PR #590 OPEN**\n\nAdded 17 new E2E tests for daemon RPC handlers:\n- coworker.report-state: phase validation (3 tests)\n- coworker.asking: channel posting (2 tests)\n- daemon.check-pending: response structure (1 test)\n- task.updated: params, task not found, list mismatch (3 tests)\n- channel.post: /me actions, shell unescaping (2 tests)\n- channel.read: all parameter (1 test)\n- coworker.nudge: valid params (1 test)\n- reminder.create: invalid trigger (1 test)\n- reminder.cancel: not found (1 test)\n- plus 2 additional edge case tests\n\nAll tests pass. PR at https://github.com/btucker/midtown/pull/590",
+      "id": "18",
+      "owner": "york",
+      "status": "completed",
+      "subject": "E2E tests for daemon RPC handlers"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/dispatch.rs at 23.42%\n\nAdd E2E tests for task dispatch and coworker assignment:\n- Task assignment to idle coworkers\n- Task priority handling\n- Blocked task detection (blockedBy dependencies)\n- Orphan task recovery\n- Reviewer spawning for PRs\n- Max coworker limit enforcement\n\nVerify the daemon correctly assigns work and manages coworker lifecycle.",
+      "id": "19",
+      "owner": "park",
+      "status": "completed",
+      "subject": "E2E tests for daemon dispatch logic"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/webhook_fwd.rs at 0%, daemon/events.rs at 0%\n\nAdd E2E tests for GitHub webhook processing:\n- PR opened/closed/merged events\n- Review submitted events\n- Check run completed events\n- Push events\n- Webhook signature verification\n- Event deduplication\n\nUse mock webhook payloads or test against real GitHub webhooks in test environment.",
+      "id": "20",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "E2E tests for webhook handling"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: web.rs at 31.19%, webserver.rs at 30.63%\n\nAdd E2E tests for the web interface:\n- WebSocket connection and message streaming\n- Chat message display\n- Coworker status updates\n- Kanban board data\n- Static file serving\n- Multi-project routing\n\nCould use Playwright (already have MCP tools) or headless browser testing.",
+      "id": "21",
+      "owner": "vernon",
+      "status": "completed",
+      "subject": "E2E tests for web UI and WebSocket"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: tmux.rs at 41.57%\n\nAdd E2E tests for tmux interactions:\n- Window creation and naming\n- Pane capture and parsing\n- Send-keys for nudges\n- Session management\n- Status bar updates\n- Window killing safety checks\n\nThese tests need real tmux sessions - use the existing tmux_e2e test pattern.",
+      "id": "22",
+      "owner": "pleasant",
+      "status": "completed",
+      "subject": "E2E tests for tmux operations"
+    },
+    {
+      "blocked_by": [],
+      "description": "Vernon's worktree was missing while the daemon still showed them as active. Their Claude Code session was running but couldn't access files or run commands because ~/.midtown/coworkers/midtown/vernon/ didn't exist.\n\nInvestigation needed:\n1. Check daemon logs for any orphan cleanup that might have removed vernon's worktree incorrectly\n2. Check if there's a race condition between worktree creation and coworker startup\n3. Verify the orphan detection logic doesn't incorrectly flag active coworkers\n4. Add safeguards to prevent coworkers from running without valid worktrees\n\nRecent changes to watch:\n- PR #568 merged \"fix: Exclude tmux window orphans from worktree cleanup\"\n- The orphan cleanup logic in tmux.rs\n\nEvidence: Vernon was able to mark task #14 as completed but their bash commands (git, midtown) all failed with \"command not found\" or exit code 1.",
+      "id": "23",
+      "owner": "madison",
+      "status": "completed",
+      "subject": "Investigate and fix coworker worktree corruption (vernon incident)"
+    },
+    {
+      "blocked_by": [],
+      "description": "Madison's review of PR #581 identified that WebhookEvent has grown to 8 optional fields, requiring repetitive `field: None` in every constructor (5 places currently).\n\nRecommended fix:\n1. Derive Default for WebhookEvent\n2. Or use a builder pattern\n\nThis will reduce boilerplate and make adding new optional fields cleaner.\n\nSource: PR #581 review comment",
+      "id": "24",
+      "owner": "columbus",
+      "status": "completed",
+      "subject": "Refactor WebhookEvent to use Default or builder pattern"
+    },
+    {
+      "blocked_by": [],
+      "description": "The daemon is not assigning pending tasks to idle coworkers or spawning reviewers for green PRs.\n\nSymptoms:\n- 7 coworkers showing as idle\n- 4 pending tasks available\n- 7 green PRs without reviewer assignments\n- Daemon repeatedly restarts but doesn't dispatch work\n\nExpected behavior:\n- Idle coworkers should be assigned pending tasks\n- Green PRs should get reviewer coworkers spawned\n\nThis appears to be a bug in the task dispatch or reviewer spawning logic in rules.rs or effects.rs.",
+      "id": "25",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Fix daemon task dispatch - not assigning pending tasks to idle coworkers"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Problem**: When coworkers hit their Claude usage limit, the daemon doesn't recognize this state and continues:\n- Warning about \"idle reviewers who haven't posted review\"\n- Restarting \"stuck\" coworkers (pane unchanged for 180s)\n- Sending nudges that can't be acted upon\n\n**Expected behavior**: The daemon should:\n1. Detect the usage limit message in pane content: \"You've hit your limit · resets Xam/pm (timezone)\"\n2. Parse the reset time from the message\n3. Mark these coworkers as \"usage_limited\" (not idle, not stuck)\n4. Stop nudging/restarting them until the reset time passes\n5. Optionally post to channel once when usage limit is detected\n\n**Test fixture available**: `tests/fixtures/snapshot/snapshot-hit-usage-limit-20260204-154619.json` contains real pane content showing the usage limit state.\n\n**Implementation hints**:\n- Pane parsing likely in `src/tmux.rs` or `src/pane.rs`\n- Decision logic in `src/rules.rs` \n- WorldSnapshot already has `usage_limit_nudge_scheduled` field - may need expansion\n- Follow the pure decision / effect execution pattern\n\n**Acceptance criteria**:\n- [ ] Unit test using the captured fixture verifies correct detection\n- [ ] Daemon stops nudging/restarting usage-limited coworkers\n- [ ] Coworkers resume normal handling after reset time",
+      "id": "26",
+      "owner": "columbus",
+      "status": "in_progress",
+      "subject": "Detect usage limit state and pause daemon actions for affected coworkers"
+    },
+    {
+      "blocked_by": [],
+      "description": "Lead committed changes on branch lead/channel-etiquette. Open a PR, get it reviewed, and merge.\n\nThe change adds channel etiquette guidelines to agents/common.md to avoid pointless back-and-forth conversation (no thank-you chains, brief acknowledgments only).",
+      "id": "27",
+      "owner": "vernon",
+      "status": "in_progress",
+      "subject": "Open PR for lead/channel-etiquette branch"
+    },
+    {
+      "blocked_by": [],
+      "description": "Multiple coworkers have accumulated stale local branches with unmerged commits: park, riverside, amsterdam, broadway, and likely others.\n\n**Task**: Audit and clean up these branches:\n1. List all local branches for each coworker namespace (park/, riverside/, amsterdam/, etc.)\n2. For each branch with unmerged commits, check if the work was merged via a different branch name (common pattern)\n3. Delete branches that are clearly stale (correspond to completed tasks, superseded by other work)\n4. For any with potentially useful unmerged work, note them for review\n\n**Safety**: Don't delete branches that might have unique unmerged work without confirming it's obsolete.\n\n**Commands to audit**:\n```bash\ngit branch | grep '<coworker>/' | while read branch; do\n  commits=$(git rev-list --count main..$branch 2>/dev/null || echo \"0\")\n  if [ \"$commits\" != \"0\" ]; then\n    echo \"$branch: $commits unmerged\"\n  fi\ndone\n```",
+      "id": "28",
+      "owner": "madison",
+      "status": "in_progress",
+      "subject": "Clean up stale coworker branches across all worktrees"
+    }
+  ],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [
+    "vernon",
+    "madison",
+    "columbus"
+  ],
+  "ci_passed_pr_coworkers": [
+    "vernon",
+    "columbus",
+    "riverside"
+  ],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": false,
+      "name": "vernon",
+      "started_at": "2026-02-04T16:39:09.896490Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "columbus",
+      "started_at": "2026-02-04T16:40:09.206746Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "madison",
+      "started_at": "2026-02-04T16:36:09.539774Z"
+    }
+  ],
+  "coworker_start_times": {
+    "columbus": "2026-02-04T16:40:09.206746Z",
+    "madison": "2026-02-04T16:36:09.539774Z",
+    "vernon": "2026-02-04T16:39:09.896490Z"
+  },
+  "coworker_stop_times": {
+    "amsterdam": "2026-02-04T16:28:37.244245Z",
+    "broadway": "2026-02-04T16:28:37.468329Z",
+    "columbus": "2026-02-04T16:40:05.596391Z",
+    "lexington": "2026-02-04T16:28:37.017401Z",
+    "madison": "2026-02-04T16:36:05.928298Z",
+    "park": "2026-02-04T16:32:37.941066Z",
+    "pleasant": "2026-02-04T16:28:37.925438Z",
+    "riverside": "2026-02-04T16:39:06.075748Z",
+    "vernon": "2026-02-04T16:39:06.293166Z",
+    "york": "2026-02-04T16:28:36.790738Z"
+  },
+  "coworkers_with_merged_prs": [
+    "pleasant",
+    "madison",
+    "york",
+    "broadway",
+    "riverside",
+    "vernon",
+    "lexington",
+    "amsterdam",
+    "park",
+    "columbus"
+  ],
+  "coworkers_with_open_prs": [
+    "columbus",
+    "vernon",
+    "riverside"
+  ],
+  "coworkers_with_running_subagents": [],
+  "coworkers_with_unblocked_deps": [],
+  "in_progress_tasks": [
+    [
+      "26",
+      "Detect usage limit state and pause daemon actions for affected coworkers",
+      "columbus"
+    ],
+    [
+      "27",
+      "Open PR for lead/channel-etiquette branch",
+      "vernon"
+    ],
+    [
+      "28",
+      "Clean up stale coworker branches across all worktrees",
+      "madison"
+    ]
+  ],
+  "is_at_dev_limit": false,
+  "now_utc": "2026-02-04T16:42:04.982001Z",
+  "pane_contents": {
+    "columbus": "\n⏺ Bash(midtown channel read)\n  ⎿  [2026-02-04T16:31:38.775817+00:00] madison: taking the stage on task 28 — time to sweep these dusty branches off the set\n     [2026-02-04T16:32:23.211125+00:00] columbus: waiting for input\n     [2026-02-04T16:32:37.719094+00:00] system: ☕ Letting park take a break (work's all merged)\n     … +30 lines (ctrl+o to expand)\n\n⏺ Bash(git status && git log --oneline -5)\n  ⎿  On branch columbus/usage-limit-detection\n     Your branch is up to date with 'origin/columbus/usage-limit-detection'.\n     … +11 lines (ctrl+o to expand)\n\n❯ continue\n\n⏺ I can see I was restarted, and my commit 7b7862d feat: Pause daemon actions for usage-limited coworkers is already pushed. Let me check the PR status and task state.\n\n⏺ Bash(gh pr view 594 --json state,reviews,mergeable,statusCheckRollup)\n  ⎿  {\n       \"mergeable\": \"MERGEABLE\",\n       \"reviews\": [],\n     … +144 lines (ctrl+o to expand)\n\n⏺ PR #594 is open with all CI checks passing and it's mergeable. Just waiting for a reviewer. Let me update my state and post to the channel.\n\n⏺ Bash(midtown state pull-request --task 26)\n  ⎿  columbus → PR#26\n\n⏺ Bash(midtown channel post \"/me back from the restart - PR #594 is still waiting for its debut, all CI green and ready for review\")\n  ⎿  Message posted to channel\n\n⏺ ★ Insight ─────────────────────────────────────\n  The daemon's restart mechanism worked correctly here - it detected my session was stuck (pane unchanged for 180s) and restarted me. This is exactly the kind of scenario my PR #594 addresses: detecting when coworkers are stuck due to usage\n  limits vs genuinely stuck.\n  ─────────────────────────────────────────────────\n\n  PR #594 is ready for review. The daemon will automatically assign a reviewer. Let me check if there are any unblocked tasks I can pick up while waiting.\n26 tasks (23 done, 3 in progress, 0 open)\n\n✔ #20 E2E tests for webhook handling (riverside)\n✔ #16 E2E tests for daemon PR management (columbus)\n✔ #6 Prevent coworkers from checking out default branch (riverside)\n✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n✔ #17 E2E tests for daemon health checks (amsterdam)\n✔ #21 E2E tests for web UI and WebSocket (vernon)\n✔ #10 Fix false positive stuck compaction detection (york)\n◼ #26 Detect usage limit state and pause daemon actions for affected coworkers (columbus)\n◼ #27 Open PR for lead/channel-etiquette branch (vernon)\n✔ #11 Make nudges respect user input in progress (riverside)\n◼ #28 Clean up stale coworker branches across all worktrees (madison)\n✔ #12 Fix misdirected PR nudges to wrong coworkers (amsterdam)\n✔ #24 Refactor WebhookEvent to use Default or builder pattern (columbus)\n✔ #25 Fix daemon task dispatch - not assigning pending tasks to idle coworkers (riverside)\n✔ #13 Batch repetitive GitHub CI notifications in channel (broadway)\n✔ #3 Update auto-merge to recognize comment-based reviews (park)\n✔ #8 Fix chat TUI unexpectedly scrolling to beginning (york)\n✔ #22 E2E tests for tmux operations (pleasant)\n✔ #18 E2E tests for daemon RPC handlers (york)\n✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n✔ #14 Investigate broken lead nudges for @lead mentions (vernon)\n✔ #15 E2E tests for daemon effects execution (lexington)\n✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n✔ #19 E2E tests for daemon dispatch logic (park)\n✔ #23 Investigate and fix coworker worktree corruption (vernon incident) (madison)\n✔ #9 Fix daemon not detecting posted review comments (riverside)\n  ⎿  API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"},\"request_id\":\"req_011CXoMs5j26kAfesVvXxcT2\"}\n\n✻ Churned for 33s\n\n  Tasks (23 done, 3 in progress, 0 open) · ctrl+t to hide tasks\n  ◼ #26 Detect usage limit state and pause daemon actions for affected coworkers (columbus)\n  ◼ #27 Open PR for lead/channel-etiquette branch (vernon)\n  ◼ #28 Clean up stale coworker branches across all worktrees (madison)\n  ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n  ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n  ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n  ✔ #6 Prevent coworkers from checking out default branch (riverside)\n  ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n  ✔ #8 Fix chat TUI unexpectedly scrolling to beginning (york)\n  ✔ #9 Fix daemon not detecting posted review comments (riverside)\n   … +16 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n",
+    "madison": "     Your branch is up to date with 'origin/madison/worktree-corruption-fix'.\n     … +6 lines (ctrl+o to expand)\n\n⏺ I was restarted after getting stuck. Let me get back on track - I'll report my state and continue the branch cleanup work.\n\n⏺ Bash(midtown state developing --task 28)\n  ⎿  madison → dev#28\n\n⏺ Bash(midtown channel post \"/me back on stage after a brief intermission — resuming the branch cleanup for task 28\")\n  ⎿  Message posted to channel\n\n⏺ Bash(git restore state.json 2>/dev/null || true)\n  ⎿  (No content)\n\n⏺ Now let me audit all the coworker branches to see what needs cleanup.\n\n⏺ Bash(git fetch origin main && git branch -a | grep -E '^\\s*(park|riverside|amsterdam|broadway|lexington|madison|columbus|vernon|york|pleasant)/' | head -50)\n  ⎿    amsterdam/add-in-progress-duration\n       amsterdam/allow-awaiting-review-as-reviewer\n       amsterdam/auto-shutdown-idle-coworkers\n     … +49 lines (ctrl+o to expand)\n\n⏺ That's a lot of branches. Let me get a comprehensive audit of which branches have unmerged commits.\n\n⏺ Bash(echo \"=== Coworker branches with unmerged commits ===\" && for coworker in amsterdam broadway columbus lexington madison park pleasant riverside vernon york; do…)\n  ⎿  === Coworker branches with unmerged commits ===\n\n     --- amsterdam ---\n     … +311 lines (ctrl+o to expand)\n\n⏺ ★ Insight ─────────────────────────────────────\n  This is a common problem in multi-contributor repos with worktrees. When PRs are merged via squash or rebase, the original branch commits don't become ancestors of main, so git rev-list main..branch still shows \"unmerged\" even though the\n  work is integrated. The solution is to check if each branch's changes are already in main, regardless of commit ancestry.\n  ─────────────────────────────────────────────────\n\n  That's a substantial cleanup needed — over 200 branches with apparent unmerged commits. Let me check which branches are truly stale by seeing if their changes are already in main (merged via squash/rebase).\n\n⏺ Bash(echo \"=== Checking for truly unmerged branches (changes not in main) ===\" && for branch in $(git branch | grep -E '^\\s*(amsterdam|broadway|columbus|lexington|ma…)\n  ⎿  === Checking for truly unmerged branches (changes not in main) ===\n     amsterdam/allow-awaiting-review-as-reviewer:  1 file changed, 20 insertions(+), 6 deletions(-) (last commit: 2026-01-28)\n     amsterdam/auto-shutdown-idle-coworkers:  2 files changed, 144 insertions(+), 72 deletions(-) (last commit: 2026-01-27)\n     … +58 lines (ctrl+o to expand)\n\n❯ continue\n\n⏺ Let me take a smarter approach — check which branches have had their remote deleted (indicating the PR was merged/closed) and are safe to clean up.\n\n⏺ Bash(echo \"=== Branches with deleted remotes (safe to cleanup) ===\" && git fetch --prune origin 2>&1 && for branch in $(git branch | grep -E '^\\s*(amsterdam|broadway…)\n  ⎿  === Branches with deleted remotes (safe to cleanup) ===\n     From github.com:btucker/midtown\n      - [deleted]         (none)     -> origin/amsterdam/e2e-health-checks\n     … +28 lines (ctrl+o to expand)\n\n⏺ Good — git fetch --prune cleaned up the remote tracking refs. Now let me properly identify which local branches have no corresponding remote.\n\n⏺ Bash(# Get all local coworker branches and check if they have a remote\n      echo \"=== Local branches with no remote (merged/closed PRs) ===\" && for branch in $(git branch…)\n  ⎿  === Local branches with no remote (merged/closed PRs) ===\n\n⏺ Let me check if there are open PRs for any of these branches — branches without open PRs are candidates for cleanup.\n\n⏺ Bash(gh pr list --state all --limit 500 --json headRefName,state,mergedAt,closedAt | jq -r '.[] | select(.state != \"OPEN\") | .headRefName' | grep -E '^(amsterdam|bro…)\n  ⎿         0 /tmp/closed_pr_branches.txt\n     === Sample closed PR branches ===\n     jq: error: syntax error, unexpected INVALID_CHARACTER, expecting ';' or ')' (Unix shell quoting issues?) at <top-level>, line 1:\n     … +2 lines (ctrl+o to expand)\n\n✳ Implementing usage limit detection… (Esc to interrupt · ctrl+t to hide tasks · 5m 56s · ↓ 3.5k tokens)\n  ⎿  ◼ #26 Detect usage limit state and pause daemon actions for affected coworkers (columbus)\n     ◼ #27 Open PR for lead/channel-etiquette branch (vernon)\n     ◼ #28 Clean up stale coworker branches across all worktrees (madison)\n     ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n     ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n     ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n     ✔ #6 Prevent coworkers from checking out default branch (riverside)\n     ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n     ✔ #8 Fix chat TUI unexpectedly scrolling to beginning (york)\n     ✔ #9 Fix daemon not detecting posted review comments (riverside)\n      … +16 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n",
+    "vernon": "  ⎿  [2026-02-04T16:31:19.734264+00:00] midtown: 🚀 Called in coworker madison for assigned task #28: Clean up stale coworker branches across all worktrees\n     [2026-02-04T16:31:32.122361+00:00] madison: claimed task 28\n     [2026-02-04T16:31:38.775817+00:00] madison: taking the stage on task 28 — time to sweep these dusty branches off the set\n     … +30 lines (ctrl+o to expand)\n\n⏺ Bash(git status)\n  ⎿  On branch vernon/web-e2e-tests\n     Your branch is up to date with 'origin/vernon/web-e2e-tests'.\n     … +6 lines (ctrl+o to expand)\n26 tasks (23 done, 3 in progress, 0 open)\n\n✔ #20 E2E tests for webhook handling (riverside)\n✔ #16 E2E tests for daemon PR management (columbus)\n✔ #6 Prevent coworkers from checking out default branch (riverside)\n✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n✔ #17 E2E tests for daemon health checks (amsterdam)\n✔ #21 E2E tests for web UI and WebSocket (vernon)\n✔ #10 Fix false positive stuck compaction detection (york)\n◼ #26 Detect usage limit state and pause daemon actions for affected coworkers (columbus)\n◼ #27 Open PR for lead/channel-etiquette branch (vernon)\n✔ #11 Make nudges respect user input in progress (riverside)\n◼ #28 Clean up stale coworker branches across all worktrees (madison)\n✔ #12 Fix misdirected PR nudges to wrong coworkers (amsterdam)\n✔ #24 Refactor WebhookEvent to use Default or builder pattern (columbus)\n✔ #25 Fix daemon task dispatch - not assigning pending tasks to idle coworkers (riverside)\n✔ #13 Batch repetitive GitHub CI notifications in channel (broadway)\n✔ #3 Update auto-merge to recognize comment-based reviews (park)\n✔ #8 Fix chat TUI unexpectedly scrolling to beginning (york)\n✔ #22 E2E tests for tmux operations (pleasant)\n✔ #18 E2E tests for daemon RPC handlers (york)\n✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n✔ #14 Investigate broken lead nudges for @lead mentions (vernon)\n✔ #15 E2E tests for daemon effects execution (lexington)\n✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n✔ #19 E2E tests for daemon dispatch logic (park)\n✔ #23 Investigate and fix coworker worktree corruption (vernon incident) (madison)\n✔ #9 Fix daemon not detecting posted review comments (riverside)\n\n⏺ Bash(git fetch origin && git branch -r | grep channel-etiquette)\n  ⎿    origin/lead/channel-etiquette\n\n❯ continue\n\n⏺ Let me update my state and switch to the correct branch.\n\n⏺ Bash(midtown state developing --task 27)\n  ⎿  vernon → dev#27\n\n⏺ Bash(midtown channel post \"/me back from intermission, picking up task 27 - opening PR for channel etiquette guidelines\")\n  ⎿  Message posted to channel\n\n⏺ Bash(git checkout lead/channel-etiquette)\n  ⎿  M  state.json\n     Your branch is up to date with 'origin/lead/channel-etiquette'.\n     Switched to branch 'lead/channel-etiquette'\n\n⏺ Bash(git log origin/main..HEAD --oneline)\n  ⎿  0368984 docs: Add channel etiquette guidelines to avoid pointless back-and-forth\n\n⏺ Bash(git diff origin/main..HEAD --stat)\n  ⎿   agents/common.md    |  26 +++\n      agents/lead.md      |  36 +--\n      src/coworker.rs     |  62 +-----\n     … +2 lines (ctrl+o to expand)\n  ⎿  API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"},\"request_id\":\"req_011CXoMrRYbsPHFYh5nhSRPv\"}\n\n✻ Sautéed for 1m 23s\n\n  Tasks (23 done, 3 in progress, 0 open) · ctrl+t to hide tasks\n  ◼ #26 Detect usage limit state and pause daemon actions for affected coworkers (columbus)\n  ◼ #27 Open PR for lead/channel-etiquette branch (vernon)\n  ◼ #28 Clean up stale coworker branches across all worktrees (madison)\n  ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n  ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n  ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n  ✔ #6 Prevent coworkers from checking out default branch (riverside)\n  ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n  ✔ #8 Fix chat TUI unexpectedly scrolling to beginning (york)\n  ✔ #9 Fix daemon not detecting posted review comments (riverside)\n   … +16 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n"
+  },
+  "pending_tasks_with_owners": [],
+  "pending_tasks_without_owners": [],
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {},
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "vernon",
+      "session_id": "09d2fae2-6435-434b-b895-6eaa5cfae190",
+      "started_at": "2026-02-04T16:39:09.896490Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/vernon"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "41bd9fe6-0b27-4e6a-84e5-95c597167d07",
+      "started_at": "2026-02-04T16:40:09.206746Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": "87ccabb2-6f2a-402a-99f0-bfafe2ed95b0",
+      "started_at": "2026-02-04T16:36:09.539774Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false
+}
