@@ -92,6 +92,22 @@ impl WebhookEvent {
             ci_check_passed: None,
         }
     }
+
+    /// Create a WebhookEvent from GitHub with the given content string.
+    ///
+    /// This is a convenience constructor that wraps the content in a standard
+    /// GitHub message (author="github", type=Text).
+    ///
+    /// Use struct update syntax to override specific fields:
+    /// ```ignore
+    /// WebhookEvent {
+    ///     needs_review: Some(42),
+    ///     ..WebhookEvent::github(content)
+    /// }
+    /// ```
+    pub fn github(content: impl Into<String>) -> Self {
+        Self::new(Message::new("github", content, MessageType::Text))
+    }
 }
 
 /// Structured data about a completed CI check's duration.
@@ -687,7 +703,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
     Ok(Some(WebhookEvent {
         needs_review,
         merged_pr,
-        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
+        ..WebhookEvent::github(content)
     }))
 }
 
@@ -751,7 +767,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
             repo_full_name: Some(event.repository.full_name),
         }),
         review_state_change,
-        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
+        ..WebhookEvent::github(content)
     }))
 }
 
@@ -797,7 +813,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
             repo_full_name: Some(event.repository.full_name),
         }),
         reviewed_pr,
-        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
+        ..WebhookEvent::github(content)
     }))
 }
 
@@ -835,7 +851,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
             comment_node: Some(CommentNode::ReviewComment(event.comment.id)),
             repo_full_name: Some(event.repository.full_name),
         }),
-        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
+        ..WebhookEvent::github(content)
     }))
 }
 
@@ -872,11 +888,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
     };
 
     let content = format!("{}{}", mention, action_text);
-    Ok(Some(WebhookEvent::new(Message::new(
-        "github",
-        content,
-        MessageType::Text,
-    ))))
+    Ok(Some(WebhookEvent::github(content)))
 }
 
 fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
@@ -1001,7 +1013,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         pr_ci_failure,
         check_duration,
         ci_check_passed,
-        ..WebhookEvent::new(Message::new("github", content, MessageType::Text))
+        ..WebhookEvent::github(content)
     }))
 }
 
