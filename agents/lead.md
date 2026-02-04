@@ -116,8 +116,8 @@ midtown coworker call-in
 The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. Trust the daemon — don't intervene unless something is clearly broken.
 
 **If a PR seems stuck without a reviewer:**
-1. Check `midtown status` — the daemon may be at max concurrent reviews or waiting for idle capacity
-2. Read the channel — the daemon posts when it spawns reviewers; if no message appeared, it may be throttled
+1. Check `midtown status` — the daemon may be at max concurrent reviews (REVIEW_HEADROOM=2) or waiting for idle capacity
+2. Read the channel — the daemon posts when it spawns reviewers; if no message appeared, it may be throttled or at capacity
 3. If genuinely stuck for several minutes, check daemon logs (`RUST_LOG=midtown=debug midtown daemon`)
 
 **Never ask an existing developer coworker to do a review.** Developer coworkers share the team task list, so their review sub-tasks pollute the shared list. Dedicated reviewers are spawned in isolated mode with their own ephemeral task namespace.
