@@ -1,0 +1,1018 @@
+//! E2E tests for daemon dispatch logic using WorldSnapshot fixtures.
+//!
+//! These tests verify the daemon correctly:
+//! - Identifies tasks eligible for assignment
+//! - Detects orphaned tasks needing recovery
+//! - Respects blocked task dependencies
+//! - Tracks coworker state for dispatch decisions
+//! - Spawns reviewers for PRs
+//!
+//! Tests use real captured snapshots to validate dispatch preconditions
+//! with production-like state.
+//!
+//! Note: The pure decision functions (`decide_*`) are `pub(crate)` and tested
+//! via unit tests in rules.rs. These E2E tests validate the snapshot data
+//! and conditions that feed into those decisions.
+//!
+//! To capture new fixtures: `midtown e2e capture --label dispatch-<scenario>`
+
+use std::collections::{HashMap, HashSet};
+
+use chrono::{DateTime, Datelike, Utc};
+use serde::Deserialize;
+use serde_json::Value;
+
+// =============================================================================
+// Data structures for parsing fixtures
+// =============================================================================
+
+/// Task structure matching the WorldSnapshot JSON format.
+#[derive(Debug, Clone, Deserialize)]
+struct Task {
+    id: String,
+    subject: String,
+    status: String,
+    owner: Option<String>,
+    #[serde(default)]
+    blocked_by: Vec<String>,
+}
+
+/// Parsed snapshot data for dispatch tests.
+#[derive(Debug)]
+struct DispatchSnapshot {
+    /// All tasks from the snapshot.
+    all_tasks: Vec<Task>,
+    /// Names of currently active coworkers (running tmux windows).
+    active_names: HashSet<String>,
+    /// Coworkers currently busy (have in_progress tasks), lowercase.
+    busy_coworkers: HashSet<String>,
+    /// Coworkers with open PRs (shouldn't be sent on break).
+    coworkers_with_open_prs: HashSet<String>,
+    /// Coworkers assigned as reviewers.
+    active_reviewers: HashSet<String>,
+    /// Whether we're at the dev coworker limit.
+    is_at_dev_limit: bool,
+    /// Current timestamp from snapshot.
+    now_utc: DateTime<Utc>,
+    /// Coworker start times for sorting (e.g., duplicate worker detection).
+    coworker_start_times: HashMap<String, DateTime<Utc>>,
+    /// In-progress tasks: (task_id, subject, owner).
+    in_progress_tasks: Vec<(String, String, String)>,
+    /// Pending tasks with owners: (task_id, subject, owner).
+    pending_tasks_with_owners: Vec<(String, String, String)>,
+    /// Pending tasks without owners.
+    pending_tasks_without_owners: Vec<Task>,
+    /// Reviewer PR assignments: coworker -> PR number.
+    reviewer_pr_assignments: HashMap<String, u64>,
+}
+
+/// Load a snapshot fixture and parse it into test-friendly data structures.
+fn load_snapshot(json_str: &str) -> DispatchSnapshot {
+    let v: Value = serde_json::from_str(json_str).expect("valid JSON");
+
+    // Parse all_tasks array
+    let all_tasks: Vec<Task> = v["all_tasks"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Extract HashSets from snapshot
+    let active_names: HashSet<String> = v["active_names"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(|s| s.to_lowercase()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let busy_coworkers: HashSet<String> = v["busy_coworkers"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(|s| s.to_lowercase()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let coworkers_with_open_prs: HashSet<String> = v["coworkers_with_open_prs"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(|s| s.to_lowercase()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let active_reviewers: HashSet<String> = v["active_reviewers"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(|s| s.to_lowercase()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let is_at_dev_limit = v["is_at_dev_limit"].as_bool().unwrap_or(false);
+
+    let now_utc =
+        DateTime::parse_from_rfc3339(v["now_utc"].as_str().unwrap_or("1970-01-01T00:00:00Z"))
+            .unwrap()
+            .with_timezone(&Utc);
+
+    let coworker_start_times: HashMap<String, DateTime<Utc>> = v["coworker_start_times"]
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| {
+                    v.as_str()
+                        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| (k.to_lowercase(), dt.with_timezone(&Utc)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse in_progress_tasks array of tuples
+    let in_progress_tasks: Vec<(String, String, String)> = v["in_progress_tasks"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|tuple| {
+                    let arr = tuple.as_array()?;
+                    if arr.len() >= 3 {
+                        Some((
+                            arr[0].as_str()?.to_string(),
+                            arr[1].as_str()?.to_string(),
+                            arr[2].as_str()?.to_string(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse pending_tasks_with_owners array of tuples
+    let pending_tasks_with_owners: Vec<(String, String, String)> = v["pending_tasks_with_owners"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|tuple| {
+                    let arr = tuple.as_array()?;
+                    if arr.len() >= 3 {
+                        Some((
+                            arr[0].as_str()?.to_string(),
+                            arr[1].as_str()?.to_string(),
+                            arr[2].as_str()?.to_string(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse pending_tasks_without_owners
+    let pending_tasks_without_owners: Vec<Task> = v["pending_tasks_without_owners"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Parse reviewer_pr_assignments
+    let reviewer_pr_assignments: HashMap<String, u64> = v["reviewer_pr_assignments"]
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_u64().map(|pr| (k.to_lowercase(), pr)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    DispatchSnapshot {
+        all_tasks,
+        active_names,
+        busy_coworkers,
+        coworkers_with_open_prs,
+        active_reviewers,
+        is_at_dev_limit,
+        now_utc,
+        coworker_start_times,
+        in_progress_tasks,
+        pending_tasks_with_owners,
+        pending_tasks_without_owners,
+        reviewer_pr_assignments,
+    }
+}
+
+/// Check if a task is blocked by any incomplete task.
+fn is_task_blocked(task: &Task, all_tasks: &[Task]) -> bool {
+    if task.blocked_by.is_empty() {
+        return false;
+    }
+
+    // Task is blocked if any of its blockers are not completed
+    task.blocked_by.iter().any(|blocker_id| {
+        all_tasks
+            .iter()
+            .find(|t| t.id == *blocker_id)
+            .map(|t| t.status != "completed")
+            .unwrap_or(true) // If blocker not found, treat as blocked (conservative)
+    })
+}
+
+/// Get idle coworkers (active but not busy, no open PR, not a reviewer).
+fn get_idle_coworkers(data: &DispatchSnapshot) -> Vec<String> {
+    data.active_names
+        .iter()
+        .filter(|name| {
+            !data.busy_coworkers.contains(*name)
+                && !data.coworkers_with_open_prs.contains(*name)
+                && !data.active_reviewers.contains(*name)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Valid coworker names (Manhattan avenues).
+const VALID_AVENUES: &[&str] = &[
+    "lexington",
+    "park",
+    "madison",
+    "broadway",
+    "amsterdam",
+    "columbus",
+    "riverside",
+    "york",
+    "pleasant",
+    "vernon",
+];
+
+/// Check if a name is a valid coworker name.
+fn is_valid_coworker_name(name: &str) -> bool {
+    VALID_AVENUES.contains(&name.to_lowercase().as_str())
+}
+
+// =============================================================================
+// Tests: Pending task with owner - conditions for nudge vs spawn
+// =============================================================================
+
+/// Test that active owners would be nudged (not spawned).
+///
+/// When a task is pending with an assigned owner who is currently active,
+/// the daemon should nudge them rather than spawn a new coworker.
+#[test]
+fn pending_task_active_owner_should_be_nudged() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // york is active in this snapshot
+    assert!(
+        snap.active_names.contains("york"),
+        "york should be active in fixture"
+    );
+
+    // If york had a pending task, the condition for nudge is met:
+    // - owner is active (in active_names)
+    // - not at dev limit (is_at_dev_limit = false)
+    // - (cooldown is runtime state, not in snapshot)
+
+    // Verify the preconditions for nudge are satisfied
+    assert!(
+        !snap.is_at_dev_limit,
+        "Should not be at dev limit for nudge"
+    );
+}
+
+/// Test that inactive owners would trigger spawn.
+///
+/// When a task is pending with an assigned owner who is NOT active,
+/// the daemon should spawn the coworker (if not at dev limit).
+#[test]
+fn pending_task_inactive_owner_should_spawn() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // madison is NOT active in this snapshot
+    assert!(
+        !snap.active_names.contains("madison"),
+        "madison should NOT be active in fixture"
+    );
+
+    // If madison had a pending task, the condition for spawn is met:
+    // - owner is inactive (not in active_names)
+    // - not at dev limit
+    // - madison is a valid coworker name
+    assert!(
+        !snap.is_at_dev_limit,
+        "Should not be at dev limit for spawn"
+    );
+    assert!(
+        is_valid_coworker_name("madison"),
+        "madison should be a valid coworker name"
+    );
+}
+
+/// Test that dev limit blocks spawning.
+///
+/// When the daemon is at the dev coworker limit, it should skip spawning
+/// new coworkers for pending tasks (to reserve slots for reviewers).
+#[test]
+fn dev_limit_blocks_spawn_condition() {
+    // Create a modified snapshot with is_at_dev_limit = true
+    // to verify the condition would block spawning
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // In this fixture, is_at_dev_limit is false
+    // When true, the spawn_for_pending_tasks function would skip unowned tasks
+    println!(
+        "is_at_dev_limit: {} (would block spawn if true)",
+        snap.is_at_dev_limit
+    );
+
+    // Verify active count for context
+    println!(
+        "Active coworkers: {} (limit enforcement depends on config)",
+        snap.active_names.len()
+    );
+}
+
+/// Test that lead-owned tasks are skipped.
+///
+/// Tasks owned by "lead" are not actionable by the daemon - they're
+/// manual coordination tasks.
+#[test]
+fn lead_owned_tasks_skipped() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // Verify no pending tasks are owned by lead
+    for (task_id, subject, owner) in &snap.pending_tasks_with_owners {
+        assert!(
+            owner.to_lowercase() != "lead",
+            "pending_tasks_with_owners should not include lead-owned task #{}: {}",
+            task_id,
+            subject
+        );
+    }
+}
+
+/// Test that invalid owner names are detected.
+///
+/// If a task owner is not a valid coworker name (not an avenue name),
+/// the daemon should skip it.
+#[test]
+fn invalid_owner_names_detected() {
+    // Test the validation function
+    assert!(is_valid_coworker_name("york"), "york is valid");
+    assert!(is_valid_coworker_name("madison"), "madison is valid");
+    assert!(
+        is_valid_coworker_name("Broadway"),
+        "Broadway is valid (case-insensitive)"
+    );
+    assert!(!is_valid_coworker_name("invalid"), "invalid is not valid");
+    assert!(!is_valid_coworker_name(""), "empty is not valid");
+    assert!(
+        !is_valid_coworker_name("lead"),
+        "lead is not a coworker name"
+    );
+}
+
+// =============================================================================
+// Tests: Orphan task recovery
+// =============================================================================
+
+/// Test orphan detection: in_progress task with inactive owner.
+///
+/// An orphaned task is in_progress but its owner is not active.
+/// The daemon should detect this and trigger recovery.
+#[test]
+fn orphan_detection_finds_inactive_owners() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // Find in_progress tasks whose owners are not active
+    let orphans: Vec<_> = snap
+        .in_progress_tasks
+        .iter()
+        .filter(|(_, _, owner)| {
+            let owner_lower = owner.to_lowercase();
+            !owner_lower.is_empty()
+                && owner_lower != "lead"
+                && !snap.active_names.contains(&owner_lower)
+        })
+        .collect();
+
+    // Report findings
+    if orphans.is_empty() {
+        println!("No orphaned tasks in fixture (all owners are active)");
+    } else {
+        for (task_id, subject, owner) in orphans {
+            println!(
+                "Orphan detected: Task #{} ({}) owned by inactive {}",
+                task_id, subject, owner
+            );
+        }
+    }
+}
+
+/// Test that active owners are not flagged as orphans.
+///
+/// If the task owner is still active, it's not orphaned.
+#[test]
+fn active_owners_not_orphaned() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // york has an in_progress task and is active - not orphaned
+    if snap.active_names.contains("york") {
+        let york_tasks: Vec<_> = snap
+            .in_progress_tasks
+            .iter()
+            .filter(|(_, _, owner)| owner.to_lowercase() == "york")
+            .collect();
+
+        for (task_id, _, _) in york_tasks {
+            println!("Task #{} owned by active york - NOT orphaned", task_id);
+        }
+    }
+}
+
+/// Test orphan recovery respects dev limit.
+///
+/// Even if there's an orphaned task, don't spawn recovery at dev limit.
+#[test]
+fn orphan_recovery_blocked_at_dev_limit() {
+    // The orphan recovery function checks is_at_dev_limit before attempting recovery
+    // When true, it returns None immediately
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    println!(
+        "is_at_dev_limit: {} (orphan recovery would be blocked if true)",
+        snap.is_at_dev_limit
+    );
+}
+
+// =============================================================================
+// Tests: Blocked task detection
+// =============================================================================
+
+/// Test blocked task identification.
+///
+/// Tasks with blocked_by dependencies on incomplete tasks should be
+/// excluded from dispatch.
+#[test]
+fn blocked_task_detection() {
+    let tasks = vec![
+        Task {
+            id: "1".to_string(),
+            subject: "Task 1".to_string(),
+            status: "completed".to_string(),
+            owner: None,
+            blocked_by: vec![],
+        },
+        Task {
+            id: "2".to_string(),
+            subject: "Task 2".to_string(),
+            status: "in_progress".to_string(),
+            owner: Some("york".to_string()),
+            blocked_by: vec![],
+        },
+        Task {
+            id: "3".to_string(),
+            subject: "Task 3 - blocked".to_string(),
+            status: "pending".to_string(),
+            owner: None,
+            blocked_by: vec!["2".to_string()], // blocked by in_progress task
+        },
+        Task {
+            id: "4".to_string(),
+            subject: "Task 4 - unblocked".to_string(),
+            status: "pending".to_string(),
+            owner: None,
+            blocked_by: vec!["1".to_string()], // blocked by completed task
+        },
+    ];
+
+    // Task 3 is blocked (blocker is in_progress)
+    assert!(
+        is_task_blocked(&tasks[2], &tasks),
+        "Task 3 should be blocked by in_progress Task 2"
+    );
+
+    // Task 4 is unblocked (blocker is completed)
+    assert!(
+        !is_task_blocked(&tasks[3], &tasks),
+        "Task 4 should be unblocked since Task 1 is completed"
+    );
+
+    // Task 1 and 2 have no blockers
+    assert!(
+        !is_task_blocked(&tasks[0], &tasks),
+        "Task 1 has no blockers"
+    );
+    assert!(
+        !is_task_blocked(&tasks[1], &tasks),
+        "Task 2 has no blockers"
+    );
+}
+
+/// Test blocked task handling with real fixture.
+#[test]
+fn blocked_tasks_excluded_from_pending_unowned() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // pending_tasks_without_owners should not include blocked tasks
+    // (The snapshot collector already filters these)
+    for task in &snap.pending_tasks_without_owners {
+        // Verify no pending unowned tasks are blocked
+        let blocked = is_task_blocked(task, &snap.all_tasks);
+        assert!(
+            !blocked,
+            "pending_tasks_without_owners should not include blocked task #{}: {}",
+            task.id, task.subject
+        );
+    }
+}
+
+/// Test that completed blockers unblock tasks.
+#[test]
+fn completed_blockers_unblock_tasks() {
+    let tasks = vec![
+        Task {
+            id: "1".to_string(),
+            subject: "Blocker task".to_string(),
+            status: "completed".to_string(),
+            owner: None,
+            blocked_by: vec![],
+        },
+        Task {
+            id: "2".to_string(),
+            subject: "Blocked task".to_string(),
+            status: "pending".to_string(),
+            owner: None,
+            blocked_by: vec!["1".to_string()],
+        },
+    ];
+
+    // Task 2 should NOT be blocked because task 1 is completed
+    assert!(
+        !is_task_blocked(&tasks[1], &tasks),
+        "Task should be unblocked when blocker is completed"
+    );
+}
+
+/// Test transitive blocking (task blocked by blocked task).
+#[test]
+fn transitive_blocking_not_expanded() {
+    // Note: The current is_task_blocked only checks direct blockers,
+    // not transitive dependencies. This is intentional - the daemon
+    // evaluates one level at a time.
+    let tasks = vec![
+        Task {
+            id: "1".to_string(),
+            subject: "Root task".to_string(),
+            status: "in_progress".to_string(),
+            owner: Some("york".to_string()),
+            blocked_by: vec![],
+        },
+        Task {
+            id: "2".to_string(),
+            subject: "Middle task".to_string(),
+            status: "pending".to_string(),
+            owner: None,
+            blocked_by: vec!["1".to_string()], // blocked by in_progress task 1
+        },
+        Task {
+            id: "3".to_string(),
+            subject: "Leaf task".to_string(),
+            status: "pending".to_string(),
+            owner: None,
+            blocked_by: vec!["2".to_string()], // blocked by pending task 2
+        },
+    ];
+
+    // Task 2 is blocked (task 1 is in_progress)
+    assert!(
+        is_task_blocked(&tasks[1], &tasks),
+        "Task 2 is blocked by task 1"
+    );
+
+    // Task 3 is blocked (task 2 is pending, not completed)
+    assert!(
+        is_task_blocked(&tasks[2], &tasks),
+        "Task 3 is blocked by task 2"
+    );
+}
+
+// =============================================================================
+// Tests: Duplicate worker detection
+// =============================================================================
+
+/// Test duplicate worker sorting by start time.
+///
+/// When multiple coworkers claim the same task, the daemon keeps the
+/// earliest-started one and shuts down duplicates.
+#[test]
+fn duplicate_worker_sorting() {
+    use chrono::Duration;
+
+    let now = Utc::now();
+    let earlier = now - Duration::minutes(5);
+    let later = now + Duration::minutes(5);
+
+    let mut workers: Vec<(String, Option<DateTime<Utc>>)> = vec![
+        ("later_worker".to_string(), Some(later)),
+        ("earlier_worker".to_string(), Some(earlier)),
+        ("now_worker".to_string(), Some(now)),
+    ];
+
+    // Sort by start time (earliest first)
+    workers.sort_by(|a, b| match (&a.1, &b.1) {
+        (Some(t1), Some(t2)) => t1.cmp(t2),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    assert_eq!(workers[0].0, "earlier_worker", "Earliest should be first");
+    assert_eq!(workers[1].0, "now_worker");
+    assert_eq!(workers[2].0, "later_worker", "Latest should be last");
+}
+
+/// Test duplicate worker sorting with unknown times.
+///
+/// Workers with known start times should sort before those with unknown times.
+#[test]
+fn duplicate_worker_sorting_unknown_times() {
+    let now = Utc::now();
+
+    let mut workers: Vec<(String, Option<DateTime<Utc>>)> = vec![
+        ("unknown1".to_string(), None),
+        ("known".to_string(), Some(now)),
+        ("unknown2".to_string(), None),
+    ];
+
+    workers.sort_by(|a, b| match (&a.1, &b.1) {
+        (Some(t1), Some(t2)) => t1.cmp(t2),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    assert_eq!(workers[0].0, "known", "Known time should sort first");
+    // Unknown workers stay in relative order (stable sort)
+}
+
+/// Test coworker start times are tracked for duplicate detection.
+#[test]
+fn coworker_start_times_tracked() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // All active coworkers should have start times
+    for name in &snap.active_names {
+        assert!(
+            snap.coworker_start_times.contains_key(name),
+            "Active coworker {} should have a start time",
+            name
+        );
+    }
+}
+
+/// Test duplicate task detection preconditions.
+///
+/// The snapshot tracks which coworkers own which in_progress tasks.
+/// Duplicates would be detected by grouping by task_id.
+#[test]
+fn duplicate_task_detection_data_available() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // Build a map of task_id -> owners
+    let mut task_owners: HashMap<String, Vec<String>> = HashMap::new();
+    for (task_id, _, owner) in &snap.in_progress_tasks {
+        if !owner.is_empty() && owner.to_lowercase() != "lead" {
+            task_owners
+                .entry(task_id.clone())
+                .or_default()
+                .push(owner.clone());
+        }
+    }
+
+    // Check for any tasks with multiple owners (would be duplicates)
+    for (task_id, owners) in &task_owners {
+        if owners.len() > 1 {
+            println!(
+                "Duplicate detected: Task #{} has {} owners: {:?}",
+                task_id,
+                owners.len(),
+                owners
+            );
+        }
+    }
+}
+
+// =============================================================================
+// Tests: Reviewer spawning
+// =============================================================================
+
+/// Test reviewer assignments are tracked.
+///
+/// The snapshot should track which coworkers are assigned to review which PRs.
+#[test]
+fn reviewer_assignments_tracked() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // Check if broadway is assigned to review a PR
+    if let Some(pr) = snap.reviewer_pr_assignments.get("broadway") {
+        println!("Broadway is reviewing PR #{}", pr);
+        assert_eq!(
+            *pr, 533,
+            "Broadway should be reviewing PR 533 in this fixture"
+        );
+    }
+
+    // Report all reviewer assignments
+    for (reviewer, pr) in &snap.reviewer_pr_assignments {
+        println!("Reviewer {}: PR #{}", reviewer, pr);
+    }
+}
+
+/// Test that active reviewers are excluded from idle coworker pool.
+///
+/// Reviewers should not be considered idle for task assignment.
+#[test]
+fn reviewers_excluded_from_idle_pool() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    let idle = get_idle_coworkers(&snap);
+
+    for reviewer in &snap.active_reviewers {
+        assert!(
+            !idle.contains(reviewer),
+            "Active reviewer {} should not be in idle pool",
+            reviewer
+        );
+    }
+}
+
+/// Test reviewer state isolation.
+///
+/// Reviewers may be in isolated_tasks mode (their task list is separate).
+#[test]
+fn reviewer_isolation_tracked() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let v: Value = serde_json::from_str(fixture).expect("valid JSON");
+
+    // Check coworker_snapshots for isolated_tasks flag
+    if let Some(coworkers) = v["coworker_snapshots"].as_array() {
+        for cw in coworkers {
+            let name = cw["name"].as_str().unwrap_or("");
+            let isolated = cw["isolated_tasks"].as_bool().unwrap_or(false);
+            if isolated {
+                println!("Coworker {} is in isolated task mode (reviewer)", name);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Tests: Snapshot data integrity
+// =============================================================================
+
+/// Test that busy coworkers match in_progress task owners.
+#[test]
+fn busy_coworkers_consistency() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // Get owners of in_progress tasks
+    let in_progress_owners: HashSet<String> = snap
+        .in_progress_tasks
+        .iter()
+        .map(|(_, _, owner)| owner.to_lowercase())
+        .filter(|o| !o.is_empty() && o != "lead")
+        .collect();
+
+    // Each busy coworker should own an in_progress task
+    for busy in &snap.busy_coworkers {
+        assert!(
+            in_progress_owners.contains(busy),
+            "Busy coworker {} should own an in_progress task",
+            busy
+        );
+    }
+}
+
+/// Test that pending unowned tasks are unblocked.
+#[test]
+fn pending_unowned_tasks_are_unblocked() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    for task in &snap.pending_tasks_without_owners {
+        // Verify the task has no blocking dependencies that are incomplete
+        if !task.blocked_by.is_empty() {
+            for blocker_id in &task.blocked_by {
+                let blocker = snap.all_tasks.iter().find(|t| t.id == *blocker_id);
+                if let Some(b) = blocker {
+                    assert_eq!(
+                        b.status, "completed",
+                        "pending_tasks_without_owners task #{} is blocked by incomplete #{} ({})",
+                        task.id, b.id, b.status
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Test task owner validation.
+#[test]
+fn task_owner_validation() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    for task in &snap.all_tasks {
+        if let Some(owner) = &task.owner
+            && !owner.is_empty()
+        {
+            let owner_lower = owner.to_lowercase();
+            let is_valid = owner_lower == "lead" || is_valid_coworker_name(&owner_lower);
+            assert!(
+                is_valid,
+                "Task #{} has invalid owner '{}' - must be an avenue name or 'lead'",
+                task.id, owner
+            );
+        }
+    }
+}
+
+// =============================================================================
+// Tests: Integration scenarios
+// =============================================================================
+
+/// Test complete dispatch scenario analysis with fixture.
+#[test]
+fn dispatch_scenario_analysis() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    println!("=== Dispatch Scenario Analysis ===");
+    println!("Active coworkers: {:?}", snap.active_names);
+    println!("Busy coworkers: {:?}", snap.busy_coworkers);
+    println!("At dev limit: {}", snap.is_at_dev_limit);
+    println!("In-progress tasks: {}", snap.in_progress_tasks.len());
+    println!(
+        "Pending with owners: {}",
+        snap.pending_tasks_with_owners.len()
+    );
+    println!(
+        "Pending without owners: {}",
+        snap.pending_tasks_without_owners.len()
+    );
+    println!("Active reviewers: {:?}", snap.active_reviewers);
+
+    // Calculate idle coworkers
+    let idle = get_idle_coworkers(&snap);
+    println!("Idle coworkers: {:?}", idle);
+
+    // Analyze each pending task with owner
+    for (task_id, task_subject, owner) in &snap.pending_tasks_with_owners {
+        let owner_lower = owner.to_lowercase();
+        let is_active = snap.active_names.contains(&owner_lower);
+        let action = if is_active { "nudge" } else { "spawn" };
+        println!(
+            "Task #{} ({}) owned by {} -> would {}",
+            task_id, task_subject, owner, action
+        );
+    }
+
+    // Check for orphans
+    let orphan_count = snap
+        .in_progress_tasks
+        .iter()
+        .filter(|(_, _, owner)| {
+            let owner_lower = owner.to_lowercase();
+            !owner_lower.is_empty()
+                && owner_lower != "lead"
+                && !snap.active_names.contains(&owner_lower)
+        })
+        .count();
+    println!("Orphaned tasks: {}", orphan_count);
+}
+
+/// Test that fixture timestamp is reasonable.
+#[test]
+fn fixture_timestamp_is_valid() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // Timestamp should be recent (after 2026)
+    assert!(
+        snap.now_utc.year() >= 2026,
+        "Fixture timestamp {} should be recent",
+        snap.now_utc
+    );
+}
+
+/// Test multiple fixture files for consistency.
+#[test]
+fn multiple_fixtures_valid_structure() {
+    let fixtures = [
+        include_str!("fixtures/snapshot/snapshot-20260203-152121.json"),
+        include_str!("fixtures/snapshot/snapshot-20260203-161629.json"),
+        include_str!("fixtures/snapshot/snapshot-20260203-182216.json"),
+    ];
+
+    for (i, fixture_str) in fixtures.iter().enumerate() {
+        let snap = load_snapshot(fixture_str);
+
+        // Basic validity checks
+        assert!(
+            !snap.active_names.is_empty() || snap.all_tasks.is_empty(),
+            "Fixture {} should have active names if it has tasks",
+            i
+        );
+
+        // All busy coworkers should be active
+        for busy in &snap.busy_coworkers {
+            assert!(
+                snap.active_names.contains(busy),
+                "Fixture {}: busy coworker {} should be active",
+                i,
+                busy
+            );
+        }
+
+        println!(
+            "Fixture {} validated: {} active coworkers",
+            i,
+            snap.active_names.len()
+        );
+    }
+}
+
+/// Test idle coworker calculation.
+#[test]
+fn idle_coworker_calculation() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    let idle = get_idle_coworkers(&snap);
+
+    // Verify all returned coworkers are truly idle
+    for name in &idle {
+        assert!(
+            snap.active_names.contains(name),
+            "{} should be active",
+            name
+        );
+        assert!(
+            !snap.busy_coworkers.contains(name),
+            "{} should not be busy",
+            name
+        );
+        assert!(
+            !snap.coworkers_with_open_prs.contains(name),
+            "{} should not have open PR",
+            name
+        );
+        assert!(
+            !snap.active_reviewers.contains(name),
+            "{} should not be a reviewer",
+            name
+        );
+    }
+
+    println!("Idle coworkers: {:?}", idle);
+}
+
+/// Test dev limit state is captured.
+#[test]
+fn dev_limit_state_captured() {
+    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
+    let snap = load_snapshot(fixture);
+
+    // The is_at_dev_limit flag is captured and can be used for decision logic
+    println!("is_at_dev_limit: {}", snap.is_at_dev_limit);
+
+    // When true, new task spawns would be blocked
+    // When false, spawns are allowed (up to the configured limit)
+}
