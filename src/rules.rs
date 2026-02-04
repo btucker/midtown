@@ -1417,6 +1417,10 @@ pub fn decide_pr_issue_action_with_handoff(
 ///
 /// Pure function: determines whether to nudge, spawn, or skip based on
 /// whether the owner is active and whether the comment is a self-comment.
+///
+/// Note: Production code now uses `decide_pr_comment_action_with_handoff`.
+/// This simpler variant is retained for tests.
+#[cfg(test)]
 pub(crate) fn decide_pr_comment_action(
     owner: &str,
     actor: &str,
