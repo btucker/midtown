@@ -400,16 +400,18 @@ pub(crate) fn decide_idle_shutdowns(
 // Detection types and functions
 // ---------------------------------------------------------------------------
 
-/// Pattern that indicates a coworker has hit a usage/rate limit.
+/// Patterns that indicate a coworker has hit a usage/rate limit (case-insensitive).
 ///
 /// When Claude Code hits a usage limit, it displays a message with "/upgrade"
-/// as an action option. This is specific to the actual usage limit screen and
-/// won't match code content that happens to mention "usage limit" or "rate limit"
-/// in comments or variable names.
+/// as an action option. We look for contextual patterns to avoid false positives
+/// when coworkers edit code containing "/upgrade" in strings or comments:
+/// - "- /upgrade" (menu option format in the usage limit screen)
+/// - "/upgrade to" (instruction format: "/upgrade to increase your limit")
+/// - "/upgrade or" (options format: "/upgrade or wait")
 ///
 /// Previous patterns like "usage limit" caused false positives when coworkers
 /// were editing code with those strings in comments.
-const USAGE_LIMIT_PATTERN: &str = "/upgrade";
+const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade or"];
 
 /// Detect whether pane content indicates a subagent (Task tool) is running.
 ///
@@ -471,31 +473,100 @@ pub(crate) fn decide_usage_limit_detection(
 /// Returns true if the usage limit pattern is present AND there's no significant
 /// activity after it. If the coworker has recovered (substantial content after
 /// the limit message), returns false.
+///
+/// Detection is case-insensitive to handle variations like "/Upgrade" or "/UPGRADE".
 fn is_at_usage_limit(content: &str) -> bool {
-    // Find the last occurrence of the usage limit pattern
-    let Some(limit_pos) = content.rfind(USAGE_LIMIT_PATTERN) else {
+    let content_lower = content.to_lowercase();
+
+    // Find the last occurrence of any usage limit pattern (case-insensitive)
+    let Some((limit_pos, pattern_len)) = USAGE_LIMIT_PATTERNS
+        .iter()
+        .filter_map(|pattern| {
+            content_lower
+                .rfind(&pattern.to_lowercase())
+                .map(|pos| (pos, pattern.len()))
+        })
+        .max_by_key(|(pos, _)| *pos)
+    else {
         return false;
     };
 
     // Get content after the usage limit message
-    let after_limit = &content[limit_pos + USAGE_LIMIT_PATTERN.len()..];
+    let after_limit = &content[limit_pos + pattern_len..];
 
-    // Count significant lines after the limit (non-empty, non-whitespace-only)
+    // Count significant lines after the limit
+    // Skip: empty lines, UI chrome (box-drawing, bullets, prompts), horizontal rules
     let significant_lines: usize = after_limit
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            // Skip empty lines and common noise
-            !trimmed.is_empty()
-                && !trimmed
-                    .chars()
-                    .all(|c| c == '─' || c == '━' || c == '=' || c == '-')
+            !trimmed.is_empty() && !is_ui_chrome(trimmed)
         })
         .count();
 
     // If there are more than 5 significant lines after the limit, coworker has recovered
     // (typical Claude Code output has prompts, tool calls, status lines, etc.)
     significant_lines <= 5
+}
+
+/// Check if a line is UI chrome (visual elements, not meaningful content).
+///
+/// Filters out:
+/// - Horizontal rules (─, ━, =, -)
+/// - Box-drawing characters (│, ┌, ├, └, etc.)
+/// - Bullet points and task indicators (◼, ◻, ✔, ●, ○, ■, □)
+/// - Cursor prompts (❯, >, $, %)
+fn is_ui_chrome(line: &str) -> bool {
+    // Lines that are entirely horizontal rules
+    if line
+        .chars()
+        .all(|c| matches!(c, '─' | '━' | '=' | '-' | ' '))
+    {
+        return true;
+    }
+
+    // Lines that are mostly box-drawing or bullet characters
+    let ui_chars: usize = line
+        .chars()
+        .filter(|c| {
+            matches!(
+                c,
+                '│' | '┌'
+                    | '├'
+                    | '└'
+                    | '┐'
+                    | '┤'
+                    | '┘'
+                    | '┬'
+                    | '┴'
+                    | '┼'
+                    | '╭'
+                    | '╮'
+                    | '╯'
+                    | '╰'
+                    | '◼'
+                    | '◻'
+                    | '✔'
+                    | '●'
+                    | '○'
+                    | '■'
+                    | '□'
+                    | '▪'
+                    | '▫'
+                    | '❯'
+                    | '>'
+                    | '$'
+                    | '%'
+                    | '─'
+                    | '━'
+                    | ' '
+            )
+        })
+        .count();
+
+    // If more than 80% of non-whitespace chars are UI chrome, consider it chrome
+    let non_ws_count = line.chars().filter(|c| !c.is_whitespace()).count();
+    non_ws_count > 0 && ui_chars * 100 / non_ws_count >= 80
 }
 
 /// Decision output for usage limit expiry check.
@@ -4157,7 +4228,7 @@ Options:
     fn usage_limit_minimal_activity_still_limited() {
         // Just a few lines after the limit - not enough to consider recovered
         let minimal_after = r#"
-/upgrade
+- /upgrade to increase your limit
 
 (waiting for limit to reset)
 "#;
@@ -4165,6 +4236,89 @@ Options:
         assert!(
             has_usage_limit_pattern(minimal_after),
             "minimal activity after limit should still be considered limited"
+        );
+    }
+
+    #[test]
+    fn usage_limit_case_insensitive() {
+        // Detection should be case-insensitive
+        let uppercase = "Your limit reached. - /UPGRADE to increase your limit.";
+        let mixed_case = "Your limit reached. - /Upgrade to increase your limit.";
+
+        assert!(
+            has_usage_limit_pattern(uppercase),
+            "uppercase '/UPGRADE' should trigger detection"
+        );
+        assert!(
+            has_usage_limit_pattern(mixed_case),
+            "mixed case '/Upgrade' should trigger detection"
+        );
+    }
+
+    #[test]
+    fn usage_limit_code_with_upgrade_should_not_trigger() {
+        // Code containing "/upgrade" in a string literal or comment should NOT trigger
+        // because it lacks the contextual patterns "- /upgrade" or "/upgrade to"
+        let code_with_upgrade = r#"
+            // Test fixture for usage limit detection
+            const PATTERN: &str = "/upgrade";
+
+            fn test_usage_limit() {
+                let pane = "some content with /upgrade in it";
+                assert!(has_pattern(pane));
+            }
+        "#;
+
+        assert!(
+            !has_usage_limit_pattern(code_with_upgrade),
+            "code containing '/upgrade' without context should NOT trigger detection"
+        );
+    }
+
+    #[test]
+    fn usage_limit_ui_chrome_should_not_count_as_activity() {
+        // Pure UI chrome (horizontal rules, cursor prompts) after the limit should not
+        // count as "significant activity" for recovery detection.
+        // Note: Lines with actual text content (like "Task 1" or file paths) ARE counted
+        // as significant since they represent real output, not just chrome.
+        let limit_with_pure_chrome = r#"
+You've reached your usage limit for Claude Opus 4.5.
+
+- /upgrade to increase your limit
+
+───────────────────────────
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+========================
+❯
+❯
+"#;
+
+        assert!(
+            has_usage_limit_pattern(limit_with_pure_chrome),
+            "pure UI chrome after usage limit should not count as recovery activity"
+        );
+    }
+
+    #[test]
+    fn usage_limit_real_activity_means_recovered() {
+        // If there's actual meaningful content after the usage limit (tool calls,
+        // text output, etc.), the coworker has recovered
+        let recovered_with_real_output = r#"
+You've reached your usage limit for Claude Opus 4.5.
+
+- /upgrade to increase your limit
+
+OK I'll continue working.
+Let me read the file.
+⏺ Read(file_path: "/src/main.rs")
+Got it, here are the contents.
+Now implementing the fix.
+⏺ Edit(file_path: "/src/main.rs")
+"#;
+
+        assert!(
+            !has_usage_limit_pattern(recovered_with_real_output),
+            "real activity after usage limit should indicate recovery"
         );
     }
 }
