@@ -263,7 +263,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let usage_limited_coworkers: HashSet<String> = pane_contents
         .iter()
         .filter(|(_, content)| crate::rules::has_usage_limit_pattern(content))
-        .map(|(name, _)| name.clone())
+        .map(|(name, _)| name.to_lowercase())
         .collect();
 
     // ── Limits & timing ─────────────────────────────────────────────────

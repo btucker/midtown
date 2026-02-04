@@ -333,9 +333,7 @@ pub(crate) fn decide_idle_shutdowns(
         let ci_passed = ci_passed_pr_coworkers
             .iter()
             .any(|c| c.eq_ignore_ascii_case(coworker));
-        let is_usage_limited = usage_limited_coworkers
-            .iter()
-            .any(|u| u.eq_ignore_ascii_case(coworker));
+        let is_usage_limited = usage_limited_coworkers.contains(&coworker.to_lowercase());
 
         // Coworkers with active tasks, review assignments, unblocked deps,
         // recent pane activity, running subagents, or usage limits are never
@@ -537,7 +535,7 @@ pub(crate) fn decide_stuck_coworker_restarts(
 
     for (name, content) in pane_contents {
         // Skip coworkers at usage limit — they're frozen but not stuck
-        if usage_limited_coworkers.contains(name) {
+        if usage_limited_coworkers.contains(&name.to_lowercase()) {
             continue;
         }
         // Hash the pane content for cheap comparison
@@ -2067,6 +2065,42 @@ mod tests {
             "coworkers with CI-passed PRs should be sent on break (waiting for review)"
         );
         assert_eq!(decisions[0].name, "york");
+    }
+
+    #[test]
+    fn idle_shutdown_skips_usage_limited_coworker() {
+        // Coworkers at usage limit should be protected from idle shutdown.
+        // They're frozen waiting for the limit to reset, not truly idle.
+        let coworkers = vec![cw("york", 10)];
+        let phases = lifecycle_with(
+            "york",
+            SessionHealth::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // york is at usage limit — should NOT be sent on break
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),       // not busy
+            &set(&[]),       // no open PR
+            &set(&[]),       // not reviewing
+            &set(&[]),       // no unblocked deps
+            &set(&[]),       // no running subagent
+            &set(&[]),       // no ci_passed
+            &set(&["york"]), // usage_limited
+            &phases,
+            Instant::now(),
+            Utc::now(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            Duration::from_secs(120),
+        );
+
+        assert!(
+            decisions.is_empty(),
+            "usage-limited coworker should be protected from idle shutdown"
+        );
     }
 
     // -----------------------------------------------------------------------
