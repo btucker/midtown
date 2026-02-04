@@ -2079,7 +2079,9 @@ fn test_kill_window_refuses_to_kill_last_window() {
 
     let session = test_session_name();
     assert!(create_test_session(&session));
-    // NOTE: No SessionCleanup here - we're testing that the session survives
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
 
     // Rename the default window to "only_window"
     let default_target = format!("{}:0", session);
@@ -2106,9 +2108,6 @@ fn test_kill_window_refuses_to_kill_last_window() {
         still_exists,
         "Last window should NOT have been killed - safety check failed"
     );
-
-    // Clean up
-    kill_test_session(&session);
 }
 
 /// `kill_window_by_target` also refuses to kill the last window.
@@ -2123,6 +2122,9 @@ fn test_kill_window_by_target_refuses_last_window() {
 
     let session = test_session_name();
     assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
 
     // Rename the default window
     let default_target = format!("{}:0", session);
@@ -2143,9 +2145,6 @@ fn test_kill_window_by_target_refuses_last_window() {
         still_exists,
         "Last window should NOT have been killed via kill_window_by_target"
     );
-
-    // Clean up
-    kill_test_session(&session);
 }
 
 /// `kill_window` works when there are multiple windows.
