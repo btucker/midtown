@@ -870,6 +870,12 @@ async fn collect_stuck_condition_effects(
             })
             .count();
 
+        // Cache the count for use by task dispatch (prioritize reviews over new tasks)
+        {
+            let mut cache = state.pr_coworker_cache.write().unwrap();
+            cache.prs_needing_review = prs_needing_review;
+        }
+
         let current_review_count = {
             let ps = state.persistent_state.lock().await;
             ps.github.active_count()

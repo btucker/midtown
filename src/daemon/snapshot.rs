@@ -91,6 +91,9 @@ pub struct WorldSnapshot {
     /// PRs that have been verified as reviewed (Claude review comment exists).
     /// Pre-collected during snapshot so decision logic doesn't need API calls.
     pub reviewed_prs: HashSet<u64>,
+    /// Count of open PRs that need review (not draft, no Claude review, no formal review).
+    /// Used by task dispatch to prioritize reviews over new task pickup.
+    pub prs_needing_review: usize,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -269,9 +272,9 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .collect();
     let coworkers_with_merged_prs: HashSet<String> =
         super::pr::get_coworkers_with_merged_prs(state);
-    let ci_passed_pr_coworkers: HashSet<String> = {
+    let (ci_passed_pr_coworkers, prs_needing_review) = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        cache.ci_passed_pr_owners.clone()
+        (cache.ci_passed_pr_owners.clone(), cache.prs_needing_review)
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
@@ -353,6 +356,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         active_reviewers,
         reviewer_pr_assignments,
         reviewed_prs,
+        prs_needing_review,
         coworkers_with_unblocked_deps,
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
@@ -472,6 +476,7 @@ mod tests {
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,

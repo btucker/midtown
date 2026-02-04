@@ -652,6 +652,22 @@ pub(super) fn spawn_for_pending_tasks(
 
     // Case 2: Pending tasks without owners - assign ownership atomically, then spawn
     let pending_unowned = &snap.pending_tasks_without_owners;
+
+    // Prioritize PR reviews over new task pickup: if there are PRs waiting for review
+    // and we have capacity to spawn reviewers, defer new task assignment. This ensures
+    // PRs don't wait while coworkers pick up new work.
+    let active_review_count = snap.active_reviewers.len();
+    if snap.prs_needing_review > 0
+        && active_review_count < MAX_CONCURRENT_REVIEWS
+        && !state.is_at_coworker_limit()
+    {
+        debug!(
+            "Deferring unowned task pickup: {} PR(s) need review, {}/{} reviewers active",
+            snap.prs_needing_review, active_review_count, MAX_CONCURRENT_REVIEWS
+        );
+        return effects;
+    }
+
     // All tasks from snapshot for relationship lookups (blockedBy, PR owner search)
     let all_tasks = &snap.all_tasks;
     // Track PR# → coworker and task_id → coworker assignments made during this loop iteration.
