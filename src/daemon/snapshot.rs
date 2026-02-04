@@ -168,14 +168,18 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         }
     }
 
-    // Derive blank-pane set: running coworkers whose pane has no visible output
+    // Derive blank-pane set: running coworkers whose pane has no visible output.
+    // IMPORTANT: Only mark as blank if we SUCCESSFULLY captured an empty pane.
+    // A failed pane capture (None) is NOT treated as blank - the coworker might
+    // be actively running and tmux just had a transient failure. This prevents
+    // false-positive zombie detection that kills healthy isolated reviewers.
     let blank_pane_coworkers: HashSet<String> = running_coworkers
         .iter()
         .filter(|cw| {
             pane_contents
                 .get(&cw.name)
                 .map(|c| !crate::tmux::content_has_output(c))
-                .unwrap_or(true) // no pane content captured → treat as blank
+                .unwrap_or(false) // pane capture failed → don't assume blank
         })
         .map(|cw| cw.name.to_lowercase())
         .collect();
