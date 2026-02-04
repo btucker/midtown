@@ -670,7 +670,8 @@ async fn collect_stuck_condition_effects(
                 let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::NoReview);
                 let has_available_slots = state.coworkers.next_available_name().is_some();
 
-                let nudge = if prior_nudges >= STUCK_ESCALATION_NUDGE_COUNT {
+                // prior_nudges is the count before this nudge, so +1 gives "this nudge number"
+                let nudge = if prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT {
                     // Escalation: this has persisted too long, suggest investigation
                     let context = if is_assigned && has_available_slots {
                         "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug."
@@ -722,7 +723,8 @@ async fn collect_stuck_condition_effects(
                 let prior_nudges =
                     tracker.nudge_count(&pr_id, StuckConditionType::UnresolvedFeedback);
 
-                let nudge = if prior_nudges >= STUCK_ESCALATION_NUDGE_COUNT {
+                // prior_nudges is the count before this nudge, so +1 gives "this nudge number"
+                let nudge = if prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT {
                     format!(
                         "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't responded despite repeated nudges. The coworker may be stuck or the task may need reassignment.",
                         pr_number,
@@ -755,7 +757,8 @@ async fn collect_stuck_condition_effects(
             {
                 let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::MergeReady);
 
-                let nudge = if prior_nudges >= STUCK_ESCALATION_NUDGE_COUNT {
+                // prior_nudges is the count before this nudge, so +1 gives "this nudge number"
+                let nudge = if prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT {
                     format!(
                         "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — the author isn't responding to merge nudges. Consider merging manually or investigating the coworker.",
                         pr_number,
@@ -2593,5 +2596,60 @@ mod tests {
         for effect in &effects {
             assert!(matches!(effect, Effect::RerunWorkflow { .. }));
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Stuck condition escalation threshold tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_escalation_triggers_on_second_nudge() {
+        use crate::daemon::constants::STUCK_ESCALATION_NUDGE_COUNT;
+
+        // The escalation condition is: prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT
+        // With STUCK_ESCALATION_NUDGE_COUNT = 2:
+        // - First nudge (prior_nudges=0): 0+1=1 < 2, no escalation
+        // - Second nudge (prior_nudges=1): 1+1=2 >= 2, ESCALATION
+
+        let prior_nudges_first = 0u32;
+        let prior_nudges_second = 1u32;
+
+        let should_escalate_first = prior_nudges_first + 1 >= STUCK_ESCALATION_NUDGE_COUNT;
+        let should_escalate_second = prior_nudges_second + 1 >= STUCK_ESCALATION_NUDGE_COUNT;
+
+        assert!(
+            !should_escalate_first,
+            "first nudge (prior=0) should NOT escalate"
+        );
+        assert!(
+            should_escalate_second,
+            "second nudge (prior=1) should escalate"
+        );
+    }
+
+    #[test]
+    fn test_escalation_timing_matches_documentation() {
+        use crate::daemon::constants::{
+            STUCK_ESCALATION_NUDGE_COUNT, STUCK_NO_REVIEW_DURATION, STUCK_NUDGE_COOLDOWN_SECS,
+        };
+
+        // Documentation says escalation happens after 45+ minutes:
+        // - Initial stuck detection: ~15 minutes (STUCK_NO_REVIEW_DURATION)
+        // - First nudge at T=15min (prior_nudges becomes 1)
+        // - Cooldown: 30 minutes (STUCK_NUDGE_COOLDOWN_SECS)
+        // - Second nudge at T=45min triggers escalation (prior_nudges=1, 1+1=2 >= 2)
+
+        let initial_detection_secs = STUCK_NO_REVIEW_DURATION.as_secs();
+        let cooldown_secs = STUCK_NUDGE_COOLDOWN_SECS;
+        let nudges_before_escalation = STUCK_ESCALATION_NUDGE_COUNT - 1; // 1 nudge before escalation
+
+        let escalation_time_secs =
+            initial_detection_secs + (nudges_before_escalation as u64 * cooldown_secs);
+        let escalation_time_minutes = escalation_time_secs / 60;
+
+        assert_eq!(
+            escalation_time_minutes, 45,
+            "escalation should trigger at 45 minutes (15 min initial + 30 min cooldown)"
+        );
     }
 }
