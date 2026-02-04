@@ -1106,8 +1106,13 @@ fn get_open_prs() -> Vec<serde_json::Value> {
                 Vec::new()
             }
         }
-        _ => {
-            debug!("Failed to get PRs from gh CLI");
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Failed to get PRs from gh CLI: {}", stderr.trim());
+            Vec::new()
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr list: {}", e);
             Vec::new()
         }
     }
@@ -1327,14 +1332,23 @@ fn fetch_kanban_all_prs(
             let stdout = String::from_utf8_lossy(&o.stdout);
             match serde_json::from_str::<serde_json::Value>(&stdout) {
                 Ok(v) => v,
-                Err(_) => {
-                    debug!("Failed to parse kanban GraphQL response");
+                Err(e) => {
+                    warn!("Failed to parse kanban GraphQL response: {}", e);
                     return (Vec::new(), Vec::new());
                 }
             }
         }
-        _ => {
-            debug!("Failed to execute kanban GraphQL query");
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!(
+                "GitHub API query failed for {}: {}",
+                name_with_owner,
+                stderr.trim()
+            );
+            return (Vec::new(), Vec::new());
+        }
+        Err(e) => {
+            warn!("Failed to execute gh command: {}", e);
             return (Vec::new(), Vec::new());
         }
     };
@@ -1583,8 +1597,13 @@ fn get_merged_prs() -> Vec<serde_json::Value> {
             let stdout = String::from_utf8_lossy(&output.stdout);
             serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
         }
-        _ => {
-            debug!("Failed to get merged PRs from gh CLI");
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
+            Vec::new()
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr list (merged): {}", e);
             Vec::new()
         }
     }
