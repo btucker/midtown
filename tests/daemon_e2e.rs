@@ -2561,7 +2561,7 @@ fn test_daemon_rpc_channel_post_unescapes_shell_artifacts() {
                     .map(|s| s.contains("complete"))
                     .unwrap_or(false)
         })
-        .expect("Should find the posted message");
+        .unwrap_or_else(|| panic!("Should find posted message, got: {:?}", messages));
 
     let content = msg["message"].as_str().unwrap();
     assert!(
@@ -2620,10 +2620,11 @@ fn test_daemon_rpc_channel_read_all_param() {
     );
 }
 
-/// Test coworker.nudge returns success for valid params.
+/// Test coworker.nudge accepts valid params without returning invalid_params error.
 ///
-/// Note: The actual nudge may fail if the coworker doesn't exist in tmux,
-/// but the RPC handler should still return a response (success or error).
+/// This verifies the RPC handler validates params correctly. The underlying tmux
+/// operation may fail (returning -32603 internal error) if no coworker exists,
+/// but it should NOT return -32602 (invalid params) for well-formed requests.
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_rpc_coworker_nudge_valid_params() {
@@ -2645,13 +2646,25 @@ fn test_daemon_rpc_coworker_nudge_valid_params() {
     let response = fixture.rpc_call("coworker.nudge", Some(params));
     assert!(response.is_some(), "Should receive response");
 
-    // The response may be success (if no tmux session) or error (if tmux exists but window doesn't)
-    // Either way, we should get a well-formed response
     let response = response.unwrap();
-    assert!(
-        response["result"].is_object() || response["error"].is_object(),
-        "Response should have result or error"
-    );
+
+    // Valid params should NOT return invalid_params error (-32602).
+    // The operation may return success or internal error (-32603) depending
+    // on tmux state, but never invalid_params for well-formed requests.
+    if let Some(error) = response["error"].as_object() {
+        let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        assert_ne!(
+            code, -32602,
+            "Valid params should not return invalid_params error"
+        );
+    }
+    // If no error, verify we got a result object
+    if response["error"].is_null() {
+        assert!(
+            response["result"].is_object(),
+            "Success response should have result object"
+        );
+    }
 }
 
 /// Test reminder.create with invalid trigger returns error.
