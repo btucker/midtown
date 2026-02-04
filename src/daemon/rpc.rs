@@ -631,46 +631,36 @@ fn handle_task_updated(
         );
     };
 
-    let Some(ref owner) = task.owner else {
-        info!(
-            "task.updated: task {} has no owner, skipping nudge",
-            task_id
-        );
+    // Use helper function to decide whether to nudge
+    let Some((owner, nudge_message)) = should_nudge_task_owner(task, updater) else {
+        // Log the specific reason for skipping
+        let reason = if task.owner.is_none() {
+            "task has no owner"
+        } else if task.owner.as_ref().is_some_and(|o| o == updater) {
+            "updater is owner"
+        } else if task.status == crate::tasks::TaskStatus::Completed {
+            "task is completed"
+        } else {
+            "unknown"
+        };
+        debug!("task.updated: task {} skipping nudge ({})", task_id, reason);
         return Response::success(
             id,
             serde_json::json!({
                 "nudged": false,
-                "reason": "task has no owner",
+                "reason": reason,
             }),
         );
     };
 
-    if owner == updater {
-        debug!(
-            "task.updated: task {} updated by its owner ({}), no nudge needed",
-            task_id, updater
-        );
-        return Response::success(
-            id,
-            serde_json::json!({
-                "nudged": false,
-                "reason": "updater is owner",
-            }),
-        );
-    }
-
-    let nudge_message = format!(
-        "Your task #{} ({}) was updated by {} — check the latest changes",
-        task_id, task.subject, updater
-    );
-
     // Nudge the owner (could be a coworker or Lead).
     // Run in spawn_blocking to avoid blocking the async runtime.
     let coworkers = state.coworkers.clone();
-    let owner_owned = owner.clone();
+    let owner_clone = owner.clone();
+    let nudge_clone = nudge_message.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = coworkers.nudge(&owner_owned, &nudge_message) {
-            debug!("Failed to nudge {} for task update: {}", owner_owned, e);
+        if let Err(e) = coworkers.nudge(&owner_clone, &nudge_clone) {
+            debug!("Failed to nudge {} for task update: {}", owner_clone, e);
         }
     });
 
@@ -701,6 +691,35 @@ fn should_lookup_task(task_list_id: Option<&str>, repo_name: &str) -> bool {
         None => true, // Backwards compatibility
         Some(id) => id == expected,
     }
+}
+
+/// Determine whether to nudge a task owner about an update.
+///
+/// Returns `Some((owner, message))` if a nudge should be sent, or `None` if not.
+///
+/// Nudges are skipped when:
+/// - Task has no owner
+/// - Updater is the owner (self-update)
+/// - Task is already completed (no need to alert about finished work)
+fn should_nudge_task_owner(task: &crate::tasks::Task, updater: &str) -> Option<(String, String)> {
+    // Skip if no owner
+    let owner = task.owner.as_ref()?;
+
+    // Skip if updater is the owner
+    if owner == updater {
+        return None;
+    }
+
+    // Skip completed tasks — they're done, no need to nudge about updates
+    if task.status == crate::tasks::TaskStatus::Completed {
+        return None;
+    }
+
+    let message = format!(
+        "Your task #{} ({}) was updated by {} — check the latest changes",
+        task.id, task.subject, updater
+    );
+    Some((owner.clone(), message))
 }
 
 /// Remove shell escaping artifacts from channel messages.
@@ -1779,5 +1798,92 @@ mod tests {
     fn test_should_lookup_task_different_repo() {
         // When task_list_id is for a different repo, should NOT proceed
         assert!(!should_lookup_task(Some("midtown-otherrepo"), "myrepo"));
+    }
+
+    #[test]
+    fn test_should_nudge_task_owner_in_progress_task() {
+        // In-progress task with owner, updated by someone else — should nudge
+        let task = crate::tasks::Task {
+            id: "42".to_string(),
+            subject: "Fix the bug".to_string(),
+            status: crate::tasks::TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: None,
+            blocked_by: vec![],
+            created_at: None,
+        };
+        let result = should_nudge_task_owner(&task, "lead");
+        assert!(result.is_some());
+        let (owner, message) = result.unwrap();
+        assert_eq!(owner, "york");
+        assert!(message.contains("task #42"));
+        assert!(message.contains("lead"));
+    }
+
+    #[test]
+    fn test_should_nudge_task_owner_completed_task() {
+        // Completed task — should NOT nudge (this is the bug fix)
+        let task = crate::tasks::Task {
+            id: "42".to_string(),
+            subject: "Fix the bug".to_string(),
+            status: crate::tasks::TaskStatus::Completed,
+            owner: Some("york".to_string()),
+            description: None,
+            blocked_by: vec![],
+            created_at: None,
+        };
+        let result = should_nudge_task_owner(&task, "lead");
+        assert!(result.is_none(), "Should not nudge for completed tasks");
+    }
+
+    #[test]
+    fn test_should_nudge_task_owner_no_owner() {
+        // Task without owner — should NOT nudge
+        let task = crate::tasks::Task {
+            id: "42".to_string(),
+            subject: "Fix the bug".to_string(),
+            status: crate::tasks::TaskStatus::InProgress,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            created_at: None,
+        };
+        let result = should_nudge_task_owner(&task, "lead");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_should_nudge_task_owner_self_update() {
+        // Owner updating their own task — should NOT nudge
+        let task = crate::tasks::Task {
+            id: "42".to_string(),
+            subject: "Fix the bug".to_string(),
+            status: crate::tasks::TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: None,
+            blocked_by: vec![],
+            created_at: None,
+        };
+        let result = should_nudge_task_owner(&task, "york");
+        assert!(
+            result.is_none(),
+            "Should not nudge when owner updates their own task"
+        );
+    }
+
+    #[test]
+    fn test_should_nudge_task_owner_pending_task() {
+        // Pending task with owner, updated by someone else — should nudge
+        let task = crate::tasks::Task {
+            id: "42".to_string(),
+            subject: "Fix the bug".to_string(),
+            status: crate::tasks::TaskStatus::Pending,
+            owner: Some("york".to_string()),
+            description: None,
+            blocked_by: vec![],
+            created_at: None,
+        };
+        let result = should_nudge_task_owner(&task, "lead");
+        assert!(result.is_some());
     }
 }
