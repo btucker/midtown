@@ -822,6 +822,102 @@ fn load_additional_worktree_managers(
         .collect()
 }
 
+/// Extract owner/repo from a git remote URL.
+///
+/// Handles both HTTPS and SSH URL formats:
+/// - HTTPS: `https://github.com/owner/repo.git` -> `owner/repo`
+/// - SSH: `git@github.com:owner/repo.git` -> `owner/repo`
+fn extract_repo_name_from_url(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches(".git");
+
+    // SSH format: git@github.com:owner/repo
+    // Find the colon after the @ symbol (separates host from path)
+    if let Some(at_pos) = url.find('@')
+        && let Some(colon_pos) = url[at_pos..].find(':')
+    {
+        let path = &url[at_pos + colon_pos + 1..];
+        if path.contains('/') {
+            return Some(path.to_string());
+        }
+    }
+
+    // HTTPS format: https://github.com/owner/repo
+    // Extract the last two path components
+    let parts: Vec<&str> = url.rsplitn(3, '/').collect();
+    if parts.len() >= 2 {
+        let repo = parts[0];
+        let owner = parts[1];
+        if !owner.is_empty() && !repo.is_empty() {
+            return Some(format!("{}/{}", owner, repo));
+        }
+    }
+
+    None
+}
+
+/// Validate that the configured github_user has access to the repository.
+///
+/// Makes a simple `gh repo view` call to verify the user can access the repo.
+/// This catches misconfigured github_user early with a clear error message,
+/// rather than having mysterious polling failures later.
+fn validate_github_repo_access(github_user: &str, workdir: &PathBuf) -> crate::Result<()> {
+    info!("Validating GitHub repo access for user: {}", github_user);
+
+    // Get the repo's full name (owner/repo) for the error message
+    let output = std::process::Command::new("gh")
+        .current_dir(workdir)
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ])
+        .output()
+        .map_err(|e| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Failed to run `gh repo view`: {}", e),
+        })?;
+
+    if output.status.success() {
+        let repo_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        info!(
+            "Validated github_user '{}' has access to repository '{}'",
+            github_user, repo_name
+        );
+        return Ok(());
+    }
+
+    // Get the repo name for a better error message (even if access check failed)
+    let repo_name = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            extract_repo_name_from_url(&url)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(crate::Error::Rpc {
+        code: -32603,
+        message: format!(
+            "github_user '{}' does not have access to repository '{}'.\n\
+             Please check your ~/.midtown/config.toml configuration.\n\
+             GitHub error: {}",
+            github_user,
+            repo_name,
+            stderr.trim()
+        ),
+    })
+}
+
+/// Acquire an exclusive lock on the PID file.
+///
 /// The lock is held for the lifetime of the returned File handle.
 ///
 /// Returns an error if another daemon is already running (lock already held).
@@ -959,6 +1055,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             github_user,
             token.len()
         );
+
+        // Validate that the github_user has access to this repository.
+        // This catches misconfigured github_user early with a clear error,
+        // rather than having mysterious failures during polling.
+        validate_github_repo_access(github_user, &config.workdir)?;
     }
 
     // Acquire exclusive lock on PID file to enforce singleton behavior
@@ -1558,6 +1659,57 @@ mod tests {
         UsageLimitDecision, UsageLimitExpiryDecision, decide_usage_limit_detection,
         decide_usage_limit_expiry,
     };
+
+    // URL parsing tests for extract_repo_name_from_url
+    #[test]
+    fn test_extract_repo_name_https_url() {
+        assert_eq!(
+            extract_repo_name_from_url("https://github.com/owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            extract_repo_name_from_url("https://github.com/owner/repo"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            extract_repo_name_from_url("https://github.com/btucker/midtown.git"),
+            Some("btucker/midtown".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_ssh_url() {
+        assert_eq!(
+            extract_repo_name_from_url("git@github.com:owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            extract_repo_name_from_url("git@github.com:owner/repo"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            extract_repo_name_from_url("git@github.com:btucker/midtown.git"),
+            Some("btucker/midtown".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_with_whitespace() {
+        assert_eq!(
+            extract_repo_name_from_url("  https://github.com/owner/repo.git  \n"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            extract_repo_name_from_url("git@github.com:owner/repo.git\n"),
+            Some("owner/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_name_invalid() {
+        assert_eq!(extract_repo_name_from_url("not a url"), None);
+        assert_eq!(extract_repo_name_from_url(""), None);
+    }
 
     // Auto-nudge helper tests
     #[test]
