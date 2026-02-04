@@ -25,20 +25,8 @@ use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::push::PushManager;
+use crate::tasks::extract_task_id_from_pr_title;
 use crate::tmux;
-
-/// Extract task ID from PR title using the `[Midtown #XX]` format.
-fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
-    // Look for "[Midtown #XX]" pattern
-    if let Some(start) = title.find("[Midtown #") {
-        let rest = &title[start + 10..]; // Skip "[Midtown #"
-        if let Some(end) = rest.find(']') {
-            let num_str = &rest[..end];
-            return num_str.parse::<u64>().ok();
-        }
-    }
-    None
-}
 
 /// Tracks which WebSocket connections are viewing which tmux windows,
 /// along with each viewer's viewport width in columns.
@@ -522,10 +510,12 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         .collect();
 
     // Build a map of task_id -> task_subject for PR enrichment
+    // Task.id is a String, so parse the JSON string value to u64
     let task_map: std::collections::HashMap<u64, String> = tasks
         .iter()
         .filter_map(|t| {
-            let id = t.get("id").and_then(|i| i.as_u64())?;
+            let id_str = t.get("id").and_then(|i| i.as_str())?;
+            let id = id_str.parse::<u64>().ok()?;
             let subject = t.get("subject").and_then(|s| s.as_str())?;
             Some((id, subject.to_string()))
         })

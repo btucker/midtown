@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
 /// Data fetched from background thread for kanban refresh
@@ -75,9 +76,9 @@ pub enum TaskStatus {
 pub struct KanbanPr {
     pub number: u64,
     pub title: String,
-    #[allow(dead_code)] // Retained for potential future use (modal display, debugging)
+    #[allow(dead_code)] // Populated but not yet rendered in TUI
     pub author: String,
-    #[allow(dead_code)] // Retained for potential future use (modal display, debugging)
+    #[allow(dead_code)] // Populated but not yet rendered in TUI
     pub created_at: DateTime<Utc>,
     pub ci_status: CiStatus,
     /// Reviewer name (extracted from review comment frontmatter)
@@ -759,19 +760,6 @@ fn extract_coworker_from_body(body: &str) -> Option<String> {
             if !name.is_empty() {
                 return Some(name.to_string());
             }
-        }
-    }
-    None
-}
-
-/// Extract task ID from PR title using the `[Midtown #XX]` format.
-fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
-    // Look for "[Midtown #XX]" pattern
-    if let Some(start) = title.find("[Midtown #") {
-        let rest = &title[start + 10..]; // Skip "[Midtown #"
-        if let Some(end) = rest.find(']') {
-            let num_str = &rest[..end];
-            return num_str.parse::<u64>().ok();
         }
     }
     None
