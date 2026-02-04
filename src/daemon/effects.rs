@@ -559,6 +559,8 @@ async fn rebase_pr_on_main(state: &DaemonState, pr_number: u64, reason: &str) {
 /// Auto-merge a PR using `gh pr merge --squash`.
 ///
 /// Posts a channel message on success or failure.
+/// TODO: Wire up to Effect::AutoMergePr when auto-merge logic is complete.
+#[allow(dead_code)]
 async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
     use super::helpers::truncate_str;
 
