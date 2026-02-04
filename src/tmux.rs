@@ -2936,4 +2936,78 @@ Claude is now processing the request
         assert_eq!(retry.name, "park");
         assert_eq!(retry.initial_prompt, Some("task prompt".to_string()));
     }
+
+    /// Regression test: orphan cleanup must not kill tmux processes.
+    ///
+    /// Bug context: The orphan cleanup pattern matches "claude" in command lines,
+    /// but tmux servers include "claude" in their args when spawning windows.
+    /// Since tmux servers run as daemons (PPID=1), they were incorrectly matched
+    /// as orphans and killed, destroying all windows.
+    #[test]
+    fn orphan_cleanup_excludes_tmux_processes() {
+        use std::process::Command;
+
+        let session_name = "test-orphan-cleanup";
+
+        // Clean up any leftover session from previous failed runs
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session_name])
+            .output();
+
+        // Start a tmux session with "claude --settings" in the command line
+        // This simulates how midtown starts sessions
+        let create_result = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "echo",
+                "claude",
+                "--settings",
+                "/fake/midtown/test-settings.json",
+            ])
+            .output();
+
+        if create_result.is_err() {
+            // tmux not available, skip test
+            return;
+        }
+
+        // Verify session was created
+        let session_exists = Command::new("tmux")
+            .args(["has-session", "-t", session_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !session_exists {
+            // Could not create session (tmux server issues), skip
+            return;
+        }
+
+        // Run the orphan cleanup with the pattern that matches "claude --settings"
+        // This is the same pattern used by the daemon
+        let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
+        let killed = super::kill_orphaned_processes(pattern);
+
+        // The tmux session should still exist - it must NOT have been killed
+        let session_still_exists = Command::new("tmux")
+            .args(["has-session", "-t", session_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session_name])
+            .output();
+
+        assert!(
+            session_still_exists,
+            "tmux session was killed by orphan cleanup! killed={} processes. \
+             The orphan cleanup pattern must exclude tmux processes.",
+            killed
+        );
+    }
 }
