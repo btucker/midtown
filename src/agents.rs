@@ -211,19 +211,34 @@ fn load_personality(name: &str, personality: Personality) -> Option<String> {
 /// Build the personality section to append to a system prompt.
 fn personality_section(name: &str, personality: Personality) -> String {
     match load_personality(name, personality) {
-        Some(desc) => format!(
-            "\n\n## Personality\n\n\
-             Your personality variant is set to **{}**. Let this voice come through in your \
-             channel messages and GitHub comments (PR descriptions, review comments). \
-             Keep code itself clean and professional regardless.\n\n\
-             **Standard status messages are NOT exempt.** When you post claiming, developing, \
-             testing, completing, or idle updates to the channel, phrase them in your personality's \
-             voice. Don't fall back to generic, formulaic messages — every channel post is a \
-             chance to bring your character to life. Just make sure the required status keywords \
-             and task numbers are still present (see Workflow Phases).\n\n{}",
-            personality.as_str(),
-            desc
-        ),
+        Some(desc) => {
+            if personality == Personality::Normal {
+                // Normal mode: strictly professional, no personality flair
+                format!(
+                    "\n\n## Personality\n\n\
+                     Your personality variant is set to **normal**. Be strictly professional \
+                     in all communication. Use direct, factual language with no flair or \
+                     personality expression. Status messages should be plain: \"claimed task 5\", \
+                     \"completed task 7\", \"idle\". Keep code itself clean and professional.\n\n{}",
+                    desc
+                )
+            } else {
+                // Fun/wild modes: encourage personality expression
+                format!(
+                    "\n\n## Personality\n\n\
+                     Your personality variant is set to **{}**. Let this voice come through in your \
+                     channel messages and GitHub comments (PR descriptions, review comments). \
+                     Keep code itself clean and professional regardless.\n\n\
+                     **Standard status messages are NOT exempt.** When you post claiming, developing, \
+                     testing, completing, or idle updates to the channel, phrase them in your personality's \
+                     voice. Don't fall back to generic, formulaic messages — every channel post is a \
+                     chance to bring your character to life. Just make sure the required status keywords \
+                     and task numbers are still present (see Workflow Phases).\n\n{}",
+                    personality.as_str(),
+                    desc
+                )
+            }
+        }
         None => String::new(),
     }
 }
@@ -469,8 +484,8 @@ mod tests {
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(
-            text.contains("Traditional"),
-            "york normal should be traditional"
+            text.contains("Professional"),
+            "york normal should be professional"
         );
     }
 

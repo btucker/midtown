@@ -42,25 +42,25 @@ midtown state <phase> [--task <id>]
 
 **Always run `midtown state` when your phase changes.** This is what drives the status display — `/me` messages are for the chat log only.
 
-**Also post a `/me` channel message** alongside each state change so teammates can follow your progress in the chat. These messages are freeform — no keyword requirements. **Express your personality** in them:
+**Also post a `/me` channel message** alongside each state change so teammates can follow your progress in the chat. These messages are freeform — no keyword requirements. If your personality mode allows it, express it in these messages:
 
 ```bash
 # Update structured state AND post to channel:
 midtown state claiming --task 5
-midtown channel post "/me taking on task 5 - the spotlight awaits!"
+midtown channel post "/me claimed task 5"
 
 midtown state developing --task 5
-midtown channel post "/me diving into the code for task 5"
+midtown channel post "/me working on task 5"
 
 midtown state completed --task 5
-midtown channel post "/me wrapped up task 5 - another scene in the books"
+midtown channel post "/me completed task 5"
 
 midtown state idle
-midtown channel post "/me the stage is dark, waiting for the next act"
+midtown channel post "/me idle, ready for next task"
 ```
 
 ### Other Updates
-Use your personality in all channel messages — they're freeform:
+Channel messages are freeform:
 - Progress milestones: `/me found the root cause in auth.rs`
 - Blocked: `blocked on task 3, need API spec clarified`
 - Questions: `@Lead should this handle the edge case?`
@@ -82,10 +82,10 @@ midtown channel post "@user yes, the test suite covers that case"
 Without the @mention, the daemon cannot route your reply and the other person may never see it. Always reply to whoever messaged you — if the nudge says it came from the user, reply with `@user`.
 
 ### Idle Status (No Feedback Needed)
-When you become idle, report it and post a channel message in your own voice without requesting feedback:
+When you become idle, report it and post a channel message without requesting feedback:
 ```bash
 midtown state idle
-midtown channel post "/me the stage is dark, waiting for the next act"
+midtown channel post "/me idle, ready for next task"
 ```
 
 These are **informational only** - do not ask questions or request confirmation. The daemon will auto-shutdown idle coworkers or assign new work when available.
@@ -103,16 +103,16 @@ TaskUpdate with taskId, status: "in_progress", owner: "{name}"
 
 This ensures `midtown status` shows who's working on each task.
 
-After updating a task status, **report your phase with `midtown state`** and announce it to the channel. Use your personality voice:
+After updating a task status, **report your phase with `midtown state`** and announce it to the channel:
 
 ```bash
 # Example: claiming task 5
 midtown state claiming --task 5
-midtown channel post "/me taking on task 5 - auth endpoint time!"
+midtown channel post "/me claimed task 5 - auth endpoint"
 
 # Example: starting development
 midtown state developing --task 5
-midtown channel post "/me building out the auth endpoint for task 5"
+midtown channel post "/me working on auth endpoint for task 5"
 ```
 
 ### Avoiding Duplicate Claims
@@ -201,7 +201,7 @@ When your PR is ready for review:
 **Report your state and post to channel:**
 ```bash
 midtown state pull-request --task 42
-midtown channel post "/me PR #42 is ready for its audience"
+midtown channel post "/me opened PR for task 42"
 ```
 
 **Do NOT @lead for routine PR review requests.** The daemon automatically detects new PRs and assigns reviewers — you don't need to notify the lead or create review tasks manually. The daemon will assign an idle coworker or call in a new one to review your PR.
