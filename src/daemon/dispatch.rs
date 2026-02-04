@@ -368,6 +368,32 @@ fn should_skip_orphan_flagging(pr_poll_initialized: bool) -> bool {
     !pr_poll_initialized
 }
 
+/// Compute which orphaned coworkers should have their reviewer assignments cleared.
+///
+/// Returns `None` if we should skip clearing (PR poll not yet initialized).
+/// Returns `Some(vec)` with the filtered list of orphans (excluding those with open PRs).
+///
+/// During startup, we don't have accurate PR data, so we can't safely clear
+/// reviewer assignments without risking clearing assignments for coworkers who
+/// legitimately have open PRs and are just "on break".
+///
+/// Pure function for testability.
+fn compute_orphans_for_reviewer_clearing(
+    pr_poll_initialized: bool,
+    all_orphaned: Vec<String>,
+    open_pr_owners: &HashSet<String>,
+) -> Option<Vec<String>> {
+    if !pr_poll_initialized {
+        return None;
+    }
+    let filtered = filter_orphans_with_open_prs(all_orphaned, open_pr_owners);
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered)
+    }
+}
+
 /// Filter out worktrees that have open PRs.
 ///
 /// A worktree with an open PR is not orphaned — it's just waiting for review/merge.
@@ -429,7 +455,10 @@ fn partition_orphans_by_merged_status(
 /// runtime. We process a limited number per tick to avoid saturating the
 /// blocking thread pool.
 ///
-/// Returns effects for clearing reviewer assignments of orphaned coworkers.
+/// Returns effects for clearing reviewer assignments of orphaned coworkers,
+/// but only after the first PR poll completes (when we have accurate PR data).
+/// Coworkers with open PRs are excluded from reviewer assignment clearing
+/// since they may be "on break" waiting for reviews.
 pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -459,16 +488,7 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
         (vec![], vec![], HashMap::new())
     });
 
-    // Queue effect to clear reviewer assignments for orphaned coworkers.
-    // When a coworker's tmux session ends unexpectedly, their reviewer assignment
-    // should be freed so another coworker can be assigned to review the PR.
-    if !all_orphaned.is_empty() {
-        effects.push(Effect::ClearOrphanedReviewerAssignments {
-            orphaned_coworkers: all_orphaned,
-        });
-    }
-
-    // Skip orphan flagging until the first PR poll completes.
+    // Skip orphan flagging and reviewer assignment clearing until the first PR poll completes.
     let (pr_poll_initialized, open_pr_owners) = {
         let cache = state.pr_coworker_cache.read().unwrap();
         (cache.pr_poll_initialized, cache.open_pr_owners.clone())
@@ -476,6 +496,16 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
     if should_skip_orphan_flagging(pr_poll_initialized) {
         debug!("Skipping orphan flagging - PR poll not yet initialized");
         return effects;
+    }
+
+    // Queue effect to clear reviewer assignments for orphaned coworkers.
+    // Uses pure helper function for testability.
+    if let Some(orphans) =
+        compute_orphans_for_reviewer_clearing(pr_poll_initialized, all_orphaned, &open_pr_owners)
+    {
+        effects.push(Effect::ClearOrphanedReviewerAssignments {
+            orphaned_coworkers: orphans,
+        });
     }
 
     // Filter out worktrees whose branches have open PRs (by coworker name).
@@ -1033,5 +1063,61 @@ mod tests {
         // After first PR poll completes, we have open_pr_owners data
         // and can safely flag orphans
         assert!(!should_skip_orphan_flagging(true));
+    }
+
+    #[test]
+    fn test_compute_orphans_for_reviewer_clearing_skips_before_pr_poll() {
+        // Bug scenario: During startup, PR poll hasn't run yet. If we clear
+        // reviewer assignments, we'd incorrectly clear them for coworkers who
+        // have open PRs (because open_pr_owners is empty until PR poll runs).
+        let all_orphaned = vec!["amsterdam".to_string(), "york".to_string()];
+        let open_pr_owners: HashSet<String> = HashSet::new(); // Empty during startup
+
+        // Before PR poll initialized, should return None (skip clearing)
+        let result = compute_orphans_for_reviewer_clearing(false, all_orphaned, &open_pr_owners);
+        assert!(
+            result.is_none(),
+            "Should skip reviewer clearing before PR poll initializes"
+        );
+    }
+
+    #[test]
+    fn test_compute_orphans_for_reviewer_clearing_filters_open_pr_owners() {
+        // After PR poll: amsterdam has an open PR, york doesn't.
+        // Only york should have their reviewer assignment cleared.
+        let all_orphaned = vec!["amsterdam".to_string(), "york".to_string()];
+        let open_pr_owners: HashSet<String> = ["amsterdam".to_string()].into_iter().collect();
+
+        let result = compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners);
+        assert_eq!(
+            result,
+            Some(vec!["york".to_string()]),
+            "Should only clear reviewer assignments for orphans without open PRs"
+        );
+    }
+
+    #[test]
+    fn test_compute_orphans_for_reviewer_clearing_all_have_open_prs() {
+        // All orphaned coworkers have open PRs - should return None
+        let all_orphaned = vec!["amsterdam".to_string(), "york".to_string()];
+        let open_pr_owners: HashSet<String> = ["amsterdam".to_string(), "york".to_string()]
+            .into_iter()
+            .collect();
+
+        let result = compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners);
+        assert!(
+            result.is_none(),
+            "Should return None when all orphans have open PRs"
+        );
+    }
+
+    #[test]
+    fn test_compute_orphans_for_reviewer_clearing_none_orphaned() {
+        // No orphaned worktrees - should return None
+        let all_orphaned: Vec<String> = vec![];
+        let open_pr_owners: HashSet<String> = HashSet::new();
+
+        let result = compute_orphans_for_reviewer_clearing(true, all_orphaned, &open_pr_owners);
+        assert!(result.is_none(), "Should return None when no orphans");
     }
 }
