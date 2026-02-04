@@ -668,10 +668,7 @@ async fn collect_stuck_condition_effects(
             tracker.track(&pr_id, StuckConditionType::NoReview);
             if tracker.should_nudge(&pr_id, StuckConditionType::NoReview) {
                 let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::NoReview);
-                // Check both conditions: a name must be available AND we must not be at the limit
-                // This matches the logic in spawn_reviewer_for_pr which checks both before spawning
-                let has_available_slots = state.coworkers.next_available_name().is_some()
-                    && !state.is_at_coworker_limit();
+                let has_available_slots = state.has_available_coworker_slot();
 
                 let nudge = if should_escalate(prior_nudges) {
                     // Escalation: this has persisted too long, suggest investigation

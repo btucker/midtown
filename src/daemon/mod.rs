@@ -453,6 +453,19 @@ impl DaemonState {
         self.coworkers.list().len() >= dev_cap
     }
 
+    /// Check if a coworker slot is available for spawning.
+    ///
+    /// This combines two checks:
+    /// 1. We're not at the max coworker limit (absolute cap)
+    /// 2. There's an available name in the name pool
+    ///
+    /// Use this for diagnostic messages and decisions about whether spawning
+    /// is possible. For actual spawning, use the individual checks to get
+    /// better error messages.
+    fn has_available_coworker_slot(&self) -> bool {
+        !self.is_at_coworker_limit() && self.coworkers.next_available_name().is_some()
+    }
+
     /// Check if a PR has a review comment from a Claude coworker.
     ///
     /// Uses the persistent state cache as the single source of truth. First
