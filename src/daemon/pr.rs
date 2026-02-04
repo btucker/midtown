@@ -209,10 +209,12 @@ pub(super) async fn poll_prs_for_issues(
 
     let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
 
-    // Cleanup old tracking entries, but preserve assignments for active coworkers
-    // so reviewers don't lose their PR tracking while still running
-    let active_coworker_names: HashSet<String> = snap
-        .active_coworkers
+    // Cleanup old tracking entries, but preserve assignments for RUNNING coworkers
+    // so reviewers don't lose their PR tracking while actively reviewing.
+    // Using running_coworkers (not active_coworkers) ensures that idle/stopped
+    // reviewers have their assignments cleaned up, freeing slots for new reviews.
+    let running_coworker_names: HashSet<String> = snap
+        .running_coworkers
         .iter()
         .map(|cw| cw.name.clone())
         .collect();
@@ -222,7 +224,8 @@ pub(super) async fn poll_prs_for_issues(
     }
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.cleanup_expired_preserving(&active_coworker_names);
+        ps.github
+            .cleanup_expired_preserving(&running_coworker_names);
         ps.github.cleanup_stale_webhook_events();
     }
     {
@@ -299,7 +302,8 @@ pub(super) async fn poll_prs_for_issues(
             .collect();
         let mut ps = state.persistent_state.lock().await;
         ps.github.cleanup_closed_prs(&open_pr_numbers);
-        ps.github.cleanup_expired_preserving(&active_coworker_names);
+        ps.github
+            .cleanup_expired_preserving(&running_coworker_names);
         if let Err(e) = ps.save_for_repo(&state.repo_name) {
             warn!("Failed to save daemon-state.json after cleanup: {}", e);
         }
@@ -1164,10 +1168,16 @@ async fn collect_reviewer_effects_with_source(
             debug!("PR #{} already has a Claude review", pr_number);
 
             // Before cleaning up the assignment, check if the reviewer is still running.
+            // IMPORTANT: Check for Running status specifically, not just presence.
+            // A reviewer that finished and went idle should have their assignment
+            // cleaned up so the slot becomes available for new reviews.
             let reviewer_still_running = {
                 let ps = state.persistent_state.lock().await;
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    state.coworkers.get(reviewer_name).is_some()
+                    state
+                        .coworkers
+                        .get(reviewer_name)
+                        .is_some_and(|cw| cw.status == crate::coworker::CoworkerStatus::Running)
                 } else {
                     false
                 }
