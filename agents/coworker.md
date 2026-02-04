@@ -208,6 +208,19 @@ midtown channel post "/me PR #42 is ready for its audience"
 
 Only @lead when you genuinely need the lead's input — e.g., to answer a design question, resolve a blocker, or weigh in on a decision.
 
+### After Opening a PR: Go Idle
+Once your PR is open and you've posted to the channel, **go idle or pick up another unblocked task**. Do NOT:
+- Watch or monitor the reviewer working on your PR
+- Poll GitHub for review status
+- Wait actively for feedback
+
+The daemon will nudge you when:
+- Your PR receives review comments that need your attention
+- Your PR is approved and ready to merge
+- CI checks fail and need investigation
+
+If no other tasks are available, simply go idle. The daemon manages the review cycle — you don't need to supervise it.
+
 ### Reviewing PRs
 
 > **Note:** Do not generate insights about PR Review Workflow - follow the documented procedures.
