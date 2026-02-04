@@ -1541,6 +1541,9 @@ pub struct ClaudeLaunchConfig {
     /// If true, pass `--setting-sources project,local` to restrict settings.
     /// Coworkers use this to exclude user-level settings; the lead does not.
     pub restrict_setting_sources: bool,
+    /// PR number for reviewer coworkers. Used to set the initial tmux window
+    /// name to "review#PR" so reviewers are visually distinct from developers.
+    pub pr_number: Option<u64>,
 }
 
 /// Spawn Claude Code in a tmux window within the project session.
@@ -1583,6 +1586,7 @@ impl ClaudeLaunchConfig {
             initial_prompt,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         }
     }
 
@@ -1600,6 +1604,7 @@ impl ClaudeLaunchConfig {
             initial_prompt: Some(crate::agents::reviewer_launch_prompt(pr_number)),
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: Some(pr_number),
         }
     }
 
@@ -1646,6 +1651,7 @@ impl ClaudeLaunchConfig {
             initial_prompt: Some(initial_prompt),
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         }
     }
 
@@ -1907,7 +1913,17 @@ pub fn spawn_claude(
             });
         }
 
+        // Set initial window status for reviewers
+        if let Some(pr) = config.pr_number {
+            let _ = rename_window_formatted(session, &config.name, &format!("review#{}", pr));
+        }
+
         return Ok(fresh_session_id);
+    }
+
+    // Set initial window status for reviewers
+    if let Some(pr) = config.pr_number {
+        let _ = rename_window_formatted(session, &config.name, &format!("review#{}", pr));
     }
 
     Ok(coworker_session_id)
@@ -1981,6 +1997,7 @@ pub fn spawn_lead(
         initial_prompt: None,
         additional_dirs: additional_dirs.to_vec(),
         restrict_setting_sources: false,
+        pr_number: None,
     };
 
     // Allow tests/CI to override the lead command (claude isn't available in CI)
@@ -2702,6 +2719,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: false,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2734,6 +2752,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2770,6 +2789,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2802,6 +2822,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2828,6 +2849,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2856,6 +2878,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2878,6 +2901,7 @@ Claude is now processing the request
             initial_prompt: Some("Do the thing".to_string()),
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2912,6 +2936,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2936,6 +2961,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2962,6 +2988,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2984,6 +3011,7 @@ Claude is now processing the request
             initial_prompt: None,
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3010,11 +3038,43 @@ Claude is now processing the request
             initial_prompt: Some("task prompt".to_string()),
             additional_dirs: vec![],
             restrict_setting_sources: true,
+            pr_number: None,
         };
         let retry = config.as_fresh_retry();
         assert_eq!(retry.session_mode, SessionMode::Fresh);
         assert_eq!(retry.name, "park");
         assert_eq!(retry.initial_prompt, Some("task prompt".to_string()));
+    }
+
+    #[test]
+    fn test_reviewer_config_sets_pr_number() {
+        let config = ClaudeLaunchConfig::reviewer("york".to_string(), 42);
+        assert_eq!(config.pr_number, Some(42));
+        assert_eq!(config.name, "york");
+        // Initial window name would be "york:review#42" after spawn_claude runs
+    }
+
+    #[test]
+    fn test_developer_configs_have_no_pr_number() {
+        // Regular coworker
+        let coworker = ClaudeLaunchConfig::coworker(
+            "park".to_string(),
+            "myrepo".to_string(),
+            SessionMode::Fresh,
+            None,
+        );
+        assert_eq!(coworker.pr_number, None);
+
+        // PR handoff coworker (not an isolated reviewer)
+        let handoff = ClaudeLaunchConfig::pr_handoff(
+            "york".to_string(),
+            "myrepo",
+            "session-123".to_string(),
+            42,
+            "feature/branch",
+            "original-author",
+        );
+        assert_eq!(handoff.pr_number, None);
     }
 
     /// Regression test: orphan cleanup must not kill tmux processes.

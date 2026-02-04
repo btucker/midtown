@@ -1086,6 +1086,7 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
         initial_prompt: Some("Say 'ready' and wait.".to_string()),
         additional_dirs: vec![],
         restrict_setting_sources: true,
+        pr_number: None,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
@@ -1373,6 +1374,7 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
         initial_prompt: Some("Say hello and wait for instructions.".to_string()),
         additional_dirs: vec![],
         restrict_setting_sources: true,
+        pr_number: None,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
 
@@ -1684,6 +1686,7 @@ fn test_kill_orphaned_claude_processes_real() {
         initial_prompt: Some("Say 'ready' and wait.".to_string()),
         additional_dirs: vec![],
         restrict_setting_sources: true,
+        pr_number: None,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
