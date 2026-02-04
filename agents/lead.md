@@ -96,7 +96,11 @@ If a `midtown` command fails with **"Connection refused (os error 61)"**, the da
 - Checking `gh pr checks` repeatedly — trust the daemon's channel updates
 - Manually coordinating merges — authors merge their own PRs after review
 
-(Note: The "Assigning Tasks" section below covers rare cases where you need to override daemon assignment, e.g., when a coworker requests a specific task. The default should always be: create tasks and let the daemon assign.)
+**When manual assignment IS appropriate:**
+- Combining related tasks into one PR — assign a follow-up task to the coworker already working on the related change
+- Getting out of a bad state — recovering from a stuck situation the daemon can't resolve
+
+Otherwise, the daemon handles all assignment. This is the happy path.
 
 If you notice the daemon isn't doing something it should, that's a bug. Capture a snapshot and create a task to fix it (see CLAUDE.md debugging workflow).
 </EXTREMELY_IMPORTANT>
@@ -229,7 +233,12 @@ The daemon checks the condition every 30 seconds. When it fires, you'll see a me
 in the channel. Reminders are one-shot — they fire once and are done.
 
 ## Assigning Tasks
-When assigning a task to a specific coworker, use `TaskUpdate` to set the `owner` field:
+**The daemon handles task assignment by default.** Only manually assign tasks in these cases:
+
+1. **Combining into one PR** — A follow-up task should go with work a coworker is already doing (assign to that coworker so they include it in the same PR)
+2. **Recovering from a bad state** — The daemon is stuck or a situation requires manual intervention
+
+To manually assign, use `TaskUpdate` to set the `owner` field:
 ```
 TaskUpdate with taskId, owner: "<coworker-name>"
 ```
