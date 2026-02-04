@@ -311,7 +311,9 @@ pub(super) async fn poll_prs_for_issues(
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
         // Extract owner from branch prefix (e.g., "amsterdam/feature" -> "amsterdam")
-        let owner = head_ref.split('/').next().unwrap_or("");
+        // IMPORTANT: Use coworker_from_branch() to validate against COWORKER_NAMES.
+        // Raw split('/') would allow invalid names like "fix" from "fix/feature" branches.
+        let owner = coworker_from_branch(head_ref).unwrap_or_default();
 
         // Check for actionable issues
         let issues = detect_pr_issues(pr);
@@ -357,8 +359,12 @@ pub(super) async fn poll_prs_for_issues(
             );
 
             // Decide action using pure decision function
-            let action =
-                decide_pr_issue_action(owner, &active_coworkers, state.is_at_dev_limit(), &message);
+            let action = decide_pr_issue_action(
+                &owner,
+                &active_coworkers,
+                state.is_at_dev_limit(),
+                &message,
+            );
 
             effects.extend(pr_action_to_effects(
                 action, pr_number, title, issue_type, state,
@@ -1108,7 +1114,9 @@ async fn collect_reviewer_effects_with_source(
             // Nudge the PR author — review is complete but PR is still open
             let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
             let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-            let owner = head_ref.split('/').next().unwrap_or("");
+            // IMPORTANT: Use coworker_from_branch() to validate against COWORKER_NAMES.
+            // Raw split('/') would allow invalid names like "fix" from "fix/feature" branches.
+            let owner = coworker_from_branch(head_ref).unwrap_or_default();
 
             if !owner.is_empty() {
                 let should_nudge = {
@@ -1131,7 +1139,7 @@ async fn collect_reviewer_effects_with_source(
                         .collect();
 
                     let action = crate::rules::decide_review_complete_action(
-                        owner,
+                        &owner,
                         &active_coworkers,
                         state.is_at_dev_limit(),
                         &nudge_msg,

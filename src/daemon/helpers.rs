@@ -700,6 +700,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coworker_from_branch_rejects_common_branch_prefixes() {
+        // Bug fix: branches like "fix/feature" should NOT create a coworker named "fix"
+        // These common branch prefixes are not valid coworker names
+        assert_eq!(
+            coworker_from_branch("fix/blank-pane-false-positive"),
+            None,
+            "fix/ prefix should NOT be treated as a coworker name"
+        );
+        assert_eq!(
+            coworker_from_branch("feature/new-thing"),
+            None,
+            "feature/ prefix should NOT be treated as a coworker name"
+        );
+        assert_eq!(
+            coworker_from_branch("bugfix/issue-123"),
+            None,
+            "bugfix/ prefix should NOT be treated as a coworker name"
+        );
+        assert_eq!(
+            coworker_from_branch("hotfix/urgent"),
+            None,
+            "hotfix/ prefix should NOT be treated as a coworker name"
+        );
+        assert_eq!(
+            coworker_from_branch("chore/update-deps"),
+            None,
+            "chore/ prefix should NOT be treated as a coworker name"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // text_contains_review_signature — detects Claude reviews
     // -------------------------------------------------------------------------
