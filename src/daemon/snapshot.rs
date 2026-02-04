@@ -121,7 +121,9 @@ pub struct WorldSnapshot {
     pub daemon_logs: Vec<String>,
 
     // ── Limits & timing ─────────────────────────────────────────────────
-    /// Whether the daemon is at the dev coworker limit.
+    /// Whether the daemon is at the absolute coworker limit (max capacity).
+    pub is_at_coworker_limit: bool,
+    /// Whether the daemon is at the dev coworker limit (reserving review headroom).
     pub is_at_dev_limit: bool,
     /// Current monotonic instant (for timeout comparisons).
     #[serde(skip)]
@@ -329,6 +331,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let daemon_logs = Vec::new();
 
     // ── Limits & timing ─────────────────────────────────────────────────
+    let is_at_coworker_limit = state.is_at_coworker_limit();
     let is_at_dev_limit = state.is_at_dev_limit();
     let now = Instant::now();
     let now_utc = Utc::now();
@@ -363,6 +366,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         usage_limited_coworkers,
         channel_messages,
         daemon_logs,
+        is_at_coworker_limit,
         is_at_dev_limit,
         now,
         now_utc,
@@ -483,6 +487,7 @@ mod tests {
             usage_limited_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now: Instant::now(),
             now_utc: Utc::now(),
@@ -553,12 +558,14 @@ mod tests {
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             channel_messages: vec![], // Empty by default
             daemon_logs: vec![],      // Empty by default
+            is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now: Instant::now(),
             now_utc: Utc::now(),

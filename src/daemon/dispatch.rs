@@ -659,10 +659,10 @@ pub(super) fn spawn_for_pending_tasks(
     let active_review_count = snap.active_reviewers.len();
     if snap.prs_needing_review > 0
         && active_review_count < MAX_CONCURRENT_REVIEWS
-        && !state.is_at_coworker_limit()
+        && !snap.is_at_coworker_limit
     {
         debug!(
-            "Deferring unowned task pickup: {} PR(s) need review, {}/{} reviewers active",
+            "Deferring unowned task pickup: {} PR(s) need review, {}/{} active reviewers, capacity available",
             snap.prs_needing_review, active_review_count, MAX_CONCURRENT_REVIEWS
         );
         return effects;
