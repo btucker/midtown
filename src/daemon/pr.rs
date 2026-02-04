@@ -387,6 +387,30 @@ pub(super) async fn poll_prs_for_issues(
         reviewed
     };
 
+    // Compute prs_needing_review and update cache (must happen here, not in effect
+    // collection functions which should be pure). This value is used by task dispatch
+    // to prioritize PR reviews over new task pickup.
+    let prs_needing_review: usize = prs
+        .iter()
+        .filter(|pr| {
+            let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+            let review_decision = pr
+                .get("reviewDecision")
+                .and_then(|r| r.as_str())
+                .unwrap_or("");
+            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+            // PR needs review if it's not a draft, has no formal review, and no Claude comment review
+            pr_number != 0
+                && !is_draft
+                && review_decision.is_empty()
+                && !reviewed_prs.contains(&pr_number)
+        })
+        .count();
+    {
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.prs_needing_review = prs_needing_review;
+    }
+
     // Nudge PR owners when CI turns green and they have review feedback to address.
     // This covers the case where a coworker is waiting for CI while feedback awaits.
     effects.extend(
@@ -394,7 +418,9 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
-    effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
+    effects.extend(
+        collect_stuck_condition_effects(state, &prs, &reviewed_prs, prs_needing_review).await,
+    );
 
     // Detect stale CI checks and trigger re-runs
     effects.extend(collect_stale_check_effects(state, &prs).await);
@@ -615,10 +641,15 @@ fn pr_action_to_effects(
 /// The `reviewed_prs` parameter contains PR numbers that have Claude reviews
 /// (comment-based or formal), pre-collected before this function to keep
 /// decision logic free of async API calls.
+///
+/// The `prs_needing_review` parameter is the pre-computed count of PRs that
+/// need review, calculated by the caller to maintain pure function behavior
+/// (no cache writes inside effect collection).
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
+    prs_needing_review: usize,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -852,24 +883,9 @@ async fn collect_stuck_condition_effects(
     }
 
     // --- Scenario 5: Review backlog ---
+    // prs_needing_review is passed in from the caller (computed and cached before
+    // calling this function to maintain pure function behavior).
     {
-        let prs_needing_review: usize = prs
-            .iter()
-            .filter(|pr| {
-                let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-                let review_decision = pr
-                    .get("reviewDecision")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("");
-                let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-                // PR needs review if it's not a draft, has no formal review, and no Claude comment review
-                pr_number != 0
-                    && !is_draft
-                    && review_decision.is_empty()
-                    && !reviewed_prs.contains(&pr_number)
-            })
-            .count();
-
         let current_review_count = {
             let ps = state.persistent_state.lock().await;
             ps.github.active_count()

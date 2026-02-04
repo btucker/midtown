@@ -91,6 +91,9 @@ pub struct WorldSnapshot {
     /// PRs that have been verified as reviewed (Claude review comment exists).
     /// Pre-collected during snapshot so decision logic doesn't need API calls.
     pub reviewed_prs: HashSet<u64>,
+    /// Count of open PRs that need review (not draft, no Claude review, no formal review).
+    /// Used by task dispatch to prioritize reviews over new task pickup.
+    pub prs_needing_review: usize,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -118,7 +121,9 @@ pub struct WorldSnapshot {
     pub daemon_logs: Vec<String>,
 
     // ── Limits & timing ─────────────────────────────────────────────────
-    /// Whether the daemon is at the dev coworker limit.
+    /// Whether the daemon is at the absolute coworker limit (max capacity).
+    pub is_at_coworker_limit: bool,
+    /// Whether the daemon is at the dev coworker limit (reserving review headroom).
     pub is_at_dev_limit: bool,
     /// Current monotonic instant (for timeout comparisons).
     #[serde(skip)]
@@ -269,9 +274,9 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .collect();
     let coworkers_with_merged_prs: HashSet<String> =
         super::pr::get_coworkers_with_merged_prs(state);
-    let ci_passed_pr_coworkers: HashSet<String> = {
+    let (ci_passed_pr_coworkers, prs_needing_review) = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        cache.ci_passed_pr_owners.clone()
+        (cache.ci_passed_pr_owners.clone(), cache.prs_needing_review)
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
@@ -326,6 +331,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let daemon_logs = Vec::new();
 
     // ── Limits & timing ─────────────────────────────────────────────────
+    let is_at_coworker_limit = state.is_at_coworker_limit();
     let is_at_dev_limit = state.is_at_dev_limit();
     let now = Instant::now();
     let now_utc = Utc::now();
@@ -353,12 +359,14 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         active_reviewers,
         reviewer_pr_assignments,
         reviewed_prs,
+        prs_needing_review,
         coworkers_with_unblocked_deps,
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
         usage_limited_coworkers,
         channel_messages,
         daemon_logs,
+        is_at_coworker_limit,
         is_at_dev_limit,
         now,
         now_utc,
@@ -472,12 +480,14 @@ mod tests {
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now: Instant::now(),
             now_utc: Utc::now(),
@@ -548,12 +558,14 @@ mod tests {
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             channel_messages: vec![], // Empty by default
             daemon_logs: vec![],      // Empty by default
+            is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now: Instant::now(),
             now_utc: Utc::now(),
