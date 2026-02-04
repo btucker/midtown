@@ -148,8 +148,8 @@ struct SnapshotData {
 
 /// Test that PRs without reviewers are identified for reviewer spawning.
 ///
-/// Snapshot context (20260203-182216): Multiple coworkers have open PRs,
-/// some already have reviewers assigned, others need review.
+/// Snapshot context (20260204-050821): Multiple coworkers have open PRs,
+/// some are being actively reviewed, others may still need review.
 ///
 /// The daemon should spawn reviewers for PRs that:
 /// - Have no reviewer assigned (not in reviewer_pr_assignments)
@@ -157,7 +157,7 @@ struct SnapshotData {
 /// - Are not from an active reviewer (would be self-review)
 #[test]
 fn pr_needing_review_identified_for_spawn() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-182216.json");
+    let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
     // PRs that already have reviewers assigned
@@ -178,37 +178,47 @@ fn pr_needing_review_identified_for_spawn() {
         .collect();
 
     // In this snapshot:
-    // - park, riverside, columbus, york have open PRs
-    // - amsterdam, broadway are active reviewers
-    // - amsterdam is reviewing PR 543, broadway is reviewing PR 540, lexington reviewed PR 542
-    // - reviewed_prs: [540, 543]
+    // - riverside, lexington, vernon, york have open PRs
+    // - madison, broadway, riverside are active reviewers
+    // - broadway reviewing PR 562, madison reviewing PR 563, riverside reviewing PR 564
+    // - reviewed_prs: [] (none completed yet)
 
     // Coworkers with open PRs who are NOT active reviewers are candidates for needing review
+    // In this case: lexington, vernon, york (riverside is itself a reviewer)
     assert!(
         !prs_needing_review.is_empty(),
         "should have PRs needing review from non-reviewer coworkers"
     );
 
-    // Verify the active reviewers are correctly identified
+    // Verify the active reviewers are correctly identified (from snapshot)
     assert!(
-        data.active_reviewers.contains("amsterdam"),
-        "amsterdam should be an active reviewer"
+        data.active_reviewers.contains("madison"),
+        "madison should be an active reviewer"
     );
     assert!(
         data.active_reviewers.contains("broadway"),
         "broadway should be an active reviewer"
     );
-
-    // Verify reviewer assignments are tracked
-    assert_eq!(
-        data.reviewer_pr_assignments.get("amsterdam"),
-        Some(&543),
-        "amsterdam should be assigned to PR 543"
+    assert!(
+        data.active_reviewers.contains("riverside"),
+        "riverside should be an active reviewer"
     );
+
+    // Verify reviewer assignments are tracked (from snapshot)
     assert_eq!(
         data.reviewer_pr_assignments.get("broadway"),
-        Some(&540),
-        "broadway should be assigned to PR 540"
+        Some(&562),
+        "broadway should be assigned to PR 562"
+    );
+    assert_eq!(
+        data.reviewer_pr_assignments.get("madison"),
+        Some(&563),
+        "madison should be assigned to PR 563"
+    );
+    assert_eq!(
+        data.reviewer_pr_assignments.get("riverside"),
+        Some(&564),
+        "riverside should be assigned to PR 564"
     );
 
     // Test that the daemon would spawn a reviewer for unassigned PRs
@@ -217,9 +227,9 @@ fn pr_needing_review_identified_for_spawn() {
     // 2. PR is not in assigned PRs
     // 3. Max concurrent reviews not reached
 
-    // The key insight: PRs from park, riverside, columbus, york need review
-    // because they're not in active_reviewers and their work is done
-    for coworker in &["park", "riverside", "columbus", "york"] {
+    // The key insight: PRs from lexington, vernon, york may need review
+    // because they're not active reviewers
+    for coworker in &["riverside", "lexington", "vernon", "york"] {
         assert!(
             data.coworkers_with_open_prs.contains(*coworker),
             "{} should have an open PR",
@@ -231,7 +241,7 @@ fn pr_needing_review_identified_for_spawn() {
 /// Test that active reviewers are excluded from self-review scenarios.
 #[test]
 fn active_reviewers_excluded_from_self_review() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-182216.json");
+    let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
     // Active reviewers should not be assigned to review their own PRs
@@ -260,7 +270,7 @@ fn active_reviewers_excluded_from_self_review() {
 /// have green CI. Combined with approval status, these are merge candidates.
 #[test]
 fn ci_passed_prs_identified_for_merge() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-182216.json");
+    let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
     // In this snapshot: riverside and columbus have CI-passed PRs
@@ -269,14 +279,15 @@ fn ci_passed_prs_identified_for_merge() {
         "should have coworkers with CI-passed PRs"
     );
 
-    // Verify expected coworkers have CI-passed PRs
+    // Verify expected coworkers have CI-passed PRs (from snapshot)
+    // Snapshot shows: ci_passed_pr_coworkers: ["riverside", "vernon"]
     assert!(
         data.ci_passed_pr_coworkers.contains("riverside"),
         "riverside should have CI-passed PR"
     );
     assert!(
-        data.ci_passed_pr_coworkers.contains("columbus"),
-        "columbus should have CI-passed PR"
+        data.ci_passed_pr_coworkers.contains("vernon"),
+        "vernon should have CI-passed PR"
     );
 
     // Auto-merge requires:
@@ -291,7 +302,7 @@ fn ci_passed_prs_identified_for_merge() {
 /// Test that PRs are not auto-merged when still being reviewed.
 #[test]
 fn prs_under_review_not_auto_merged() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-182216.json");
+    let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
     // PRs that are currently being reviewed (assigned but not in reviewed_prs)
@@ -350,7 +361,7 @@ fn prs_under_review_not_auto_merged() {
 /// - Skip if at dev limit and owner inactive
 #[test]
 fn pr_owner_nudged_for_review_feedback() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-182216.json");
+    let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
     // Simulate a review feedback scenario for a coworker with an open PR
@@ -390,7 +401,7 @@ fn pr_owner_nudged_for_review_feedback() {
 /// Test that PR issue detection correctly handles active vs inactive owners.
 #[test]
 fn pr_issue_action_respects_owner_status() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-182216.json");
+    let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
     let active_coworkers: Vec<String> = data.active_names.iter().cloned().collect();
@@ -513,17 +524,18 @@ fn coworker_from_branch_extracts_owner() {
 /// using the captured snapshot state.
 #[test]
 fn complete_pr_workflow_scenario() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-182216.json");
+    let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
     // Scenario: Multiple coworkers have open PRs at various stages
     //
-    // 1. park, riverside, columbus, york have open PRs (coworkers_with_open_prs)
-    // 2. amsterdam and broadway are reviewing PRs (active_reviewers)
-    // 3. PRs 540 and 543 have been reviewed (reviewed_prs)
-    // 4. riverside and columbus have CI-passed PRs (ci_passed_pr_coworkers)
+    // From snapshot (20260204-050821):
+    // 1. riverside, lexington, vernon, york have open PRs (coworkers_with_open_prs)
+    // 2. madison, broadway, riverside are reviewing PRs (active_reviewers)
+    // 3. No PRs have completed review yet (reviewed_prs is empty)
+    // 4. riverside and vernon have CI-passed PRs (ci_passed_pr_coworkers)
 
-    // Verify scenario setup
+    // Verify scenario setup matches actual snapshot data
     assert_eq!(
         data.coworkers_with_open_prs.len(),
         4,
@@ -531,10 +543,14 @@ fn complete_pr_workflow_scenario() {
     );
     assert_eq!(
         data.active_reviewers.len(),
-        2,
-        "should have 2 active reviewers"
+        3,
+        "should have 3 active reviewers"
     );
-    assert_eq!(data.reviewed_prs.len(), 2, "should have 2 reviewed PRs");
+    assert_eq!(
+        data.reviewed_prs.len(),
+        0,
+        "should have 0 reviewed PRs (reviews in progress)"
+    );
     assert_eq!(
         data.ci_passed_pr_coworkers.len(),
         2,

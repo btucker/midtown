@@ -1,0 +1,290 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "7e5dc432-f6af-4ff0-8800-45f3e1df01db",
+      "started_at": "2026-02-04T05:05:57.710014Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "",
+      "started_at": "2026-02-04T05:06:25.420783Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "madison",
+      "session_id": "3582c2df-d0ef-432c-81ff-65d621bd86ca",
+      "started_at": "2026-02-04T05:07:21.909494Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "lexington",
+      "session_id": "",
+      "started_at": "2026-02-04T05:06:21.817589Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/lexington"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "broadway",
+      "session_id": "613196b4-ccf8-4dff-b63b-0bec41c78a14",
+      "started_at": "2026-02-04T05:07:25.558132Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/broadway"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "riverside",
+      "session_id": "fb804598-e918-4630-99ae-89a4fb15c17b",
+      "started_at": "2026-02-04T05:06:29.035480Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    }
+  ],
+  "active_names": [
+    "columbus",
+    "york",
+    "lexington",
+    "broadway",
+    "madison",
+    "riverside"
+  ],
+  "active_reviewers": [
+    "madison",
+    "broadway",
+    "riverside"
+  ],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "**Plan:** `~/.claude/plans/2026-02-04-e2e-test-coverage.md` - Task 1\n\n**Goal:** Test that unassigned tasks get assigned to idle coworkers correctly.\n\n**Files:**\n- Create: `tests/task_dispatch_e2e.rs`\n- Use fixtures from `tests/fixtures/snapshot/`\n\n**Tests to write:**\n1. `pending_task_assigned_to_idle_coworker` - Verify pending unowned tasks get assigned\n2. `blocked_task_not_assigned` - Verify blocked tasks stay unassigned\n3. `task_triggers_coworker_spawn` - Verify spawn when no idle coworkers available\n\n**Prerequisites:**\n- Capture snapshot with pending tasks: `midtown e2e capture --label task-dispatch-pending`\n\nFollow the snapshot-based testing pattern from `tests/idle_break_e2e.rs`.",
+      "id": "1",
+      "owner": "york",
+      "status": "completed",
+      "subject": "Add task dispatch E2E tests"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Plan:** `~/.claude/plans/2026-02-04-e2e-test-coverage.md` - Task 2\n\n**Goal:** Test PR-related decisions: reviewer spawning, auto-merge eligibility, comment nudges.\n\n**Files:**\n- Create: `tests/pr_management_e2e.rs`\n- Reference: `tests/polling_degradation.rs` (existing pure function tests)\n\n**Tests to write:**\n1. `pr_needing_review_spawns_reviewer` - PRs without reviewers trigger spawn\n2. `approved_green_pr_auto_merges` - Approved PRs with green CI get merged\n3. `pr_comment_nudges_owner` - New comments nudge the PR owner\n\n**Prerequisites:**\n- Capture snapshots:\n  - `midtown e2e capture --label pr-needs-review`\n  - `midtown e2e capture --label pr-auto-merge-ready`\n  - `midtown e2e capture --label pr-has-comments`",
+      "id": "2",
+      "owner": "columbus",
+      "status": "in_progress",
+      "subject": "Add PR management E2E tests"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Plan:** `~/.claude/plans/2026-02-04-e2e-test-coverage.md` - Task 3\n\n**Goal:** Extend health testing with stuck detection, zombie recovery, usage limit scenarios.\n\n**Files:**\n- Modify: `tests/idle_break_e2e.rs` → rename to `tests/health_e2e.rs`\n- Capture new fixtures for stuck/zombie scenarios\n\n**Tests to write:**\n1. `stuck_coworker_gets_nudged` - Coworkers stuck in compaction/waiting get nudged\n2. `zombie_coworker_respawned` - Blank-pane coworkers are respawned\n3. `usage_limit_detected_and_handled` - Usage limit screens handled correctly\n4. Keep existing idle break tests\n\n**Prerequisites:**\n- Capture snapshots:\n  - `midtown e2e capture --label stuck-coworker`\n  - `midtown e2e capture --label zombie`\n  - `midtown e2e capture --label usage-limit`",
+      "id": "3",
+      "owner": "amsterdam",
+      "status": "in_progress",
+      "subject": "Add health check E2E tests"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Plan:** `~/.claude/plans/2026-02-04-e2e-test-coverage.md` - Task 4\n\n**Goal:** Test that effects actually produce observable outcomes via RPC.\n\n**Files:**\n- Create: `tests/effect_verification_e2e.rs`\n- Extend: `DaemonFixture` in `tests/daemon_e2e.rs` with RPC helper\n\n**Tests to write:**\n1. `effect_post_to_channel_writes_file` - PostToChannel effect writes to channel.jsonl\n2. `effect_spawn_coworker_creates_window` - Spawning creates tmux window\n3. `effect_nudge_coworker_sends_keys` - Nudging sends keys to pane\n\nThese are `#[ignore]` tests requiring tmux (and some require claude).",
+      "id": "4",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Add effect verification E2E tests"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Plan:** `~/.claude/plans/2026-02-04-e2e-test-coverage.md` - Task 5\n\n**Goal:** Extend `daemon_e2e.rs` with comprehensive RPC coverage.\n\n**Files:**\n- Modify: `tests/daemon_e2e.rs`\n\n**Tests to write:**\n1. `rpc_task_list_returns_tasks` - Task list RPC works\n2. `rpc_task_create_adds_task` - Task creation RPC works\n3. `rpc_coworker_list_returns_coworkers` - Coworker list RPC works\n4. `rpc_coworker_view_captures_pane` - Coworker view RPC captures pane\n5. `rpc_status_returns_daemon_state` - Status RPC returns expected fields\n\nThese are `#[ignore]` tests requiring daemon startup.",
+      "id": "5",
+      "owner": "lexington",
+      "status": "completed",
+      "subject": "Add comprehensive RPC handler E2E tests"
+    },
+    {
+      "blocked_by": [],
+      "description": "**Plan:** `~/.claude/plans/2026-02-04-e2e-test-coverage.md` - Task 6\n\n**Goal:** Test complete workflow: task created → coworker spawned → work done → PR opened.\n\n**Files:**\n- Create: `tests/workflow_e2e.rs`\n\n**Test to write:**\n1. `full_task_to_merge_workflow` - Integration test verifying:\n   - Task creation via RPC\n   - Daemon assigns to coworker\n   - Task marked in_progress\n   - PR opened\n   - Task completed\n\nThis is the ultimate E2E test - requires real Claude Code. 5 minute timeout.\n`#[ignore]` test for full stack integration.",
+      "id": "6",
+      "owner": "amsterdam",
+      "status": "in_progress",
+      "subject": "Add full workflow E2E test"
+    },
+    {
+      "blocked_by": [],
+      "description": "Lead committed a docs change on branch `lead/plans-no-subagent-exec`.\n\n**Change:** Added guidance to the Lead system prompt clarifying that after writing a plan, the Lead should create tasks from it rather than offering \"subagent execution\" or \"parallel session\" options. In midtown, work is delegated to coworkers via tasks.\n\n**Files changed:** `agents/lead.md`\n\nOpen a PR, get it reviewed, and merge.",
+      "id": "7",
+      "owner": "vernon",
+      "status": "completed",
+      "subject": "Open PR for lead/plans-no-subagent-exec branch"
+    }
+  ],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [
+    "columbus",
+    "amsterdam"
+  ],
+  "ci_passed_pr_coworkers": [
+    "riverside",
+    "vernon"
+  ],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": false,
+      "name": "columbus",
+      "started_at": "2026-02-04T05:05:57.710014Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "york",
+      "started_at": "2026-02-04T05:06:25.420783Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "madison",
+      "started_at": "2026-02-04T05:07:21.909494Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "lexington",
+      "started_at": "2026-02-04T05:06:21.817589Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "broadway",
+      "started_at": "2026-02-04T05:07:25.558132Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "riverside",
+      "started_at": "2026-02-04T05:06:29.035480Z"
+    }
+  ],
+  "coworker_start_times": {
+    "broadway": "2026-02-04T05:07:25.558132Z",
+    "columbus": "2026-02-04T05:05:57.710014Z",
+    "lexington": "2026-02-04T05:06:21.817589Z",
+    "madison": "2026-02-04T05:07:21.909494Z",
+    "riverside": "2026-02-04T05:06:29.035480Z",
+    "york": "2026-02-04T05:06:25.420783Z"
+  },
+  "coworker_stop_times": {},
+  "coworkers_with_merged_prs": [
+    "park",
+    "vernon",
+    "pleasant",
+    "amsterdam",
+    "columbus",
+    "york",
+    "madison"
+  ],
+  "coworkers_with_open_prs": [
+    "riverside",
+    "lexington",
+    "vernon",
+    "york"
+  ],
+  "coworkers_with_running_subagents": [],
+  "coworkers_with_unblocked_deps": [],
+  "in_progress_tasks": [
+    [
+      "2",
+      "Add PR management E2E tests",
+      "columbus"
+    ],
+    [
+      "3",
+      "Add health check E2E tests",
+      "amsterdam"
+    ],
+    [
+      "6",
+      "Add full workflow E2E test",
+      "amsterdam"
+    ]
+  ],
+  "is_at_dev_limit": false,
+  "now_utc": "2026-02-04T05:08:21.516111Z",
+  "pane_contents": {
+    "broadway": "  CLAUDE.md files, and getting the PR summary:\n\n⏺ 3 Task agents finished (ctrl+o to expand)\n   ├─ Check PR #562 eligibility · 1 tool use · 19.8k tokens\n   │  ⎿  Done\n   ├─ Find CLAUDE.md files for PR · 4 tool uses · 20.1k tokens\n   │  ⎿  Done\n   └─ Get PR #562 summary · 2 tool uses · 19.7k tokens\n      ⎿  Done\n\n✶ Checking PR eligibility… (Esc to interrupt · 56s · thinking)\n  ⎿  ◼ #1 Check PR #562 eligibility (broadway)\n     ◻ #2 Find relevant CLAUDE.md files (broadway)\n     ◻ #3 Get PR #562 summary (broadway)\n     ◻ #4 Run 5 parallel code review agents (broadway)\n     ◻ #5 Score and filter issues (broadway)\n     ◻ #6 Post review comment on PR #562 (broadway)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n",
+    "columbus": "  etc.). More robust tests extract patterns that should hold for any valid\n  snapshot state.\n  ─────────────────────────────────────────────────\n\n  Let me capture a fresh snapshot and adapt my tests.\n\n  Bash(midtown e2e capture --label pr-management 2>&1 || echo         timeout:\n      \"Capture command not available\")                                30s\n  ⎿  Running…\n\n· Adding full workflow E2E test… (Esc to interrupt · 2m 23s · ↓ 5.3k tokens)\n  ⎿  ◼ #2 Add PR management E2E tests (columbus)\n     ◼ #3 Add health check E2E tests (amsterdam)\n     ◼ #6 Add full workflow E2E test (amsterdam)\n     ✔ #1 Add task dispatch E2E tests (york)\n     ✔ #4 Add effect verification E2E tests (riverside)\n     ✔ #5 Add comprehensive RPC handler E2E tests (lexington)\n     ✔ #7 Open PR for lead/plans-no-subagent-exec branch (vernon)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n",
+    "lexington": "❯ Your task #5 (Add comprehensive RPC handler E2E tests) was updated by\n  madison — check the latest changes\n\n❯ Your task #5 (Add comprehensive RPC handler E2E tests) was updated by\n  broadway — check the latest changes\n\n⏺ Task #5 still shows as completed. My PR #565 is up and CI is running. Waiting\n  for tests to finish.\n\n  Tasks (4 done, 3 in progress, 0 open) · ctrl+t to hide tasks\n  ◼ #2 Add PR management E2E tests (columbus)\n  ◼ #3 Add health check E2E tests (amsterdam)\n  ◼ #6 Add full workflow E2E test (amsterdam)\n  ✔ #1 Add task dispatch E2E tests (york)\n  ✔ #4 Add effect verification E2E tests (riverside)\n  ✔ #5 Add comprehensive RPC handler E2E tests (lexington)\n  ✔ #7 Open PR for lead/plans-no-subagent-exec branch (vernon)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n",
+    "madison": "  CLAUDE.md files, and getting PR summary:\n\n⏺ 3 Task agents finished (ctrl+o to expand)\n   ├─ Check PR #565 eligibility · 2 tool uses · 19.8k tokens\n   │  ⎿  Done\n   ├─ Find CLAUDE.md files for PR · 3 tool uses · 20.0k tokens\n   │  ⎿  Done\n   └─ Get PR #565 summary · 3 tool uses · 19.7k tokens\n      ⎿  Done\n\n✳ Checking PR eligibility… (Esc to interrupt · 59s · thinking)\n  ⎿  ◼ #1 Check PR #565 eligibility (madison)\n     ◻ #2 Find relevant CLAUDE.md files (madison)\n     ◻ #3 Get PR #565 summary (madison)\n     ◻ #4 Run 5 parallel code review agents (madison)\n     ◻ #5 Score and filter issues (madison)\n     ◻ #6 Post review comment on PR #565 (madison)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n",
+    "riverside": "   ├─ Check previous PR comments · 5 tool uses · 43.9k tokens\n   │  ⎿  Bash: View comments on PR #556 which added E2E tests\n   └─ Check code comment compliance · 6 tool uses · 54.4k tokens\n      ⎿ Bash: Check the original tmux.rs code around\n        kill_window_by_target_unchecked\n\n✻ Running parallel review agents… (Esc to interrupt · 1m 52s · thinking)\n  ⎿  ◼ #4 Run 5 parallel code review agents (riverside)\n     ◻ #5 Score and filter issues (riverside)\n     ◻ #6 Post review comment on PR #564 (riverside)\n     ✔ #1 Check PR #564 eligibility for code review (riverside)\n     ✔ #2 Find relevant CLAUDE.md files (riverside)\n     ✔ #3 Get PR #564 summary (riverside)\n\n\n  ❯ Your task #4 (Add effect verification E2E tests) was updated by madison —\n    check the latest changes\n  ❯ Your task #4 (Add effect verification E2E tests) was updated by broadway\n    — check the latest changes\n────────────────────────────────────────────────────────────────────────────────\n❯ Press up to edit queued messages\n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n",
+    "york": "\n❯ Your task #1 (Add task dispatch E2E tests) was updated by madison — check\n  the latest changes\n\n❯ Your task #1 (Add task dispatch E2E tests) was updated by broadway —\n  check the latest changes\n\n⏺ Task #1 remains completed. My PR #564 is rebased and awaiting CI/review. I'm\n  idle and ready for new work or PR feedback.\n\n  Tasks (4 done, 3 in progress, 0 open) · ctrl+t to hide tasks\n  ◼ #2 Add PR management E2E tests (columbus)\n  ◼ #3 Add health check E2E tests (amsterdam)\n  ◼ #6 Add full workflow E2E test (amsterdam)\n  ✔ #1 Add task dispatch E2E tests (york)\n  ✔ #4 Add effect verification E2E tests (riverside)\n  ✔ #5 Add comprehensive RPC handler E2E tests (lexington)\n  ✔ #7 Open PR for lead/plans-no-subagent-exec branch (vernon)\n\n────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n"
+  },
+  "pending_tasks_with_owners": [],
+  "pending_tasks_without_owners": [],
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {
+    "broadway": 562,
+    "madison": 563,
+    "riverside": 564
+  },
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "7e5dc432-f6af-4ff0-8800-45f3e1df01db",
+      "started_at": "2026-02-04T05:05:57.710014Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "",
+      "started_at": "2026-02-04T05:06:25.420783Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "madison",
+      "session_id": "3582c2df-d0ef-432c-81ff-65d621bd86ca",
+      "started_at": "2026-02-04T05:07:21.909494Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "lexington",
+      "session_id": "",
+      "started_at": "2026-02-04T05:06:21.817589Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/lexington"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "broadway",
+      "session_id": "613196b4-ccf8-4dff-b63b-0bec41c78a14",
+      "started_at": "2026-02-04T05:07:25.558132Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/broadway"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "riverside",
+      "session_id": "fb804598-e918-4630-99ae-89a4fb15c17b",
+      "started_at": "2026-02-04T05:06:29.035480Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false
+}
