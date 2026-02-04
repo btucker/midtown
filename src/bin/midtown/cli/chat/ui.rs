@@ -701,6 +701,11 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Update visible height for scroll calculations
     app.visible_height = inner.height as usize;
 
+    // Clamp scroll_offset to prevent unexpected jumps when visible_height changes.
+    // This fixes a bug where kanban board resizing could cause the chat to
+    // unexpectedly scroll to the beginning of history.
+    app.clamp_scroll_offset();
+
     // Get cached current_tasks lookup first, then visible messages.
     // We clone current_tasks to avoid holding a mutable borrow across the loop.
     let current_tasks = app.current_tasks().clone();
