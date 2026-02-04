@@ -501,6 +501,18 @@ pub fn reset_task_to_pending_for_repo(task_id: &str, repo_name: &str) -> Result<
     Ok(())
 }
 
+/// Extract task ID from PR title using the `[Midtown #XX]` format.
+pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
+    if let Some(start) = title.find("[Midtown #") {
+        let rest = &title[start + 10..]; // Skip "[Midtown #"
+        if let Some(end) = rest.find(']') {
+            let num_str = &rest[..end];
+            return num_str.parse::<u64>().ok();
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1049,6 +1061,25 @@ mod tests {
         // Only the old task should pass the filter
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "400");
+    }
+
+    #[test]
+    fn test_extract_task_id_from_pr_title() {
+        assert_eq!(
+            extract_task_id_from_pr_title("feat: Add auth endpoint [Midtown #42]"),
+            Some(42)
+        );
+        assert_eq!(
+            extract_task_id_from_pr_title("fix: Something [Midtown #7]"),
+            Some(7)
+        );
+        assert_eq!(extract_task_id_from_pr_title("No task id here"), None);
+        assert_eq!(extract_task_id_from_pr_title(""), None);
+        assert_eq!(extract_task_id_from_pr_title("[Midtown #] empty id"), None);
+        assert_eq!(
+            extract_task_id_from_pr_title("prefix [Midtown #123] suffix"),
+            Some(123)
+        );
     }
 
     #[test]

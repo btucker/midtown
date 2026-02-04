@@ -25,6 +25,7 @@ use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::push::PushManager;
+use crate::tasks::extract_task_id_from_pr_title;
 use crate::tmux;
 
 /// Tracks which WebSocket connections are viewing which tmux windows,
@@ -508,6 +509,18 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         })
         .collect();
 
+    // Build a map of task_id -> task_subject for PR enrichment
+    // Task.id is a String, so parse the JSON string value to u64
+    let task_map: std::collections::HashMap<u64, String> = tasks
+        .iter()
+        .filter_map(|t| {
+            let id_str = t.get("id").and_then(|i| i.as_str())?;
+            let id = id_str.parse::<u64>().ok()?;
+            let subject = t.get("subject").and_then(|s| s.as_str())?;
+            Some((id, subject.to_string()))
+        })
+        .collect();
+
     // Load persistent state to get reviewer assignments (local file, cheap)
     let persistent_state =
         crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
@@ -599,15 +612,21 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 .get("createdAt")
                 .or_else(|| pr.get("created_at"))
                 .and_then(|c| c.as_str());
+            // Extract task ID from PR title and look up task name
+            let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
+            let task_id = extract_task_id_from_pr_title(title);
+            let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
             serde_json::json!({
                 "number": pr_number,
-                "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                "title": title,
                 "author": author,
                 "status": status,
                 "reviewer": reviewer,
                 "reviewer_assigned_at": reviewer_assigned_at,
                 "review_posted": review_posted,
                 "created_at": created_at,
+                "task_id": task_id,
+                "task_name": task_name,
             })
         })
         .collect();

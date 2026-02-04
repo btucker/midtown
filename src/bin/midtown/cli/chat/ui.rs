@@ -397,19 +397,23 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 .as_ref()
                 .map(|r| format!("[{}] ", r))
                 .unwrap_or_default();
-            let line1 = format!("{} {}PR#{} {}", ci_dot, repo_badge, pr.number, pr.title);
-            let author_duration = format_duration_minutes(pr.created_at);
-            let line2 = format!("  A: {} {}", pr.author, author_duration);
+            // Show task info if available, otherwise fall back to PR title
+            let line1 = if let (Some(task_id), Some(task_name)) = (pr.task_id, &pr.task_name) {
+                format!("{} {}#{} {}", ci_dot, repo_badge, task_id, task_name)
+            } else {
+                format!("{} {}PR#{} {}", ci_dot, repo_badge, pr.number, pr.title)
+            };
+            let line2 = format!("  └ PR #{}", pr.number);
             let line3 = match (&pr.reviewer, &pr.reviewed_at) {
                 (Some(reviewer), Some(at)) => {
                     if pr.review_posted {
-                        format!("  R: {} (done)", reviewer)
+                        format!("  └ R: {} (done)", reviewer)
                     } else {
-                        format!("  R: {} {}", reviewer, format_duration_minutes(*at))
+                        format!("  └ R: {} {}", reviewer, format_duration_minutes(*at))
                     }
                 }
-                (Some(reviewer), None) => format!("  R: {}", reviewer),
-                _ => "  R: pending".to_string(),
+                (Some(reviewer), None) => format!("  └ R: {}", reviewer),
+                _ => "  └ R: pending".to_string(),
             };
             let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
             KanbanItem {
