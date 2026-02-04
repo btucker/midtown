@@ -114,6 +114,10 @@ pub struct WorldSnapshot {
     /// These coworkers should be excluded from stuck detection, idle warnings,
     /// and task assignment until the limit expires.
     pub usage_limited_coworkers: HashSet<String>,
+    /// Coworkers currently experiencing API errors (detected from pane content).
+    /// Like usage limits, these should be excluded from stuck detection, but
+    /// unlike usage limits, they should receive periodic nudges to retry.
+    pub api_error_coworkers: HashSet<String>,
 
     // ── Channel messages ─────────────────────────────────────────────────
     /// Recent channel messages for debugging context.
@@ -335,6 +339,19 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
+    // Detect which coworkers are experiencing API errors (from pane content)
+    // These are transient failures that may resolve on retry
+    let api_error_coworkers: HashSet<String> = pane_contents
+        .iter()
+        .filter(|(name, content)| {
+            // Only detect API error if not already at usage limit
+            // (usage limit takes precedence)
+            !usage_limited_coworkers.contains(&name.to_lowercase())
+                && crate::rules::has_api_error_pattern(content)
+        })
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
     // ── Channel messages & daemon logs ─────────────────────────────────
     // These debug fields are NOT populated during tick collection (hot path).
     // They are only populated on-demand via `with_debug_context()` when
@@ -377,6 +394,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
         usage_limited_coworkers,
+        api_error_coworkers,
         channel_messages,
         daemon_logs,
         is_at_coworker_limit,
@@ -499,6 +517,7 @@ mod tests {
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -578,6 +597,7 @@ mod tests {
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
             channel_messages: vec![], // Empty by default
             daemon_logs: vec![],      // Empty by default
             is_at_coworker_limit: false,

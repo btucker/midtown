@@ -255,6 +255,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &snap.coworkers_with_running_subagents,
             &snap.ci_passed_pr_coworkers,
             &snap.usage_limited_coworkers,
+            &snap.api_error_coworkers,
             &records,
             snap.now_utc,
             MINIMUM_COWORKER_LIFETIME,
@@ -443,6 +444,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         &snap.pane_contents,
         &snap.in_progress_tasks,
         &snap.usage_limited_coworkers,
+        &snap.api_error_coworkers,
         snap.now,
         COWORKER_STUCK_DURATION,
     );
@@ -603,6 +605,87 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
             name: cw.name.clone(),
             message: "continue".to_string(),
         });
+    }
+
+    effects
+}
+
+/// Check for coworkers experiencing API errors and periodically nudge them to retry.
+///
+/// Unlike usage limits (which have a known reset time and get a single scheduled nudge),
+/// API errors are transient and may resolve at any moment. We periodically nudge
+/// coworkers with API errors to encourage them to retry, using a cooldown to avoid
+/// spamming.
+///
+/// First detection: posts a channel message about the API error.
+/// Subsequent detections: nudges the coworker with a cooldown (does not re-post).
+pub(super) fn check_and_nudge_api_errors(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<Effect> {
+    if snap.api_error_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+    let mut first_detection = false;
+
+    for name in &snap.api_error_coworkers {
+        // Check cooldown - only nudge if the cooldown has expired
+        let should_nudge = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.check("api_error_nudge", name, API_ERROR_NUDGE_COOLDOWN)
+        };
+
+        if !should_nudge {
+            debug!("API error nudge cooldown active for {}", name);
+            continue;
+        }
+
+        // Check if this is the first time we're seeing this coworker with API error
+        // (no prior cooldown entry means first detection)
+        let is_first = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            !cooldowns.has_entry("api_error_nudge", name)
+        };
+
+        if is_first {
+            first_detection = true;
+        }
+
+        info!(
+            "Nudging coworker {} to retry after API error (cooldown: {}s)",
+            name,
+            API_ERROR_NUDGE_COOLDOWN.as_secs()
+        );
+
+        effects.push(Effect::NudgeCoworker {
+            name: name.clone(),
+            message: "The API error may have cleared. Try continuing your work.".to_string(),
+        });
+        effects.push(Effect::RecordCooldown {
+            category: "api_error_nudge".to_string(),
+            key: name.clone(),
+        });
+    }
+
+    // Post a channel message on first detection
+    if first_detection {
+        let names: Vec<&str> = snap
+            .api_error_coworkers
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        effects.insert(
+            0,
+            Effect::PostToChannel {
+                sender: "system".to_string(),
+                message: format!(
+                    "⚠️ API errors detected for: {}. Will periodically nudge to retry.",
+                    names.join(", ")
+                ),
+            },
+        );
     }
 
     effects
