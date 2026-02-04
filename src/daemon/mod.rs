@@ -822,6 +822,79 @@ fn load_additional_worktree_managers(
         .collect()
 }
 
+/// Validate that the configured github_user has access to the repository.
+///
+/// Makes a simple `gh repo view` call to verify the user can access the repo.
+/// This catches misconfigured github_user early with a clear error message,
+/// rather than having mysterious polling failures later.
+fn validate_github_repo_access(github_user: &str, workdir: &PathBuf) -> crate::Result<()> {
+    info!("Validating GitHub repo access for user: {}", github_user);
+
+    // Get the repo's full name (owner/repo) for the error message
+    let output = std::process::Command::new("gh")
+        .current_dir(workdir)
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ])
+        .output()
+        .map_err(|e| crate::Error::Rpc {
+            code: -32603,
+            message: format!("Failed to run `gh repo view`: {}", e),
+        })?;
+
+    if output.status.success() {
+        let repo_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        info!(
+            "Validated github_user '{}' has access to repository '{}'",
+            github_user, repo_name
+        );
+        return Ok(());
+    }
+
+    // Get the repo name for a better error message (even if access check failed)
+    let repo_name = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            // Extract owner/repo from various URL formats
+            url.trim_end_matches(".git")
+                .rsplit('/')
+                .take(2)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("/")
+                .trim_start_matches(':')
+                .to_string()
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(crate::Error::Rpc {
+        code: -32603,
+        message: format!(
+            "github_user '{}' does not have access to repository '{}'.\n\
+             Please check your ~/.midtown/config.toml configuration.\n\
+             GitHub error: {}",
+            github_user,
+            repo_name,
+            stderr.trim()
+        ),
+    })
+}
+
+/// Acquire an exclusive lock on the PID file.
+///
 /// The lock is held for the lifetime of the returned File handle.
 ///
 /// Returns an error if another daemon is already running (lock already held).
@@ -959,6 +1032,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             github_user,
             token.len()
         );
+
+        // Validate that the github_user has access to this repository.
+        // This catches misconfigured github_user early with a clear error,
+        // rather than having mysterious failures during polling.
+        validate_github_repo_access(github_user, &config.workdir)?;
     }
 
     // Acquire exclusive lock on PID file to enforce singleton behavior
