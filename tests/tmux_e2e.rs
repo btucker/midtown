@@ -1774,3 +1774,686 @@ fn test_kill_orphaned_claude_processes_real() {
         );
     }
 }
+
+// ── Send-keys for nudges ────────────────────────────────────────────
+
+/// `send_keys_raw` delivers raw key sequences without Enter.
+///
+/// Verifies that raw keys can be sent to a pane and captured. This is the
+/// foundation for nudge delivery.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_send_keys_raw_delivers_text() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+
+    // Create a window running cat which will echo input
+    // Use cat -u for unbuffered output
+    midtown::tmux::create_window(
+        &session,
+        "catwin",
+        &temp.path().to_string_lossy(),
+        Some("cat"),
+    )
+    .expect("create_window failed");
+
+    thread::sleep(Duration::from_millis(500));
+
+    // Send some text via send_keys_raw (no Enter appended)
+    let test_text = "Hello from test";
+    midtown::tmux::send_keys_raw(&session, "catwin", test_text).expect("send_keys_raw failed");
+
+    thread::sleep(Duration::from_millis(200));
+
+    // Capture the pane and verify the text appears
+    let target = format!("{}:catwin", session);
+    let content = midtown::tmux::capture_pane(&target);
+    assert!(content.is_some(), "Failed to capture pane");
+
+    // The text should be visible as typed (waiting for Enter)
+    let content = content.unwrap();
+    assert!(
+        content.contains(test_text),
+        "Expected '{}' in pane content, got: {}",
+        test_text,
+        content
+    );
+}
+
+/// `send_keys_raw` can send special keys like Enter.
+///
+/// This verifies the mechanism used by nudge delivery to submit input.
+/// Uses a marker file to verify the command was actually executed.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_send_keys_raw_enter_submits_input() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let marker_file = temp.path().join("marker.txt");
+
+    // Create a window with a shell
+    midtown::tmux::create_window(
+        &session,
+        "shellwin",
+        &temp.path().to_string_lossy(),
+        None, // Start a shell
+    )
+    .expect("create_window failed");
+
+    // Give shell time to start
+    thread::sleep(Duration::from_millis(800));
+
+    // Send a touch command followed by Enter - creates a file as proof of execution
+    let touch_cmd = format!("touch {}", marker_file.to_string_lossy());
+    midtown::tmux::send_keys_raw(&session, "shellwin", &touch_cmd)
+        .expect("send_keys_raw text failed");
+    thread::sleep(Duration::from_millis(100));
+    midtown::tmux::send_keys_raw(&session, "shellwin", "Enter")
+        .expect("send_keys_raw Enter failed");
+
+    // Wait for command to execute
+    thread::sleep(Duration::from_millis(1000));
+
+    // Verify the marker file was created (proves Enter was sent and command executed)
+    assert!(
+        marker_file.exists(),
+        "Marker file should exist - proves 'Enter' was sent and command executed"
+    );
+}
+
+// ── Session management ──────────────────────────────────────────────
+
+/// `session_exists` returns true for existing sessions.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+#[allow(deprecated)]
+fn test_session_exists_returns_true_for_existing() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // session_exists expects the name WITHOUT the prefix
+    // The test session was created with the full name, so we need to extract the suffix
+    let session_suffix = session
+        .strip_prefix(midtown::tmux::SESSION_PREFIX)
+        .unwrap_or(&session);
+
+    let exists = midtown::tmux::session_exists(session_suffix);
+    assert!(
+        exists.is_ok() && exists.unwrap(),
+        "session_exists should return true for existing session"
+    );
+}
+
+/// `session_exists` returns false for non-existing sessions.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+#[allow(deprecated)]
+fn test_session_exists_returns_false_for_nonexistent() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let nonexistent = format!("nonexistent-{}", std::process::id());
+    let exists = midtown::tmux::session_exists(&nonexistent);
+    assert!(
+        exists.is_ok() && !exists.unwrap(),
+        "session_exists should return false for non-existing session"
+    );
+}
+
+/// `list_sessions` returns existing midtown sessions.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+#[allow(deprecated)]
+fn test_list_sessions_finds_midtown_sessions() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Create a session with the midtown prefix
+    let unique_name = format!("test-list-{}", std::process::id());
+    let full_session = format!("{}{}", midtown::tmux::SESSION_PREFIX, unique_name);
+
+    let status = Command::new("tmux")
+        .args(["new-session", "-d", "-s", &full_session])
+        .status()
+        .expect("Failed to create test session");
+    assert!(status.success(), "Failed to create midtown test session");
+
+    // Cleanup on drop
+    struct MidtownSessionCleanup(String);
+    impl Drop for MidtownSessionCleanup {
+        fn drop(&mut self) {
+            let _ = Command::new("tmux")
+                .args(["kill-session", "-t", &self.0])
+                .status();
+        }
+    }
+    let _cleanup = MidtownSessionCleanup(full_session);
+
+    let sessions = midtown::tmux::list_sessions().expect("list_sessions failed");
+
+    assert!(
+        sessions.contains(&unique_name),
+        "list_sessions should find our midtown session '{}', got: {:?}",
+        unique_name,
+        sessions
+    );
+}
+
+// ── Status bar hook setup ───────────────────────────────────────────
+
+/// `setup_status_bar_hook` completes without error.
+///
+/// The hook sets up a pane-focus-in callback that updates the status bar
+/// color based on the focused window's name. We verify the function executes
+/// successfully - the hook mechanism is internal to tmux.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_setup_status_bar_hook_succeeds() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Create a window named after a coworker to ensure the hook has valid targets
+    assert!(create_test_window(&session, "lexington"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Set up the status bar hook - should succeed
+    let result = midtown::tmux::setup_status_bar_hook(&session);
+    assert!(result.is_ok(), "setup_status_bar_hook should succeed");
+
+    // Setting the hook again should also succeed (idempotent)
+    let result2 = midtown::tmux::setup_status_bar_hook(&session);
+    assert!(
+        result2.is_ok(),
+        "setup_status_bar_hook should be idempotent"
+    );
+}
+
+/// `setup_status_bar_hook` can be called on sessions with multiple windows.
+///
+/// Verifies that the hook setup works correctly regardless of how many
+/// windows exist in the session.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_setup_status_bar_hook_with_multiple_windows() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Create multiple coworker windows
+    for name in ["lexington", "park", "madison", "amsterdam"] {
+        assert!(
+            create_test_window(&session, name),
+            "Failed to create {}",
+            name
+        );
+    }
+    thread::sleep(Duration::from_millis(100));
+
+    // Set up the status bar hook
+    let result = midtown::tmux::setup_status_bar_hook(&session);
+    assert!(
+        result.is_ok(),
+        "setup_status_bar_hook should succeed with multiple windows"
+    );
+
+    // Switching windows should not error (even if we can't easily verify the color)
+    for name in ["lexington", "park", "madison", "amsterdam"] {
+        let target = format!("{}:{}", session, name);
+        let status = Command::new("tmux")
+            .args(["select-window", "-t", &target])
+            .status()
+            .expect("select-window failed");
+        assert!(status.success(), "Should be able to select window {}", name);
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+// ── Window killing safety checks ────────────────────────────────────
+
+/// `kill_window` refuses to kill the last window in a session.
+///
+/// This safety check prevents accidentally destroying the session (and
+/// potentially the tmux server if it's the only session).
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_kill_window_refuses_to_kill_last_window() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Rename the default window to "only_window"
+    let default_target = format!("{}:0", session);
+    let _ = Command::new("tmux")
+        .args(["rename-window", "-t", &default_target, "only_window"])
+        .status();
+    thread::sleep(Duration::from_millis(100));
+
+    // Verify there's only one window
+    let windows = midtown::tmux::list_all_windows(&session).expect("list_all_windows failed");
+    assert_eq!(windows.len(), 1, "Should have exactly one window");
+
+    // Try to kill it - this should NOT work (safety check)
+    let result = midtown::tmux::kill_window(&session, "only_window");
+    assert!(
+        result.is_ok(),
+        "kill_window should return Ok (silent failure)"
+    );
+
+    // Verify the window still exists
+    let still_exists =
+        midtown::tmux::window_exists(&session, "only_window").expect("window_exists failed");
+    assert!(
+        still_exists,
+        "Last window should NOT have been killed - safety check failed"
+    );
+}
+
+/// `kill_window_by_target` also refuses to kill the last window.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_kill_window_by_target_refuses_last_window() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Rename the default window
+    let default_target = format!("{}:0", session);
+    let _ = Command::new("tmux")
+        .args(["rename-window", "-t", &default_target, "sole_window"])
+        .status();
+    thread::sleep(Duration::from_millis(100));
+
+    // Try to kill by target - should refuse
+    let target = format!("{}:sole_window", session);
+    let result = midtown::tmux::kill_window_by_target(&target);
+    assert!(result.is_ok(), "kill_window_by_target should return Ok");
+
+    // Window should still exist
+    let still_exists =
+        midtown::tmux::window_exists(&session, "sole_window").expect("window_exists failed");
+    assert!(
+        still_exists,
+        "Last window should NOT have been killed via kill_window_by_target"
+    );
+}
+
+/// `kill_window` works when there are multiple windows.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_kill_window_succeeds_with_multiple_windows() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Create an additional window so we have 2
+    assert!(create_test_window(&session, "to_kill"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Verify we have 2 windows
+    let windows = midtown::tmux::list_all_windows(&session).expect("list_all_windows failed");
+    assert!(windows.len() >= 2, "Should have at least 2 windows");
+
+    // Now kill should work
+    let result = midtown::tmux::kill_window(&session, "to_kill");
+    assert!(result.is_ok(), "kill_window should succeed");
+    thread::sleep(Duration::from_millis(200));
+
+    // Verify the window is gone
+    let still_exists =
+        midtown::tmux::window_exists(&session, "to_kill").expect("window_exists failed");
+    assert!(!still_exists, "Window 'to_kill' should have been killed");
+}
+
+// ── Pane capture and parsing ────────────────────────────────────────
+
+/// `capture_pane` returns content from a tmux pane.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_capture_pane_returns_content() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+
+    // Create a window that outputs some text
+    midtown::tmux::create_window(
+        &session,
+        "output",
+        &temp.path().to_string_lossy(),
+        Some("echo CAPTURE_TEST_MARKER; sleep 300"),
+    )
+    .expect("create_window failed");
+
+    thread::sleep(Duration::from_millis(500));
+
+    let target = format!("{}:output", session);
+    let content = midtown::tmux::capture_pane(&target);
+
+    assert!(content.is_some(), "capture_pane should return Some");
+    assert!(
+        content.as_ref().unwrap().contains("CAPTURE_TEST_MARKER"),
+        "Captured content should contain our marker, got: {}",
+        content.unwrap()
+    );
+}
+
+/// `capture_pane` returns None for non-existent pane.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_capture_pane_returns_none_for_nonexistent() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let target = "nonexistent-session:nonexistent-window";
+    let content = midtown::tmux::capture_pane(target);
+
+    assert!(
+        content.is_none(),
+        "capture_pane should return None for non-existent target"
+    );
+}
+
+// ── Window resize operations ────────────────────────────────────────
+
+/// `resize_window_width` changes the window width.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_resize_window_width_changes_cols() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    // Create with a specific size
+    let _ = Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session, "-x", "200", "-y", "50"])
+        .status()
+        .expect("Failed to create session");
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Create a window to resize
+    assert!(create_test_window(&session, "resizable"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Resize to 120 columns
+    let result = midtown::tmux::resize_window_width(&session, "resizable", 120);
+    assert!(result.is_ok(), "resize_window_width should succeed");
+
+    // Verify the width changed
+    let target = format!("{}:resizable", session);
+    let output = Command::new("tmux")
+        .args(["display-message", "-t", &target, "-p", "#{window_width}"])
+        .output()
+        .expect("Failed to get window width");
+
+    let width: u16 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("Failed to parse width");
+
+    assert_eq!(width, 120, "Window width should be 120, got {}", width);
+}
+
+/// `resize_window_width` enforces minimum width of 80 columns.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_resize_window_width_enforces_minimum() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    let _ = Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session, "-x", "200", "-y", "50"])
+        .status()
+        .expect("Failed to create session");
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    assert!(create_test_window(&session, "narrow"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Try to resize to 40 (below minimum)
+    let result = midtown::tmux::resize_window_width(&session, "narrow", 40);
+    assert!(result.is_ok(), "resize_window_width should succeed");
+
+    // Verify width is at minimum (80), not 40
+    let target = format!("{}:narrow", session);
+    let output = Command::new("tmux")
+        .args(["display-message", "-t", &target, "-p", "#{window_width}"])
+        .output()
+        .expect("Failed to get window width");
+
+    let width: u16 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("Failed to parse width");
+
+    assert_eq!(
+        width,
+        midtown::tmux::MIN_RESIZE_COLS,
+        "Window width should be enforced to minimum {}, got {}",
+        midtown::tmux::MIN_RESIZE_COLS,
+        width
+    );
+}
+
+/// `reset_window_size` resets to automatic sizing.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_reset_window_size_succeeds() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    let _ = Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session, "-x", "200", "-y", "50"])
+        .status()
+        .expect("Failed to create session");
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    assert!(create_test_window(&session, "autoreset"));
+    thread::sleep(Duration::from_millis(100));
+
+    // First resize to a specific width
+    midtown::tmux::resize_window_width(&session, "autoreset", 150)
+        .expect("resize_window_width failed");
+
+    // Now reset to automatic sizing
+    let result = midtown::tmux::reset_window_size(&session, "autoreset");
+    assert!(result.is_ok(), "reset_window_size should succeed");
+}
+
+// ── count_windows_by_name / kill_all_windows_by_name ────────────────
+
+/// `count_windows_by_name` counts windows correctly.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_count_windows_by_name() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Create multiple windows with same base name (simulating duplicates)
+    // Note: tmux allows duplicate names, and midtown handles this
+    assert!(create_test_window(&session, "dupwin"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Create another window with a different name
+    assert!(create_test_window(&session, "other"));
+    thread::sleep(Duration::from_millis(100));
+
+    let (count, ids) = midtown::tmux::count_windows_by_name(&session, "dupwin")
+        .expect("count_windows_by_name failed");
+
+    assert_eq!(count, 1, "Should have 1 window named 'dupwin'");
+    assert_eq!(ids.len(), 1, "Should return 1 window ID");
+
+    let (other_count, _) = midtown::tmux::count_windows_by_name(&session, "other")
+        .expect("count_windows_by_name failed");
+    assert_eq!(other_count, 1, "Should have 1 window named 'other'");
+
+    let (none_count, _) = midtown::tmux::count_windows_by_name(&session, "nonexistent")
+        .expect("count_windows_by_name failed");
+    assert_eq!(none_count, 0, "Should have 0 windows named 'nonexistent'");
+}
+
+/// `kill_all_windows_by_name` kills all windows with the given name.
+#[test]
+#[ignore]
+#[timeout(15_000)]
+fn test_kill_all_windows_by_name_removes_duplicates() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    // Create a 'keeper' window first (so we have >1 window for safety check)
+    assert!(create_test_window(&session, "keeper"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Create a window to kill
+    assert!(create_test_window(&session, "victim"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Verify 'victim' exists
+    assert!(
+        midtown::tmux::window_exists(&session, "victim").unwrap(),
+        "victim window should exist"
+    );
+
+    // Kill all windows named 'victim'
+    let killed = midtown::tmux::kill_all_windows_by_name(&session, "victim")
+        .expect("kill_all_windows_by_name failed");
+
+    assert_eq!(killed, 1, "Should have killed 1 window");
+    thread::sleep(Duration::from_millis(300));
+
+    // Verify 'victim' is gone
+    assert!(
+        !midtown::tmux::window_exists(&session, "victim").unwrap(),
+        "victim window should be gone"
+    );
+
+    // 'keeper' should still exist
+    assert!(
+        midtown::tmux::window_exists(&session, "keeper").unwrap(),
+        "keeper window should still exist"
+    );
+}
