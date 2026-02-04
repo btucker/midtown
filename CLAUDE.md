@@ -187,7 +187,9 @@ Post to the channel when done so the team knows the new code is live:
 midtown channel post "Pulled main, rebuilt release, and restarted midtown."
 ```
 
-## Debugging Unexpected Daemon Behavior (Lead Workflow)
+## Debugging & Test Fixtures
+
+### Debugging Unexpected Daemon Behavior (Lead Workflow)
 
 **IMPORTANT: The Lead should do this PROACTIVELY whenever noticing daemon misbehavior — don't wait for the user to ask.**
 
@@ -219,26 +221,6 @@ When the Lead notices the daemon doing something unexpected (wrong decisions, mi
    - Verify the test passes
 
 This ensures bugs get test coverage before fixes, preventing regressions. **Act immediately** — the daemon state changes quickly and valuable debug info is lost if not captured promptly.
-
-## Debugging & Test Fixtures
-
-### Capturing WorldSnapshots
-
-When debugging daemon behavior or creating test cases, capture the daemon's `WorldSnapshot`:
-
-```bash
-midtown e2e capture                      # capture current state
-midtown e2e capture --label usage-limit  # include descriptive label
-```
-
-This saves a JSON file to `tests/fixtures/snapshot/` containing:
-- All pane contents (tmux screen captures)
-- Coworker state and start times
-- Task state (in-progress, pending, ownership)
-- PR state (open, merged, CI status)
-- Reviewer assignments
-
-Use these fixtures in unit tests to verify daemon decisions without running real Claude Code.
 
 ### Debug Logging
 
