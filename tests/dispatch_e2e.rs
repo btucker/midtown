@@ -850,16 +850,16 @@ fn task_owner_validation() {
     let snap = load_snapshot(fixture);
 
     for task in &snap.all_tasks {
-        if let Some(owner) = &task.owner {
-            if !owner.is_empty() {
-                let owner_lower = owner.to_lowercase();
-                let is_valid = owner_lower == "lead" || is_valid_coworker_name(&owner_lower);
-                assert!(
-                    is_valid,
-                    "Task #{} has invalid owner '{}' - must be an avenue name or 'lead'",
-                    task.id, owner
-                );
-            }
+        if let Some(owner) = &task.owner
+            && !owner.is_empty()
+        {
+            let owner_lower = owner.to_lowercase();
+            let is_valid = owner_lower == "lead" || is_valid_coworker_name(&owner_lower);
+            assert!(
+                is_valid,
+                "Task #{} has invalid owner '{}' - must be an avenue name or 'lead'",
+                task.id, owner
+            );
         }
     }
 }
