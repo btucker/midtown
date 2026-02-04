@@ -417,7 +417,11 @@ fn partition_orphans_by_merged_status(
 /// The worktree operations run in a blocking task to avoid blocking the async
 /// runtime. We process a limited number per tick to avoid saturating the
 /// blocking thread pool.
-pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
+///
+/// Returns effects for clearing reviewer assignments of orphaned coworkers.
+pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
     // Clone the coworker manager for use in the blocking task.
     // CoworkerManager is Clone and contains Arc<> internally.
     let coworkers = state.coworkers.clone();
@@ -425,7 +429,10 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
     // Run the blocking worktree operations (git commands only - no gh CLI) in a
     // separate thread pool. Process at most 2 worktrees per tick to avoid
     // saturating the blocking thread pool and causing RPC timeouts.
-    let (flagged, branch_map) = tokio::task::spawn_blocking(move || {
+    // Also get the full list of orphaned worktrees for state cleanup.
+    let (all_orphaned, flagged, branch_map) = tokio::task::spawn_blocking(move || {
+        // First get all orphaned worktrees (before cleanup modifies the list)
+        let all_orphaned = coworkers.find_orphaned_worktree_names();
         let flagged = coworkers.cleanup_orphaned_worktrees(Some(2));
         // Pre-fetch branch names for all flagged worktrees (avoids blocking git
         // calls later in the async context)
@@ -433,13 +440,22 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
             .iter()
             .map(|name| (name.clone(), coworkers.get_worktree_branch(name)))
             .collect();
-        (flagged, branch_map)
+        (all_orphaned, flagged, branch_map)
     })
     .await
     .unwrap_or_else(|e| {
         warn!("Worktree cleanup task panicked: {}", e);
-        (vec![], HashMap::new())
+        (vec![], vec![], HashMap::new())
     });
+
+    // Queue effect to clear reviewer assignments for orphaned coworkers.
+    // When a coworker's tmux session ends unexpectedly, their reviewer assignment
+    // should be freed so another coworker can be assigned to review the PR.
+    if !all_orphaned.is_empty() {
+        effects.push(Effect::ClearOrphanedReviewerAssignments {
+            orphaned_coworkers: all_orphaned,
+        });
+    }
 
     // Filter out worktrees whose branches have open PRs (by coworker name).
     let open_pr_owners = {
@@ -499,7 +515,7 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
         .collect();
 
     if due_for_warning.is_empty() {
-        return;
+        return effects;
     }
 
     // Record warnings and log (rate-limited by OrphanTracker)
@@ -522,6 +538,8 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
     if let Err(e) = state.send_and_broadcast(&msg) {
         warn!("Failed to send orphan flag message: {}", e);
     }
+
+    effects
 }
 
 /// Handles two cases:
