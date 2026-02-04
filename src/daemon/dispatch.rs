@@ -417,7 +417,11 @@ fn partition_orphans_by_merged_status(
 /// The worktree operations run in a blocking task to avoid blocking the async
 /// runtime. We process a limited number per tick to avoid saturating the
 /// blocking thread pool.
-pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
+///
+/// Returns effects for clearing reviewer assignments of orphaned coworkers.
+pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
     // Clone the coworker manager for use in the blocking task.
     // CoworkerManager is Clone and contains Arc<> internally.
     let coworkers = state.coworkers.clone();
@@ -444,29 +448,13 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
         (vec![], vec![], HashMap::new())
     });
 
-    // Clear reviewer assignments for orphaned coworkers.
+    // Queue effect to clear reviewer assignments for orphaned coworkers.
     // When a coworker's tmux session ends unexpectedly, their reviewer assignment
     // should be freed so another coworker can be assigned to review the PR.
     if !all_orphaned.is_empty() {
-        let mut cleared_count = 0;
-        let mut ps = state.persistent_state.lock().await;
-        for name in &all_orphaned {
-            if let Some(assignment) = ps.github.remove_assignment_by_reviewer(name) {
-                info!(
-                    "Cleared stale reviewer assignment: {} was reviewing PR #{}",
-                    name, assignment.pr_number
-                );
-                cleared_count += 1;
-            }
-        }
-        if cleared_count > 0
-            && let Err(e) = ps.save_for_repo(&state.repo_name)
-        {
-            warn!(
-                "Failed to save daemon-state.json after clearing orphan reviewer assignments: {}",
-                e
-            );
-        }
+        effects.push(Effect::ClearOrphanedReviewerAssignments {
+            orphaned_coworkers: all_orphaned,
+        });
     }
 
     // Filter out worktrees whose branches have open PRs (by coworker name).
@@ -527,7 +515,7 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
         .collect();
 
     if due_for_warning.is_empty() {
-        return;
+        return effects;
     }
 
     // Record warnings and log (rate-limited by OrphanTracker)
@@ -550,6 +538,8 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
     if let Err(e) = state.send_and_broadcast(&msg) {
         warn!("Failed to send orphan flag message: {}", e);
     }
+
+    effects
 }
 
 /// Handles two cases:

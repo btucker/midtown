@@ -103,6 +103,8 @@ pub enum Effect {
         reviewer_name: String,
         source: crate::github_state::AssignmentSource,
     },
+    /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
+    ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -395,6 +397,30 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let msg = Message::system(message);
                 if let Err(e) = state.send_and_broadcast(&msg) {
                     warn!("Failed to post system message: {}", e);
+                }
+            }
+            Effect::ClearOrphanedReviewerAssignments { orphaned_coworkers } => {
+                if orphaned_coworkers.is_empty() {
+                    continue;
+                }
+                let mut cleared_count = 0;
+                let mut ps = state.persistent_state.lock().await;
+                for name in &orphaned_coworkers {
+                    if let Some(assignment) = ps.github.remove_assignment_by_reviewer(name) {
+                        info!(
+                            "Cleared stale reviewer assignment: {} was reviewing PR #{}",
+                            name, assignment.pr_number
+                        );
+                        cleared_count += 1;
+                    }
+                }
+                if cleared_count > 0
+                    && let Err(e) = ps.save_for_repo(&state.repo_name)
+                {
+                    warn!(
+                        "Failed to save daemon-state.json after clearing orphan reviewer assignments: {}",
+                        e
+                    );
                 }
             }
         }
