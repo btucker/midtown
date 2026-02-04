@@ -449,11 +449,14 @@ pub(crate) enum UsageLimitDecision {
 ///
 /// Scans pane contents for known usage/rate limit patterns.
 /// The caller is responsible for skipping this call when a nudge is already scheduled.
+///
+/// To detect recovery: if the usage limit pattern appears but there's significant
+/// activity AFTER it, the coworker has recovered and should not be marked as limited.
 pub(crate) fn decide_usage_limit_detection(
     pane_contents: &HashMap<String, String>,
 ) -> UsageLimitDecision {
     for (name, content) in pane_contents {
-        if content.contains(USAGE_LIMIT_PATTERN) {
+        if is_at_usage_limit(content) {
             return UsageLimitDecision::Detected {
                 coworker: name.clone(),
             };
@@ -461,6 +464,38 @@ pub(crate) fn decide_usage_limit_detection(
     }
 
     UsageLimitDecision::NoneDetected
+}
+
+/// Check if pane content indicates an active (not recovered) usage limit.
+///
+/// Returns true if the usage limit pattern is present AND there's no significant
+/// activity after it. If the coworker has recovered (substantial content after
+/// the limit message), returns false.
+fn is_at_usage_limit(content: &str) -> bool {
+    // Find the last occurrence of the usage limit pattern
+    let Some(limit_pos) = content.rfind(USAGE_LIMIT_PATTERN) else {
+        return false;
+    };
+
+    // Get content after the usage limit message
+    let after_limit = &content[limit_pos + USAGE_LIMIT_PATTERN.len()..];
+
+    // Count significant lines after the limit (non-empty, non-whitespace-only)
+    let significant_lines: usize = after_limit
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Skip empty lines and common noise
+            !trimmed.is_empty()
+                && !trimmed
+                    .chars()
+                    .all(|c| c == '─' || c == '━' || c == '=' || c == '-')
+        })
+        .count();
+
+    // If there are more than 5 significant lines after the limit, coworker has recovered
+    // (typical Claude Code output has prompts, tool calls, status lines, etc.)
+    significant_lines <= 5
 }
 
 /// Decision output for usage limit expiry check.
@@ -1143,12 +1178,14 @@ fn parse_12hour_time(text: &str) -> Option<Duration> {
     diff.to_std().ok()
 }
 
-/// Check if pane content contains the usage limit pattern ("/upgrade").
+/// Check if pane content indicates an active (not recovered) usage limit.
+///
+/// Returns true only if the usage limit pattern is present AND the coworker
+/// hasn't recovered (no significant activity after the limit message).
 ///
 /// Used directly in tests and indirectly via `decide_usage_limit_detection`.
-#[allow(dead_code)]
 pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
-    pane_content.contains(USAGE_LIMIT_PATTERN)
+    is_at_usage_limit(pane_content)
 }
 
 // ---------------------------------------------------------------------------
@@ -4065,5 +4102,69 @@ fn launch_agent() {
         // but that's acceptable - false positives here just prevent unnecessary
         // idle shutdown, which is safe. The key is avoiding false negatives.
         // In practice, code files rarely have this exact pattern.
+    }
+
+    // -----------------------------------------------------------------------
+    // Usage limit recovery detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn usage_limit_recovery_detected_after_activity() {
+        // Coworker hit usage limit but has since recovered and is working again
+        let recovered_pane = r#"
+You've reached your usage limit. /upgrade to increase.
+Your limit will reset in 2 hours.
+
+> User response resumed
+
+⏺ I'll continue with the task.
+
+Let me read the file first.
+
+⏺ Read(file_path: "/src/main.rs")
+
+Now I'll implement the fix.
+
+⏺ Edit(file_path: "/src/main.rs")
+"#;
+
+        assert!(
+            !has_usage_limit_pattern(recovered_pane),
+            "coworker with significant activity after usage limit should NOT be detected as limited"
+        );
+    }
+
+    #[test]
+    fn usage_limit_still_stuck_at_limit() {
+        // Coworker is still at the usage limit screen (no significant activity after)
+        let stuck_at_limit = r#"
+You've reached your usage limit for Claude Opus 4.5.
+
+Your limit will reset in 2 hours.
+
+Options:
+- /upgrade to increase your limit
+- /compact to reduce context
+"#;
+
+        assert!(
+            has_usage_limit_pattern(stuck_at_limit),
+            "coworker still at usage limit screen should be detected as limited"
+        );
+    }
+
+    #[test]
+    fn usage_limit_minimal_activity_still_limited() {
+        // Just a few lines after the limit - not enough to consider recovered
+        let minimal_after = r#"
+/upgrade
+
+(waiting for limit to reset)
+"#;
+
+        assert!(
+            has_usage_limit_pattern(minimal_after),
+            "minimal activity after limit should still be considered limited"
+        );
     }
 }
