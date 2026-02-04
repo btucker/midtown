@@ -663,7 +663,10 @@ pub(super) fn check_and_recover_stuck_ui(
                     name
                 );
                 // Trace log pane content for debugging false positives
-                if let Some(pane_content) = snap.pane_contents.get(&name) {
+                // Guard with enabled! to avoid expensive string operations when trace is disabled
+                if tracing::enabled!(tracing::Level::TRACE)
+                    && let Some(pane_content) = snap.pane_contents.get(&name)
+                {
                     // Log last 20 lines to see what triggered detection
                     let last_lines: Vec<&str> = pane_content.lines().rev().take(20).collect();
                     trace!(
