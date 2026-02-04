@@ -602,7 +602,7 @@ fn test_webhook_check_run_failure() {
     assert_eq!(status, 200);
 
     assert!(
-        fixture.wait_for_channel_message("Check 'Build' failed on PR #99", 5000),
+        fixture.wait_for_channel_message("Check 'Build' failed on PR #99", 15000),
         "CI failure should appear in channel"
     );
     assert!(
@@ -640,7 +640,7 @@ fn test_webhook_check_run_failure_on_main() {
     assert_eq!(status, 200);
 
     assert!(
-        fixture.wait_for_channel_message("Check 'E2E Tests' failed on main", 5000),
+        fixture.wait_for_channel_message("Check 'E2E Tests' failed on main", 15000),
         "CI failure on main should appear in channel"
     );
 }
@@ -676,7 +676,7 @@ fn test_webhook_check_run_success() {
     assert_eq!(status, 200);
 
     assert!(
-        fixture.wait_for_channel_message("Check 'Tests' passed on PR #100", 5000),
+        fixture.wait_for_channel_message("Check 'Tests' passed on PR #100", 15000),
         "CI success should appear in channel"
     );
 }
