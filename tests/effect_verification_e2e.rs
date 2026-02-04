@@ -627,3 +627,509 @@ fn test_fixture_can_start_daemon() {
         "Ping should return 'pong'"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// ShutdownCoworker Effect Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test that shutting down a coworker removes the tmux window.
+///
+/// This verifies the ShutdownCoworker effect observable outcome: the coworker.break
+/// RPC should result in the coworker's tmux window being removed from the session.
+#[test]
+#[ignore] // Requires tmux and built binary (may require claude CLI)
+fn test_effect_shutdown_coworker_removes_window() {
+    if !tmux_available() {
+        eprintln!("SKIPPED: tmux not available");
+        return;
+    }
+
+    let mut fixture = match EffectTestFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("SKIPPED: fixture creation failed");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("SKIPPED: daemon failed to start");
+        return;
+    }
+
+    let coworker_name = "madison";
+
+    // First, spawn a coworker
+    let spawn_params = serde_json::json!({
+        "name": coworker_name
+    });
+
+    let spawn_response = fixture.rpc_call("coworker.spawn", Some(spawn_params));
+    assert!(
+        spawn_response.is_some(),
+        "Should receive response from coworker.spawn"
+    );
+
+    let spawn_response = spawn_response.unwrap();
+    if spawn_response["error"].is_object() {
+        eprintln!(
+            "SKIPPED: coworker.spawn failed (expected without Claude CLI): {:?}",
+            spawn_response["error"]
+        );
+        return;
+    }
+
+    // Wait for coworker to be fully spawned
+    thread::sleep(Duration::from_secs(3));
+
+    // Verify coworker appears in list
+    let list_before = fixture.rpc_call("coworker.list", None).unwrap();
+    let coworkers_before = list_before["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+    let found_before = coworkers_before
+        .iter()
+        .any(|c| c["name"].as_str() == Some(coworker_name));
+    assert!(
+        found_before,
+        "Coworker '{}' should appear in list before shutdown",
+        coworker_name
+    );
+
+    // Verify tmux window exists
+    let windows_before = fixture.list_tmux_windows();
+    assert!(
+        windows_before.iter().any(|w| w.contains(coworker_name)),
+        "Tmux window for '{}' should exist before shutdown. Found: {:?}",
+        coworker_name,
+        windows_before
+    );
+
+    // Now shut down the coworker using coworker.break
+    let break_params = serde_json::json!({
+        "name": coworker_name
+    });
+
+    let break_response = fixture.rpc_call("coworker.break", Some(break_params));
+    assert!(
+        break_response.is_some(),
+        "Should receive response from coworker.break"
+    );
+
+    let break_response = break_response.unwrap();
+    assert!(
+        break_response["error"].is_null(),
+        "coworker.break should not return an error: {:?}",
+        break_response["error"]
+    );
+
+    // Verify the break was successful
+    assert!(
+        break_response["result"]["success"].as_bool() == Some(true),
+        "coworker.break should report success"
+    );
+
+    // Give tmux time to remove the window
+    thread::sleep(Duration::from_secs(1));
+
+    // Verify coworker no longer appears in list
+    let list_after = fixture.rpc_call("coworker.list", None).unwrap();
+    let coworkers_after = list_after["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+    let found_after = coworkers_after
+        .iter()
+        .any(|c| c["name"].as_str() == Some(coworker_name));
+    assert!(
+        !found_after,
+        "Coworker '{}' should NOT appear in list after shutdown. Found: {:?}",
+        coworker_name, coworkers_after
+    );
+
+    // Verify tmux window is removed
+    let windows_after = fixture.list_tmux_windows();
+    assert!(
+        !windows_after.iter().any(|w| w.contains(coworker_name)),
+        "Tmux window for '{}' should NOT exist after shutdown. Found: {:?}",
+        coworker_name,
+        windows_after
+    );
+}
+
+/// Test the full coworker lifecycle: spawn → list → break → list.
+///
+/// This is a comprehensive test that exercises SpawnCoworker and ShutdownCoworker
+/// effects and verifies the daemon correctly tracks coworker state throughout
+/// the lifecycle.
+#[test]
+#[ignore] // Requires tmux and built binary (may require claude CLI)
+fn test_effect_coworker_full_lifecycle() {
+    if !tmux_available() {
+        eprintln!("SKIPPED: tmux not available");
+        return;
+    }
+
+    let mut fixture = match EffectTestFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("SKIPPED: fixture creation failed");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("SKIPPED: daemon failed to start");
+        return;
+    }
+
+    // Initially there should be no coworkers
+    let initial_list = fixture.rpc_call("coworker.list", None).unwrap();
+    let initial_coworkers = initial_list["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+    assert!(
+        initial_coworkers.is_empty(),
+        "Initially there should be no coworkers"
+    );
+
+    let coworker_name = "broadway";
+
+    // Phase 1: Spawn
+    let spawn_response = fixture.rpc_call(
+        "coworker.spawn",
+        Some(serde_json::json!({ "name": coworker_name })),
+    );
+    assert!(spawn_response.is_some(), "Should receive spawn response");
+
+    let spawn_response = spawn_response.unwrap();
+    if spawn_response["error"].is_object() {
+        eprintln!(
+            "SKIPPED: coworker.spawn failed (expected without Claude CLI): {:?}",
+            spawn_response["error"]
+        );
+        return;
+    }
+
+    thread::sleep(Duration::from_secs(3));
+
+    // Phase 2: Verify spawned
+    let mid_list = fixture.rpc_call("coworker.list", None).unwrap();
+    let mid_coworkers = mid_list["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+    assert_eq!(
+        mid_coworkers.len(),
+        1,
+        "Should have exactly one coworker after spawn"
+    );
+    assert_eq!(
+        mid_coworkers[0]["name"].as_str(),
+        Some(coworker_name),
+        "Spawned coworker should have correct name"
+    );
+
+    // Phase 3: Break (shutdown)
+    let break_response = fixture.rpc_call(
+        "coworker.break",
+        Some(serde_json::json!({ "name": coworker_name })),
+    );
+    assert!(break_response.is_some(), "Should receive break response");
+
+    let break_response = break_response.unwrap();
+    assert!(
+        break_response["error"].is_null(),
+        "Break should succeed: {:?}",
+        break_response["error"]
+    );
+
+    thread::sleep(Duration::from_secs(1));
+
+    // Phase 4: Verify shutdown
+    let final_list = fixture.rpc_call("coworker.list", None).unwrap();
+    let final_coworkers = final_list["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+    assert!(
+        final_coworkers.is_empty(),
+        "Should have no coworkers after break. Found: {:?}",
+        final_coworkers
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// PostSystemMessage Effect Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test that system messages appear in the channel file.
+///
+/// System messages are distinct from regular channel posts - they have a
+/// special "system" sender and are used for daemon notifications.
+/// This test verifies that channel messages can be read back.
+#[test]
+#[ignore] // Requires built binary
+fn test_effect_channel_messages_persist_and_read() {
+    let mut fixture = match EffectTestFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("SKIPPED: fixture creation failed");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("SKIPPED: daemon failed to start");
+        return;
+    }
+
+    // Post several messages to build up channel history
+    let markers: Vec<String> = (0..3)
+        .map(|i| format!("e2e-channel-marker-{}-{}", std::process::id(), i))
+        .collect();
+
+    for marker in &markers {
+        let params = serde_json::json!({
+            "message": format!("Test message: {}", marker),
+            "from": "test-agent"
+        });
+        let response = fixture.rpc_call("channel.post", Some(params));
+        assert!(response.is_some(), "Should post message");
+        assert!(response.unwrap()["error"].is_null(), "Post should not fail");
+    }
+
+    // Give time for writes to flush
+    thread::sleep(Duration::from_millis(200));
+
+    // Read channel using RPC
+    let read_response = fixture.rpc_call("channel.read", None);
+    assert!(
+        read_response.is_some(),
+        "Should receive response from channel.read"
+    );
+
+    let read_response = read_response.unwrap();
+    assert!(
+        read_response["error"].is_null(),
+        "channel.read should not fail: {:?}",
+        read_response["error"]
+    );
+
+    let messages = read_response["result"]["messages"]
+        .as_array()
+        .expect("messages should be an array");
+
+    // Verify all our markers appear in the messages
+    for marker in &markers {
+        let found = messages.iter().any(|m| {
+            m["message"]
+                .as_str()
+                .map(|s| s.contains(marker))
+                .unwrap_or(false)
+        });
+        assert!(
+            found,
+            "Channel should contain marker '{}'. Messages: {:?}",
+            marker,
+            messages.iter().map(|m| &m["message"]).collect::<Vec<_>>()
+        );
+    }
+
+    // Also verify file on disk contains the markers
+    let channel_path = fixture.channel_path();
+    let contents = fs::read_to_string(&channel_path).expect("Should read channel.jsonl");
+    for marker in &markers {
+        assert!(
+            contents.contains(marker),
+            "channel.jsonl should contain marker '{}' on disk",
+            marker
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Multiple Coworker Effect Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test spawning multiple coworkers creates multiple tmux windows.
+///
+/// This verifies that the SpawnCoworker effect can be executed multiple times
+/// and each spawn creates a distinct tmux window.
+#[test]
+#[ignore] // Requires tmux and built binary (may require claude CLI)
+fn test_effect_spawn_multiple_coworkers() {
+    if !tmux_available() {
+        eprintln!("SKIPPED: tmux not available");
+        return;
+    }
+
+    let mut fixture = match EffectTestFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("SKIPPED: fixture creation failed");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("SKIPPED: daemon failed to start");
+        return;
+    }
+
+    let coworker_names = vec!["amsterdam", "columbus"];
+
+    // Spawn both coworkers
+    for name in &coworker_names {
+        let spawn_response =
+            fixture.rpc_call("coworker.spawn", Some(serde_json::json!({ "name": name })));
+        assert!(spawn_response.is_some(), "Should receive spawn response");
+
+        let spawn_response = spawn_response.unwrap();
+        if spawn_response["error"].is_object() {
+            eprintln!(
+                "SKIPPED: coworker.spawn for '{}' failed (expected without Claude CLI): {:?}",
+                name, spawn_response["error"]
+            );
+            return;
+        }
+    }
+
+    // Wait for both to be fully spawned
+    thread::sleep(Duration::from_secs(4));
+
+    // Verify both appear in coworker list
+    let list_response = fixture.rpc_call("coworker.list", None).unwrap();
+    let coworkers = list_response["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+
+    assert_eq!(
+        coworkers.len(),
+        2,
+        "Should have exactly 2 coworkers. Found: {:?}",
+        coworkers
+    );
+
+    for name in &coworker_names {
+        let found = coworkers.iter().any(|c| c["name"].as_str() == Some(name));
+        assert!(
+            found,
+            "Coworker '{}' should appear in list. Found: {:?}",
+            name, coworkers
+        );
+    }
+
+    // Verify both tmux windows exist
+    let windows = fixture.list_tmux_windows();
+    for name in &coworker_names {
+        assert!(
+            windows.iter().any(|w| w.contains(name)),
+            "Tmux window for '{}' should exist. Found: {:?}",
+            name,
+            windows
+        );
+    }
+}
+
+/// Test that breaking one coworker doesn't affect others.
+///
+/// This verifies that ShutdownCoworker effect is properly scoped to the
+/// target coworker and doesn't accidentally affect other running coworkers.
+#[test]
+#[ignore] // Requires tmux and built binary (may require claude CLI)
+fn test_effect_shutdown_one_preserves_others() {
+    if !tmux_available() {
+        eprintln!("SKIPPED: tmux not available");
+        return;
+    }
+
+    let mut fixture = match EffectTestFixture::new() {
+        Some(f) => f,
+        None => {
+            eprintln!("SKIPPED: fixture creation failed");
+            return;
+        }
+    };
+
+    if !fixture.start_daemon() {
+        eprintln!("SKIPPED: daemon failed to start");
+        return;
+    }
+
+    // Spawn two coworkers
+    let coworker_to_keep = "riverside";
+    let coworker_to_remove = "york";
+
+    for name in [coworker_to_keep, coworker_to_remove] {
+        let spawn_response =
+            fixture.rpc_call("coworker.spawn", Some(serde_json::json!({ "name": name })));
+        assert!(spawn_response.is_some(), "Should receive spawn response");
+
+        let spawn_response = spawn_response.unwrap();
+        if spawn_response["error"].is_object() {
+            eprintln!(
+                "SKIPPED: coworker.spawn for '{}' failed: {:?}",
+                name, spawn_response["error"]
+            );
+            return;
+        }
+    }
+
+    thread::sleep(Duration::from_secs(4));
+
+    // Verify both are spawned
+    let list_before = fixture.rpc_call("coworker.list", None).unwrap();
+    let coworkers_before = list_before["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+    assert_eq!(
+        coworkers_before.len(),
+        2,
+        "Should have 2 coworkers before break"
+    );
+
+    // Break only one
+    let break_response = fixture.rpc_call(
+        "coworker.break",
+        Some(serde_json::json!({ "name": coworker_to_remove })),
+    );
+    assert!(break_response.is_some(), "Should receive break response");
+    assert!(
+        break_response.unwrap()["error"].is_null(),
+        "Break should succeed"
+    );
+
+    thread::sleep(Duration::from_secs(1));
+
+    // Verify only one remains
+    let list_after = fixture.rpc_call("coworker.list", None).unwrap();
+    let coworkers_after = list_after["result"]["coworkers"]
+        .as_array()
+        .expect("coworkers should be an array");
+
+    assert_eq!(
+        coworkers_after.len(),
+        1,
+        "Should have 1 coworker after break. Found: {:?}",
+        coworkers_after
+    );
+
+    assert_eq!(
+        coworkers_after[0]["name"].as_str(),
+        Some(coworker_to_keep),
+        "Remaining coworker should be '{}', not '{}'",
+        coworker_to_keep,
+        coworker_to_remove
+    );
+
+    // Verify tmux windows match
+    let windows = fixture.list_tmux_windows();
+    assert!(
+        windows.iter().any(|w| w.contains(coworker_to_keep)),
+        "Window for '{}' should still exist",
+        coworker_to_keep
+    );
+    assert!(
+        !windows.iter().any(|w| w.contains(coworker_to_remove)),
+        "Window for '{}' should be gone",
+        coworker_to_remove
+    );
+}
