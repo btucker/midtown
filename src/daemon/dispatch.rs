@@ -357,6 +357,17 @@ pub(super) fn check_for_duplicate_task_workers(
 // Pending task auto-spawn
 // ============================================================================
 
+/// Decide whether to skip orphan flagging based on PR poll initialization state.
+///
+/// During startup, orphan checks run every 10s but PR poll runs every 30s.
+/// If we flag orphans before we have PR data, we'd incorrectly warn about
+/// worktrees that have open PRs (because open_pr_owners is still empty).
+///
+/// Pure function for testability.
+fn should_skip_orphan_flagging(pr_poll_initialized: bool) -> bool {
+    !pr_poll_initialized
+}
+
 /// Filter out worktrees that have open PRs.
 ///
 /// A worktree with an open PR is not orphaned — it's just waiting for review/merge.
@@ -458,14 +469,11 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
     }
 
     // Skip orphan flagging until the first PR poll completes.
-    // During startup, orphan checks run every 10s but PR poll runs every 30s.
-    // If we flag orphans before we have PR data, we'd incorrectly warn about
-    // worktrees that have open PRs (because open_pr_owners is still empty).
     let (pr_poll_initialized, open_pr_owners) = {
         let cache = state.pr_coworker_cache.read().unwrap();
         (cache.pr_poll_initialized, cache.open_pr_owners.clone())
     };
-    if !pr_poll_initialized {
+    if should_skip_orphan_flagging(pr_poll_initialized) {
         debug!("Skipping orphan flagging - PR poll not yet initialized");
         return effects;
     }
@@ -1010,5 +1018,20 @@ mod tests {
         // york has a different branch - should be in unmerged partition
         assert!(merged.is_empty());
         assert_eq!(unmerged, vec!["york"]);
+    }
+
+    #[test]
+    fn test_should_skip_orphan_flagging_before_pr_poll() {
+        // During startup, PR poll hasn't run yet - should skip flagging
+        // to avoid false positives (worktrees with open PRs incorrectly
+        // flagged as orphaned because we don't have PR data yet)
+        assert!(should_skip_orphan_flagging(false));
+    }
+
+    #[test]
+    fn test_should_not_skip_orphan_flagging_after_pr_poll() {
+        // After first PR poll completes, we have open_pr_owners data
+        // and can safely flag orphans
+        assert!(!should_skip_orphan_flagging(true));
     }
 }
