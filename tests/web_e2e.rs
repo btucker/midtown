@@ -342,6 +342,42 @@ impl WebTestFixture {
     }
 }
 
+/// Guard that ensures cleanup runs even if test panics.
+/// For async tests: create this after fixture setup, cleanup runs on drop.
+struct AsyncCleanupGuard {
+    socket_path: PathBuf,
+    pid_path: PathBuf,
+    project_dir: PathBuf,
+    temp_dir: PathBuf,
+    repo_name: String,
+}
+
+impl AsyncCleanupGuard {
+    fn new(fixture: &WebTestFixture) -> Self {
+        Self {
+            socket_path: fixture.socket_path.clone(),
+            pid_path: fixture.pid_path.clone(),
+            project_dir: fixture.project_dir.clone(),
+            temp_dir: fixture.temp_dir.clone(),
+            repo_name: fixture.repo_name.clone(),
+        }
+    }
+}
+
+impl Drop for AsyncCleanupGuard {
+    fn drop(&mut self) {
+        // Run cleanup synchronously - this runs even on panic unwind
+        do_cleanup(
+            self.socket_path.clone(),
+            self.pid_path.clone(),
+            self.project_dir.clone(),
+            self.temp_dir.clone(),
+            self.repo_name.clone(),
+            None, // daemon process handled separately via fixture
+        );
+    }
+}
+
 /// Shared cleanup logic.
 fn do_cleanup(
     socket_path: PathBuf,
@@ -393,26 +429,17 @@ impl Drop for WebTestFixture {
     fn drop(&mut self) {
         // Only do cleanup if daemon_process is still set (not already cleaned up)
         if self.daemon_process.is_some() {
-            // Spawn a detached thread to do cleanup asynchronously.
-            // This avoids tokio runtime conflicts during test shutdown.
-            let socket_path = self.socket_path.clone();
-            let pid_path = self.pid_path.clone();
-            let project_dir = self.project_dir.clone();
-            let temp_dir = self.temp_dir.clone();
-            let repo_name = self.repo_name.clone();
-            let daemon_process = self.daemon_process.take();
-
-            // Detached thread - we don't wait for it
-            let _ = thread::spawn(move || {
-                do_cleanup(
-                    socket_path,
-                    pid_path,
-                    project_dir,
-                    temp_dir,
-                    repo_name,
-                    daemon_process,
-                );
-            });
+            // Run cleanup synchronously. This is safe for sync tests (no tokio runtime).
+            // Async tests use std::mem::forget() to skip Drop and handle cleanup explicitly.
+            // This ensures cleanup completes even on panic in sync tests.
+            do_cleanup(
+                self.socket_path.clone(),
+                self.pid_path.clone(),
+                self.project_dir.clone(),
+                self.temp_dir.clone(),
+                self.repo_name.clone(),
+                self.daemon_process.take(),
+            );
         }
     }
 }
@@ -692,6 +719,9 @@ async fn test_websocket_connects() {
         return;
     }
 
+    // Create cleanup guard - ensures cleanup runs even if assertions panic
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
     let ws_url = fixture.ws_url();
     let result = tokio::time::timeout(Duration::from_secs(5), connect_async(&ws_url)).await;
 
@@ -710,6 +740,7 @@ async fn test_websocket_connects() {
 
     fixture.async_cleanup().await;
     std::mem::forget(fixture);
+    // Guard drops here and runs cleanup (idempotent)
 }
 
 /// Test that channel messages are broadcast via WebSocket.
@@ -726,6 +757,9 @@ async fn test_websocket_receives_channel_messages() {
         std::mem::forget(fixture);
         return;
     }
+
+    // Create cleanup guard - ensures cleanup runs even if assertions panic
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
 
     // Connect WebSocket
     let ws_url = fixture.ws_url();
@@ -822,6 +856,9 @@ async fn test_websocket_send_message() {
         return;
     }
 
+    // Create cleanup guard - ensures cleanup runs even if assertions panic
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
     // Connect WebSocket
     let ws_url = fixture.ws_url();
     let (mut ws_stream, _) = connect_async(&ws_url)
@@ -890,6 +927,9 @@ async fn test_websocket_view_window_message() {
         return;
     }
 
+    // Create cleanup guard - ensures cleanup runs even if assertions panic
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
     let ws_url = fixture.ws_url();
     let (mut ws_stream, _) = connect_async(&ws_url)
         .await
@@ -932,6 +972,9 @@ async fn test_websocket_invalid_message_type() {
         std::mem::forget(fixture);
         return;
     }
+
+    // Create cleanup guard - ensures cleanup runs even if assertions panic
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
 
     let ws_url = fixture.ws_url();
     let (mut ws_stream, _) = connect_async(&ws_url)
@@ -1185,6 +1228,9 @@ async fn test_full_message_flow() {
         return;
     }
 
+    // Create cleanup guard - ensures cleanup runs even if assertions panic
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
     // Connect WebSocket
     let ws_url = fixture.ws_url();
     let (mut ws_stream, _) = connect_async(&ws_url)
@@ -1279,6 +1325,9 @@ async fn test_websocket_broadcast_to_multiple_clients() {
         std::mem::forget(fixture);
         return;
     }
+
+    // Create cleanup guard - ensures cleanup runs even if assertions panic
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
 
     let ws_url = fixture.ws_url();
 
