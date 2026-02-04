@@ -237,12 +237,35 @@ pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
 /// Coworker reviews are identified by:
 /// - The "🤖 Reviewed by" or "Reviewed by" signature (legacy formal reviews)
 /// - The "<!-- midtown:" frontmatter (comment-based reviews)
-/// - The "## Code Review by" header (comment-based reviews)
+/// - The "# Code Review by" header at any heading level (case-insensitive)
 pub fn text_contains_review_signature(text: &str) -> bool {
     text.contains("🤖 Reviewed by")
         || text.contains("Reviewed by")
         || text.contains("<!-- midtown:")
-        || text.contains("## Code Review by")
+        || text_has_code_review_header(text)
+}
+
+/// Check if text contains a "Code Review by" header at any markdown heading level.
+///
+/// Matches patterns like:
+/// - "## Code Review by madison"
+/// - "### Code review by pleasant"  (any case)
+/// - "# CODE REVIEW BY york"
+fn text_has_code_review_header(text: &str) -> bool {
+    let text_lower = text.to_lowercase();
+    // Look for markdown heading followed by "code review by"
+    // Matches: # code review by, ## code review by, ### code review by, etc.
+    for line in text_lower.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            // Strip heading markers and check content
+            let content = trimmed.trim_start_matches('#').trim();
+            if content.starts_with("code review by") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Get the creation time of a PR to enforce review delay.
@@ -733,6 +756,25 @@ mod tests {
         assert!(!text_contains_review_signature(
             "Thanks for the PR! I'll take a look."
         ));
+    }
+
+    #[test]
+    fn review_signature_detects_h3_lowercase_header() {
+        // Bug: pleasant's review used "### Code review by" (h3, lowercase "review")
+        // but the pattern only matched "## Code Review by" (h2, capital R)
+        assert!(text_contains_review_signature(
+            "### Code review by pleasant\n\nFound 4 issues:\n\n1. First issue..."
+        ));
+    }
+
+    #[test]
+    fn review_signature_case_insensitive() {
+        // Various case combinations should all match
+        assert!(text_contains_review_signature("## code review by york"));
+        assert!(text_contains_review_signature(
+            "### CODE REVIEW BY amsterdam"
+        ));
+        assert!(text_contains_review_signature("# Code review by pleasant"));
     }
 
     // -------------------------------------------------------------------------
