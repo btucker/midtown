@@ -1394,6 +1394,33 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     );
                 }
 
+                // Store author session for PR handoff (allows any coworker to resume the PR)
+                if let Some(ref pr_opened) = webhook_event.pr_opened
+                    && let Some(ref author) = pr_opened.author_coworker
+                {
+                    if let Some(session_id) = state.coworkers.get_session_id(author) {
+                        let mut ps = state.persistent_state.lock().await;
+                        ps.github.store_pr_author_session(
+                            pr_opened.pr_number,
+                            &session_id,
+                            &pr_opened.branch,
+                            author,
+                        );
+                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                            warn!("Failed to persist PR author session: {}", e);
+                        }
+                        info!(
+                            "Stored author session for PR #{}: session={}, author={}",
+                            pr_opened.pr_number, session_id, author
+                        );
+                    } else {
+                        debug!(
+                            "PR #{} author {} has no known session ID (discovered coworker?)",
+                            pr_opened.pr_number, author
+                        );
+                    }
+                }
+
                 // Nudge lead to pull main when a PR merges
                 if let Some(pr_number) = webhook_event.merged_pr {
                     // Channel message is informational only (no @lead to avoid

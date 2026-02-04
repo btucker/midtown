@@ -39,6 +39,14 @@ pub struct GitHubState {
     /// Polling checks this to defer to webhooks when they're healthy for a specific PR.
     #[serde(default)]
     pub pr_last_webhook_event: HashMap<u64, DateTime<Utc>>,
+
+    /// Map of PR number -> author session info for PR handoff.
+    ///
+    /// When a coworker opens a PR, we store their Claude session ID so that
+    /// any other coworker can resume work on that PR with full context.
+    /// This enables PR continuity when the original author is unavailable.
+    #[serde(default)]
+    pub pr_author_sessions: HashMap<u64, PrAuthorSession>,
 }
 
 /// A pending reviewer spawn triggered by a webhook event.
@@ -89,6 +97,22 @@ pub struct PrReviewerAssignment {
     /// Optional webhook delivery ID for debugging/telemetry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_event_id: Option<String>,
+}
+
+/// Tracks the Claude session associated with a PR author.
+///
+/// When a coworker opens a PR, we store their session ID so that any other
+/// coworker can later resume work on that PR with full context preserved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrAuthorSession {
+    /// The Claude session ID (UUID) used when the PR was created.
+    pub session_id: String,
+    /// The git branch name for this PR.
+    pub branch: String,
+    /// The coworker who originally authored the PR.
+    pub original_author: String,
+    /// When this session was recorded.
+    pub stored_at: DateTime<Utc>,
 }
 
 fn default_assignment_source() -> AssignmentSource {
@@ -412,6 +436,49 @@ impl GitHubState {
         // Clean up per-PR webhook event timestamps for closed PRs
         self.pr_last_webhook_event
             .retain(|pr, _| open_set.contains(pr));
+
+        // Clean up PR author sessions for closed PRs
+        self.pr_author_sessions
+            .retain(|pr, _| open_set.contains(pr));
+    }
+
+    /// Store the Claude session ID for a PR author.
+    ///
+    /// Called when a coworker opens a PR, so that any other coworker can later
+    /// resume work on that PR with the original session context.
+    pub fn store_pr_author_session(
+        &mut self,
+        pr_number: u64,
+        session_id: &str,
+        branch: &str,
+        author: &str,
+    ) {
+        debug!(
+            "Storing author session for PR #{}: session={}, branch={}, author={}",
+            pr_number, session_id, branch, author
+        );
+        self.pr_author_sessions.insert(
+            pr_number,
+            PrAuthorSession {
+                session_id: session_id.to_string(),
+                branch: branch.to_string(),
+                original_author: author.to_string(),
+                stored_at: Utc::now(),
+            },
+        );
+    }
+
+    /// Get the stored author session for a PR.
+    ///
+    /// Returns the session ID and branch info if available, allowing another
+    /// coworker to resume work on this PR with full context.
+    pub fn get_pr_author_session(&self, pr_number: u64) -> Option<&PrAuthorSession> {
+        self.pr_author_sessions.get(&pr_number)
+    }
+
+    /// Remove the stored author session for a PR (e.g., when PR is merged/closed).
+    pub fn remove_pr_author_session(&mut self, pr_number: u64) -> Option<PrAuthorSession> {
+        self.pr_author_sessions.remove(&pr_number)
     }
 }
 
@@ -877,5 +944,64 @@ mod tests {
         // Legacy data defaults to PollingFallback
         assert_eq!(assignment.source, AssignmentSource::PollingFallback);
         assert!(assignment.webhook_event_id.is_none());
+    }
+
+    #[test]
+    fn test_store_pr_author_session() {
+        let mut state = GitHubState::default();
+        state.store_pr_author_session(42, "session-abc-123", "lexington/feature", "lexington");
+
+        let session = state.get_pr_author_session(42).unwrap();
+        assert_eq!(session.session_id, "session-abc-123");
+        assert_eq!(session.branch, "lexington/feature");
+        assert_eq!(session.original_author, "lexington");
+    }
+
+    #[test]
+    fn test_get_pr_author_session_none() {
+        let state = GitHubState::default();
+        assert!(state.get_pr_author_session(99).is_none());
+    }
+
+    #[test]
+    fn test_remove_pr_author_session() {
+        let mut state = GitHubState::default();
+        state.store_pr_author_session(42, "session-abc-123", "lexington/feature", "lexington");
+
+        let removed = state.remove_pr_author_session(42);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().session_id, "session-abc-123");
+        assert!(state.get_pr_author_session(42).is_none());
+    }
+
+    #[test]
+    fn test_cleanup_closed_prs_removes_author_sessions() {
+        let mut state = GitHubState::default();
+        state.store_pr_author_session(42, "session-1", "lexington/feature", "lexington");
+        state.store_pr_author_session(43, "session-2", "park/feature", "park");
+        state.store_pr_author_session(44, "session-3", "york/feature", "york");
+
+        // Only PR 42 and 44 are still open
+        state.cleanup_closed_prs(&[42, 44]);
+
+        assert!(state.get_pr_author_session(42).is_some());
+        assert!(state.get_pr_author_session(43).is_none()); // cleaned up
+        assert!(state.get_pr_author_session(44).is_some());
+    }
+
+    #[test]
+    fn test_pr_author_session_persists() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("github-state.json");
+
+        let mut state = GitHubState::default();
+        state.store_pr_author_session(42, "session-abc", "lexington/feature", "lexington");
+        state.save(&path).unwrap();
+
+        let loaded = GitHubState::load(&path).unwrap();
+        let session = loaded.get_pr_author_session(42).unwrap();
+        assert_eq!(session.session_id, "session-abc");
+        assert_eq!(session.branch, "lexington/feature");
+        assert_eq!(session.original_author, "lexington");
     }
 }

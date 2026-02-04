@@ -66,6 +66,8 @@ pub struct WebhookEvent {
     /// When set, the daemon buffers this notification instead of posting `message`
     /// immediately — `message` is ignored in favor of a later batched message.
     pub ci_check_passed: Option<CiCheckPassed>,
+    /// Info about a newly opened PR — used to store the author's session for handoff.
+    pub pr_opened: Option<PrOpenedInfo>,
 }
 
 impl WebhookEvent {
@@ -90,6 +92,7 @@ impl WebhookEvent {
             pr_ci_failure: None,
             check_duration: None,
             ci_check_passed: None,
+            pr_opened: None,
         }
     }
 
@@ -171,6 +174,20 @@ pub struct PrCiFailure {
     pub owner_coworker: Option<String>,
     /// Name of the failed check
     pub check_name: String,
+}
+
+/// Structured data about a newly opened PR.
+///
+/// Populated by the `pull_request` webhook handler when a PR is opened,
+/// allowing the daemon to store the author's session ID for potential handoff.
+#[derive(Debug, Clone)]
+pub struct PrOpenedInfo {
+    /// PR number
+    pub pr_number: u64,
+    /// The branch name (e.g., "lexington/feature-auth")
+    pub branch: String,
+    /// The coworker who opened the PR (from branch prefix or body frontmatter)
+    pub author_coworker: Option<String>,
 }
 
 /// Identifies a GitHub comment for the reactions API.
@@ -699,10 +716,21 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         _ => None,
     };
 
+    // Capture PR author info when a PR is opened (for session handoff)
+    let pr_opened = match event.action.as_str() {
+        "opened" | "ready_for_review" => branch.map(|b| PrOpenedInfo {
+            pr_number: event.number,
+            branch: b.to_string(),
+            author_coworker: coworker.map(String::from),
+        }),
+        _ => None,
+    };
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         needs_review,
         merged_pr,
+        pr_opened,
         ..WebhookEvent::github(content)
     }))
 }

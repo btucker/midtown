@@ -565,6 +565,17 @@ impl CoworkerManager {
         coworkers.get(name).cloned()
     }
 
+    /// Get the session ID for a coworker.
+    ///
+    /// Returns the Claude Code session ID (UUID) if the coworker is tracked
+    /// and has a known session ID. This is used for PR handoff — when a different
+    /// coworker needs to resume work on a PR, they can resume the original
+    /// author's session to preserve context.
+    pub fn get_session_id(&self, name: &str) -> Option<String> {
+        let coworkers = self.coworkers.read().unwrap();
+        coworkers.get(name).and_then(|cw| cw.session_id.clone())
+    }
+
     /// Get the branch name checked out in a coworker's worktree.
     ///
     /// Returns None if the worktree doesn't exist or is in detached HEAD state.
