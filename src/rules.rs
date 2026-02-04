@@ -1265,6 +1265,24 @@ pub enum PrAction {
     NudgeOwner { owner: String, message: String },
     /// Owner is inactive — spawn them with a message.
     SpawnOwner { owner: String, message: String },
+    /// Hand off to any available coworker with the original author's session context.
+    ///
+    /// Used when the PR needs work but the original author is unavailable.
+    /// A different coworker resumes the original session to preserve context.
+    HandoffToCoworker {
+        /// The coworker to assign (typically the first idle one)
+        assignee: String,
+        /// The original PR author
+        original_author: String,
+        /// The PR number
+        pr_number: u64,
+        /// The branch name
+        branch: String,
+        /// The session ID to resume
+        session_id: String,
+        /// The nudge message
+        message: String,
+    },
     /// No identifiable owner — post to channel.
     PostToChannel { message: String },
     /// Skip — dev limit reached, self-comment, on cooldown, or no owner.
@@ -1296,6 +1314,93 @@ pub fn decide_pr_issue_action(
                 reason: format!("dev limit reached, cannot spawn {} for PR issue", owner),
             }
         } else {
+            PrAction::SpawnOwner {
+                owner: owner.to_string(),
+                message: message.to_string(),
+            }
+        }
+    } else {
+        PrAction::PostToChannel {
+            message: message.to_string(),
+        }
+    }
+}
+
+/// Context for PR session handoff — the stored session info for a PR.
+///
+/// When a coworker opens a PR, we store their session ID so that any
+/// coworker can later resume work on that PR with full context.
+#[derive(Debug, Clone)]
+pub struct PrSessionContext {
+    /// The Claude session ID (UUID) from the original author's session.
+    pub session_id: String,
+    /// The git branch for this PR.
+    pub branch: String,
+    /// The coworker who originally authored the PR.
+    pub original_author: String,
+    /// The PR number.
+    pub pr_number: u64,
+}
+
+/// Decide what action to take for a PR issue, with support for handoff.
+///
+/// This is an enhanced version of `decide_pr_issue_action` that considers
+/// handing off the PR to a different coworker when:
+/// - The original author is not active
+/// - A stored session context is available
+/// - There are idle coworkers available to take over
+///
+/// The handoff preserves the original author's session context so the new
+/// coworker has full history of decisions and code understanding.
+pub fn decide_pr_issue_action_with_handoff(
+    owner: &str,
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+    at_dev_limit: bool,
+    session_context: Option<&PrSessionContext>,
+    message: &str,
+) -> PrAction {
+    let is_active = active_coworkers
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(owner));
+
+    if is_active {
+        // Owner is active — just nudge them
+        PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    } else if !owner.is_empty() {
+        if at_dev_limit {
+            PrAction::Skip {
+                reason: format!("dev limit reached, cannot spawn {} for PR issue", owner),
+            }
+        } else if let Some(ctx) = session_context {
+            // We have session context — try to hand off to an idle coworker
+            // (excluding the original author who isn't available)
+            let assignee = idle_coworkers
+                .iter()
+                .find(|c| !c.eq_ignore_ascii_case(owner))
+                .cloned();
+
+            if let Some(assignee) = assignee {
+                PrAction::HandoffToCoworker {
+                    assignee,
+                    original_author: ctx.original_author.clone(),
+                    pr_number: ctx.pr_number,
+                    branch: ctx.branch.clone(),
+                    session_id: ctx.session_id.clone(),
+                    message: message.to_string(),
+                }
+            } else {
+                // No idle coworkers available — fall back to spawning the original owner
+                PrAction::SpawnOwner {
+                    owner: owner.to_string(),
+                    message: message.to_string(),
+                }
+            }
+        } else {
+            // No session context — spawn the original owner
             PrAction::SpawnOwner {
                 owner: owner.to_string(),
                 message: message.to_string(),
@@ -2328,6 +2433,164 @@ mod tests {
         let action =
             decide_review_complete_action("york", &active(&["amsterdam"]), true, "review complete");
         assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_pr_issue_action_with_handoff tests
+    // -----------------------------------------------------------------------
+
+    fn make_session_context(owner: &str, pr_number: u64) -> PrSessionContext {
+        PrSessionContext {
+            session_id: format!("session-{}", pr_number),
+            branch: format!("{}/feature", owner),
+            original_author: owner.to_string(),
+            pr_number,
+        }
+    }
+
+    #[test]
+    fn pr_handoff_nudges_active_owner_even_with_session() {
+        // Even with a session context available, active owners get nudged
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["york", "amsterdam"]),
+            &active(&["amsterdam"]),
+            false,
+            Some(&session),
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_handoff_hands_off_to_idle_coworker_when_owner_inactive() {
+        // When owner is inactive and session exists, hand off to idle coworker
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["amsterdam"]), // york not active
+            &active(&["amsterdam"]), // amsterdam is idle
+            false,
+            Some(&session),
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::HandoffToCoworker {
+                assignee: "amsterdam".to_string(),
+                original_author: "york".to_string(),
+                pr_number: 42,
+                branch: "york/feature".to_string(),
+                session_id: "session-42".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_handoff_spawns_owner_when_no_session() {
+        // Without session context, fall back to spawning the original owner
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["amsterdam"]),
+            &active(&["amsterdam"]),
+            false,
+            None, // no session
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::SpawnOwner {
+                owner: "york".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_handoff_spawns_owner_when_no_idle_coworkers() {
+        // Even with session, if no idle coworkers, spawn the original owner
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["amsterdam"]), // york not active
+            &active(&[]),            // no idle coworkers
+            false,
+            Some(&session),
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::SpawnOwner {
+                owner: "york".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_handoff_skips_original_owner_in_idle_list() {
+        // Should not hand off to the original owner (defeats the purpose)
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&[]),                    // no active coworkers
+            &active(&["york", "amsterdam"]), // both in idle list
+            false,
+            Some(&session),
+            "fix checks",
+        );
+        // Should pick amsterdam, not york
+        assert_eq!(
+            action,
+            PrAction::HandoffToCoworker {
+                assignee: "amsterdam".to_string(),
+                original_author: "york".to_string(),
+                pr_number: 42,
+                branch: "york/feature".to_string(),
+                session_id: "session-42".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_handoff_skips_at_dev_limit() {
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["amsterdam"]),
+            &active(&["amsterdam"]),
+            true, // at dev limit
+            Some(&session),
+            "fix checks",
+        );
+        assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pr_handoff_posts_to_channel_no_owner() {
+        let action = decide_pr_issue_action_with_handoff(
+            "",
+            &active(&["amsterdam"]),
+            &active(&["amsterdam"]),
+            false,
+            None,
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::PostToChannel {
+                message: "fix checks".to_string(),
+            }
+        );
     }
 
     // -----------------------------------------------------------------------

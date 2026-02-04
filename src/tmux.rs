@@ -1603,6 +1603,52 @@ impl ClaudeLaunchConfig {
         }
     }
 
+    /// Create a config for PR handoff — a coworker taking over another's PR.
+    ///
+    /// This resumes the original author's Claude session to preserve full context
+    /// (code understanding, decisions made, etc.) while having a different coworker
+    /// continue the work. Used when the original PR author is unavailable.
+    ///
+    /// The coworker will:
+    /// 1. Checkout the PR branch into their worktree
+    /// 2. Resume the original session (preserving context)
+    /// 3. Address review feedback or fix issues
+    /// 4. Push changes to the branch
+    pub fn pr_handoff(
+        name: impl Into<String>,
+        repo_name: impl Into<String>,
+        session_id: String,
+        pr_number: u64,
+        branch: &str,
+        original_author: &str,
+    ) -> Self {
+        let initial_prompt = format!(
+            "You're taking over PR #{} from {}.\n\n\
+            First, checkout the branch:\n\
+            ```bash\n\
+            git fetch origin {}\n\
+            git checkout {}\n\
+            ```\n\n\
+            Then continue where {} left off. This is their PR, so you have their full context \
+            from the resumed session. Address any review feedback, fix any issues, and push \
+            your changes to the branch.\n\n\
+            When done, post to the channel that you've addressed the feedback on PR #{}.",
+            pr_number, original_author, branch, branch, original_author, pr_number
+        );
+
+        ClaudeLaunchConfig {
+            name: name.into(),
+            session_mode: SessionMode::ResumeSession(session_id),
+            task_mode: TaskMode::Shared {
+                repo_name: repo_name.into(),
+            },
+            role: CoworkerRole::Coworker,
+            initial_prompt: Some(initial_prompt),
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+        }
+    }
+
     /// Build the full shell command string for launching Claude in a tmux pane.
     ///
     /// `settings_file` and `prompt_file` are pre-written files containing the
