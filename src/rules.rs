@@ -295,8 +295,6 @@ pub(crate) fn decide_idle_shutdowns(
 
         // Check minimum lifetime
         let lifetime = now_utc.signed_duration_since(cw.started_at);
-        let lifetime_secs = lifetime.num_seconds();
-        let min_lifetime_secs = minimum_lifetime.as_secs() as i64;
         if lifetime < chrono::Duration::from_std(minimum_lifetime).unwrap_or_default() {
             if matches!(
                 get_health(records, coworker),
@@ -308,15 +306,6 @@ pub(crate) fn decide_idle_shutdowns(
             }
             continue;
         }
-
-        // Log when a coworker passes the minimum lifetime check - this is when they
-        // become eligible for idle shutdown (critical for debugging mass shutdowns)
-        tracing::debug!(
-            coworker = %coworker,
-            lifetime_secs = lifetime_secs,
-            min_lifetime_secs = min_lifetime_secs,
-            "IDLE_CHECK: coworker passed minimum lifetime check, now eligible for idle shutdown"
-        );
 
         // Check pane activity: if the pane content changed recently, the coworker
         // is actively working and must not be sent on break.
@@ -368,39 +357,15 @@ pub(crate) fn decide_idle_shutdowns(
             }
         } else if cw.isolated_tasks {
             // Isolated coworkers (reviewers) go on break immediately when idle
-            tracing::warn!(
-                coworker = %coworker,
-                "IDLE_DECISION: isolated coworker flagged for immediate shutdown"
-            );
             to_shutdown.push(ShutdownDecision {
                 name: coworker.clone(),
                 is_isolated: true,
             });
         } else {
-            // Log protection state for non-protected coworkers
-            tracing::debug!(
-                coworker = %coworker,
-                is_busy = is_busy,
-                has_open_pr = has_open_pr,
-                protected_by_open_pr = protected_by_open_pr,
-                is_reviewing = is_reviewing,
-                has_unblocked_deps = has_unblocked_deps,
-                pane_recently_active = pane_recently_active,
-                has_running_subagent = has_running_subagent,
-                pane_hash_exists = pane_hash_info.is_some(),
-                "IDLE_CHECK: coworker NOT protected, checking idle state"
-            );
-
             match get_health(records, coworker) {
                 Some(SessionHealth::Idle { since }) => {
                     let idle_duration = now.duration_since(since);
                     if idle_duration >= idle_break_duration {
-                        tracing::warn!(
-                            coworker = %coworker,
-                            idle_secs = idle_duration.as_secs(),
-                            threshold_secs = idle_break_duration.as_secs(),
-                            "IDLE_DECISION: non-protected coworker idle too long, flagging for shutdown"
-                        );
                         to_shutdown.push(ShutdownDecision {
                             name: coworker.clone(),
                             is_isolated: false,
@@ -408,10 +373,6 @@ pub(crate) fn decide_idle_shutdowns(
                     }
                 }
                 None => {
-                    tracing::debug!(
-                        coworker = %coworker,
-                        "IDLE_CHECK: coworker has no health state, setting to Idle now"
-                    );
                     transitions.push(HealthTransition::Set {
                         name: coworker.clone(),
                         phase: SessionHealth::Idle { since: now },

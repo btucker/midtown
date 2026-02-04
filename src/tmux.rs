@@ -674,8 +674,12 @@ pub fn get_ppid(pid: u32) -> Option<u32> {
 /// Returns PIDs of processes that:
 /// 1. Match the given regex pattern in their command line
 /// 2. Have PPID=1 (orphaned - no legitimate parent)
+/// 3. Are NOT tmux processes (to avoid killing the tmux server)
 ///
 /// This is conservative: only truly orphaned processes are returned.
+/// The tmux exclusion is critical because `tmux new-session` commands may
+/// match patterns like "claude" in their arguments, but killing the tmux
+/// server would destroy all coworker windows.
 pub fn find_orphaned_processes(pattern: &str) -> Vec<u32> {
     // Find PIDs matching the pattern
     let output = match Command::new("pgrep").args(["-f", pattern]).output() {
