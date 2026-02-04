@@ -1884,7 +1884,10 @@ mod tests {
             get_issue_action(PrIssueType::ChangesRequested),
             "please address feedback"
         );
-        assert_eq!(get_issue_action(PrIssueType::Approved), "ready to merge!");
+        assert_eq!(
+            get_issue_action(PrIssueType::Approved),
+            "approved with CI green — please merge (use --auto if checks pending)"
+        );
         assert_eq!(
             get_issue_action(PrIssueType::NeedsReview),
             "calling in reviewer"

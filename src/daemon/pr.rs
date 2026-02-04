@@ -330,25 +330,10 @@ pub(super) async fn poll_prs_for_issues(
                 continue;
             }
 
-            // For approved PRs with all checks passing, auto-merge instead of nudging
+            // Author-driven merge decisions: Instead of auto-merging approved PRs,
+            // nudge the author so THEY can decide to merge. This keeps merge decisions
+            // with the agent who has full context of the PR and review feedback.
             use crate::rules::decide_pr_issue_action;
-            if issue_type == PrIssueType::Approved && is_auto_mergeable(pr) {
-                info!(
-                    "PR #{} ({}) is approved with all checks passing — auto-merging",
-                    pr_number, title
-                );
-                effects.push(Effect::AutoMergePr {
-                    pr_number,
-                    title: title.to_string(),
-                });
-                // Always record the cooldown, even on failure, to prevent
-                // retrying every poll interval (30s) for persistent failures.
-                effects.push(Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                });
-                continue;
-            }
 
             // Format the nudge message
             let message = format!(
