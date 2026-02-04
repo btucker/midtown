@@ -59,8 +59,16 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
             }
             Vec::new()
         }
-        _ => {
-            debug!("Failed to get PRs from gh CLI for idle check");
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "Failed to get PRs from gh CLI for idle check: {}",
+                stderr.trim()
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr list for idle check: {}", e);
             Vec::new()
         }
     }
@@ -125,8 +133,13 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
                 (HashSet::new(), HashSet::new())
             }
         }
-        _ => {
-            debug!("Failed to get merged PRs from gh CLI for idle check");
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
+            (HashSet::new(), HashSet::new())
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr list (merged): {}", e);
             (HashSet::new(), HashSet::new())
         }
     };
@@ -1811,7 +1824,7 @@ pub(super) fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
             let json: serde_json::Value = match serde_json::from_str(&stdout) {
                 Ok(v) => v,
                 Err(e) => {
-                    debug!("Failed to parse review JSON for PR #{}: {}", pr_number, e);
+                    warn!("Failed to parse review JSON for PR #{}: {}", pr_number, e);
                     return false;
                 }
             };
@@ -1840,8 +1853,17 @@ pub(super) fn pr_has_claude_review_uncached(pr_number: u64) -> bool {
 
             false
         }
-        _ => {
-            debug!("Failed to fetch reviews/comments for PR #{}", pr_number);
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "Failed to fetch reviews/comments for PR #{}: {}",
+                pr_number,
+                stderr.trim()
+            );
+            false
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr view for PR #{}: {}", pr_number, e);
             false
         }
     }
