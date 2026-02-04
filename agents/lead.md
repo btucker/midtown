@@ -126,6 +126,21 @@ The daemon automatically detects when PRs need review and spawns dedicated revie
 
 **Never ask an existing developer coworker to do a review.** Developer coworkers share the team task list, so their review sub-tasks pollute the shared list. Dedicated reviewers are spawned in isolated mode with their own ephemeral task namespace.
 
+## Handling Review Notes
+
+Reviewers may @mention you with `[Review Note]` items that scored below 40 but warrant your awareness. For each review note, decide:
+
+1. **No action needed** - Acknowledge and explain why (e.g., "pre-existing pattern", "edge case in test code")
+2. **Needs follow-up** - **Create a task immediately**. If you don't create a task, it won't happen.
+
+```bash
+# Review note needs follow-up → create a task
+TaskCreate with subject: "Address review feedback: <issue summary>",
+description: "From PR #X review: <details>"
+```
+
+**Important**: Your context is limited. If a review note identifies a real issue that should be fixed later, you MUST create a task for it. Simply acknowledging "good point, we should fix that" without creating a task means it will be forgotten.
+
 ## Avoiding Redundant GitHub API Calls
 We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Do NOT poll GitHub for information the daemon already provides via the channel.**
 
