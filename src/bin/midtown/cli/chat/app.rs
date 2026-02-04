@@ -75,7 +75,9 @@ pub enum TaskStatus {
 pub struct KanbanPr {
     pub number: u64,
     pub title: String,
+    #[allow(dead_code)] // Retained for potential future use (modal display, debugging)
     pub author: String,
+    #[allow(dead_code)] // Retained for potential future use (modal display, debugging)
     pub created_at: DateTime<Utc>,
     pub ci_status: CiStatus,
     /// Reviewer name (extracted from review comment frontmatter)
@@ -86,6 +88,10 @@ pub struct KanbanPr {
     pub review_posted: bool,
     /// Repository name (for multi-repo projects)
     pub repo: Option<String>,
+    /// Task ID extracted from PR title (from `[Midtown #XX]` format)
+    pub task_id: Option<u64>,
+    /// Task name/subject looked up from task list
+    pub task_name: Option<String>,
 }
 
 /// A merged PR item for the Done column
@@ -758,9 +764,28 @@ fn extract_coworker_from_body(body: &str) -> Option<String> {
     None
 }
 
+/// Extract task ID from PR title using the `[Midtown #XX]` format.
+fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
+    // Look for "[Midtown #XX]" pattern
+    if let Some(start) = title.find("[Midtown #") {
+        let rest = &title[start + 10..]; // Skip "[Midtown #"
+        if let Some(end) = rest.find(']') {
+            let num_str = &rest[..end];
+            return num_str.parse::<u64>().ok();
+        }
+    }
+    None
+}
+
 /// Fetch open PRs from GitHub using gh CLI
 fn fetch_prs() -> Vec<KanbanPr> {
     let mut prs = Vec::new();
+
+    // Build task map for task_id -> subject lookup (Task.id is String)
+    let task_map: HashMap<String, String> = midtown::tasks::read_tasks()
+        .into_iter()
+        .map(|t| (t.id, t.subject))
+        .collect();
 
     if let Ok(output) = std::process::Command::new("gh")
         .args([
@@ -815,6 +840,9 @@ fn fetch_prs() -> Vec<KanbanPr> {
 
                 if number > 0 {
                     let review_posted = reviewer.is_some();
+                    // Extract task info from PR title
+                    let task_id = extract_task_id_from_pr_title(&title);
+                    let task_name = task_id.and_then(|id| task_map.get(&id.to_string()).cloned());
                     prs.push(KanbanPr {
                         number,
                         title,
@@ -825,6 +853,8 @@ fn fetch_prs() -> Vec<KanbanPr> {
                         reviewed_at,
                         review_posted,
                         repo: None,
+                        task_id,
+                        task_name,
                     });
                 }
             }
@@ -1072,6 +1102,12 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
+            let task_id = pr.get("task_id").and_then(|v| v.as_u64());
+            let task_name = pr
+                .get("task_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             Some(KanbanPr {
                 number,
                 title,
@@ -1082,6 +1118,8 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
                 reviewed_at,
                 review_posted,
                 repo,
+                task_id,
+                task_name,
             })
         })
         .collect();

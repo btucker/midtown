@@ -196,18 +196,28 @@
               {#if pr.repo}
                 <span class="repo-badge">[{pr.repo}]</span>
               {/if}
+              {#if pr.task_id}
+                <span class="task-id">#{pr.task_id}</span>
+                <span class="task-subject">{pr.task_name || 'Unknown task'}</span>
+              {:else}
+                <span class="pr-title">{pr.title}</span>
+              {/if}
+            </div>
+            <div class="card-detail">
+              <span class="tree-branch">└</span>
               <a
                 href="{prRepoUrl(pr)}/pull/{pr.number}"
                 class="pr-link"
                 target="_blank"
                 rel="noopener"
                 onclick={(e) => e.stopPropagation()}
-              >PR#{pr.number}</a>
-              <span class="pr-title">{pr.title}</span>
+              >PR #{pr.number}</a>
             </div>
-            <div class="card-detail"><span class="pipe">|</span> by: {pr.author}{pr.created_at ? ` (${formatRelativeTime(pr.created_at)})` : ''}</div>
             {#if pr.reviewer}
-              <div class="card-detail"><span class="pipe">|</span> rev: {pr.reviewer}{pr.review_posted ? ' (done)' : pr.reviewer_assigned_at ? ` (${formatRelativeTime(pr.reviewer_assigned_at)})` : ''}</div>
+              <div class="card-detail">
+                <span class="tree-branch">└</span>
+                R: {pr.reviewer}{pr.review_posted ? ' (done)' : pr.reviewer_assigned_at ? ` (${formatRelativeTime(pr.reviewer_assigned_at)})` : ''}
+              </div>
             {/if}
           </button>
         {/each}
@@ -495,6 +505,11 @@
 
   .pipe {
     color: #555;
+  }
+
+  .tree-branch {
+    color: #555;
+    margin-right: 4px;
   }
 
   .task-id {

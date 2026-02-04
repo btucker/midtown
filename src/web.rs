@@ -27,6 +27,19 @@ use crate::message::Message;
 use crate::push::PushManager;
 use crate::tmux;
 
+/// Extract task ID from PR title using the `[Midtown #XX]` format.
+fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
+    // Look for "[Midtown #XX]" pattern
+    if let Some(start) = title.find("[Midtown #") {
+        let rest = &title[start + 10..]; // Skip "[Midtown #"
+        if let Some(end) = rest.find(']') {
+            let num_str = &rest[..end];
+            return num_str.parse::<u64>().ok();
+        }
+    }
+    None
+}
+
 /// Tracks which WebSocket connections are viewing which tmux windows,
 /// along with each viewer's viewport width in columns.
 ///
@@ -508,6 +521,16 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         })
         .collect();
 
+    // Build a map of task_id -> task_subject for PR enrichment
+    let task_map: std::collections::HashMap<u64, String> = tasks
+        .iter()
+        .filter_map(|t| {
+            let id = t.get("id").and_then(|i| i.as_u64())?;
+            let subject = t.get("subject").and_then(|s| s.as_str())?;
+            Some((id, subject.to_string()))
+        })
+        .collect();
+
     // Load persistent state to get reviewer assignments (local file, cheap)
     let persistent_state =
         crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
@@ -599,15 +622,21 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 .get("createdAt")
                 .or_else(|| pr.get("created_at"))
                 .and_then(|c| c.as_str());
+            // Extract task ID from PR title and look up task name
+            let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
+            let task_id = extract_task_id_from_pr_title(title);
+            let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
             serde_json::json!({
                 "number": pr_number,
-                "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                "title": title,
                 "author": author,
                 "status": status,
                 "reviewer": reviewer,
                 "reviewer_assigned_at": reviewer_assigned_at,
                 "review_posted": review_posted,
                 "created_at": created_at,
+                "task_id": task_id,
+                "task_name": task_name,
             })
         })
         .collect();
