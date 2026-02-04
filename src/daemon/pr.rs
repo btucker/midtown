@@ -303,6 +303,10 @@ pub(super) async fn poll_prs_for_issues(
             .collect();
         let mut cache = state.pr_coworker_cache.write().unwrap();
         cache.ci_passed_pr_owners = ci_passed;
+        // Mark PR poll as initialized so orphan detection knows we have PR data.
+        // This prevents false positive orphan warnings during daemon startup when
+        // orphan checks run before the first PR poll completes.
+        cache.pr_poll_initialized = true;
     }
 
     // Cleanup saved PR break sessions for coworkers whose PRs are no longer open

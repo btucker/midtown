@@ -457,11 +457,20 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
         });
     }
 
-    // Filter out worktrees whose branches have open PRs (by coworker name).
-    let open_pr_owners = {
+    // Skip orphan flagging until the first PR poll completes.
+    // During startup, orphan checks run every 10s but PR poll runs every 30s.
+    // If we flag orphans before we have PR data, we'd incorrectly warn about
+    // worktrees that have open PRs (because open_pr_owners is still empty).
+    let (pr_poll_initialized, open_pr_owners) = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        cache.open_pr_owners.clone()
+        (cache.pr_poll_initialized, cache.open_pr_owners.clone())
     };
+    if !pr_poll_initialized {
+        debug!("Skipping orphan flagging - PR poll not yet initialized");
+        return effects;
+    }
+
+    // Filter out worktrees whose branches have open PRs (by coworker name).
     let flagged = filter_orphans_with_open_prs(flagged, &open_pr_owners);
 
     // Partition worktrees by whether their PR was merged.
