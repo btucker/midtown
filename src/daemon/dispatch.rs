@@ -582,6 +582,14 @@ pub(super) fn spawn_for_pending_tasks(
             !cooldowns.check("task_nudge", &task_key, Duration::from_secs(300))
         };
 
+        // Check if the owner is an isolated reviewer (has their own task namespace)
+        let is_owner_isolated = snap
+            .coworker_snapshots
+            .iter()
+            .find(|cw| cw.name.eq_ignore_ascii_case(owner))
+            .map(|cw| cw.isolated_tasks)
+            .unwrap_or(false);
+
         // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
             task_id,
@@ -590,6 +598,7 @@ pub(super) fn spawn_for_pending_tasks(
             &snap.active_names,
             snap.is_at_dev_limit,
             on_nudge_cooldown,
+            is_owner_isolated,
         );
 
         match action {
@@ -748,6 +757,23 @@ pub(super) fn spawn_for_pending_tasks(
 
         // Check if this coworker is already running (grouped to an active coworker)
         let already_running = snap.active_names.contains(&coworker_name.to_lowercase());
+
+        // Check if this coworker is an isolated reviewer (has their own task namespace)
+        let is_coworker_isolated = snap
+            .coworker_snapshots
+            .iter()
+            .find(|cw| cw.name.eq_ignore_ascii_case(&coworker_name))
+            .map(|cw| cw.isolated_tasks)
+            .unwrap_or(false);
+
+        // Skip assigning main task list tasks to isolated reviewers
+        if already_running && is_coworker_isolated {
+            debug!(
+                "Task #{}: skipping isolated reviewer {} (separate task namespace)",
+                task.id, coworker_name
+            );
+            continue;
+        }
 
         info!(
             "Proposing task #{} for {} (already_running={})",

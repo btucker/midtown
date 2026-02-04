@@ -1405,6 +1405,10 @@ pub(crate) enum PendingTaskAction {
 ///
 /// Pure function: determines whether to nudge an active owner, spawn an
 /// inactive one, or skip.
+///
+/// # Arguments
+/// * `is_owner_isolated` - If true, the owner is an isolated reviewer with their own
+///   task namespace. Main task list updates should not nudge isolated reviewers.
 pub(crate) fn decide_pending_task_action(
     task_id: &str,
     task_subject: &str,
@@ -1412,6 +1416,7 @@ pub(crate) fn decide_pending_task_action(
     active_names: &HashSet<String>,
     at_dev_limit: bool,
     on_nudge_cooldown: bool,
+    is_owner_isolated: bool,
 ) -> PendingTaskAction {
     // Skip empty or lead-owned tasks
     if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
@@ -1425,6 +1430,17 @@ pub(crate) fn decide_pending_task_action(
         return PendingTaskAction::Skip {
             reason: format!(
                 "task #{} owner '{}' is not a valid coworker name",
+                task_id, owner
+            ),
+        };
+    }
+
+    // Skip isolated reviewers — they have their own task namespace and should
+    // not be nudged about main task list updates (task ID collision issue).
+    if is_owner_isolated {
+        return PendingTaskAction::Skip {
+            reason: format!(
+                "task #{} owner '{}' is an isolated reviewer (separate task namespace)",
                 task_id, owner
             ),
         };
@@ -2337,21 +2353,24 @@ mod tests {
     #[test]
     fn pending_task_nudges_active_owner() {
         let names = set(&["york"]);
-        let action = decide_pending_task_action("42", "Fix bug", "york", &names, false, false);
+        let action =
+            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false);
         assert!(matches!(action, PendingTaskAction::NudgeOwner { .. }));
     }
 
     #[test]
     fn pending_task_skips_nudge_on_cooldown() {
         let names = set(&["york"]);
-        let action = decide_pending_task_action("42", "Fix bug", "york", &names, false, true);
+        let action =
+            decide_pending_task_action("42", "Fix bug", "york", &names, false, true, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
     #[test]
     fn pending_task_spawns_inactive_owner() {
         let names = set(&["amsterdam"]);
-        let action = decide_pending_task_action("42", "Fix bug", "york", &names, false, false);
+        let action =
+            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false);
         assert_eq!(
             action,
             PendingTaskAction::SpawnOwner {
@@ -2365,21 +2384,23 @@ mod tests {
     #[test]
     fn pending_task_skips_at_dev_limit() {
         let names = set(&["amsterdam"]);
-        let action = decide_pending_task_action("42", "Fix bug", "york", &names, true, false);
+        let action =
+            decide_pending_task_action("42", "Fix bug", "york", &names, true, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
     #[test]
     fn pending_task_skips_lead_owner() {
         let names = set(&["york"]);
-        let action = decide_pending_task_action("42", "Fix bug", "lead", &names, false, false);
+        let action =
+            decide_pending_task_action("42", "Fix bug", "lead", &names, false, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
     #[test]
     fn pending_task_skips_empty_owner() {
         let names = set(&["york"]);
-        let action = decide_pending_task_action("42", "Fix bug", "", &names, false, false);
+        let action = decide_pending_task_action("42", "Fix bug", "", &names, false, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
@@ -2387,7 +2408,8 @@ mod tests {
     fn pending_task_skips_invalid_coworker_name() {
         // "fix" is not a valid coworker name (not an avenue name)
         let names = set(&["york"]);
-        let action = decide_pending_task_action("42", "Fix bug", "fix", &names, false, false);
+        let action =
+            decide_pending_task_action("42", "Fix bug", "fix", &names, false, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
@@ -4299,6 +4321,87 @@ Now implementing the fix.
         assert!(
             !has_usage_limit_pattern(recovered_with_real_output),
             "real activity after usage limit should indicate recovery"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_pending_task_action tests (isolated namespace handling)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pending_task_action_skips_isolated_reviewer() {
+        // Bug: Task ID collision between reviewer's isolated namespace and main task list.
+        // Isolated reviewers should NOT be nudged about main task list updates.
+        let active_names: HashSet<String> = ["madison".to_string()].into_iter().collect();
+
+        // Main task #6 has owner="madison", but madison is an isolated reviewer
+        let action = decide_pending_task_action(
+            "6",
+            "Prevent coworkers from checking out default branch",
+            "madison",
+            &active_names,
+            false, // not at dev limit
+            false, // not on cooldown
+            true,  // IS isolated reviewer
+        );
+
+        assert!(
+            matches!(action, PendingTaskAction::Skip { .. }),
+            "isolated reviewer should be skipped for main task list updates, got: {:?}",
+            action
+        );
+
+        // Verify the skip reason mentions isolation
+        if let PendingTaskAction::Skip { reason } = action {
+            assert!(
+                reason.contains("isolated"),
+                "skip reason should mention isolation: {}",
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn pending_task_action_nudges_non_isolated_coworker() {
+        // Non-isolated coworkers SHOULD be nudged about their pending tasks
+        let active_names: HashSet<String> = ["york".to_string()].into_iter().collect();
+
+        let action = decide_pending_task_action(
+            "6",
+            "Prevent coworkers from checking out default branch",
+            "york",
+            &active_names,
+            false, // not at dev limit
+            false, // not on cooldown
+            false, // NOT isolated
+        );
+
+        assert!(
+            matches!(action, PendingTaskAction::NudgeOwner { .. }),
+            "non-isolated coworker should be nudged, got: {:?}",
+            action
+        );
+    }
+
+    #[test]
+    fn pending_task_action_spawns_non_isolated_inactive_owner() {
+        // Inactive non-isolated owners should be spawned
+        let active_names: HashSet<String> = HashSet::new(); // york is not active
+
+        let action = decide_pending_task_action(
+            "6",
+            "Prevent coworkers from checking out default branch",
+            "york",
+            &active_names,
+            false, // not at dev limit
+            false, // not on cooldown
+            false, // NOT isolated
+        );
+
+        assert!(
+            matches!(action, PendingTaskAction::SpawnOwner { .. }),
+            "inactive non-isolated owner should be spawned, got: {:?}",
+            action
         );
     }
 }
