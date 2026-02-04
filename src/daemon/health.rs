@@ -258,7 +258,6 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &records,
             snap.now,
             snap.now_utc,
-            IDLE_BREAK_DURATION,
             MINIMUM_COWORKER_LIFETIME,
             PANE_ACTIVITY_GRACE,
         );

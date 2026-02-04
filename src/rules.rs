@@ -94,9 +94,15 @@ impl CooldownTracker {
 /// A coworker can only be in one phase at a time — the enum enforces
 /// mutual exclusivity. Pane scraping is used only for health checks
 /// (stuck detection, zombie detection, usage limits), not workflow state.
+///
+/// NOTE: The Idle variant is preserved for potential future use but is not
+/// currently constructed. Coworkers are now sent on break immediately when
+/// unprotected, without any tracking delay.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub(crate) enum SessionHealth {
     /// Coworker has no tasks and is waiting for the idle timeout to expire.
+    /// (Currently unused - coworkers go on break immediately)
     Idle { since: Instant },
 }
 
@@ -222,6 +228,8 @@ pub(crate) fn set_workflow(
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum HealthTransition {
     /// Set a coworker's phase to a new value.
+    /// (Currently unused - coworkers go on break immediately without tracking)
+    #[allow(dead_code)]
     Set { name: String, phase: SessionHealth },
     /// Clear a coworker's phase (set to None).
     Clear { name: String },
@@ -284,7 +292,6 @@ pub(crate) fn decide_idle_shutdowns(
     records: &HashMap<String, CoworkerRecord>,
     now: Instant,
     now_utc: DateTime<Utc>,
-    idle_break_duration: Duration,
     minimum_lifetime: Duration,
     pane_activity_grace: Duration,
 ) -> (Vec<ShutdownDecision>, Vec<HealthTransition>) {
@@ -359,30 +366,18 @@ pub(crate) fn decide_idle_shutdowns(
                     name: coworker.clone(),
                 });
             }
-        } else if cw.isolated_tasks {
-            // Isolated coworkers (reviewers) go on break immediately when idle
+        } else {
+            // All unprotected coworkers go on break immediately.
+            // The daemon will recall them when:
+            // - A task is assigned to them
+            // - Their PR gets review feedback
+            // - A blocked task unblocks
+            // This avoids coworkers sitting idle waiting for work that may
+            // take a while (PR reviews, blocked dependencies, etc.)
             to_shutdown.push(ShutdownDecision {
                 name: coworker.clone(),
-                is_isolated: true,
+                is_isolated: cw.isolated_tasks,
             });
-        } else {
-            match get_health(records, coworker) {
-                Some(SessionHealth::Idle { since }) => {
-                    let idle_duration = now.duration_since(since);
-                    if idle_duration >= idle_break_duration {
-                        to_shutdown.push(ShutdownDecision {
-                            name: coworker.clone(),
-                            is_isolated: false,
-                        });
-                    }
-                }
-                None => {
-                    transitions.push(HealthTransition::Set {
-                        name: coworker.clone(),
-                        phase: SessionHealth::Idle { since: now },
-                    });
-                }
-            }
         }
     }
 
@@ -1655,7 +1650,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1689,7 +1683,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1722,7 +1715,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1752,7 +1744,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1782,7 +1773,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1815,7 +1805,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1843,7 +1832,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1854,11 +1842,12 @@ mod tests {
     }
 
     #[test]
-    fn idle_shutdown_starts_tracking_newly_idle() {
+    fn idle_shutdown_immediate_for_unprotected_coworker() {
+        // Unprotected coworkers are sent on break immediately (no delay)
         let coworkers = vec![cw("york", 10)];
-        let mut phases: HashMap<String, CoworkerRecord> = HashMap::new();
+        let phases: HashMap<String, CoworkerRecord> = HashMap::new();
 
-        let (decisions, transitions) = decide_idle_shutdowns(
+        let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
             &set(&[]),
             &set(&[]),
@@ -1870,15 +1859,13 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
-        apply_health_transitions(&mut phases, transitions);
 
-        // No shutdown yet — just started tracking
-        assert!(decisions.is_empty());
-        assert!(get_health(&phases, "york").is_some());
+        // Immediate shutdown — no tracking delay
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].name, "york");
     }
 
     #[test]
@@ -1904,7 +1891,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1945,7 +1931,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -1989,7 +1974,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -2022,7 +2006,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -2062,7 +2045,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -2101,7 +2083,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
@@ -3664,7 +3645,6 @@ mod tests {
             &phases,
             Instant::now(),
             Utc::now(),
-            Duration::from_secs(30),
             Duration::from_secs(300),
             Duration::from_secs(120),
         );
