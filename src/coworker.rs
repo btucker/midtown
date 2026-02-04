@@ -425,6 +425,18 @@ impl CoworkerManager {
         Ok(())
     }
 
+    /// Find all orphaned worktree names — worktrees with no active coworker.
+    ///
+    /// This is useful for clearing state (like reviewer assignments) for coworkers
+    /// whose sessions have ended unexpectedly.
+    pub fn find_orphaned_worktree_names(&self) -> Vec<String> {
+        let active_names: Vec<String> = {
+            let coworkers = self.coworkers.read().unwrap();
+            coworkers.keys().cloned().collect()
+        };
+        self.worktree_manager.find_orphaned_worktrees(&active_names)
+    }
+
     /// Clean up orphaned worktrees that have no active coworker.
     ///
     /// For each orphaned worktree:

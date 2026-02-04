@@ -425,7 +425,10 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
     // Run the blocking worktree operations (git commands only - no gh CLI) in a
     // separate thread pool. Process at most 2 worktrees per tick to avoid
     // saturating the blocking thread pool and causing RPC timeouts.
-    let (flagged, branch_map) = tokio::task::spawn_blocking(move || {
+    // Also get the full list of orphaned worktrees for state cleanup.
+    let (all_orphaned, flagged, branch_map) = tokio::task::spawn_blocking(move || {
+        // First get all orphaned worktrees (before cleanup modifies the list)
+        let all_orphaned = coworkers.find_orphaned_worktree_names();
         let flagged = coworkers.cleanup_orphaned_worktrees(Some(2));
         // Pre-fetch branch names for all flagged worktrees (avoids blocking git
         // calls later in the async context)
@@ -433,13 +436,38 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) {
             .iter()
             .map(|name| (name.clone(), coworkers.get_worktree_branch(name)))
             .collect();
-        (flagged, branch_map)
+        (all_orphaned, flagged, branch_map)
     })
     .await
     .unwrap_or_else(|e| {
         warn!("Worktree cleanup task panicked: {}", e);
-        (vec![], HashMap::new())
+        (vec![], vec![], HashMap::new())
     });
+
+    // Clear reviewer assignments for orphaned coworkers.
+    // When a coworker's tmux session ends unexpectedly, their reviewer assignment
+    // should be freed so another coworker can be assigned to review the PR.
+    if !all_orphaned.is_empty() {
+        let mut cleared_count = 0;
+        let mut ps = state.persistent_state.lock().await;
+        for name in &all_orphaned {
+            if let Some(assignment) = ps.github.remove_assignment_by_reviewer(name) {
+                info!(
+                    "Cleared stale reviewer assignment: {} was reviewing PR #{}",
+                    name, assignment.pr_number
+                );
+                cleared_count += 1;
+            }
+        }
+        if cleared_count > 0
+            && let Err(e) = ps.save_for_repo(&state.repo_name)
+        {
+            warn!(
+                "Failed to save daemon-state.json after clearing orphan reviewer assignments: {}",
+                e
+            );
+        }
+    }
 
     // Filter out worktrees whose branches have open PRs (by coworker name).
     let open_pr_owners = {

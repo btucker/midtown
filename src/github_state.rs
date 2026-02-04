@@ -199,6 +199,20 @@ impl GitHubState {
             .map(|(pr_number, _)| *pr_number)
     }
 
+    /// Remove a reviewer assignment by coworker name (e.g., when coworker session ends).
+    ///
+    /// Returns the removed assignment if found.
+    pub fn remove_assignment_by_reviewer(
+        &mut self,
+        reviewer: &str,
+    ) -> Option<PrReviewerAssignment> {
+        if let Some(pr_number) = self.pr_for_reviewer(reviewer) {
+            self.pr_reviewers.remove(&pr_number)
+        } else {
+            None
+        }
+    }
+
     /// Clean up assignments that have expired (older than timeout).
     pub fn cleanup_expired_assignments(&mut self) {
         let now = Utc::now();
@@ -467,6 +481,28 @@ mod tests {
         // After removal, should return None
         state.remove_assignment(42);
         assert_eq!(state.pr_for_reviewer("lexington"), None);
+    }
+
+    #[test]
+    fn test_remove_assignment_by_reviewer() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
+
+        // Remove lexington's assignment by name
+        let removed = state.remove_assignment_by_reviewer("lexington");
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().pr_number, 42);
+
+        // Verify it's gone
+        assert!(state.pr_for_reviewer("lexington").is_none());
+        assert!(state.get_reviewer(42).is_none());
+
+        // park's assignment should be unaffected
+        assert_eq!(state.pr_for_reviewer("park"), Some(43));
+
+        // Removing non-existent reviewer returns None
+        assert!(state.remove_assignment_by_reviewer("york").is_none());
     }
 
     #[test]
