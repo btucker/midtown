@@ -57,6 +57,7 @@ use std::path::{Path, PathBuf};
 /// assert_eq!(new_msgs.len(), 1);
 /// assert_eq!(new_msgs[0].content, "Third");
 /// ```
+#[derive(Clone)]
 pub struct Channel {
     /// Base directory for this channel (~/.midtown/projects/<repo>/)
     base_dir: PathBuf,

@@ -738,168 +738,172 @@ pub(super) async fn handle_channel_post(
 
     let msg = Message::new(from, content.clone(), msg_type.clone());
 
-    match state.send_and_broadcast(&msg) {
-        Ok(()) => {
-            info!("Channel post from {}: {}", from, message);
+    // Run the channel file write in spawn_blocking to avoid blocking the async runtime.
+    // The channel.send() method acquires a file lock that can take up to 2 seconds under
+    // contention, which would otherwise stall all RPC handlers sharing this runtime thread.
+    let channel = state.channel.clone();
+    let msg_for_write = msg.clone();
+    let write_result = tokio::task::spawn_blocking(move || channel.send(&msg_for_write)).await;
 
-            // Track last activity time for coworker (used for silent coworker detection)
-            if is_coworker_sender(from) {
-                let mut records = state.coworker_records.write().await;
-                records
-                    .entry(from.to_string())
-                    .or_insert_with(crate::rules::CoworkerRecord::new_spawn)
-                    .last_activity = Some(Instant::now());
-                drop(records); // Release write lock before acquiring read lock
-            }
-
-            // Update tmux tab for coworkers when they post /me actions.
-            // Prefer structured state from daemon memory (reported via RPC) over
-            // parsing the freeform /me message text with keyword matching.
-            //
-            // Run tmux operations in spawn_blocking to avoid blocking the async
-            // runtime. This prevents RPC timeouts when tmux commands are slow.
-            if msg_type == MessageType::Action {
-                let display_status = {
-                    let records = state.coworker_records.read().await;
-                    records.get(from).and_then(|record| record.display_status())
-                };
-
-                let coworkers = state.coworkers.clone();
-                let from_clone = from.to_string();
-                let content_clone = content.clone();
-
-                tokio::task::spawn_blocking(move || {
-                    if let Some(display) = display_status {
-                        if let Err(e) = coworkers.update_status_formatted(&from_clone, &display) {
-                            debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                        }
-                    } else {
-                        // Fallback: parse /me message text with keyword matching
-                        if let Err(e) =
-                            coworkers.update_status_display(&from_clone, Some(&content_clone))
-                        {
-                            debug!("Failed to update tmux tab for {}: {}", from_clone, e);
-                        }
-                    }
-                });
-            }
-
-            // Nudge lead when user messages arrive (from web UI or TUI input)
-            if state.is_user_sender(from) {
-                // Check if user is @mentioning specific coworkers or @all
-                let has_coworker_mentions =
-                    !extract_mentions(&content).is_empty() || contains_at_all(&content);
-                let has_lead_mention = content.to_lowercase().contains("@lead");
-
-                // Route @mentions in user messages directly to coworkers
-                super::chat::route_mentions(state, &msg).await;
-
-                // Only nudge lead if there are no coworker @mentions (regular
-                // message for the lead) or if the user also @mentioned the lead.
-                // This lets users talk directly to coworkers without the lead
-                // acting as a middleman.
-                if !has_coworker_mentions || has_lead_mention {
-                    let nudge_msg = format!("user: {}", content);
-                    info!("Nudging Lead about user message");
-                    // Run in spawn_blocking to avoid blocking the async runtime
-                    let coworkers = state.coworkers.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                            warn!("Failed to nudge Lead about user message: {}", e);
-                        }
-                    });
-                } else {
-                    info!(
-                        "Skipping Lead nudge — user message routed directly to mentioned coworker(s)"
-                    );
-                }
-            }
-
-            // Nudge the Lead when a coworker explicitly mentions @lead
-            let content_lower = content.to_lowercase();
-            if is_coworker_sender(from) && content_lower.contains("@lead") {
-                // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)
-                let should_nudge = {
-                    let cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.check("lead_mention", &msg.id, Duration::from_secs(3600))
-                };
-
-                if should_nudge {
-                    // Record that we're nudging for this message
-                    {
-                        let mut cooldowns = state.cooldowns.lock().unwrap();
-                        cooldowns.record("lead_mention", &msg.id);
-                    }
-
-                    // Truncate message for nudge (max 100 chars)
-                    let summary = if content.len() > 100 {
-                        format!("{}...", &content[..97])
-                    } else {
-                        content.clone()
-                    };
-
-                    let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
-                    info!("Nudging Lead about @lead mention from {}", from);
-
-                    // Nudge the Lead window (spawn_blocking to avoid blocking async runtime)
-                    let coworkers = state.coworkers.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
-                            warn!("Failed to nudge Lead about @lead mention: {}", e);
-                        }
-                    });
-
-                    // Send push notification to mobile PWA
-                    state.send_push_notification(
-                        &format!("@lead from {}", from),
-                        &summary,
-                        "mention",
-                    );
-                }
-            }
-
-            // Send bell notification and push notification for @user mentions
-            // Also recognize @<display_name> if configured (e.g., @Ben)
-            let has_user_mention = content_lower.contains("@user")
-                || state
-                    .user_display_name
-                    .as_ref()
-                    .is_some_and(|dn| content_lower.contains(&format!("@{}", dn.to_lowercase())));
-            if has_user_mention && !state.is_user_sender(from) {
-                info!("Bell notification: @user mentioned by {}", from);
-                // Run in spawn_blocking to avoid blocking the async runtime
-                let coworkers = state.coworkers.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = coworkers.notify_user() {
-                        warn!("Failed to send bell notification for @user mention: {}", e);
-                    }
-                });
-                let display = state.user_display_name.as_deref().unwrap_or("user");
-                let summary = if content.len() > 100 {
-                    format!("{}...", &content[..97])
-                } else {
-                    content.clone()
-                };
-                state.send_push_notification(
-                    &format!("@{} from {}", display, from),
-                    &summary,
-                    "mention",
-                );
-            }
-
-            Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": "Message posted to channel",
-                }),
-            )
+    match write_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            error!("Failed to write to channel: {}", e);
+            return Response::error(id, RpcError::new(-32603, e.to_string()));
         }
         Err(e) => {
-            error!("Failed to post to channel: {}", e);
-            Response::error(id, RpcError::new(-32603, e.to_string()))
+            error!("spawn_blocking panic in channel write: {}", e);
+            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
         }
     }
+
+    // Broadcast to WebSocket clients (non-blocking channel send)
+    if let Some(ref tx) = state.web_updates_tx {
+        super::super::web::broadcast_channel_message(tx, &msg);
+    }
+
+    info!("Channel post from {}: {}", from, message);
+
+    // Track last activity time for coworker (used for silent coworker detection)
+    if is_coworker_sender(from) {
+        let mut records = state.coworker_records.write().await;
+        records
+            .entry(from.to_string())
+            .or_insert_with(crate::rules::CoworkerRecord::new_spawn)
+            .last_activity = Some(Instant::now());
+        drop(records); // Release write lock before acquiring read lock
+    }
+
+    // Update tmux tab for coworkers when they post /me actions.
+    // Prefer structured state from daemon memory (reported via RPC) over
+    // parsing the freeform /me message text with keyword matching.
+    //
+    // Run tmux operations in spawn_blocking to avoid blocking the async
+    // runtime. This prevents RPC timeouts when tmux commands are slow.
+    if msg_type == MessageType::Action {
+        let display_status = {
+            let records = state.coworker_records.read().await;
+            records.get(from).and_then(|record| record.display_status())
+        };
+
+        let coworkers = state.coworkers.clone();
+        let from_clone = from.to_string();
+        let content_clone = content.clone();
+
+        tokio::task::spawn_blocking(move || {
+            if let Some(display) = display_status {
+                if let Err(e) = coworkers.update_status_formatted(&from_clone, &display) {
+                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
+                }
+            } else {
+                // Fallback: parse /me message text with keyword matching
+                if let Err(e) = coworkers.update_status_display(&from_clone, Some(&content_clone)) {
+                    debug!("Failed to update tmux tab for {}: {}", from_clone, e);
+                }
+            }
+        });
+    }
+
+    // Nudge lead when user messages arrive (from web UI or TUI input)
+    if state.is_user_sender(from) {
+        // Check if user is @mentioning specific coworkers or @all
+        let has_coworker_mentions =
+            !extract_mentions(&content).is_empty() || contains_at_all(&content);
+        let has_lead_mention = content.to_lowercase().contains("@lead");
+
+        // Route @mentions in user messages directly to coworkers
+        super::chat::route_mentions(state, &msg).await;
+
+        // Only nudge lead if there are no coworker @mentions (regular
+        // message for the lead) or if the user also @mentioned the lead.
+        // This lets users talk directly to coworkers without the lead
+        // acting as a middleman.
+        if !has_coworker_mentions || has_lead_mention {
+            let nudge_msg = format!("user: {}", content);
+            info!("Nudging Lead about user message");
+            // Run in spawn_blocking to avoid blocking the async runtime
+            let coworkers = state.coworkers.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
+                    warn!("Failed to nudge Lead about user message: {}", e);
+                }
+            });
+        } else {
+            info!("Skipping Lead nudge — user message routed directly to mentioned coworker(s)");
+        }
+    }
+
+    // Nudge the Lead when a coworker explicitly mentions @lead
+    let content_lower = content.to_lowercase();
+    if is_coworker_sender(from) && content_lower.contains("@lead") {
+        // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)
+        let should_nudge = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            cooldowns.check("lead_mention", &msg.id, Duration::from_secs(3600))
+        };
+
+        if should_nudge {
+            // Record that we're nudging for this message
+            {
+                let mut cooldowns = state.cooldowns.lock().unwrap();
+                cooldowns.record("lead_mention", &msg.id);
+            }
+
+            // Truncate message for nudge (max 100 chars)
+            let summary = if content.len() > 100 {
+                format!("{}...", &content[..97])
+            } else {
+                content.clone()
+            };
+
+            let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
+            info!("Nudging Lead about @lead mention from {}", from);
+
+            // Nudge the Lead window (spawn_blocking to avoid blocking async runtime)
+            let coworkers = state.coworkers.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = coworkers.nudge_lead(&nudge_msg) {
+                    warn!("Failed to nudge Lead about @lead mention: {}", e);
+                }
+            });
+
+            // Send push notification to mobile PWA
+            state.send_push_notification(&format!("@lead from {}", from), &summary, "mention");
+        }
+    }
+
+    // Send bell notification and push notification for @user mentions
+    // Also recognize @<display_name> if configured (e.g., @Ben)
+    let has_user_mention = content_lower.contains("@user")
+        || state
+            .user_display_name
+            .as_ref()
+            .is_some_and(|dn| content_lower.contains(&format!("@{}", dn.to_lowercase())));
+    if has_user_mention && !state.is_user_sender(from) {
+        info!("Bell notification: @user mentioned by {}", from);
+        // Run in spawn_blocking to avoid blocking the async runtime
+        let coworkers = state.coworkers.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = coworkers.notify_user() {
+                warn!("Failed to send bell notification for @user mention: {}", e);
+            }
+        });
+        let display = state.user_display_name.as_deref().unwrap_or("user");
+        let summary = if content.len() > 100 {
+            format!("{}...", &content[..97])
+        } else {
+            content.clone()
+        };
+        state.send_push_notification(&format!("@{} from {}", display, from), &summary, "mention");
+    }
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": "Message posted to channel",
+        }),
+    )
 }
 
 /// Handle channel.read RPC method.
