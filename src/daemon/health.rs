@@ -119,34 +119,57 @@ pub(super) fn check_and_respawn_lead(
     // Session exists — check how many lead windows are present.
     // Using count_windows_by_name instead of window_exists to detect
     // duplicates that can accumulate from restart races.
-    match crate::tmux::count_windows_by_name(session, "lead") {
+    let lead_check = crate::tmux::count_windows_by_name(session, "lead");
+    let all_windows = crate::tmux::list_windows(session).unwrap_or_default();
+    debug!(
+        session = %session,
+        lead_check = ?lead_check,
+        all_windows = ?all_windows,
+        window_count = all_windows.len(),
+        "LEAD_HEALTH: checking lead window status"
+    );
+
+    match lead_check {
         Ok((0, _)) => {
-            warn!("Lead window missing in session {}, respawning...", session);
+            warn!(
+                session = %session,
+                all_windows = ?all_windows,
+                "LEAD_HEALTH: Lead window missing, will respawn"
+            );
             match crate::tmux::spawn_lead(
                 session,
                 &workdir.to_string_lossy(),
                 project_name,
                 additional_dirs,
             ) {
-                Ok(()) => info!("Successfully respawned lead window"),
-                Err(e) => error!("Failed to respawn lead window: {}", e),
+                Ok(()) => info!("LEAD_HEALTH: Successfully respawned lead window"),
+                Err(e) => error!("LEAD_HEALTH: Failed to respawn lead window: {}", e),
             }
         }
-        Ok((1, _)) => {} // exactly one lead window, all good
+        Ok((1, ids)) => {
+            debug!(
+                session = %session,
+                lead_id = ?ids.first(),
+                "LEAD_HEALTH: exactly one lead window, all good"
+            );
+        }
         Ok((n, ids)) => {
             // Multiple lead windows detected — kill all but the first one
             warn!(
-                "Found {} duplicate lead windows in session {}, cleaning up extras",
-                n, session
+                session = %session,
+                lead_count = n,
+                lead_ids = ?ids,
+                all_windows = ?all_windows,
+                "LEAD_HEALTH: Found duplicate lead windows, cleaning up extras"
             );
             for id in ids.iter().skip(1) {
                 let target = format!("{}:{}", session, id);
-                info!("Killing duplicate lead window {}", target);
+                info!(target = %target, "LEAD_HEALTH: Killing duplicate lead window");
                 let _ = crate::tmux::kill_window_by_target(&target);
             }
         }
         Err(e) => {
-            warn!("Failed to check lead window status: {}", e);
+            warn!(error = %e, "LEAD_HEALTH: Failed to check lead window status");
         }
     }
 
