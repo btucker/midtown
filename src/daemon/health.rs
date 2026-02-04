@@ -265,6 +265,52 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         decisions
     };
 
+    // Log all shutdown decisions for debugging the mass-shutdown issue
+    if !to_shutdown.is_empty() {
+        warn!(
+            "IDLE_SHUTDOWN: {} coworkers flagged for shutdown: {:?}",
+            to_shutdown.len(),
+            to_shutdown
+                .iter()
+                .map(|d| (&d.name, d.is_isolated))
+                .collect::<Vec<_>>()
+        );
+        // Log protection state for each coworker being shut down
+        for decision in &to_shutdown {
+            let name = &decision.name;
+            let is_busy = snap
+                .busy_coworkers
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(name));
+            let has_open_pr = snap
+                .coworkers_with_open_prs
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(name));
+            let is_reviewing = snap
+                .active_reviewers
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case(name));
+            let has_subagent = snap
+                .coworkers_with_running_subagents
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(name));
+            let ci_passed = snap
+                .ci_passed_pr_coworkers
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(name));
+            warn!(
+                "IDLE_SHUTDOWN: {} - is_busy={}, has_open_pr={}, is_reviewing={}, has_subagent={}, ci_passed={}, is_isolated={}",
+                name,
+                is_busy,
+                has_open_pr,
+                is_reviewing,
+                has_subagent,
+                ci_passed,
+                decision.is_isolated
+            );
+        }
+    }
+
     let mut effects = Vec::new();
 
     // Determine effects for idle coworkers

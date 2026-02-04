@@ -642,8 +642,12 @@ pub fn get_ppid(pid: u32) -> Option<u32> {
 /// Returns PIDs of processes that:
 /// 1. Match the given regex pattern in their command line
 /// 2. Have PPID=1 (orphaned - no legitimate parent)
+/// 3. Are NOT tmux processes (to avoid killing the tmux server)
 ///
 /// This is conservative: only truly orphaned processes are returned.
+/// The tmux exclusion is critical because `tmux new-session` commands may
+/// match patterns like "claude" in their arguments, but killing the tmux
+/// server would destroy all coworker windows.
 pub fn find_orphaned_processes(pattern: &str) -> Vec<u32> {
     // Find PIDs matching the pattern
     let output = match Command::new("pgrep").args(["-f", pattern]).output() {
@@ -656,9 +660,33 @@ pub fn find_orphaned_processes(pattern: &str) -> Vec<u32> {
         .filter_map(|l| l.trim().parse().ok())
         .collect();
 
-    // Filter to only orphaned processes (PPID=1)
+    // Filter to only orphaned processes (PPID=1) that are NOT tmux
+    // Bug fix: The pattern may match tmux server processes because the
+    // `tmux new-session` command line includes "claude" in its arguments.
+    // Killing the tmux server would destroy all windows, so we must exclude it.
     pids.into_iter()
-        .filter(|&pid| get_ppid(pid) == Some(1))
+        .filter(|&pid| {
+            // Must be orphaned (PPID=1)
+            if get_ppid(pid) != Some(1) {
+                return false;
+            }
+            // Must NOT be a tmux process
+            let is_tmux = Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "comm="])
+                .output()
+                .ok()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .starts_with("tmux")
+                })
+                .unwrap_or(false);
+            if is_tmux {
+                tracing::debug!(pid = pid, "Skipping tmux process in orphan cleanup");
+                return false;
+            }
+            true
+        })
         .collect()
 }
 
@@ -677,6 +705,29 @@ pub fn kill_orphaned_processes(pattern: &str) -> usize {
     }
 
     let count = orphan_pids.len();
+
+    // Log what we're about to kill for debugging
+    for &pid in &orphan_pids {
+        // Get process command line for debugging
+        let cmdline = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "args="])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "<unknown>".to_string());
+        tracing::warn!(
+            pid = pid,
+            cmdline = %cmdline,
+            pattern = %pattern,
+            "ORPHAN_CLEANUP: killing orphaned claude process"
+        );
+    }
 
     // Send SIGTERM to orphaned processes
     let pid_strings: Vec<String> = orphan_pids.iter().map(|p| p.to_string()).collect();
@@ -2816,5 +2867,79 @@ Claude is now processing the request
         assert_eq!(retry.session_mode, SessionMode::Fresh);
         assert_eq!(retry.name, "park");
         assert_eq!(retry.initial_prompt, Some("task prompt".to_string()));
+    }
+
+    /// Regression test: orphan cleanup must not kill tmux processes.
+    ///
+    /// Bug context: The orphan cleanup pattern matches "claude" in command lines,
+    /// but tmux servers include "claude" in their args when spawning windows.
+    /// Since tmux servers run as daemons (PPID=1), they were incorrectly matched
+    /// as orphans and killed, destroying all windows.
+    #[test]
+    fn orphan_cleanup_excludes_tmux_processes() {
+        use std::process::Command;
+
+        let session_name = "test-orphan-cleanup";
+
+        // Clean up any leftover session from previous failed runs
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session_name])
+            .output();
+
+        // Start a tmux session with "claude --settings" in the command line
+        // This simulates how midtown starts sessions
+        let create_result = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "echo",
+                "claude",
+                "--settings",
+                "/fake/midtown/test-settings.json",
+            ])
+            .output();
+
+        if create_result.is_err() {
+            // tmux not available, skip test
+            return;
+        }
+
+        // Verify session was created
+        let session_exists = Command::new("tmux")
+            .args(["has-session", "-t", session_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !session_exists {
+            // Could not create session (tmux server issues), skip
+            return;
+        }
+
+        // Run the orphan cleanup with the pattern that matches "claude --settings"
+        // This is the same pattern used by the daemon
+        let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
+        let killed = super::kill_orphaned_processes(pattern);
+
+        // The tmux session should still exist - it must NOT have been killed
+        let session_still_exists = Command::new("tmux")
+            .args(["has-session", "-t", session_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session_name])
+            .output();
+
+        assert!(
+            session_still_exists,
+            "tmux session was killed by orphan cleanup! killed={} processes. \
+             The orphan cleanup pattern must exclude tmux processes.",
+            killed
+        );
     }
 }

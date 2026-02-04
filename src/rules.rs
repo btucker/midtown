@@ -309,9 +309,8 @@ pub(crate) fn decide_idle_shutdowns(
 
         // Check pane activity: if the pane content changed recently, the coworker
         // is actively working and must not be sent on break.
-        let pane_recently_active = records
-            .get(coworker)
-            .and_then(|r| r.pane_hash)
+        let pane_hash_info = records.get(coworker).and_then(|r| r.pane_hash);
+        let pane_recently_active = pane_hash_info
             .map(|(_, last_changed)| now.duration_since(last_changed) < pane_activity_grace)
             .unwrap_or(false);
 
@@ -365,7 +364,8 @@ pub(crate) fn decide_idle_shutdowns(
         } else {
             match get_health(records, coworker) {
                 Some(SessionHealth::Idle { since }) => {
-                    if now.duration_since(since) >= idle_break_duration {
+                    let idle_duration = now.duration_since(since);
+                    if idle_duration >= idle_break_duration {
                         to_shutdown.push(ShutdownDecision {
                             name: coworker.clone(),
                             is_isolated: false,

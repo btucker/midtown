@@ -1,0 +1,156 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "6ca39700-3af4-4aa8-ac0b-abe449f46778",
+      "started_at": "2026-02-04T00:55:20.475514Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "riverside",
+      "session_id": "4056dde5-4855-496a-85bd-c7fd784047d5",
+      "started_at": "2026-02-04T00:55:26.329302Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": "5122477d-db57-4fe6-9343-731412dfaed0",
+      "started_at": "2026-02-04T00:55:37.932559Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    }
+  ],
+  "active_names": [
+    "york",
+    "riverside",
+    "madison"
+  ],
+  "active_reviewers": [],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "The `midtown channel read` command fails with \"JSON error: input contains invalid characters at line 1 column 38\".\n\n**Investigation context:**\n- Channel file is valid JSON overall (file command confirms \"JSON data\")\n- Lead cursor is at position 415659 in the file\n- File is 810017 bytes total, so cursor is valid\n- First lines look clean in hex dump\n\n**Likely cause:**\nThe cursor reads from a byte offset and the remaining content might not start at a valid JSON boundary, or there's a character encoding issue at that specific position.\n\n**Fix approach:**\n1. Add a failing test that reproduces the parsing error\n2. Make the channel reader more robust - handle partial lines, invalid JSON entries gracefully\n3. Consider using line-based seeking instead of byte offsets",
+      "id": "1",
+      "owner": "riverside",
+      "status": "pending",
+      "subject": "Fix channel read JSON parsing error"
+    },
+    {
+      "blocked_by": [],
+      "description": "When the daemon tries to spawn a reviewer for a PR, it fails if an orphaned worktree still has that branch checked out.\n\n**Current behavior:**\n- PR #555 on branch `madison/green-with-feedback-nudge` needs a reviewer\n- madison worktree still exists with that branch checked out\n- madison is NOT an active coworker (no tmux window)\n- Daemon logs \"call-in failed\" and \"Failed to spawn reviewer\"\n- The PR sits unreviewed\n\n**Expected behavior:**\nThe daemon should detect this situation and either:\n1. Clean up the orphaned worktree before spawning reviewer\n2. Detach the orphaned worktree from the branch (checkout detached HEAD)\n3. Reuse the orphaned worktree for the reviewer if it's already on the right branch\n\n**Relevant code:**\n- `src/coworker.rs` - worktree creation logic\n- `src/rules.rs` - reviewer spawn decisions\n- `src/daemon/effects.rs` - spawn execution\n\n**Test approach:**\n1. Create a test with an orphaned worktree on a PR branch\n2. Verify daemon detects and resolves the conflict\n3. Verify reviewer spawns successfully",
+      "id": "2",
+      "owner": "madison",
+      "status": "pending",
+      "subject": "Handle orphaned worktrees blocking reviewer spawn"
+    }
+  ],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [],
+  "ci_passed_pr_coworkers": [
+    "madison"
+  ],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": false,
+      "name": "york",
+      "started_at": "2026-02-04T00:55:20.475514Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "riverside",
+      "started_at": "2026-02-04T00:55:26.329302Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "madison",
+      "started_at": "2026-02-04T00:55:37.932559Z"
+    }
+  ],
+  "coworker_start_times": {
+    "madison": "2026-02-04T00:55:37.932559Z",
+    "riverside": "2026-02-04T00:55:26.329302Z",
+    "york": "2026-02-04T00:55:20.475514Z"
+  },
+  "coworker_stop_times": {},
+  "coworkers_with_merged_prs": [
+    "park",
+    "amsterdam",
+    "columbus",
+    "york",
+    "vernon",
+    "pleasant",
+    "riverside",
+    "lexington"
+  ],
+  "coworkers_with_open_prs": [
+    "madison"
+  ],
+  "coworkers_with_running_subagents": [
+    "madison",
+    "riverside"
+  ],
+  "coworkers_with_unblocked_deps": [],
+  "in_progress_tasks": [],
+  "is_at_dev_limit": false,
+  "now_utc": "2026-02-04T00:55:41.997541Z",
+  "pane_contents": {
+    "madison": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/madison\n\n❯ You've been assigned task #2: Handle orphaned worktrees blocking reviewer spawn. Get started!\n\n✽ Spinning… (Esc to interrupt · ctrl+t to hide tasks · thinking)\n  ⎿  ◻ #1 Fix channel read JSON parsing error (riverside)\n     ◻ #2 Handle orphaned worktrees blocking reviewer spawn (madison)\n\n\n  ❯ You have pending task #2: Handle orphaned worktrees blocking reviewer spawn. Get started!\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ Press up to edit queued messages\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "riverside": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/riverside\n\n❯ You've been assigned task #1: Fix channel read JSON parsing error. Get started!\n\n⏺ Let me start by reading the channel to catch up on recent team activity, then get the details on my assigned task.\n\n⏺ Bash(midtown channel read)\n  ⎿  Error: Exit code 1\n     Error: JSON error: input contains invalid characters at line 1 column 38\n\n❯ You have pending task #1: Fix channel read JSON parsing error. Get started!\n\n⏺ The channel read command is failing - which is exactly the bug I need to fix. Let me claim this task and start investigating.\n\n✽ Flowing… (Esc to interrupt · ctrl+t to hide tasks · thought for 2s)\n  ⎿  ◻ #1 Fix channel read JSON parsing error (riverside)\n     ◻ #2 Handle orphaned worktrees blocking reviewer spawn (madison)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "york": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/york\n\n  Tasks (0 done, 2 open) · ctrl+t to hide tasks\n  ◻ #1 Fix channel read JSON parsing error (riverside)\n  ◻ #2 Handle orphaned worktrees blocking reviewer spawn (madison)\n\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ Try \"write a test for daemon.rs\"\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+  },
+  "pending_tasks_with_owners": [
+    [
+      "1",
+      "Fix channel read JSON parsing error",
+      "riverside"
+    ],
+    [
+      "2",
+      "Handle orphaned worktrees blocking reviewer spawn",
+      "madison"
+    ]
+  ],
+  "pending_tasks_without_owners": [],
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {},
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "6ca39700-3af4-4aa8-ac0b-abe449f46778",
+      "started_at": "2026-02-04T00:55:20.475514Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "riverside",
+      "session_id": "4056dde5-4855-496a-85bd-c7fd784047d5",
+      "started_at": "2026-02-04T00:55:26.329302Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": "5122477d-db57-4fe6-9343-731412dfaed0",
+      "started_at": "2026-02-04T00:55:37.932559Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false
+}
