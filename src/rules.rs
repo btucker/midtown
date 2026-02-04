@@ -274,11 +274,15 @@ pub(crate) struct ShutdownDecision {
 /// - They have open unmerged PRs with CI not yet passed (waiting for CI)
 /// - They are actively reviewing a PR
 /// - They have unblocked dependent tasks
-/// - Their pane content changed recently (within `pane_activity_grace`)
 /// - They have a subagent (Task tool) currently running
 ///
 /// Coworkers with open PRs where CI has passed CAN go on break - they're just
 /// waiting for human review, and the daemon will respawn them when feedback arrives.
+///
+/// Note: Pane content changes are NOT used as a protection signal. Idle coworkers
+/// may have pane activity from daemon nudges, Claude Code UI updates, etc. The
+/// other flags (busy, reviewing, subagent) already cover all legitimate work
+/// scenarios, and `minimum_lifetime` protects freshly spawned coworkers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_idle_shutdowns(
     coworkers: &[CoworkerSnapshot],
@@ -290,10 +294,8 @@ pub(crate) fn decide_idle_shutdowns(
     ci_passed_pr_coworkers: &HashSet<String>,
     usage_limited_coworkers: &HashSet<String>,
     records: &HashMap<String, CoworkerRecord>,
-    now: Instant,
     now_utc: DateTime<Utc>,
     minimum_lifetime: Duration,
-    pane_activity_grace: Duration,
 ) -> (Vec<ShutdownDecision>, Vec<HealthTransition>) {
     let mut to_shutdown = Vec::new();
     let mut transitions = Vec::new();
@@ -314,13 +316,6 @@ pub(crate) fn decide_idle_shutdowns(
             }
             continue;
         }
-
-        // Check pane activity: if the pane content changed recently, the coworker
-        // is actively working and must not be sent on break.
-        let pane_hash_info = records.get(coworker).and_then(|r| r.pane_hash);
-        let pane_recently_active = pane_hash_info
-            .map(|(_, last_changed)| now.duration_since(last_changed) < pane_activity_grace)
-            .unwrap_or(false);
 
         let is_busy = busy_coworkers
             .iter()
@@ -343,18 +338,21 @@ pub(crate) fn decide_idle_shutdowns(
         let is_usage_limited = usage_limited_coworkers.contains(&coworker.to_lowercase());
 
         // Coworkers with active tasks, review assignments, unblocked deps,
-        // recent pane activity, running subagents, or usage limits are never
-        // sent on break.
+        // running subagents, or usage limits are never sent on break.
         //
         // Coworkers with open PRs CAN go on break if their CI has passed
         // (they're waiting for review feedback, and the daemon will respawn
         // them when feedback arrives).
+        //
+        // Note: pane content changes are NOT checked here. Idle coworkers may
+        // have pane activity from daemon nudges and UI updates, which previously
+        // blocked idle breaks (bug #62). The other flags already cover all
+        // legitimate work scenarios.
         let protected_by_open_pr = has_open_pr && !ci_passed;
         if is_busy
             || protected_by_open_pr
             || is_reviewing
             || has_unblocked_deps
-            || pane_recently_active
             || has_running_subagent
             || is_usage_limited
         {
@@ -1877,10 +1875,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -1910,10 +1906,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -1942,10 +1936,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         assert!(decisions.is_empty());
@@ -1971,10 +1963,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         assert!(decisions.is_empty());
@@ -2000,10 +1990,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -2032,10 +2020,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -2059,10 +2045,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         assert_eq!(decisions.len(), 1);
@@ -2086,10 +2070,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         // Immediate shutdown — no tracking delay
@@ -2118,19 +2100,19 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         assert!(decisions.is_empty());
     }
 
     #[test]
-    fn idle_shutdown_skips_coworker_with_recent_pane_activity() {
+    fn idle_shutdown_sends_idle_coworker_on_break_despite_pane_activity() {
+        // Bug #62: Idle coworkers with no task should be sent on break even if
+        // their pane content changed recently. Pane changes for idle coworkers
+        // come from daemon nudges, Claude Code UI updates, etc. — not real work.
         let coworkers = vec![cw("york", 10)];
-        // york has a pane_hash that changed recently (10 seconds ago)
         let mut phases = HashMap::new();
         phases.insert(
             "york".to_string(),
@@ -2142,12 +2124,14 @@ mod tests {
                 workflow_phase: None,
                 task_id: None,
                 workflow_updated_at: None,
+                // Pane changed just 10 seconds ago — but coworker has no task
                 pane_hash: Some((12345, Instant::now() - Duration::from_secs(10))),
                 zombie_respawn_count: 0,
             },
         );
 
-        // york is idle and has no tasks/PRs, but pane changed 10s ago — should NOT break
+        // york is idle, no tasks, no PRs, no reviews — should go on break
+        // even though pane content changed recently
         let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
             &set(&[]),
@@ -2158,22 +2142,22 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
-        assert!(
-            decisions.is_empty(),
-            "coworkers with recent pane activity should not be sent on break"
+        assert_eq!(
+            decisions.len(),
+            1,
+            "idle coworkers with no tasks should be sent on break regardless of pane activity"
         );
+        assert_eq!(decisions[0].name, "york");
     }
 
     #[test]
-    fn idle_shutdown_allows_break_with_stale_pane() {
+    fn idle_shutdown_allows_break_with_pane_hash_present() {
         let coworkers = vec![cw("york", 10)];
-        // york has a pane_hash that last changed 5 minutes ago (well beyond grace period)
+        // york has a pane_hash in its record — should not interfere with idle break
         let mut phases = HashMap::new();
         phases.insert(
             "york".to_string(),
@@ -2190,7 +2174,7 @@ mod tests {
             },
         );
 
-        // york is idle, no tasks/PRs, pane unchanged for 5 minutes — should break
+        // york is idle with no tasks/PRs — pane hash doesn't affect idle break decision
         let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
             &set(&[]),
@@ -2201,10 +2185,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         assert_eq!(decisions.len(), 1);
@@ -2233,10 +2215,8 @@ mod tests {
             &set(&[]),          // ci_passed
             &set(&[]),          // usage_limited
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
         apply_health_transitions(&mut phases, transitions);
 
@@ -2272,10 +2252,8 @@ mod tests {
             &set(&["york"]), // CI PASSED
             &set(&[]),       // usage_limited
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         // The new behavior: coworkers with CI-passed PRs CAN go on break
@@ -2310,10 +2288,8 @@ mod tests {
             &set(&[]),       // no ci_passed
             &set(&["york"]), // usage_limited
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         assert!(
@@ -4036,10 +4012,8 @@ mod tests {
             &set(&[]),                         // ci_passed
             &set(&[]),                         // usage_limited
             &phases,
-            Instant::now(),
             Utc::now(),
             Duration::from_secs(300),
-            Duration::from_secs(120),
         );
 
         // Madison should NOT be shut down because she has a running subagent

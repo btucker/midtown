@@ -80,11 +80,6 @@ pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 10;
 /// This prevents spawn storms where coworkers are rapidly sent on breaks.
 pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 
-/// Grace period for pane activity before a coworker can be sent on break (2 minutes).
-/// If the coworker's tmux pane content changed within this window, they are considered
-/// actively working and must not be sent on break, regardless of task ownership.
-pub(super) const PANE_ACTIVITY_GRACE: Duration = Duration::from_secs(120);
-
 /// Cooldown between orphan recovery spawns (5 seconds)
 /// Only spawn one coworker per tick, with a minimum gap between spawns.
 pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);

@@ -256,10 +256,8 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &snap.ci_passed_pr_coworkers,
             &snap.usage_limited_coworkers,
             &records,
-            snap.now,
             snap.now_utc,
             MINIMUM_COWORKER_LIFETIME,
-            PANE_ACTIVITY_GRACE,
         );
         crate::rules::apply_health_transitions(&mut records, transitions);
         decisions
