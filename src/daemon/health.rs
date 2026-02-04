@@ -254,6 +254,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &snap.coworkers_with_unblocked_deps,
             &snap.coworkers_with_running_subagents,
             &snap.ci_passed_pr_coworkers,
+            &snap.usage_limited_coworkers,
             &records,
             snap.now,
             snap.now_utc,
@@ -444,6 +445,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         &hashes,
         &snap.pane_contents,
         &snap.in_progress_tasks,
+        &snap.usage_limited_coworkers,
         snap.now,
         COWORKER_STUCK_DURATION,
     );

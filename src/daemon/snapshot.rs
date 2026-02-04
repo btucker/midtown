@@ -95,6 +95,10 @@ pub struct WorldSnapshot {
     /// The scheduled usage-limit nudge time (if any).
     #[serde(skip)]
     pub usage_limit_nudge_at: Option<tokio::time::Instant>,
+    /// Coworkers currently at a usage limit (detected from pane content).
+    /// These coworkers should be excluded from stuck detection, idle warnings,
+    /// and task assignment until the limit expires.
+    pub usage_limited_coworkers: HashSet<String>,
 
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the dev coworker limit.
@@ -255,6 +259,13 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         (nudge_at.is_some(), *nudge_at)
     };
 
+    // Detect which coworkers are currently at usage limit (from pane content)
+    let usage_limited_coworkers: HashSet<String> = pane_contents
+        .iter()
+        .filter(|(_, content)| crate::rules::has_usage_limit_pattern(content))
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
     // ── Limits & timing ─────────────────────────────────────────────────
     let is_at_dev_limit = state.is_at_dev_limit();
     let now = Instant::now();
@@ -286,6 +297,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         coworkers_with_unblocked_deps,
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
+        usage_limited_coworkers,
         is_at_dev_limit,
         now,
         now_utc,
@@ -402,6 +414,7 @@ mod tests {
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
             is_at_dev_limit: false,
             now: Instant::now(),
             now_utc: Utc::now(),
