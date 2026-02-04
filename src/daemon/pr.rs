@@ -388,6 +388,9 @@ pub(super) async fn poll_prs_for_issues(
     // Check for stuck conditions and nudge lead if self-healing has failed
     effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
 
+    // Detect stale CI checks and trigger re-runs
+    effects.extend(collect_stale_check_effects(state, &prs).await);
+
     Ok(effects)
 }
 
@@ -2091,9 +2094,128 @@ pub(super) async fn handle_webhook_ci_failure(
     }
 }
 
+/// Detect CI checks that are stuck (running > 4x typical duration) and collect re-run effects.
+///
+/// This function examines `statusCheckRollup` for each PR to find checks that have been
+/// running for an unusually long time. When detected, it returns effects to re-run the
+/// workflow. Uses historical check durations to determine "typical" time.
+async fn collect_stale_check_effects(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+) -> Vec<Effect> {
+    use chrono::Utc;
+
+    // Get CI stats for duration comparisons
+    let ci_stats = {
+        let ps = state.persistent_state.lock().await;
+        ps.ci_stats.clone()
+    };
+
+    collect_stale_check_effects_with_time(&ci_stats, prs, Utc::now())
+}
+
+/// Pure helper for `collect_stale_check_effects` that accepts a reference time.
+///
+/// This allows deterministic testing by passing a fixed timestamp.
+fn collect_stale_check_effects_with_time(
+    ci_stats: &crate::ci_stats::CiCheckStats,
+    prs: &[serde_json::Value],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<Effect> {
+    use crate::ci_stats::extract_run_id_from_url;
+    use chrono::DateTime;
+
+    let mut effects = Vec::new();
+
+    for pr in prs {
+        let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let checks = match pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        for check in checks {
+            let status = check.get("status").and_then(|s| s.as_str()).unwrap_or("");
+
+            // Only consider checks that are in progress
+            if status != "IN_PROGRESS" {
+                continue;
+            }
+
+            let check_name = match check.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            let started_at_str = match check.get("startedAt").and_then(|s| s.as_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Parse the started_at timestamp
+            let started_at: DateTime<chrono::Utc> = match started_at_str.parse() {
+                Ok(dt) => dt,
+                Err(_) => continue,
+            };
+
+            // Calculate how long the check has been running
+            let running_duration =
+                now.signed_duration_since(started_at).num_seconds().max(0) as u64;
+
+            // Check if it exceeds the stale threshold (4x typical)
+            if !ci_stats.is_stale(check_name, running_duration) {
+                continue;
+            }
+
+            // Extract run ID from the details URL
+            let details_url = match check.get("detailsUrl").and_then(|u| u.as_str()) {
+                Some(u) => u,
+                None => continue,
+            };
+
+            let run_id = match extract_run_id_from_url(details_url) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Check cooldown to prevent re-running the same workflow repeatedly
+            if !ci_stats.can_rerun(run_id) {
+                debug!(
+                    "Skipping re-run of workflow {} for '{}' on PR #{} (on cooldown)",
+                    run_id, check_name, pr_number
+                );
+                continue;
+            }
+
+            let typical_duration = ci_stats.typical_duration_or_default(check_name);
+            info!(
+                "Detected stale CI check '{}' on PR #{}: running {}s (typical: {}s, threshold: {}s)",
+                check_name,
+                pr_number,
+                running_duration,
+                typical_duration,
+                (typical_duration as f64 * crate::ci_stats::STALE_THRESHOLD_MULTIPLIER) as u64
+            );
+
+            effects.push(Effect::RerunWorkflow {
+                run_id,
+                check_name: check_name.to_string(),
+                pr_number,
+            });
+        }
+    }
+
+    effects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn stuck_nudge_effects_returns_only_system_message() {
@@ -2126,6 +2248,244 @@ mod tests {
                 );
             }
             _ => panic!("Expected PostSystemMessage effect, got {:?}", effects[0]),
+        }
+    }
+
+    /// Creates a CiCheckStats with recorded durations for testing.
+    fn test_ci_stats_with_duration(
+        check_name: &str,
+        duration: u64,
+    ) -> crate::ci_stats::CiCheckStats {
+        let mut stats = crate::ci_stats::CiCheckStats::default();
+        // Record multiple times to establish a stable typical duration
+        for _ in 0..5 {
+            stats.record_duration(check_name, duration);
+        }
+        stats
+    }
+
+    #[test]
+    fn collect_stale_check_effects_detects_stale_in_progress_check() {
+        use chrono::{DateTime, Utc};
+
+        // Set up CI stats with a typical duration of 120 seconds for "Test" check
+        let ci_stats = test_ci_stats_with_duration("Test", 120);
+
+        // PR with an IN_PROGRESS check that started 600 seconds ago (5x typical)
+        let now: DateTime<Utc> = "2026-02-04T12:10:00Z".parse().unwrap();
+        let prs = vec![json!({
+            "number": 42,
+            "statusCheckRollup": [{
+                "name": "Test",
+                "status": "IN_PROGRESS",
+                "startedAt": "2026-02-04T12:00:00Z",
+                "detailsUrl": "https://github.com/owner/repo/actions/runs/123456/job/789"
+            }]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+
+        assert_eq!(effects.len(), 1, "should detect one stale check");
+        match &effects[0] {
+            Effect::RerunWorkflow {
+                run_id,
+                check_name,
+                pr_number,
+            } => {
+                assert_eq!(*run_id, 123456);
+                assert_eq!(check_name, "Test");
+                assert_eq!(*pr_number, 42);
+            }
+            _ => panic!("expected RerunWorkflow effect"),
+        }
+    }
+
+    #[test]
+    fn collect_stale_check_effects_ignores_checks_not_in_progress() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("Test", 120);
+        let now: DateTime<Utc> = "2026-02-04T12:10:00Z".parse().unwrap();
+
+        // PR with a COMPLETED check
+        let prs = vec![json!({
+            "number": 42,
+            "statusCheckRollup": [{
+                "name": "Test",
+                "status": "COMPLETED",
+                "startedAt": "2026-02-04T12:00:00Z",
+                "detailsUrl": "https://github.com/owner/repo/actions/runs/123456/job/789"
+            }]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should not detect completed checks as stale"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_ignores_checks_within_threshold() {
+        use chrono::{DateTime, Utc};
+
+        // Typical duration is 120s, threshold is 4x = 480s
+        let ci_stats = test_ci_stats_with_duration("Test", 120);
+        let now: DateTime<Utc> = "2026-02-04T12:05:00Z".parse().unwrap();
+
+        // PR with a check that has been running for 300s (within 480s threshold)
+        let prs = vec![json!({
+            "number": 42,
+            "statusCheckRollup": [{
+                "name": "Test",
+                "status": "IN_PROGRESS",
+                "startedAt": "2026-02-04T12:00:00Z",
+                "detailsUrl": "https://github.com/owner/repo/actions/runs/123456/job/789"
+            }]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should not detect checks within threshold"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_skips_prs_without_status_check_rollup() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("Test", 120);
+        let now: DateTime<Utc> = "2026-02-04T12:10:00Z".parse().unwrap();
+
+        let prs = vec![json!({
+            "number": 42
+            // No statusCheckRollup field
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should skip PRs without statusCheckRollup"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_skips_checks_without_details_url() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("Test", 120);
+        let now: DateTime<Utc> = "2026-02-04T12:10:00Z".parse().unwrap();
+
+        let prs = vec![json!({
+            "number": 42,
+            "statusCheckRollup": [{
+                "name": "Test",
+                "status": "IN_PROGRESS",
+                "startedAt": "2026-02-04T12:00:00Z"
+                // No detailsUrl - can't extract run ID
+            }]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(effects.is_empty(), "should skip checks without detailsUrl");
+    }
+
+    #[test]
+    fn collect_stale_check_effects_skips_invalid_details_url() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("Test", 120);
+        let now: DateTime<Utc> = "2026-02-04T12:10:00Z".parse().unwrap();
+
+        let prs = vec![json!({
+            "number": 42,
+            "statusCheckRollup": [{
+                "name": "Test",
+                "status": "IN_PROGRESS",
+                "startedAt": "2026-02-04T12:00:00Z",
+                "detailsUrl": "https://example.com/not-a-github-url"
+            }]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should skip checks with unparseable detailsUrl"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_respects_rerun_cooldown() {
+        use chrono::{DateTime, Utc};
+
+        let mut ci_stats = test_ci_stats_with_duration("Test", 120);
+        // Record a recent re-run for this workflow
+        ci_stats.record_rerun(123456);
+
+        let now: DateTime<Utc> = "2026-02-04T12:10:00Z".parse().unwrap();
+        let prs = vec![json!({
+            "number": 42,
+            "statusCheckRollup": [{
+                "name": "Test",
+                "status": "IN_PROGRESS",
+                "startedAt": "2026-02-04T12:00:00Z",
+                "detailsUrl": "https://github.com/owner/repo/actions/runs/123456/job/789"
+            }]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(effects.is_empty(), "should skip re-run when on cooldown");
+    }
+
+    #[test]
+    fn collect_stale_check_effects_handles_multiple_prs_and_checks() {
+        use chrono::{DateTime, Utc};
+
+        let mut ci_stats = test_ci_stats_with_duration("Test", 120);
+        // Also add stats for Clippy
+        for _ in 0..5 {
+            ci_stats.record_duration("Clippy", 60);
+        }
+
+        let now: DateTime<Utc> = "2026-02-04T12:10:00Z".parse().unwrap();
+        let prs = vec![
+            json!({
+                "number": 42,
+                "statusCheckRollup": [
+                    {
+                        "name": "Test",
+                        "status": "IN_PROGRESS",
+                        "startedAt": "2026-02-04T12:00:00Z",
+                        "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                    },
+                    {
+                        "name": "Clippy",
+                        "status": "COMPLETED",  // Not in progress
+                        "startedAt": "2026-02-04T12:00:00Z",
+                        "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/2"
+                    }
+                ]
+            }),
+            json!({
+                "number": 43,
+                "statusCheckRollup": [{
+                    "name": "Clippy",
+                    "status": "IN_PROGRESS",
+                    "startedAt": "2026-02-04T12:00:00Z",  // 600s ago, threshold is 240s
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/333/job/3"
+                }]
+            }),
+        ];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+
+        // Should find 2 stale checks: Test on PR #42 and Clippy on PR #43
+        assert_eq!(effects.len(), 2, "should detect two stale checks");
+
+        // Verify both effects are RerunWorkflow
+        for effect in &effects {
+            assert!(matches!(effect, Effect::RerunWorkflow { .. }));
         }
     }
 }
