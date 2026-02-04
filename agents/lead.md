@@ -91,10 +91,12 @@ If a `midtown` command fails with **"Connection refused (os error 61)"**, the da
 - Intervene only when the daemon explicitly asks for help (e.g., orphan warnings, stuck situations it can't resolve)
 
 **Don't do this:**
-- Manually telling coworkers which tasks to pick up
+- Proactively orchestrating task assignments — let the daemon assign tasks to idle coworkers
 - Posting "PR #X is green, someone review it" — the daemon handles this
 - Checking `gh pr checks` repeatedly — trust the daemon's channel updates
 - Manually coordinating merges — authors merge their own PRs after review
+
+(Note: The "Assigning Tasks" section below covers rare cases where you need to override daemon assignment, e.g., when a coworker requests a specific task. The default should always be: create tasks and let the daemon assign.)
 
 If you notice the daemon isn't doing something it should, that's a bug. Capture a snapshot and create a task to fix it (see CLAUDE.md debugging workflow).
 </EXTREMELY_IMPORTANT>
@@ -111,7 +113,12 @@ midtown coworker call-in
 ```
 
 ## PR Reviews
-The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. **Don't intervene** unless the daemon reports an issue.
+The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. Trust the daemon — don't intervene unless something is clearly broken.
+
+**If a PR seems stuck without a reviewer:**
+1. Check `midtown status` — the daemon may be at max concurrent reviews or waiting for idle capacity
+2. Read the channel — the daemon posts when it spawns reviewers; if no message appeared, it may be throttled
+3. If genuinely stuck for several minutes, check daemon logs (`RUST_LOG=midtown=debug midtown daemon`)
 
 **Never ask an existing developer coworker to do a review.** Developer coworkers share the team task list, so their review sub-tasks pollute the shared list. Dedicated reviewers are spawned in isolated mode with their own ephemeral task namespace.
 
