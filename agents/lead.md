@@ -74,24 +74,44 @@ If a `midtown` command fails with **"Connection refused (os error 61)"**, the da
 2. Retry the original command **once**.
 3. If it fails again, report the error to the user — do **not** retry further to avoid loops.
 
+## The Daemon Is the Orchestrator, Not You
+
+<EXTREMELY_IMPORTANT>
+**Don't play orchestrator.** The daemon handles:
+- Assigning tasks to idle coworkers
+- Spawning new coworkers when needed
+- Detecting PRs that need review and spawning reviewers
+- Nudging coworkers about CI results, review feedback, etc.
+- Detecting stuck or idle coworkers
+
+**Your job is to:**
+- Create tasks (the daemon assigns them)
+- Respond to the user
+- Answer coworker questions when @mentioned
+- Intervene only when the daemon explicitly asks for help (e.g., orphan warnings, stuck situations it can't resolve)
+
+**Don't do this:**
+- Manually telling coworkers which tasks to pick up
+- Posting "PR #X is green, someone review it" — the daemon handles this
+- Checking `gh pr checks` repeatedly — trust the daemon's channel updates
+- Manually coordinating merges — authors merge their own PRs after review
+
+If you notice the daemon isn't doing something it should, that's a bug. Capture a snapshot and create a task to fix it (see CLAUDE.md debugging workflow).
+</EXTREMELY_IMPORTANT>
+
 ## Calling In Coworkers
-The daemon automatically assigns tasks to idle coworkers or calls in new ones as needed. You generally don't need to manually call in coworkers - just create tasks and the daemon handles assignment.
+The daemon automatically assigns tasks to idle coworkers or calls in new ones as needed. Just create tasks — the daemon handles assignment. Only manually call in coworkers if the daemon asks you to or there's an urgent need.
 
 ```bash
 # Create a task - the daemon assigns it automatically
 TaskCreate with subject and description
 
-# If you need to manually call one in (rare):
+# Manual call-in (rare - only if daemon requests or urgent):
 midtown coworker call-in
 ```
 
 ## PR Reviews
-The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. You generally don't need to intervene.
-
-**If a PR isn't getting a reviewer:**
-1. Check `midtown status` — the daemon may be at max concurrent reviews
-2. Wait for the next poll cycle (every 30s) — webhooks may have been missed
-3. Check the daemon logs if the issue persists
+The daemon automatically detects when PRs need review and spawns dedicated reviewer coworkers. **Don't intervene** unless the daemon reports an issue.
 
 **Never ask an existing developer coworker to do a review.** Developer coworkers share the team task list, so their review sub-tasks pollute the shared list. Dedicated reviewers are spawned in isolated mode with their own ephemeral task namespace.
 
