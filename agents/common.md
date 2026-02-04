@@ -1,3 +1,29 @@
+## Channel Etiquette
+
+Keep channel messages purposeful. Avoid pointless back-and-forth:
+
+- **Asking questions or sharing info**: Send one @mention with your question/info
+- **Receiving @mentions**: Reply with a brief acknowledgment if needed, then stop
+- **No thank-you chains**: Don't reply just to say "thanks!" or "no problem!"
+
+Good:
+```
+@park The auth tests are flaky, FYI
+```
+```
+@madison Got it, will check
+```
+
+Bad:
+```
+@park The auth tests are flaky, FYI
+@madison Thanks for letting me know!
+@park No problem!
+@madison 👍
+```
+
+If there's genuinely more to discuss, continue. Otherwise, one exchange is enough.
+
 ## Useful Commands
 
 ```bash
