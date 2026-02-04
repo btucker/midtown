@@ -1415,6 +1415,10 @@ pub fn decide_pr_issue_action_with_handoff(
 ///
 /// Pure function: determines whether to nudge, spawn, or skip based on
 /// whether the owner is active and whether the comment is a self-comment.
+///
+/// Note: Production code now uses `decide_pr_comment_action_with_handoff`.
+/// This simpler variant is retained for tests.
+#[cfg(test)]
 pub(crate) fn decide_pr_comment_action(
     owner: &str,
     actor: &str,
@@ -1437,6 +1441,71 @@ pub(crate) fn decide_pr_comment_action(
     } else if at_dev_limit {
         PrAction::Skip {
             reason: format!("dev limit reached, cannot spawn {} for PR comment", owner),
+        }
+    } else {
+        PrAction::SpawnOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
+/// Decide what action to take for a PR comment nudge, with handoff support.
+///
+/// Enhanced version of `decide_pr_comment_action` that considers handing off
+/// the PR to a different coworker when the original author is unavailable
+/// and session context is available.
+pub fn decide_pr_comment_action_with_handoff(
+    owner: &str,
+    actor: &str,
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+    at_dev_limit: bool,
+    session_context: Option<&PrSessionContext>,
+    message: &str,
+) -> PrAction {
+    // Don't nudge about own comments
+    if owner == actor {
+        return PrAction::Skip {
+            reason: format!("PR comment is from owner {}, skipping self-nudge", owner),
+        };
+    }
+
+    let is_active = active_coworkers
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(owner));
+
+    if is_active {
+        PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
+        }
+    } else if at_dev_limit {
+        PrAction::Skip {
+            reason: format!("dev limit reached, cannot spawn {} for PR comment", owner),
+        }
+    } else if let Some(ctx) = session_context {
+        // We have session context — try to hand off to an idle coworker
+        let assignee = idle_coworkers
+            .iter()
+            .find(|c| !c.eq_ignore_ascii_case(owner))
+            .cloned();
+
+        if let Some(assignee) = assignee {
+            PrAction::HandoffToCoworker {
+                assignee,
+                original_author: ctx.original_author.clone(),
+                pr_number: ctx.pr_number,
+                branch: ctx.branch.clone(),
+                session_id: ctx.session_id.clone(),
+                message: message.to_string(),
+            }
+        } else {
+            // No idle coworkers available — fall back to spawning the original owner
+            PrAction::SpawnOwner {
+                owner: owner.to_string(),
+                message: message.to_string(),
+            }
         }
     } else {
         PrAction::SpawnOwner {
@@ -2395,6 +2464,106 @@ mod tests {
     #[test]
     fn pr_comment_skips_at_dev_limit_when_inactive() {
         let action = decide_pr_comment_action("york", "amsterdam", false, true, "review feedback");
+        assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // decide_pr_comment_action_with_handoff tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pr_comment_handoff_nudges_active_owner() {
+        let session = make_session_context("york", 42);
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "amsterdam",
+            &active(&["york", "amsterdam"]),
+            &active(&["amsterdam"]),
+            false,
+            Some(&session),
+            "review feedback",
+        );
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_handoff_hands_off_when_owner_inactive() {
+        let session = make_session_context("york", 42);
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "amsterdam",
+            &active(&["amsterdam"]), // york not active
+            &active(&["amsterdam"]), // amsterdam idle
+            false,
+            Some(&session),
+            "review feedback",
+        );
+        assert_eq!(
+            action,
+            PrAction::HandoffToCoworker {
+                assignee: "amsterdam".to_string(),
+                original_author: "york".to_string(),
+                pr_number: 42,
+                branch: "york/feature".to_string(),
+                session_id: "session-42".to_string(),
+                message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_handoff_spawns_owner_when_no_session() {
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "amsterdam",
+            &active(&["amsterdam"]),
+            &active(&["amsterdam"]),
+            false,
+            None, // no session
+            "review feedback",
+        );
+        assert_eq!(
+            action,
+            PrAction::SpawnOwner {
+                owner: "york".to_string(),
+                message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_handoff_skips_self_comment() {
+        let session = make_session_context("york", 42);
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "york", // self-comment
+            &active(&["york", "amsterdam"]),
+            &active(&["amsterdam"]),
+            false,
+            Some(&session),
+            "review feedback",
+        );
+        assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pr_comment_handoff_skips_at_dev_limit() {
+        let session = make_session_context("york", 42);
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "amsterdam",
+            &active(&["amsterdam"]),
+            &active(&["amsterdam"]),
+            true, // at dev limit
+            Some(&session),
+            "review feedback",
+        );
         assert!(matches!(action, PrAction::Skip { .. }));
     }
 

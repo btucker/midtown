@@ -120,6 +120,16 @@ pub enum Effect {
     /// TODO: Implement missing check detection logic.
     #[allow(dead_code)]
     RebasePrOnMain { pr_number: u64, reason: String },
+    /// Store a PR author's session ID for potential handoff.
+    ///
+    /// When a coworker opens a PR, we store their session ID so any other
+    /// coworker can later resume work on that PR with full context preserved.
+    StorePrAuthorSession {
+        pr_number: u64,
+        session_id: String,
+        branch: String,
+        author: String,
+    },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -444,6 +454,24 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RebasePrOnMain { pr_number, reason } => {
                 rebase_pr_on_main(state, pr_number, &reason).await;
+            }
+            Effect::StorePrAuthorSession {
+                pr_number,
+                session_id,
+                branch,
+                author,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.github
+                    .store_pr_author_session(pr_number, &session_id, &branch, &author);
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!("Failed to persist PR author session: {}", e);
+                } else {
+                    info!(
+                        "Stored author session for PR #{}: session={}, author={}",
+                        pr_number, session_id, author
+                    );
+                }
             }
         }
     }

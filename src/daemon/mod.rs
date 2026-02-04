@@ -1427,20 +1427,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     && let Some(ref author) = pr_opened.author_coworker
                 {
                     if let Some(session_id) = state.coworkers.get_session_id(author) {
-                        let mut ps = state.persistent_state.lock().await;
-                        ps.github.store_pr_author_session(
-                            pr_opened.pr_number,
-                            &session_id,
-                            &pr_opened.branch,
-                            author,
-                        );
-                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                            warn!("Failed to persist PR author session: {}", e);
-                        }
-                        info!(
-                            "Stored author session for PR #{}: session={}, author={}",
-                            pr_opened.pr_number, session_id, author
-                        );
+                        let effect = effects::Effect::StorePrAuthorSession {
+                            pr_number: pr_opened.pr_number,
+                            session_id,
+                            branch: pr_opened.branch.clone(),
+                            author: author.clone(),
+                        };
+                        effects::execute_effects(vec![effect], &state).await;
                     } else {
                         debug!(
                             "PR #{} author {} has no known session ID (discovered coworker?)",

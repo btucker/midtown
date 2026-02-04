@@ -411,7 +411,9 @@ pub(super) async fn poll_prs_for_issues(
     }
 
     // Polling fallback for review comment notifications (when webhooks are degraded)
-    effects.extend(collect_comment_notification_effects(state, &prs, &active_coworkers).await);
+    effects.extend(
+        collect_comment_notification_effects(state, &prs, &active_coworkers, &idle_coworkers).await,
+    );
 
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(state, &prs).await);
@@ -458,7 +460,14 @@ pub(super) async fn poll_prs_for_issues(
     // Nudge PR owners when CI turns green and they have review feedback to address.
     // This covers the case where a coworker is waiting for CI while feedback awaits.
     effects.extend(
-        collect_green_with_feedback_effects(state, &prs, &reviewed_prs, &active_coworkers).await,
+        collect_green_with_feedback_effects(
+            state,
+            &prs,
+            &reviewed_prs,
+            &active_coworkers,
+            &idle_coworkers,
+        )
+        .await,
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
@@ -482,6 +491,7 @@ async fn collect_green_with_feedback_effects(
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
     active_coworkers: &[String],
+    idle_coworkers: &[String],
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -536,11 +546,16 @@ async fn collect_green_with_feedback_effects(
             get_issue_action(PrIssueType::GreenWithFeedback)
         );
 
-        // Decide action using pure decision function
-        let action = crate::rules::decide_pr_issue_action(
+        // Look up session context for potential handoff
+        let session_context = get_pr_session_context(state, pr_number).await;
+
+        // Decide action using handoff-aware decision function (matches webhook path)
+        let action = crate::rules::decide_pr_issue_action_with_handoff(
             &owner,
             active_coworkers,
+            idle_coworkers,
             state.is_at_dev_limit(),
+            session_context.as_ref(),
             &message,
         );
 
@@ -656,59 +671,19 @@ fn pr_action_to_effects(
             branch,
             session_id,
             message,
-        } => {
-            // Hand off the PR to a different coworker using the original author's session
-            let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
-                assignee.clone(),
-                state.repo_name.clone(),
-                session_id,
-                pr_num,
-                &branch,
-                &original_author,
-            );
-
-            let on_success = vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: assignee.clone(),
-                    status: "running".to_string(),
-                    current_task: None,
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "{} is taking over PR #{} from {} (resuming their session for full context)",
-                        assignee, pr_num, original_author
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            let on_failure = vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "Failed to hand off PR #{} ({}) to {} - {}",
-                        pr_num,
-                        truncate_str(title, 40),
-                        assignee,
-                        message
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            vec![Effect::SpawnCoworkerWithCallbacks {
-                config,
-                on_success,
-                on_failure,
-            }]
-        }
+        } => handoff_to_coworker_effects(
+            &assignee,
+            &original_author,
+            pr_num,
+            &branch,
+            session_id,
+            &message,
+            "resuming their session for full context",
+            title,
+            pr_number,
+            issue_type,
+            state,
+        ),
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
@@ -1065,6 +1040,7 @@ async fn collect_comment_notification_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
     active_coworkers: &[String],
+    idle_coworkers: &[String],
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
@@ -1141,12 +1117,17 @@ async fn collect_comment_notification_effects(
             pr_number, owner
         );
 
-        // Decide action using pure decision function (same as webhook path)
-        let action = crate::rules::decide_pr_comment_action(
+        // Look up session context for potential handoff
+        let session_context = get_pr_session_context(state, pr_number).await;
+
+        // Decide action using handoff-aware decision function (matches webhook path)
+        let action = crate::rules::decide_pr_comment_action_with_handoff(
             &owner,
             "reviewer", // Generic actor since we don't know the specific commenter from polling
-            active_coworkers.contains(&owner),
+            active_coworkers,
+            idle_coworkers,
             state.is_at_dev_limit(),
+            session_context.as_ref(),
             &nudge_msg,
         );
 
@@ -1251,58 +1232,19 @@ fn comment_action_to_effects(
             branch,
             session_id,
             message,
-        } => {
-            let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
-                assignee.clone(),
-                state.repo_name.clone(),
-                session_id,
-                pr_num,
-                &branch,
-                &original_author,
-            );
-
-            let on_success = vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: assignee.clone(),
-                    status: "running".to_string(),
-                    current_task: None,
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "{} is taking over PR #{} from {} to address review feedback",
-                        assignee, pr_num, original_author
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            let on_failure = vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "Failed to hand off PR #{} ({}) to {} - {}",
-                        pr_num,
-                        truncate_str(title, 40),
-                        assignee,
-                        message
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            vec![Effect::SpawnCoworkerWithCallbacks {
-                config,
-                on_success,
-                on_failure,
-            }]
-        }
+        } => handoff_to_coworker_effects(
+            &assignee,
+            &original_author,
+            pr_num,
+            &branch,
+            session_id,
+            &message,
+            "to address review feedback",
+            title,
+            pr_number,
+            issue_type,
+            state,
+        ),
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
@@ -1320,6 +1262,79 @@ fn comment_action_to_effects(
             vec![]
         }
     }
+}
+
+/// Build effects for handing off a PR to a different coworker.
+///
+/// Shared helper that consolidates the HandoffToCoworker effect-building logic
+/// used across `pr_action_to_effects`, `comment_action_to_effects`, and
+/// `review_complete_action_to_effects`. The only variation is the `context_suffix`
+/// that describes why the handoff is happening (e.g., "resuming their session for
+/// full context" or "to address review feedback").
+#[allow(clippy::too_many_arguments)]
+fn handoff_to_coworker_effects(
+    assignee: &str,
+    original_author: &str,
+    pr_num: u64,
+    branch: &str,
+    session_id: String,
+    message: &str,
+    context_suffix: &str,
+    title: &str,
+    pr_number: u64,
+    issue_type: PrIssueType,
+    state: &DaemonState,
+) -> Vec<Effect> {
+    let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
+        assignee.to_string(),
+        state.repo_name.clone(),
+        session_id,
+        pr_num,
+        branch,
+        original_author,
+    );
+
+    let on_success = vec![
+        Effect::BroadcastCoworkerUpdate {
+            name: assignee.to_string(),
+            status: "running".to_string(),
+            current_task: None,
+        },
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "{} is taking over PR #{} from {} ({})",
+                assignee, pr_num, original_author, context_suffix
+            ),
+        },
+        Effect::RecordPrNudge {
+            pr_number,
+            issue_type,
+        },
+    ];
+
+    let on_failure = vec![
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "Failed to hand off PR #{} ({}) to {} - {}",
+                pr_num,
+                truncate_str(title, 40),
+                assignee,
+                message
+            ),
+        },
+        Effect::RecordPrNudge {
+            pr_number,
+            issue_type,
+        },
+    ];
+
+    vec![Effect::SpawnCoworkerWithCallbacks {
+        config,
+        on_success,
+        on_failure,
+    }]
 }
 
 /// Collect effects for spawning reviewers for PRs that need code review.
@@ -1643,58 +1658,19 @@ fn review_complete_action_to_effects(
             branch,
             session_id,
             message,
-        } => {
-            let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
-                assignee.clone(),
-                state.repo_name.clone(),
-                session_id,
-                pr_num,
-                &branch,
-                &original_author,
-            );
-
-            let on_success = vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: assignee.clone(),
-                    status: "running".to_string(),
-                    current_task: None,
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "{} is taking over PR #{} from {} to address review feedback",
-                        assignee, pr_num, original_author
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            let on_failure = vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "Failed to hand off PR #{} ({}) to {} - {}",
-                        pr_num,
-                        truncate_str(title, 40),
-                        assignee,
-                        message
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            vec![Effect::SpawnCoworkerWithCallbacks {
-                config,
-                on_success,
-                on_failure,
-            }]
-        }
+        } => handoff_to_coworker_effects(
+            &assignee,
+            &original_author,
+            pr_num,
+            &branch,
+            session_id,
+            &message,
+            "to address review feedback",
+            title,
+            pr_number,
+            issue_type,
+            state,
+        ),
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
@@ -1937,6 +1913,80 @@ async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
     coworker_from_branch(&branch)
 }
 
+/// Look up stored session context for a PR author, for use in handoff decisions.
+///
+/// Shared helper that avoids duplicating the persistent state lock + map lookup
+/// across polling paths and webhook handlers.
+async fn get_pr_session_context(
+    state: &DaemonState,
+    pr_number: u64,
+) -> Option<crate::rules::PrSessionContext> {
+    let ps = state.persistent_state.lock().await;
+    ps.github
+        .get_pr_author_session(pr_number)
+        .map(|s| crate::rules::PrSessionContext {
+            session_id: s.session_id.clone(),
+            branch: s.branch.clone(),
+            original_author: s.original_author.clone(),
+            pr_number,
+        })
+}
+
+/// Execute a PR handoff — spawn a coworker to take over another's PR.
+///
+/// This is a shared helper for the async webhook handlers to reduce duplication.
+/// It spawns the assignee with the original author's session context, broadcasts
+/// a status update, and posts a channel message.
+///
+/// Returns `true` if the handoff was successful.
+async fn execute_pr_handoff(
+    state: &DaemonState,
+    assignee: &str,
+    original_author: &str,
+    pr_number: u64,
+    branch: &str,
+    session_id: &str,
+    context_description: &str,
+) -> bool {
+    info!(
+        "Handing off PR #{} from {} to {} with session resume ({})",
+        pr_number, original_author, assignee, context_description
+    );
+
+    let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
+        assignee.to_string(),
+        state.repo_name.clone(),
+        session_id.to_string(),
+        pr_number,
+        branch,
+        original_author,
+    );
+
+    match state.spawn_coworker(&config).await {
+        Ok(_) => {
+            state.broadcast_coworker_update(assignee, "running", None);
+            let handoff_msg = Message::text(
+                "midtown",
+                format!(
+                    "{} is taking over PR #{} from {} {}",
+                    assignee, pr_number, original_author, context_description
+                ),
+            );
+            if let Err(e) = state.send_and_broadcast(&handoff_msg) {
+                warn!("Failed to post handoff message: {}", e);
+            }
+            true
+        }
+        Err(e) => {
+            warn!(
+                "Failed to hand off PR #{} to {}: {}",
+                pr_number, assignee, e
+            );
+            false
+        }
+    }
+}
+
 /// Handle nudging a PR owner when a comment/review is posted on their PR.
 ///
 /// This is called from the webhook event loop when a `PrActivity` is present.
@@ -1976,13 +2026,31 @@ pub(super) async fn handle_pr_comment_nudge(
         pr_number, activity.actor
     );
 
-    // Decide action using pure decision function
-    let is_active = state.coworkers.get(&owner).is_some();
-    let action = crate::rules::decide_pr_comment_action(
+    // Get active and idle coworkers for the decision function
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+    let idle_coworkers: Vec<String> = active_coworkers
+        .iter()
+        .filter(|c| !busy_coworkers.contains(*c))
+        .cloned()
+        .collect();
+
+    // Get session context for potential handoff
+    let session_context = get_pr_session_context(state, pr_number).await;
+
+    // Decide action using pure decision function with handoff support
+    let action = crate::rules::decide_pr_comment_action_with_handoff(
         &owner,
         &activity.actor,
-        is_active,
+        &active_coworkers,
+        &idle_coworkers,
         state.is_at_dev_limit(),
+        session_context.as_ref(),
         &nudge_msg,
     );
 
@@ -2078,37 +2146,16 @@ pub(super) async fn handle_pr_comment_nudge(
             ref session_id,
             message: ref _msg,
         } => {
-            info!(
-                "Handing off PR #{} from {} to {} with session resume",
-                pr_num, original_author, assignee
-            );
-            let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
-                assignee.clone(),
-                state.repo_name.clone(),
-                session_id.clone(),
+            execute_pr_handoff(
+                state,
+                assignee,
+                original_author,
                 pr_num,
                 branch,
-                original_author,
-            );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    let handoff_msg = Message::text(
-                        "daemon",
-                        format!(
-                            "{} is taking over PR #{} from {} to address review feedback",
-                            assignee, pr_num, original_author
-                        ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&handoff_msg) {
-                        warn!("Failed to post handoff message: {}", e);
-                    }
-                    true
-                }
-                Err(e) => {
-                    warn!("Failed to hand off PR #{} to {}: {}", pr_num, assignee, e);
-                    false
-                }
-            }
+                session_id,
+                "to address review feedback",
+            )
+            .await
         }
     };
 
@@ -2174,18 +2221,29 @@ pub(super) async fn handle_webhook_review_state_change(
         get_issue_action(issue_type)
     );
 
-    // Get active coworkers for the decision function
+    // Get active and idle coworkers for the decision function
     let active_coworkers: Vec<String> = state
         .coworkers
         .list()
         .iter()
         .map(|c| c.name.clone())
         .collect();
+    let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+    let idle_coworkers: Vec<String> = active_coworkers
+        .iter()
+        .filter(|c| !busy_coworkers.contains(*c))
+        .cloned()
+        .collect();
 
-    let action = crate::rules::decide_pr_issue_action(
+    // Get session context for potential handoff
+    let session_context = get_pr_session_context(state, pr_number).await;
+
+    let action = crate::rules::decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
+        &idle_coworkers,
         state.is_at_dev_limit(),
+        session_context.as_ref(),
         &nudge_msg,
     );
 
@@ -2287,41 +2345,16 @@ pub(super) async fn handle_webhook_review_state_change(
             ref session_id,
             message: ref _msg,
         } => {
-            info!(
-                "Webhook: handing off PR #{} from {} to {} with session resume",
-                pr_num, original_author, assignee
-            );
-            let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
-                assignee.clone(),
-                state.repo_name.clone(),
-                session_id.clone(),
+            execute_pr_handoff(
+                state,
+                assignee,
+                original_author,
                 pr_num,
                 branch,
-                original_author,
-            );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    state.broadcast_coworker_update(assignee, "running", None);
-                    let handoff_msg = Message::text(
-                        "midtown",
-                        format!(
-                            "{} is taking over PR #{} from {} to address {}",
-                            assignee, pr_num, original_author, issue_type
-                        ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&handoff_msg) {
-                        warn!("Failed to post handoff message: {}", e);
-                    }
-                    true
-                }
-                Err(e) => {
-                    warn!(
-                        "Webhook: failed to hand off PR #{} to {}: {}",
-                        pr_num, assignee, e
-                    );
-                    false
-                }
-            }
+                session_id,
+                &format!("to address {}", issue_type),
+            )
+            .await
         }
     };
 
@@ -2373,17 +2406,29 @@ pub(super) async fn handle_webhook_ci_failure(
         pr_number, failure.check_name
     );
 
+    // Get active and idle coworkers for the decision function
     let active_coworkers: Vec<String> = state
         .coworkers
         .list()
         .iter()
         .map(|c| c.name.clone())
         .collect();
+    let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+    let idle_coworkers: Vec<String> = active_coworkers
+        .iter()
+        .filter(|c| !busy_coworkers.contains(*c))
+        .cloned()
+        .collect();
 
-    let action = crate::rules::decide_pr_issue_action(
+    // Get session context for potential handoff
+    let session_context = get_pr_session_context(state, pr_number).await;
+
+    let action = crate::rules::decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
+        &idle_coworkers,
         state.is_at_dev_limit(),
+        session_context.as_ref(),
         &nudge_msg,
     );
 
@@ -2485,41 +2530,16 @@ pub(super) async fn handle_webhook_ci_failure(
             ref session_id,
             message: ref _msg,
         } => {
-            info!(
-                "Webhook: handing off PR #{} from {} to {} with session resume for CI failure",
-                pr_num, original_author, assignee
-            );
-            let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
-                assignee.clone(),
-                state.repo_name.clone(),
-                session_id.clone(),
+            execute_pr_handoff(
+                state,
+                assignee,
+                original_author,
                 pr_num,
                 branch,
-                original_author,
-            );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    state.broadcast_coworker_update(assignee, "running", None);
-                    let handoff_msg = Message::text(
-                        "midtown",
-                        format!(
-                            "{} is taking over PR #{} from {} to fix CI failure",
-                            assignee, pr_num, original_author
-                        ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&handoff_msg) {
-                        warn!("Failed to post handoff message: {}", e);
-                    }
-                    true
-                }
-                Err(e) => {
-                    warn!(
-                        "Webhook: failed to hand off PR #{} to {}: {}",
-                        pr_num, assignee, e
-                    );
-                    false
-                }
-            }
+                session_id,
+                "to fix CI failure",
+            )
+            .await
         }
     };
 
