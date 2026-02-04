@@ -701,6 +701,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coworker_from_branch_rejects_common_branch_prefixes() {
+        // Bug #568: Branches like "fix/xxx" were incorrectly extracting "fix" as
+        // the coworker name because raw split('/').next() was used instead of
+        // coworker_from_branch(). This test ensures common branch prefixes are
+        // correctly rejected.
+        assert_eq!(
+            coworker_from_branch("fix/exclude-tmux-from-orphan-cleanup"),
+            None,
+            "fix/ branches should not be treated as coworker branches"
+        );
+        assert_eq!(
+            coworker_from_branch("feature/add-auth"),
+            None,
+            "feature/ branches should not be treated as coworker branches"
+        );
+        assert_eq!(
+            coworker_from_branch("bugfix/login-issue"),
+            None,
+            "bugfix/ branches should not be treated as coworker branches"
+        );
+        assert_eq!(
+            coworker_from_branch("hotfix/security-patch"),
+            None,
+            "hotfix/ branches should not be treated as coworker branches"
+        );
+        assert_eq!(
+            coworker_from_branch("dependabot/npm_and_yarn/lodash-4.17.21"),
+            None,
+            "dependabot/ branches should not be treated as coworker branches"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // text_contains_review_signature — detects Claude reviews
     // -------------------------------------------------------------------------

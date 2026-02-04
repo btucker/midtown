@@ -455,11 +455,12 @@ async fn collect_green_with_feedback_effects(
 
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-        let owner = head_ref.split('/').next().unwrap_or("");
 
-        if owner.is_empty() {
-            continue;
-        }
+        // Only process coworker-owned PRs (validates branch prefix against known names)
+        let owner = match coworker_from_branch(head_ref) {
+            Some(o) => o,
+            None => continue, // Not a coworker PR (e.g., fix/, feature/, dependabot/)
+        };
 
         let message = format!(
             "PR #{} ({}) - {}: {}",
@@ -471,7 +472,7 @@ async fn collect_green_with_feedback_effects(
 
         // Decide action using pure decision function
         let action = crate::rules::decide_pr_issue_action(
-            owner,
+            &owner,
             active_coworkers,
             state.is_at_dev_limit(),
             &message,
