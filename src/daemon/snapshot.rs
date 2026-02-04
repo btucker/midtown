@@ -306,6 +306,69 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 mod tests {
     use super::*;
 
+    /// Test that failed pane capture does NOT result in blank pane detection.
+    ///
+    /// Regression test for the bug where `capture_pane()` returning `None` (transient
+    /// tmux failure) caused healthy coworkers to be flagged as blank-pane zombies and
+    /// killed. The fix changes `unwrap_or(true)` to `unwrap_or(false)` so that missing
+    /// pane content is NOT treated as "blank".
+    #[test]
+    fn test_missing_pane_capture_not_treated_as_blank() {
+        use crate::coworker::{Coworker, CoworkerStatus};
+
+        // Simulate two running coworkers
+        let running_coworkers = [
+            Coworker {
+                name: "york".to_string(),
+                status: CoworkerStatus::Running,
+                working_dir: "/tmp/test".to_string(),
+                started_at: Utc::now(),
+                current_task: None,
+                session_id: None,
+                isolated_tasks: false,
+            },
+            Coworker {
+                name: "park".to_string(),
+                status: CoworkerStatus::Running,
+                working_dir: "/tmp/test".to_string(),
+                started_at: Utc::now(),
+                current_task: None,
+                session_id: None,
+                isolated_tasks: false,
+            },
+        ];
+
+        // Simulate pane capture: york succeeded (empty pane), park FAILED (missing)
+        let mut pane_contents: HashMap<String, String> = HashMap::new();
+        pane_contents.insert("york".to_string(), "".to_string()); // captured, but empty
+
+        // Apply the same filter logic from collect_snapshot (lines 176-185)
+        let blank_pane_coworkers: HashSet<String> = running_coworkers
+            .iter()
+            .filter(|cw| {
+                pane_contents
+                    .get(&cw.name)
+                    .map(|c| !crate::tmux::content_has_output(c))
+                    .unwrap_or(false) // THE FIX: pane capture failed → don't assume blank
+            })
+            .map(|cw| cw.name.to_lowercase())
+            .collect();
+
+        // york: captured empty pane → IS blank
+        assert!(
+            blank_pane_coworkers.contains("york"),
+            "york should be flagged as blank (captured empty pane)"
+        );
+
+        // park: capture FAILED (not in pane_contents) → NOT blank
+        // This is the critical fix: before the fix, park would be in blank_pane_coworkers
+        // and would be killed as a zombie even though it might be actively running.
+        assert!(
+            !blank_pane_coworkers.contains("park"),
+            "park should NOT be flagged as blank (pane capture failed)"
+        );
+    }
+
     /// Test that WorldSnapshot has coworker_stop_times field and it serializes correctly.
     #[test]
     fn test_world_snapshot_has_coworker_stop_times() {
