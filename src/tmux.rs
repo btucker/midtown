@@ -439,18 +439,6 @@ pub fn kill_window_by_target(target: &str) -> crate::Result<()> {
 ///
 /// Only use this when you've already verified the safety constraint.
 fn kill_window_by_target_unchecked(target: &str) -> crate::Result<()> {
-    // Log the kill attempt with current window state for debugging
-    if let Some(session) = target.split(':').next() {
-        let windows = list_windows_for_debug(session);
-        tracing::info!(
-            target = %target,
-            session = %session,
-            window_count = windows.len(),
-            windows = ?windows,
-            "KILL_WINDOW: attempting to kill window"
-        );
-    }
-
     // SIGTERM the pane process first — Claude Code ignores SIGHUP
     if let Ok(output) = Command::new("tmux")
         .args(["list-panes", "-t", target, "-F", "#{pane_pid}"])
@@ -462,7 +450,6 @@ fn kill_window_by_target_unchecked(target: &str) -> crate::Result<()> {
             .map(|l| l.to_string())
             .collect();
         if !pids.is_empty() {
-            tracing::debug!(target = %target, pids = ?pids, "KILL_WINDOW: sending SIGTERM to pane processes");
             let _ = Command::new("kill")
                 .args(&pids)
                 .stderr(std::process::Stdio::null())
@@ -477,32 +464,13 @@ fn kill_window_by_target_unchecked(target: &str) -> crate::Result<()> {
         .map_err(Error::Io)?;
 
     if !status.success() {
-        tracing::error!(target = %target, "KILL_WINDOW: tmux kill-window failed");
         return Err(Error::Rpc {
             code: -32603,
             message: format!("Failed to kill tmux window: {}", target),
         });
     }
 
-    tracing::info!(target = %target, "KILL_WINDOW: successfully killed window");
     Ok(())
-}
-
-/// List all window names in a session (for debugging, infallible version).
-fn list_windows_for_debug(session: &str) -> Vec<String> {
-    let output = match Command::new("tmux")
-        .args(["list-windows", "-t", session, "-F", "#{window_name}"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return vec![],
-    };
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|s| s.to_string())
-        .collect()
 }
 
 /// Collect PIDs of all pane processes in a session.
@@ -1261,18 +1229,6 @@ pub fn count_windows_by_name(session: &str, name: &str) -> crate::Result<(usize,
 pub fn kill_all_windows_by_name(session: &str, name: &str) -> crate::Result<usize> {
     let (count, ids) = count_windows_by_name(session, name)?;
 
-    // Log entry point with full state
-    let all_windows = list_windows_for_debug(session);
-    tracing::info!(
-        session = %session,
-        target_name = %name,
-        matching_count = count,
-        matching_ids = ?ids,
-        total_windows = all_windows.len(),
-        all_windows = ?all_windows,
-        "KILL_ALL_WINDOWS: evaluating kill request"
-    );
-
     if count == 0 {
         return Ok(0);
     }
@@ -1281,7 +1237,7 @@ pub fn kill_all_windows_by_name(session: &str, name: &str) -> crate::Result<usiz
     let total_windows = count_session_windows(session);
     if total_windows <= count {
         tracing::warn!(
-            "KILL_ALL_WINDOWS: Refusing to kill all {} '{}' windows - would leave session {} empty (total={})",
+            "Refusing to kill all {} '{}' windows - would leave session {} empty (total={})",
             count,
             name,
             session,
@@ -1290,18 +1246,9 @@ pub fn kill_all_windows_by_name(session: &str, name: &str) -> crate::Result<usiz
         return Ok(0);
     }
 
-    tracing::info!(
-        session = %session,
-        target_name = %name,
-        killing_count = count,
-        ids = ?ids,
-        "KILL_ALL_WINDOWS: proceeding with kill"
-    );
-
     for id in &ids {
         // Kill by window ID (e.g., "@0") which is always unique
         let target = format!("{}:{}", session, id);
-        tracing::info!(target = %target, "KILL_ALL_WINDOWS: killing window");
 
         // SIGTERM pane processes first — Claude Code ignores SIGHUP
         if let Ok(output) = Command::new("tmux")
@@ -1807,17 +1754,6 @@ pub fn spawn_lead(
     project_name: &str,
     additional_dirs: &[PathBuf],
 ) -> crate::Result<()> {
-    // Log entry with current window state
-    let windows_before = list_windows_for_debug(session);
-    tracing::info!(
-        session = %session,
-        working_dir = %working_dir,
-        project_name = %project_name,
-        window_count = windows_before.len(),
-        windows = ?windows_before,
-        "SPAWN_LEAD: called to spawn lead window"
-    );
-
     // Kill ALL existing lead windows to prevent duplicates.
     // Using kill_all_windows_by_name instead of kill_window because tmux's
     // `kill-window -t session:name` only targets the first match when
@@ -1825,19 +1761,11 @@ pub fn spawn_lead(
     // races during restart create extras.
     match kill_all_windows_by_name(session, "lead") {
         Ok(n) if n > 0 => {
-            tracing::warn!(
-                "SPAWN_LEAD: Killed {} existing lead window(s) before respawn",
-                n
-            );
+            tracing::warn!("Killed {} existing lead window(s) before respawn", n);
         }
-        Ok(_) => {
-            tracing::info!("SPAWN_LEAD: No existing lead windows to kill");
-        }
+        Ok(_) => {}
         Err(e) => {
-            tracing::warn!(
-                "SPAWN_LEAD: Failed to clean up existing lead windows: {}",
-                e
-            );
+            tracing::warn!("Failed to clean up existing lead windows: {}", e);
         }
     }
 
