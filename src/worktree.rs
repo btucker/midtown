@@ -88,6 +88,10 @@ impl WorktreeManager {
     /// Creates a new worktree at `~/.midtown/coworkers/<repo>/<name>/`
     /// detached at the current HEAD. The coworker should immediately create
     /// a feature branch for their task.
+    ///
+    /// Exception: When reusing an existing worktree that's on the default branch
+    /// (main/master), the spawn system creates a recovery branch to prevent
+    /// working on main. See `checkout_new_branch` for the recovery mechanism.
     pub fn create(&self, coworker_name: &str) -> WorktreeResult<PathBuf> {
         let worktree_path = self.worktree_path(coworker_name);
 
@@ -295,12 +299,16 @@ impl WorktreeManager {
         branch == default_branch
     }
 
-    /// Create a new feature branch in a coworker's worktree.
+    /// Create or switch to a feature branch in a coworker's worktree.
     ///
     /// This is used to recover from situations where a coworker's worktree is on
     /// the default branch. The branch name follows the pattern `<coworker>/<suffix>`.
     ///
-    /// Returns the name of the created branch, or an error if the operation fails.
+    /// The operation is idempotent: if the branch already exists, switches to it
+    /// without error. This ensures recovery works even if called multiple times
+    /// (e.g., daemon restart, multiple spawn attempts).
+    ///
+    /// Returns the name of the branch, or an error if the operation fails.
     pub fn checkout_new_branch(
         &self,
         coworker_name: &str,
@@ -313,9 +321,11 @@ impl WorktreeManager {
 
         let branch_name = format!("{}/{}", coworker_name, branch_suffix);
 
+        // Use -B to create or reset the branch (idempotent operation).
+        // This ensures recovery works even if called multiple times.
         let output = Command::new("git")
             .current_dir(&worktree_path)
-            .args(["checkout", "-b", &branch_name])
+            .args(["checkout", "-B", &branch_name])
             .output()?;
 
         if !output.status.success() {
@@ -1107,6 +1117,32 @@ branch refs/heads/bob/work
         assert_eq!(
             manager.get_branch("testworker"),
             Some("testworker/recovery".to_string())
+        );
+    }
+
+    #[test]
+    fn test_checkout_new_branch_is_idempotent() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree
+        manager.create("testworker").expect("create worktree");
+
+        // First call creates the branch
+        let branch1 = manager
+            .checkout_new_branch("testworker", "feature-a")
+            .expect("first checkout_new_branch");
+        assert_eq!(branch1, "testworker/feature-a");
+
+        // Second call with same branch name should succeed (idempotent)
+        let branch2 = manager
+            .checkout_new_branch("testworker", "feature-a")
+            .expect("second checkout_new_branch should succeed");
+        assert_eq!(branch2, "testworker/feature-a");
+
+        // Verify the worktree is still on that branch
+        assert_eq!(
+            manager.get_branch("testworker"),
+            Some("testworker/feature-a".to_string())
         );
     }
 }

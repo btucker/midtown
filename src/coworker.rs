@@ -772,6 +772,11 @@ impl CoworkerManager {
                     // Valid worktree but stale (no window) - reuse it so the
                     // coworker keeps its existing branch and any uncommitted work
                     // (important for orphan recovery and PR break-and-resume).
+                    //
+                    // Exception: if the worktree is on the default branch (main/master),
+                    // we create a recovery branch to prevent working on main. This takes
+                    // precedence over preserving the branch state since main checkout
+                    // causes conflicts with the Lead's worktree.
                     tracing::info!("Reusing existing valid worktree for {}", name);
 
                     // Safety check: ensure the worktree is not on the default branch.
