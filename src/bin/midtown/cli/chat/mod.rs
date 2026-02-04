@@ -83,6 +83,10 @@ async fn run_app_async(
     // This ensures responsive updates if tailf isn't triggering
     let mut refresh_interval = interval(Duration::from_secs(1));
 
+    // Auto-scroll timer (30 seconds) - brings user back to bottom if they scrolled up
+    // and forgot. Prevents the chat from appearing frozen when it's just scrolled up.
+    let mut auto_scroll_interval = interval(Duration::from_secs(30));
+
     loop {
         // Draw UI and collect hyperlinks
         let mut hyperlinks = Vec::new();
@@ -162,6 +166,14 @@ async fn run_app_async(
             // Periodic refresh for kanban and repo status
             _ = refresh_interval.tick() => {
                 app.refresh();
+            }
+
+            // Auto-scroll back to bottom if user scrolled up and forgot
+            // Skip if in selection mode - user may be copying text
+            _ = auto_scroll_interval.tick() => {
+                if app.scroll_offset > 0 && !app.selection_mode {
+                    app.scroll_to_bottom();
+                }
             }
         }
     }
