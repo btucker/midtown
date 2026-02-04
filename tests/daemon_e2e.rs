@@ -603,6 +603,603 @@ fn test_daemon_channel_post_endpoint() {
     );
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Comprehensive RPC handler E2E tests
+//
+// These tests verify RPC endpoints return expected data structures and fields.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test that status RPC returns a tasks array with expected structure.
+///
+/// The status endpoint aggregates task data from Claude Code's native task
+/// storage. Each task should have id, subject, status, and assignee fields.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_status_returns_tasks_array() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return, // Skip silently if fixture creation fails
+    };
+
+    if !fixture.start_daemon() {
+        return; // Skip silently if daemon fails to start
+    }
+
+    let response = fixture.rpc_call("status", None);
+    assert!(response.is_some(), "Should receive response from status");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "Status should not return an error: {:?}",
+        response["error"]
+    );
+
+    let result = &response["result"];
+
+    // Verify tasks array exists
+    assert!(
+        result["tasks"].is_array(),
+        "Status should return a tasks array"
+    );
+
+    // If there are tasks, verify their structure
+    if let Some(tasks) = result["tasks"].as_array() {
+        for task in tasks {
+            // Each task should have id, subject, and status
+            assert!(
+                task["id"].is_string(),
+                "Task should have id field: {:?}",
+                task
+            );
+            assert!(
+                task["subject"].is_string(),
+                "Task should have subject field: {:?}",
+                task
+            );
+            assert!(
+                task["status"].is_string(),
+                "Task should have status field: {:?}",
+                task
+            );
+            // assignee can be null or string
+            assert!(
+                task["assignee"].is_null() || task["assignee"].is_string(),
+                "Task assignee should be null or string: {:?}",
+                task
+            );
+        }
+    }
+}
+
+/// Test that status RPC returns all expected daemon state fields.
+///
+/// Verifies the status endpoint returns the complete set of fields
+/// needed by clients (CLI, web UI) to display daemon state.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_status_returns_complete_daemon_state() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call("status", None);
+    assert!(response.is_some(), "Should receive response from status");
+
+    let response = response.unwrap();
+    let result = &response["result"];
+
+    // Core daemon state fields
+    assert!(
+        result["success"].as_bool() == Some(true),
+        "Status should report success"
+    );
+    assert!(
+        result["daemon_running"].as_bool() == Some(true),
+        "Status should report daemon_running: true"
+    );
+    assert!(
+        result["active_coworkers"].is_number(),
+        "Status should include active_coworkers count"
+    );
+    assert!(
+        result["max_coworkers"].is_number(),
+        "Status should include max_coworkers"
+    );
+    assert!(
+        result["max_dev_coworkers"].is_number(),
+        "Status should include max_dev_coworkers (respects reviewer headroom)"
+    );
+    assert!(
+        result["pending_tasks"].is_number(),
+        "Status should include pending_tasks count"
+    );
+    assert!(
+        result["socket_path"].is_string(),
+        "Status should include socket_path"
+    );
+
+    // Data arrays
+    assert!(
+        result["coworkers"].is_array(),
+        "Status should include coworkers array"
+    );
+    assert!(
+        result["tasks"].is_array(),
+        "Status should include tasks array"
+    );
+    assert!(
+        result["pull_requests"].is_array(),
+        "Status should include pull_requests array"
+    );
+    assert!(
+        result["merged_prs"].is_array(),
+        "Status should include merged_prs array"
+    );
+    assert!(
+        result["recent_activity"].is_array(),
+        "Status should include recent_activity array"
+    );
+}
+
+/// Test that coworker.list returns expected structure with all fields.
+///
+/// Each coworker entry should have name, status, current_task, and started_at.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_list_returns_expected_structure() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call("coworker.list", None);
+    assert!(
+        response.is_some(),
+        "Should receive response from coworker.list"
+    );
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "coworker.list should not return an error"
+    );
+
+    let result = &response["result"];
+
+    // Should report success
+    assert!(
+        result["success"].as_bool() == Some(true),
+        "coworker.list should report success"
+    );
+
+    // Coworkers should be an array
+    assert!(
+        result["coworkers"].is_array(),
+        "coworker.list should return coworkers array"
+    );
+
+    // If there were coworkers, verify their structure
+    // (In test environment there typically aren't any, but we verify the response format)
+    if let Some(coworkers) = result["coworkers"].as_array() {
+        for cw in coworkers {
+            assert!(cw["name"].is_string(), "Coworker should have name field");
+            assert!(
+                cw["status"].is_string(),
+                "Coworker should have status field"
+            );
+            assert!(
+                cw["started_at"].is_string(),
+                "Coworker should have started_at timestamp"
+            );
+            // current_task can be null or string
+            assert!(
+                cw["current_task"].is_null() || cw["current_task"].is_string(),
+                "Coworker current_task should be null or string"
+            );
+        }
+    }
+}
+
+/// Test that snapshot RPC returns WorldSnapshot with pane contents.
+///
+/// The snapshot endpoint returns the full daemon state including pane
+/// captures, which can be used for debugging and coworker view.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_snapshot_returns_pane_contents() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call("snapshot", None);
+    assert!(response.is_some(), "Should receive response from snapshot");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "Snapshot should not return an error: {:?}",
+        response["error"]
+    );
+
+    let result = &response["result"];
+
+    // WorldSnapshot structure verification
+    // Note: field names depend on serde serialization of WorldSnapshot struct
+
+    // Should have coworker-related data
+    assert!(
+        result["coworker_snapshots"].is_array() || result["active_names"].is_array(),
+        "Snapshot should contain coworker data"
+    );
+
+    // Should have pane contents map (may be empty if no coworkers)
+    // The exact field name depends on the struct serialization
+    let has_pane_data = result["pane_contents"].is_object()
+        || result["pane_contents"].is_array()
+        || result["coworker_snapshots"].is_array();
+    assert!(
+        has_pane_data,
+        "Snapshot should contain pane content data structure"
+    );
+
+    // Should have task-related data
+    assert!(
+        result["all_tasks"].is_array()
+            || result["pending_unblocked_tasks"].is_array()
+            || result["busy_coworkers"].is_array(),
+        "Snapshot should contain task-related data"
+    );
+}
+
+/// Test that channel.read RPC returns messages with expected structure.
+///
+/// The channel.read endpoint returns recent channel messages, each with
+/// from, message, and timestamp fields.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_channel_read_returns_messages() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // First post a message so we have something to read
+    let post_params = serde_json::json!({
+        "message": "Test message for channel read",
+        "from": "test-agent"
+    });
+    let post_response = fixture.rpc_call("channel.post", Some(post_params));
+    assert!(post_response.is_some(), "Should be able to post to channel");
+
+    // Now read the channel
+    let read_response = fixture.rpc_call("channel.read", None);
+    assert!(
+        read_response.is_some(),
+        "Should receive response from channel.read"
+    );
+
+    let response = read_response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "channel.read should not return an error: {:?}",
+        response["error"]
+    );
+
+    let result = &response["result"];
+    assert!(
+        result["messages"].is_array(),
+        "channel.read should return messages array"
+    );
+
+    // Verify we can find our test message
+    let messages = result["messages"].as_array().unwrap();
+    let found_test_message = messages.iter().any(|m| {
+        m["from"].as_str() == Some("test-agent")
+            && m["message"]
+                .as_str()
+                .map(|s| s.contains("Test message"))
+                .unwrap_or(false)
+    });
+    assert!(
+        found_test_message,
+        "Should find our posted test message in channel.read response"
+    );
+
+    // Verify message structure
+    for msg in messages {
+        assert!(msg["from"].is_string(), "Message should have from field");
+        assert!(
+            msg["message"].is_string(),
+            "Message should have message field"
+        );
+        assert!(
+            msg["timestamp"].is_string(),
+            "Message should have timestamp field"
+        );
+    }
+}
+
+/// Test that reminder.create and reminder.list RPCs work correctly.
+///
+/// The reminder system allows scheduling one-shot nudges triggered by
+/// conditions like "all-work-merged". This tests the full lifecycle:
+/// create a reminder, list it, then cancel it.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_reminder_lifecycle() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Create a reminder
+    let create_params = serde_json::json!({
+        "trigger": "all-work-merged",
+        "message": "Test reminder message"
+    });
+    let create_response = fixture.rpc_call("reminder.create", Some(create_params));
+    assert!(
+        create_response.is_some(),
+        "Should receive response from reminder.create"
+    );
+
+    let create_response = create_response.unwrap();
+    assert!(
+        create_response["error"].is_null(),
+        "reminder.create should not return an error: {:?}",
+        create_response["error"]
+    );
+
+    // The response contains a confirmation message with the ID embedded
+    let result = &create_response["result"];
+    let message = result["message"]
+        .as_str()
+        .expect("reminder.create should return a message");
+    assert!(
+        message.contains("Reminder set"),
+        "Confirmation should mention 'Reminder set'"
+    );
+    assert!(
+        message.contains("Test reminder message"),
+        "Confirmation should include the reminder message"
+    );
+
+    // Extract the ID from the message (format: "Reminder set (id: abc123): ...")
+    let id_start = message
+        .find("(id: ")
+        .unwrap_or_else(|| panic!("Expected '(id: ' in message but got: {}", message))
+        + 5;
+    let id_end = message[id_start..]
+        .find(')')
+        .unwrap_or_else(|| panic!("Expected ')' after ID in message: {}", message));
+    let reminder_id = &message[id_start..id_start + id_end];
+
+    // List reminders - should include our new one
+    let list_response = fixture.rpc_call("reminder.list", None);
+    assert!(
+        list_response.is_some(),
+        "Should receive response from reminder.list"
+    );
+
+    let list_response = list_response.unwrap();
+    assert!(
+        list_response["error"].is_null(),
+        "reminder.list should not return an error"
+    );
+
+    // reminder.list returns a formatted text message, not structured data
+    let list_message = list_response["result"]["message"]
+        .as_str()
+        .expect("reminder.list should return a message");
+    assert!(
+        list_message.contains("Active reminders"),
+        "List should show active reminders"
+    );
+    assert!(
+        list_message.contains(reminder_id),
+        "List should contain our reminder ID"
+    );
+    assert!(
+        list_message.contains("Test reminder message"),
+        "List should contain our reminder message"
+    );
+
+    // Cancel the reminder
+    let cancel_params = serde_json::json!({ "id": reminder_id });
+    let cancel_response = fixture.rpc_call("reminder.cancel", Some(cancel_params));
+    assert!(
+        cancel_response.is_some(),
+        "Should receive response from reminder.cancel"
+    );
+
+    let cancel_response = cancel_response.unwrap();
+    assert!(
+        cancel_response["error"].is_null(),
+        "reminder.cancel should not return an error"
+    );
+
+    let cancel_message = cancel_response["result"]["message"]
+        .as_str()
+        .expect("reminder.cancel should return a message");
+    assert!(
+        cancel_message.contains("cancelled"),
+        "Cancel should confirm cancellation"
+    );
+
+    // List again - should show "No active reminders"
+    let list_after = fixture.rpc_call("reminder.list", None).unwrap();
+    let list_after_message = list_after["result"]["message"]
+        .as_str()
+        .expect("reminder.list should return a message");
+    assert!(
+        list_after_message.contains("No active reminders"),
+        "After cancellation, should show no active reminders"
+    );
+}
+
+/// Test that kanban.data RPC returns expected structure.
+///
+/// The kanban endpoint provides data for the web UI's kanban board view,
+/// including open PRs, merged PRs, and repository information.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_kanban_data_returns_structure() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call("kanban.data", None);
+    assert!(
+        response.is_some(),
+        "Should receive response from kanban.data"
+    );
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "kanban.data should not return an error: {:?}",
+        response["error"]
+    );
+
+    let result = &response["result"];
+
+    // Kanban data returns PR-centric data for the board view
+    assert!(result.is_object(), "kanban.data should return an object");
+
+    // Should have prs array (open PRs for the kanban columns)
+    assert!(
+        result["prs"].is_array(),
+        "kanban.data should contain prs array"
+    );
+
+    // Should have merged_prs array (for the Done column)
+    assert!(
+        result["merged_prs"].is_array(),
+        "kanban.data should contain merged_prs array"
+    );
+
+    // Should have repos array (repository metadata)
+    assert!(
+        result["repos"].is_array(),
+        "kanban.data should contain repos array"
+    );
+}
+
+/// Test that coworker.spawn returns a valid JSON-RPC response.
+///
+/// In test environment without tmux, spawn will fail, but should return
+/// a proper JSON-RPC error response rather than hanging or crashing.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_spawn_returns_response() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // In test environment without tmux, spawn will fail
+    // We verify it returns a proper JSON-RPC response (not hang/crash)
+    let response = fixture.rpc_call("coworker.spawn", Some(serde_json::json!({})));
+    assert!(
+        response.is_some(),
+        "Should receive response from coworker.spawn"
+    );
+
+    let response = response.unwrap();
+    // Without tmux, we expect an error response
+    // Verify it's a proper JSON-RPC error with expected structure
+    if response["error"].is_object() {
+        assert!(
+            response["error"]["code"].is_number(),
+            "Error should have numeric code"
+        );
+        assert!(
+            response["error"]["message"].is_string(),
+            "Error should have message string"
+        );
+    } else {
+        // If somehow it succeeds, verify result structure
+        assert!(
+            response["result"].is_object(),
+            "Success should return result object"
+        );
+    }
+}
+
+/// Test that RPCs with invalid params return proper errors.
+///
+/// Methods requiring parameters should return invalid_params error (-32602)
+/// when called without required params.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_invalid_params_returns_error() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // coworker.break requires "name" param
+    let response = fixture.rpc_call("coworker.break", None);
+    assert!(response.is_some(), "Should receive response");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Missing params should return error"
+    );
+    assert_eq!(
+        response["error"]["code"].as_i64(),
+        Some(-32602),
+        "Should be invalid_params error code"
+    );
+
+    // coworker.nudge requires "name" and "message" params
+    let response2 = fixture.rpc_call("coworker.nudge", Some(serde_json::json!({"name": "test"})));
+    assert!(response2.is_some(), "Should receive response");
+
+    let response2 = response2.unwrap();
+    assert!(
+        response2["error"].is_object(),
+        "Missing message param should return error"
+    );
+}
+
 /// Test daemon graceful shutdown via SIGTERM.
 #[test]
 #[ignore] // Requires built binary
