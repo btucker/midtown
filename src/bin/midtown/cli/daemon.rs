@@ -841,14 +841,41 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
                 .stderr(Stdio::null())
                 .status();
 
-            // Wait briefly for daemon to exit and clean up
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            // Poll until the daemon exits or timeout after 2 seconds.
+            // This matches the webserver stop behavior and ensures the daemon
+            // has fully cleaned up (released socket, written state) before we
+            // proceed with restart or other operations.
+            let poll_interval = std::time::Duration::from_millis(50);
+            let timeout = std::time::Duration::from_secs(2);
+            let start = std::time::Instant::now();
+            while daemon_is_running() && start.elapsed() < timeout {
+                std::thread::sleep(poll_interval);
+            }
+
+            // Force kill if still running after graceful timeout
+            if daemon_is_running() {
+                let _ = Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .stderr(Stdio::null())
+                    .status();
+
+                // Brief poll after SIGKILL
+                let kill_timeout = std::time::Duration::from_secs(1);
+                let kill_start = std::time::Instant::now();
+                while daemon_is_running() && kill_start.elapsed() < kill_timeout {
+                    std::thread::sleep(poll_interval);
+                }
+            }
         }
 
-        // Also remove socket file as a fallback
-        let path = socket_path();
-        if path.exists() {
-            let _ = std::fs::remove_file(&path);
+        // Clean up stale socket file only if daemon is now stopped.
+        // The daemon should clean up its own socket during normal shutdown,
+        // but if it crashed or was force-killed, the socket may remain.
+        if !daemon_is_running() {
+            let path = socket_path();
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+            }
         }
         messages.push("Stopped daemon".to_string());
     } else {
@@ -944,19 +971,26 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
 pub fn handle_restart() -> Result<Response, String> {
     // Stop daemon and webserver, keep the tmux session running.
     // handle_stop also cleans up orphaned gh webhook forwarders.
-    // stop_webserver() polls until the process is confirmed dead, so no
-    // additional sleep is needed before restarting.
-    let _ = handle_stop(true);
+    // Both daemon and webserver stop functions now poll until processes exit,
+    // ensuring clean shutdown before restart.
+    handle_stop(true)?;
 
-    // Confirm the webserver is fully stopped before restarting.
-    // stop_webserver() should have already ensured this, but verify to
-    // avoid the race where handle_start() sees a zombie process and
-    // skips launching a new webserver.
+    // Final verification that both daemon and webserver are stopped.
+    // This guards against race conditions where the processes are still
+    // cleaning up even after handle_stop returned.
     let poll_interval = std::time::Duration::from_millis(50);
     let timeout = std::time::Duration::from_secs(2);
     let start = std::time::Instant::now();
-    while webserver_is_running() && start.elapsed() < timeout {
+    while (daemon_is_running() || webserver_is_running()) && start.elapsed() < timeout {
         std::thread::sleep(poll_interval);
+    }
+
+    // Fail if processes are still running after timeout
+    if daemon_is_running() {
+        return Err("Restart failed: daemon did not stop within timeout".to_string());
+    }
+    if webserver_is_running() {
+        return Err("Restart failed: webserver did not stop within timeout".to_string());
     }
 
     // Start daemon and webserver only — the tmux session and lead window
