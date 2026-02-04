@@ -177,11 +177,21 @@ impl Channel {
         let reader = BufReader::new(file);
         let mut messages = Vec::new();
 
-        for line in reader.lines() {
+        for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
             if !line.trim().is_empty() {
-                let message: Message = serde_json::from_str(&line)?;
-                messages.push(message);
+                match serde_json::from_str::<Message>(&line) {
+                    Ok(message) => messages.push(message),
+                    Err(e) => {
+                        // Skip malformed lines rather than failing completely.
+                        // This allows reading the channel even if some lines are corrupted.
+                        tracing::warn!(
+                            "Skipping malformed line {} in channel file: {}",
+                            line_num + 1,
+                            e
+                        );
+                    }
+                }
             }
         }
 
@@ -229,9 +239,21 @@ impl Channel {
 
             let line = line_buf.trim();
             if !line.is_empty() {
-                let message: Message = serde_json::from_str(line)?;
-                last_id = Some(message.id.clone());
-                messages.push(message);
+                match serde_json::from_str::<Message>(line) {
+                    Ok(message) => {
+                        last_id = Some(message.id.clone());
+                        messages.push(message);
+                    }
+                    Err(e) => {
+                        // Skip malformed lines rather than failing completely.
+                        // This allows reading the channel even if some lines are corrupted.
+                        tracing::warn!(
+                            "Skipping malformed line at position {} in channel file: {}",
+                            current_position - bytes_read as u64,
+                            e
+                        );
+                    }
+                }
             }
         }
 
@@ -1154,5 +1176,100 @@ mod tests {
             rotation_needed,
             "Channel with old messages should need rotation"
         );
+    }
+
+    #[test]
+    fn test_read_all_skips_malformed_lines() {
+        // Regression test: A raw text line in channel.jsonl (not valid JSON) was causing
+        // read_all() to fail completely. This happened in production when a raw message
+        // was somehow written directly to the file without JSON wrapping.
+        //
+        // The fix should skip invalid lines and continue reading valid messages,
+        // allowing the channel to be read even with some corruption.
+        use std::io::Write;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Write some valid messages
+        channel
+            .send(&Message::text("agent1", "First valid message"))
+            .unwrap();
+        channel
+            .send(&Message::text("agent2", "Second valid message"))
+            .unwrap();
+
+        // Manually inject a malformed line (raw text, not JSON)
+        // This simulates the corruption observed in production
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&channel_file)
+                .unwrap();
+            writeln!(file, "@lead Some raw text that is not JSON").unwrap();
+        }
+
+        // Write another valid message after the corruption
+        channel
+            .send(&Message::text("agent3", "Third valid message"))
+            .unwrap();
+
+        // read_all() should skip the invalid line and return the 3 valid messages
+        let messages = read_all_with_retry(&channel, 5).unwrap();
+        assert_eq!(
+            messages.len(),
+            3,
+            "Should skip malformed line and read 3 valid messages"
+        );
+        assert_eq!(messages[0].content, "First valid message");
+        assert_eq!(messages[1].content, "Second valid message");
+        assert_eq!(messages[2].content, "Third valid message");
+    }
+
+    #[test]
+    fn test_read_since_cursor_skips_malformed_lines() {
+        // Similar to test_read_all_skips_malformed_lines but tests the cursor-based
+        // reading path which uses a different code path (byte offset seeking).
+        use std::io::Write;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Write initial messages and read to set cursor position
+        channel
+            .send(&Message::text("agent1", "First message"))
+            .unwrap();
+        let _ = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
+
+        // Write more valid messages
+        channel
+            .send(&Message::text("agent2", "Second message"))
+            .unwrap();
+
+        // Inject a malformed line
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&channel_file)
+                .unwrap();
+            writeln!(file, "This is raw text, not JSON").unwrap();
+        }
+
+        // Write another valid message after the corruption
+        channel
+            .send(&Message::text("agent3", "Third message"))
+            .unwrap();
+
+        // read_since_cursor should skip the malformed line and return the 2 new valid messages
+        let messages = read_since_cursor_with_retry(&channel, "reader", 5).unwrap();
+        assert_eq!(
+            messages.len(),
+            2,
+            "Should skip malformed line and read 2 new valid messages"
+        );
+        assert_eq!(messages[0].content, "Second message");
+        assert_eq!(messages[1].content, "Third message");
     }
 }
