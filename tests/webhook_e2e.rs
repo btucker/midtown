@@ -168,22 +168,25 @@ impl WebhookFixture {
     }
 
     fn start_daemon(&mut self) -> bool {
-        let build_result = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        if build_result.map(|s| !s.success()).unwrap_or(true) {
-            eprintln!("Failed to build daemon binary");
-            return false;
-        }
-
-        let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        // Check for pre-built binary (CI builds before running tests)
+        let release_binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("release")
             .join("midtown");
+        let debug_binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("debug")
+            .join("midtown");
+
+        let binary_path = if release_binary.exists() {
+            release_binary
+        } else if debug_binary.exists() {
+            eprintln!("Warning: Using debug binary - timing may not match production");
+            debug_binary
+        } else {
+            eprintln!("Skipping: No midtown binary found. Run 'cargo build --release' first.");
+            return false;
+        };
 
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.pid_path);
