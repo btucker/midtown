@@ -2096,3 +2096,633 @@ fn live_daemon_gh_token_auth_works() {
         .unwrap_or(0);
     println!("Also fetched {} merged PRs", merged_count);
 }
+
+// ============================================================================
+// RPC Handler E2E Tests
+// ============================================================================
+
+/// Test coworker.report-state accepts valid workflow phases.
+///
+/// The daemon should accept all documented phase strings and return success.
+/// This tests the phase parsing logic in handle_coworker_report_state.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_report_state_valid_phases() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Test all valid phase strings
+    let valid_phases = [
+        "claiming",
+        "developing",
+        "testing",
+        "pull_request",
+        "pull-request", // Both underscore and hyphen accepted
+        "reviewing",
+        "debugging",
+        "completed",
+        "idle",
+    ];
+
+    for phase in valid_phases {
+        let params = serde_json::json!({
+            "name": "test-coworker",
+            "phase": phase,
+            "task_id": 42
+        });
+
+        let response = fixture.rpc_call("coworker.report-state", Some(params));
+        assert!(
+            response.is_some(),
+            "Should receive response for phase '{}'",
+            phase
+        );
+
+        let response = response.unwrap();
+        assert!(
+            response["error"].is_null(),
+            "Phase '{}' should not return error: {:?}",
+            phase,
+            response["error"]
+        );
+        assert_eq!(
+            response["result"]["success"].as_bool(),
+            Some(true),
+            "Phase '{}' should return success=true",
+            phase
+        );
+    }
+}
+
+/// Test coworker.report-state returns error for unknown phases.
+///
+/// Invalid phase strings should result in a JSON-RPC error response
+/// with code -32602 (invalid params).
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_report_state_invalid_phase() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "name": "test-coworker",
+        "phase": "invalid-phase-name"
+    });
+
+    let response = fixture.rpc_call("coworker.report-state", Some(params));
+    assert!(response.is_some(), "Should receive error response");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Invalid phase should return error"
+    );
+    assert_eq!(
+        response["error"]["code"].as_i64(),
+        Some(-32602),
+        "Error code should be -32602 (invalid params)"
+    );
+}
+
+/// Test coworker.report-state requires both name and phase params.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_report_state_missing_params() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Missing phase
+    let params = serde_json::json!({
+        "name": "test-coworker"
+    });
+    let response = fixture.rpc_call("coworker.report-state", Some(params));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Missing phase should return error"
+    );
+
+    // Missing name
+    let params = serde_json::json!({
+        "phase": "developing"
+    });
+    let response = fixture.rpc_call("coworker.report-state", Some(params));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Missing name should return error"
+    );
+}
+
+/// Test coworker.asking posts question to channel.
+///
+/// When a coworker uses AskUserQuestion, the daemon should:
+/// 1. Post the question to the channel
+/// 2. Return a success response
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_asking_posts_to_channel() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "name": "york",
+        "question": "Should I use async or sync file operations?"
+    });
+
+    let response = fixture.rpc_call("coworker.asking", Some(params));
+    assert!(response.is_some(), "Should receive response");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "coworker.asking should not return error: {:?}",
+        response["error"]
+    );
+    assert_eq!(
+        response["result"]["success"].as_bool(),
+        Some(true),
+        "Should return success=true"
+    );
+
+    // Verify the question was posted to the channel
+    let read_response = fixture.rpc_call("channel.read", Some(serde_json::json!({"all": true})));
+    assert!(read_response.is_some());
+
+    let read_response = read_response.unwrap();
+    let messages = read_response["result"]["messages"].as_array();
+    assert!(messages.is_some(), "Should have messages array");
+
+    let messages = messages.unwrap();
+    let has_question = messages.iter().any(|msg| {
+        msg["from"].as_str() == Some("york")
+            && msg["message"]
+                .as_str()
+                .map(|m| m.contains("async or sync"))
+                .unwrap_or(false)
+    });
+    assert!(has_question, "Channel should contain the question");
+}
+
+/// Test coworker.asking returns error for missing params.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_asking_missing_params() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Missing question
+    let response = fixture.rpc_call("coworker.asking", Some(serde_json::json!({"name": "york"})));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Missing question should return error"
+    );
+
+    // Missing name
+    let response = fixture.rpc_call(
+        "coworker.asking",
+        Some(serde_json::json!({"question": "test?"})),
+    );
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Missing name should return error"
+    );
+}
+
+/// Test daemon.check-pending returns ok response.
+///
+/// This RPC triggers the daemon to check for pending tasks and spawn
+/// coworkers if needed. It should always return {status: "ok"}.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_daemon_check_pending_returns_ok() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let response = fixture.rpc_call("daemon.check-pending", None);
+    assert!(response.is_some(), "Should receive response");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "check-pending should not return error: {:?}",
+        response["error"]
+    );
+    assert_eq!(
+        response["result"]["status"].as_str(),
+        Some("ok"),
+        "Should return status=ok"
+    );
+}
+
+/// Test task.updated returns error for missing required params.
+///
+/// Both task_id and updater are required parameters.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_task_updated_missing_params() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Missing updater
+    let response = fixture.rpc_call("task.updated", Some(serde_json::json!({"task_id": "42"})));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Missing updater should return error"
+    );
+
+    // Missing task_id
+    let response = fixture.rpc_call("task.updated", Some(serde_json::json!({"updater": "york"})));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Missing task_id should return error"
+    );
+
+    // Empty params
+    let response = fixture.rpc_call("task.updated", Some(serde_json::json!({})));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Empty params should return error"
+    );
+}
+
+/// Test task.updated returns nudged=false when task not found.
+///
+/// When a task ID doesn't exist, the handler should return
+/// a success response with nudged=false and reason="task not found".
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_task_updated_task_not_found() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "task_id": "99999",  // Non-existent task ID
+        "updater": "york"
+    });
+
+    let response = fixture.rpc_call("task.updated", Some(params));
+    assert!(response.is_some(), "Should receive response");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "Should not return error for non-existent task"
+    );
+    assert_eq!(
+        response["result"]["nudged"].as_bool(),
+        Some(false),
+        "Should not nudge for non-existent task"
+    );
+    assert_eq!(
+        response["result"]["reason"].as_str(),
+        Some("task not found"),
+        "Should report 'task not found' reason"
+    );
+}
+
+/// Test task.updated returns nudged=false for task_list_id mismatch.
+///
+/// When task_list_id doesn't match the project's task list, the handler
+/// should skip lookup and return nudged=false with reason="task list mismatch".
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_task_updated_task_list_mismatch() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "task_id": "1",
+        "updater": "york",
+        "task_list_id": "some-other-session-id"  // Different task list
+    });
+
+    let response = fixture.rpc_call("task.updated", Some(params));
+    assert!(response.is_some(), "Should receive response");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "Should not return error for mismatched task list"
+    );
+    assert_eq!(
+        response["result"]["nudged"].as_bool(),
+        Some(false),
+        "Should not nudge for mismatched task list"
+    );
+    assert_eq!(
+        response["result"]["reason"].as_str(),
+        Some("task list mismatch"),
+        "Should report 'task list mismatch' reason"
+    );
+}
+
+/// Test channel.post with /me action prefix.
+///
+/// When a message starts with "/me ", it should be stored as an Action
+/// type message. This tests the IRC-style action handling.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_channel_post_me_action() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "from": "york",
+        "message": "/me is working on task #42"
+    });
+
+    let response = fixture.rpc_call("channel.post", Some(params));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["success"].as_bool(), Some(true));
+
+    // Read back and verify the message was posted
+    let read_response = fixture.rpc_call("channel.read", Some(serde_json::json!({"all": true})));
+    assert!(read_response.is_some());
+    let read_response = read_response.unwrap();
+
+    let messages = read_response["result"]["messages"].as_array().unwrap();
+    let action_msg = messages.iter().find(|m| m["from"].as_str() == Some("york"));
+    assert!(action_msg.is_some(), "Should find the action message");
+}
+
+/// Test channel.post unescapes shell artifacts.
+///
+/// When Claude Code posts via Bash, "!" often gets escaped as "\!".
+/// The daemon should clean this up automatically.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_channel_post_unescapes_shell_artifacts() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "from": "york",
+        "message": "Task complete\\! Moving on\\!"
+    });
+
+    let response = fixture.rpc_call("channel.post", Some(params));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(response["error"].is_null());
+
+    // Read back and verify the escapes were cleaned
+    let read_response = fixture.rpc_call("channel.read", Some(serde_json::json!({"all": true})));
+    assert!(read_response.is_some());
+    let read_response = read_response.unwrap();
+
+    let messages = read_response["result"]["messages"].as_array().unwrap();
+    let msg = messages
+        .iter()
+        .find(|m| {
+            m["from"].as_str() == Some("york")
+                && m["message"]
+                    .as_str()
+                    .map(|s| s.contains("complete"))
+                    .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("Should find posted message, got: {:?}", messages));
+
+    let content = msg["message"].as_str().unwrap();
+    assert!(
+        content.contains("complete!") && content.contains("on!"),
+        "Shell escapes should be removed. Got: {}",
+        content
+    );
+    assert!(
+        !content.contains("\\!"),
+        "Should not contain escaped exclamation marks. Got: {}",
+        content
+    );
+}
+
+/// Test channel.read with all=true returns all messages.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_channel_read_all_param() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    // Post 25 messages (more than the default 20 limit)
+    for i in 1..=25 {
+        let params = serde_json::json!({
+            "from": "test",
+            "message": format!("Message {}", i)
+        });
+        fixture.rpc_call("channel.post", Some(params));
+    }
+
+    // Read with all=false (default) should return 20
+    let response = fixture
+        .rpc_call("channel.read", Some(serde_json::json!({"all": false})))
+        .unwrap();
+    let messages = response["result"]["messages"].as_array().unwrap();
+    assert!(
+        messages.len() <= 20,
+        "Default read should return max 20 messages"
+    );
+
+    // Read with all=true should return all 25
+    let response = fixture
+        .rpc_call("channel.read", Some(serde_json::json!({"all": true})))
+        .unwrap();
+    let messages = response["result"]["messages"].as_array().unwrap();
+    assert!(
+        messages.len() >= 25,
+        "all=true should return all {} messages",
+        messages.len()
+    );
+}
+
+/// Test coworker.nudge accepts valid params without returning invalid_params error.
+///
+/// This verifies the RPC handler validates params correctly. The underlying tmux
+/// operation may fail (returning -32603 internal error) if no coworker exists,
+/// but it should NOT return -32602 (invalid params) for well-formed requests.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_coworker_nudge_valid_params() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "name": "nonexistent-coworker",
+        "message": "Hello from test",
+        "from": "test"
+    });
+
+    let response = fixture.rpc_call("coworker.nudge", Some(params));
+    assert!(response.is_some(), "Should receive response");
+
+    let response = response.unwrap();
+
+    // Valid params should NOT return invalid_params error (-32602).
+    // The operation may return success or internal error (-32603) depending
+    // on tmux state, but never invalid_params for well-formed requests.
+    if let Some(error) = response["error"].as_object() {
+        let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        assert_ne!(
+            code, -32602,
+            "Valid params should not return invalid_params error"
+        );
+    }
+    // If no error, verify we got a result object
+    if response["error"].is_null() {
+        assert!(
+            response["result"].is_object(),
+            "Success response should have result object"
+        );
+    }
+}
+
+/// Test reminder.create with invalid trigger returns error.
+///
+/// Only "all-work-merged" trigger is currently supported.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_reminder_create_invalid_trigger() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "trigger": "invalid-trigger",
+        "message": "Test message"
+    });
+
+    let response = fixture.rpc_call("reminder.create", Some(params));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Invalid trigger should return error"
+    );
+}
+
+/// Test reminder.cancel with non-existent ID returns error.
+#[test]
+#[ignore] // Requires built binary
+fn test_daemon_rpc_reminder_cancel_not_found() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let params = serde_json::json!({
+        "id": "nonexistent-reminder-id"
+    });
+
+    let response = fixture.rpc_call("reminder.cancel", Some(params));
+    assert!(response.is_some());
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_object(),
+        "Non-existent reminder should return error"
+    );
+    assert_eq!(
+        response["error"]["code"].as_i64(),
+        Some(-32602),
+        "Should return invalid params error code"
+    );
+}
