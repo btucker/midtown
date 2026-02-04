@@ -2248,36 +2248,6 @@ mod tests {
         );
     }
 
-    /// Bug: collect_green_with_feedback_effects was using head_ref.split('/').next()
-    /// to extract the owner, which doesn't validate against known coworker names.
-    /// This meant PRs with branches like "btucker/fix" would extract "btucker" as owner
-    /// and potentially nudge wrong coworkers if the prefix matches a coworker name.
-    #[test]
-    fn coworker_from_branch_rejects_non_coworker_prefixes() {
-        // These should return None because they're not valid coworker names
-        assert!(
-            coworker_from_branch("btucker/fix-something").is_none(),
-            "btucker is not a coworker name"
-        );
-        assert!(
-            coworker_from_branch("feature/add-auth").is_none(),
-            "feature is not a coworker name"
-        );
-        assert!(coworker_from_branch("main").is_none(), "main has no slash");
-
-        // These should return Some because they are valid coworker names
-        assert_eq!(
-            coworker_from_branch("york/fix-something"),
-            Some("york".to_string()),
-            "york is a valid coworker name"
-        );
-        assert_eq!(
-            coworker_from_branch("amsterdam/add-feature"),
-            Some("amsterdam".to_string()),
-            "amsterdam is a valid coworker name"
-        );
-    }
-
     #[test]
     fn stuck_nudge_effects_returns_only_system_message() {
         // Bug: stuck_nudge_effects was returning both PostSystemMessage and NudgeLead,

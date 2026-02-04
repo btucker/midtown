@@ -574,7 +574,7 @@ fn fixture_health_check_snapshot_182216() {
     // All coworkers should have pane content
     for cw in &snap.coworkers {
         assert!(
-            snap.pane_contents.get(&cw.name).is_some(),
+            snap.pane_contents.contains_key(&cw.name),
             "Coworker {} should have pane content",
             cw.name
         );
