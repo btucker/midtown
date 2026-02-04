@@ -738,28 +738,10 @@ pub(super) async fn handle_channel_post(
 
     let msg = Message::new(from, content.clone(), msg_type.clone());
 
-    // Run the channel file write in spawn_blocking to avoid blocking the async runtime.
-    // The channel.send() method acquires a file lock that can take up to 2 seconds under
-    // contention, which would otherwise stall all RPC handlers sharing this runtime thread.
-    let channel = state.channel.clone();
-    let msg_for_write = msg.clone();
-    let write_result = tokio::task::spawn_blocking(move || channel.send(&msg_for_write)).await;
-
-    match write_result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            error!("Failed to write to channel: {}", e);
-            return Response::error(id, RpcError::new(-32603, e.to_string()));
-        }
-        Err(e) => {
-            error!("spawn_blocking panic in channel write: {}", e);
-            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
-        }
-    }
-
-    // Broadcast to WebSocket clients (non-blocking channel send)
-    if let Some(ref tx) = state.web_updates_tx {
-        super::super::web::broadcast_channel_message(tx, &msg);
+    // Use async version to avoid blocking the runtime during file lock acquisition
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        error!("Failed to write to channel: {}", e);
+        return Response::error(id, RpcError::new(-32603, e.to_string()));
     }
 
     info!("Channel post from {}: {}", from, message);

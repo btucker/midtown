@@ -695,6 +695,34 @@ impl DaemonState {
         Ok(())
     }
 
+    /// Async version of send_and_broadcast that uses spawn_blocking for the channel write.
+    ///
+    /// The channel.send() method acquires a file lock that can take up to 2 seconds under
+    /// contention. When called in an async context (like RPC handlers), this can block the
+    /// Tokio runtime thread and prevent other tasks from making progress. This async version
+    /// moves the blocking file write to a dedicated thread pool.
+    async fn send_and_broadcast_async(&self, message: &Message) -> crate::Result<()> {
+        let channel = self.channel.clone();
+        let msg = message.clone();
+        let write_result = tokio::task::spawn_blocking(move || channel.send(&msg)).await;
+
+        match write_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(e) => {
+                return Err(crate::Error::InvalidMessage(format!(
+                    "spawn_blocking panic: {}",
+                    e
+                )));
+            }
+        }
+
+        if let Some(ref tx) = self.web_updates_tx {
+            web::broadcast_channel_message(tx, message);
+        }
+        Ok(())
+    }
+
     /// Send a web push notification to all subscribed PWA clients.
     ///
     /// This is fire-and-forget: push sending runs in a background task.

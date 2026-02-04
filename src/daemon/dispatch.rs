@@ -583,12 +583,7 @@ pub(super) fn spawn_for_pending_tasks(
         };
 
         // Check if the owner is an isolated reviewer (has their own task namespace)
-        let is_owner_isolated = snap
-            .coworker_snapshots
-            .iter()
-            .find(|cw| cw.name.eq_ignore_ascii_case(owner))
-            .map(|cw| cw.isolated_tasks)
-            .unwrap_or(false);
+        let is_owner_isolated = snap.isolated_coworkers.contains(&owner.to_lowercase());
 
         // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
@@ -776,11 +771,8 @@ pub(super) fn spawn_for_pending_tasks(
 
         // Check if this coworker is an isolated reviewer (has their own task namespace)
         let is_coworker_isolated = snap
-            .coworker_snapshots
-            .iter()
-            .find(|cw| cw.name.eq_ignore_ascii_case(&coworker_name))
-            .map(|cw| cw.isolated_tasks)
-            .unwrap_or(false);
+            .isolated_coworkers
+            .contains(&coworker_name.to_lowercase());
 
         // Skip assigning main task list tasks to isolated reviewers
         if already_running && is_coworker_isolated {
