@@ -2460,3 +2460,74 @@ fn test_kill_all_windows_by_name_removes_duplicates() {
         "keeper window should still exist"
     );
 }
+
+// ── Reviewer window naming ──────────────────────────────────────────
+
+/// Spawning a reviewer sets the tmux window name to "name:review#PR".
+///
+/// Verifies that `spawn_claude` with `ClaudeLaunchConfig::reviewer()` correctly
+/// renames the tmux window to include "review#PR" format, distinguishing
+/// reviewer coworkers from development coworkers (which use "dev#N").
+#[test]
+#[ignore]
+#[timeout(60_000)]
+fn test_spawn_reviewer_sets_window_name_to_review_format() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Check if claude is available
+    let claude_available = Command::new("claude")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !claude_available {
+        eprintln!("claude not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_string_lossy().to_string();
+
+    // Spawn a reviewer for PR #42
+    let config = midtown::tmux::ClaudeLaunchConfig::reviewer("test-reviewer", 42);
+    let result = midtown::tmux::spawn_claude(&session, &dir, &config);
+    assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
+
+    // Wait for the window to be renamed
+    thread::sleep(Duration::from_secs(3));
+
+    // Get the raw window names from tmux
+    let output = Command::new("tmux")
+        .args(["list-windows", "-t", &session, "-F", "#{window_name}"])
+        .output()
+        .expect("Failed to list windows");
+
+    let raw_names: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.to_string())
+        .collect();
+
+    // Verify the window name contains "review#42"
+    let has_reviewer_format = raw_names.iter().any(|name| name.contains("review#42"));
+
+    assert!(
+        has_reviewer_format,
+        "Expected a window with 'review#42' in its name, got: {:?}. \
+         Reviewer coworkers should have 'name:review#PR' window format.",
+        raw_names
+    );
+
+    // Clean up: kill the claude process
+    kill_window(&session, "test-reviewer");
+}
