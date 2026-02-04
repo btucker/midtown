@@ -11,6 +11,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 
 use crate::coworker::Coworker;
+use crate::message::Message;
 use crate::rules::CoworkerSnapshot;
 use crate::tasks::Task;
 
@@ -110,6 +111,62 @@ pub struct WorldSnapshot {
     pub now_utc: DateTime<Utc>,
     /// Repository name.
     pub repo_name: String,
+
+    // ── Debug context (for snapshot captures) ─────────────────────────
+    /// Recent channel messages (last N messages for debugging context).
+    /// These help understand what led to the current state.
+    pub recent_channel_messages: Vec<Message>,
+    /// Recent daemon log lines (last N lines for debugging context).
+    /// Captured from the daemon log file.
+    pub recent_daemon_logs: Vec<String>,
+}
+
+/// Read the last N lines from the daemon log file.
+///
+/// Returns an empty Vec if the file doesn't exist or can't be read.
+fn read_recent_log_lines(repo_name: &str, n: usize) -> Vec<String> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let log_path = crate::paths::daemon_log_file_for_repo(repo_name);
+    let file = match std::fs::File::open(&log_path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let file_len = match file.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return Vec::new(),
+    };
+
+    // For efficiency, estimate where to start reading.
+    // Assume average line length of ~150 bytes for log lines.
+    let estimated_start = file_len.saturating_sub(n as u64 * 150);
+
+    let mut reader = BufReader::new(file);
+    if reader.seek(SeekFrom::Start(estimated_start)).is_err() {
+        return Vec::new();
+    }
+
+    // If we didn't start at the beginning, skip the partial first line
+    if estimated_start > 0 {
+        let mut partial = String::new();
+        let _ = reader.read_line(&mut partial);
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for line in reader.lines() {
+        match line {
+            Ok(l) => lines.push(l),
+            Err(_) => break,
+        }
+    }
+
+    // Keep only the last N lines
+    if lines.len() > n {
+        lines.split_off(lines.len() - n)
+    } else {
+        lines
+    }
 }
 
 /// Collect a full world snapshot from the daemon state.
@@ -272,6 +329,25 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let now_utc = Utc::now();
     let repo_name = state.repo_name.clone();
 
+    // ── Debug context (for snapshot captures) ─────────────────────────
+    // Read recent channel messages (last 50 messages)
+    let recent_channel_messages = match crate::Channel::for_repo(&repo_name) {
+        Ok(channel) => match channel.read_last_n_messages(50) {
+            Ok((messages, _)) => messages,
+            Err(e) => {
+                tracing::warn!(%e, "failed to read recent channel messages for snapshot");
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            tracing::warn!(%e, "failed to open channel for snapshot");
+            Vec::new()
+        }
+    };
+
+    // Read recent daemon logs (last 100 lines)
+    let recent_daemon_logs = read_recent_log_lines(&repo_name, 100);
+
     let snapshot = WorldSnapshot {
         active_coworkers,
         running_coworkers,
@@ -302,6 +378,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         now,
         now_utc,
         repo_name,
+        recent_channel_messages,
+        recent_daemon_logs,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -419,6 +497,8 @@ mod tests {
             now: Instant::now(),
             now_utc: Utc::now(),
             repo_name: "test-repo".to_string(),
+            recent_channel_messages: vec![],
+            recent_daemon_logs: vec![],
         };
 
         // Verify the field exists and has the expected values
