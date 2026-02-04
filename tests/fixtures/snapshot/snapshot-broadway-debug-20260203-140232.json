@@ -1,0 +1,116 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "session_id": "fe23cc69-435b-48b4-a4a7-cd60df31ef52",
+      "started_at": "2026-02-03T14:02:16.683202Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/amsterdam"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "broadway",
+      "session_id": "b39803e1-2eb8-47e5-a544-03a512f9a10f",
+      "started_at": "2026-02-03T13:50:59.725768Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/broadway"
+    }
+  ],
+  "active_names": [
+    "broadway",
+    "amsterdam"
+  ],
+  "active_reviewers": [
+    "amsterdam"
+  ],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "**Context:** Preparing for workflows feature which needs to know when coworkers stopped.\n\n**Current state:** WorldSnapshot has `coworker_start_times: HashMap<String, DateTime<Utc>>` but no equivalent for stop times.\n\n**Changes needed:**\n1. Add `coworker_stop_times: HashMap<String, DateTime<Utc>>` to WorldSnapshot\n2. Track stop time when coworkers go on break (in effects.rs or wherever break is handled)\n3. Include in snapshot collection\n\n**Files likely involved:**\n- `src/daemon/snapshot.rs` - add field to WorldSnapshot\n- `src/daemon/effects.rs` - record stop time on break\n- `src/daemon/state.rs` - persist stop times if needed\n\nWrite a test first per CLAUDE.md.",
+      "id": "13",
+      "owner": "broadway",
+      "status": "in_progress",
+      "subject": "Add stopped_at tracking to WorldSnapshot for coworkers"
+    }
+  ],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [
+    "broadway"
+  ],
+  "ci_passed_pr_coworkers": [],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "started_at": "2026-02-03T14:02:16.683202Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "broadway",
+      "started_at": "2026-02-03T13:50:59.725768Z"
+    }
+  ],
+  "coworker_start_times": {
+    "amsterdam": "2026-02-03T14:02:16.683202Z",
+    "broadway": "2026-02-03T13:50:59.725768Z"
+  },
+  "coworkers_with_merged_prs": [
+    "madison",
+    "york",
+    "columbus",
+    "amsterdam",
+    "pleasant",
+    "broadway",
+    "vernon",
+    "riverside"
+  ],
+  "coworkers_with_open_prs": [
+    "broadway"
+  ],
+  "coworkers_with_unblocked_deps": [],
+  "in_progress_tasks": [
+    [
+      "13",
+      "Add stopped_at tracking to WorldSnapshot for coworkers",
+      "broadway"
+    ]
+  ],
+  "is_at_dev_limit": false,
+  "now_utc": "2026-02-03T14:02:32.332300Z",
+  "pane_contents": {
+    "amsterdam": "\n ▐▛███▜▌   Claude Code v2.1.17\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/amsterdam\n\n❯ Review PR #520 using /code-review:code-review 520\n\n⏺ Let me read the channel first, then start the review.\n\n⏺ Bash(midtown channel read)\n  ⎿  [2026-02-03T11:17:51.972340+00:00] system: ⚠️ @lead Orphaned worktrees with unmerged commits: park. Please investigate and decide whether to merge or delete these branches.\n     [2026-02-03T12:04:22.309340+00:00] system: ⚠️ @lead Orphaned worktrees with unmerged commits: riverside. Please investigate and decide whether to merge or delete these branches.\n     [2026-02-03T12:17:56.850847+00:00] system: ⚠️ @lead Orphaned worktrees with unmerged commits: park. Please investigate and decide whether to merge or delete these branches.\n     … +25 lines (ctrl+o to expand)\n\n⏺ Bash(midtown channel post \"/me stepping into the review booth for PR #520\")\n  ⎿  Message posted to channel\n\n⏺ Bash(midtown state reviewing --task 13)\n  ⎿  amsterdam → review#13\n\n✢ Razzmatazzing… (esc to interrupt · thought for 1s)\n\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "broadway": "\n⏺ Bash(git diff)\n  ⎿  diff --git a/src/daemon/effects.rs b/src/daemon/effects.rs\n     index d73b2ac..737bf01 100644\n     --- a/src/daemon/effects.rs\n     … +129 lines (ctrl+o to expand)\n\n⏺ ★ Insight ─────────────────────────────────────\n  The implementation follows the codebase's patterns:\n  - WorldSnapshot immutability: Data is cloned into the snapshot (not referenced) so pure decision functions can't trigger side effects\n  - RwLock for stop_times: Matches how pr_break_sessions is stored - allows concurrent reads during snapshots while exclusive writes during shutdowns\n  - Lowercase keys: Matching the convention used by coworker_start_times for consistency\n  ─────────────────────────────────────────────────\n\n⏺ Bash(git log --oneline -5)\n  ⎿  7f20edd chore: Bump version to 0.4.2 (#517)\n     60c6cf9 fix: Add service worker update lifecycle handlers and E2E tests [Midtown #9] (#514)\n     7af4ea0 fix: Use has_compaction_indicator() in has_queued_nudges() (#516)\n     … +2 lines (ctrl+o to expand)\n\n⏺ Bash(git add src/daemon/effects.rs src/daemon/mod.rs src/daemon/snapshot.rs && git commit -m \"feat: Add coworker_stop_times tracking to WorldSnapshot [Midtown #13]…)\n  ⎿  [broadway/add-stopped-at-tracking 96d9b7c] feat: Add coworker_stop_times tracking to WorldSnapshot [Midtown #13]\n      3 files changed, 74 insertions(+)\n     +cargo clippy -- -D warnings\n     … +2 lines (ctrl+o to expand)\n\n⏺ Bash(git push -u origin broadway/add-stopped-at-tracking 2>&1)\n  ⎿  remote:\n     remote: Create a pull request for 'broadway/add-stopped-at-tracking' on GitHub by visiting:\n     remote:      https://github.com/btucker/midtown/pull/new/broadway/add-stopped-at-tracking\n     … +4 lines (ctrl+o to expand)\n\n⏺ Bash(gh pr create --title \"feat: Add coworker_stop_times tracking to WorldSnapshot [Midtown #13]\" --body \"<!-- midtown: broadway -->…)\n  ⎿  https://github.com/btucker/midtown/pull/520\n\n⏺ Bash(midtown state pull-request --task 13)\n  ⎿  broadway → PR#13\n\n⏺ Bash(midtown channel post \"/me PR #520 is ready for its audience - coworker_stop_times takes the stage\")\n  ⎿  Message posted to channel\n\n⏺ Bash(sleep 10 && midtown channel read 2>&1 | tail -10)\n  ⎿  - The `execute_effects()` function in `effects.rs` is the *only* place side effects happen\n     - This separation makes decision logic testable without mocking async infrastructure\n     … +7 lines (ctrl+o to expand)\n1 task (0 done, 1 in progress, 0 open)\n\n◼ #13 Add stopped_at tracking to WorldSnapshot for coworkers (broadway)\n\n⏺ Bash(midtown state idle)\n  ⎿  broadway → idle\n\n⏺ Bash(midtown channel post \"/me the curtain falls on act one - awaiting reviews before the encore\")\n  ⎿  Message posted to channel\n\n⏺ Task #13 is complete. I've:\n\n  1. Added coworker_stop_times field to WorldSnapshot (src/daemon/snapshot.rs)\n  2. Added storage in DaemonState as RwLock<HashMap<String, DateTime<Utc>>> (src/daemon/mod.rs)\n  3. Recording stop time in effects.rs when Effect::ShutdownCoworker executes\n  4. Population in snapshot collection from DaemonState\n  5. Added unit test that verifies the field works correctly\n\n  PR #520 is created and ready for review: https://github.com/btucker/midtown/pull/520\n\n✻ Churned for 5m 44s\n\n  Tasks (0 done, 1 in progress, 0 open) · ctrl+t to hide tasks\n  ◼ #13 Add stopped_at tracking to WorldSnapshot for coworkers (broadway)\n\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\n"
+  },
+  "pending_tasks_with_owners": [],
+  "pending_tasks_without_owners": [],
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {
+    "amsterdam": 520
+  },
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "session_id": "fe23cc69-435b-48b4-a4a7-cd60df31ef52",
+      "started_at": "2026-02-03T14:02:16.683202Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/amsterdam"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "broadway",
+      "session_id": "b39803e1-2eb8-47e5-a544-03a512f9a10f",
+      "started_at": "2026-02-03T13:50:59.725768Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/broadway"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false
+}

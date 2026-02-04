@@ -710,6 +710,29 @@ pub fn kill_orphaned_processes(pattern: &str) -> usize {
 
     let count = orphan_pids.len();
 
+    // Log what we're about to kill for debugging
+    for &pid in &orphan_pids {
+        // Get process command line for debugging
+        let cmdline = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "args="])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "<unknown>".to_string());
+        tracing::warn!(
+            pid = pid,
+            cmdline = %cmdline,
+            pattern = %pattern,
+            "ORPHAN_CLEANUP: killing orphaned claude process"
+        );
+    }
+
     // Send SIGTERM to orphaned processes
     let pid_strings: Vec<String> = orphan_pids.iter().map(|p| p.to_string()).collect();
     let _ = Command::new("kill")
