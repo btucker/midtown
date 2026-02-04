@@ -530,14 +530,30 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
 
     // Notify @lead about orphaned worktrees with unmerged commits
     let names_list = due_for_warning.join(", ");
-    let msg = Message::system(format!(
+    let nudge_text = format!(
         "⚠️ @lead Orphaned worktrees with unmerged commits: {}. \
          Please investigate and decide whether to merge or delete these branches.",
         names_list
-    ));
+    );
+    let msg = Message::system(nudge_text.clone());
     if let Err(e) = state.send_and_broadcast(&msg) {
         warn!("Failed to send orphan flag message: {}", e);
     }
+
+    // Directly nudge the lead (don't rely solely on chat monitor).
+    // This matches the pattern used for CI failures on the default branch.
+    if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
+        warn!("Failed to nudge lead for orphaned worktrees: {}", e);
+    } else {
+        info!("Nudged lead about orphaned worktrees with unmerged commits");
+    }
+
+    // Send push notification for mobile alerts
+    state.send_push_notification(
+        "Orphaned worktrees need attention",
+        &nudge_text,
+        "orphan_warning",
+    );
 
     effects
 }
