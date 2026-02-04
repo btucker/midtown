@@ -1,0 +1,491 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "riverside",
+      "session_id": "69828d3c-97cc-4f58-bfb6-8529c258867a",
+      "started_at": "2026-02-04T15:43:42.439736Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "10ad5b70-bfe7-49dc-a746-4f172ab759cc",
+      "started_at": "2026-02-04T15:44:48.919057Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": "ed41e48e-9c26-4bca-a342-6f91e1e73322",
+      "started_at": "2026-02-04T15:40:13.601954Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "e3cada2f-0f70-4e50-9035-d51b0653d34b",
+      "started_at": "2026-02-04T15:43:50.127855Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "park",
+      "session_id": "c2b52ecc-9c0f-4e13-9740-11a31a215f4f",
+      "started_at": "2026-02-04T15:38:15.920686Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/park"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "lexington",
+      "session_id": "fa8ef3e1-fd15-41d8-9026-4b0c3d48285c",
+      "started_at": "2026-02-04T15:33:46.132557Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/lexington"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "session_id": "f6becc58-c4ad-47a2-81ce-da7585ad5369",
+      "started_at": "2026-02-04T15:33:14.135039Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/amsterdam"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "vernon",
+      "session_id": "0ed547b0-4aa1-4a3f-a20c-a12e9692fe8b",
+      "started_at": "2026-02-04T15:43:46.277581Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/vernon"
+    }
+  ],
+  "active_names": [
+    "columbus",
+    "riverside",
+    "lexington",
+    "vernon",
+    "madison",
+    "york",
+    "amsterdam",
+    "park"
+  ],
+  "active_reviewers": [
+    "park"
+  ],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "Bug: `is_auto_mergeable()` in src/daemon/helpers.rs only accepts formal GitHub APPROVED reviewDecision. It should also recognize positive review comments (e.g., \"No issues found\") as approval for auto-merge purposes.\n\nCurrent behavior (line 153):\n```rust\nif review_decision != \"APPROVED\" {\n    return false;\n}\n```\n\nExpected behavior:\n- Keep APPROVED as valid\n- Also check PR comments for positive review indicators from coworkers (look for midtown markers and \"No issues found\" or similar patterns)\n\nContext: We use comment-based reviews because the same GitHub account (btucker) authors PRs and runs coworkers, making formal self-approval impossible.",
+      "id": "3",
+      "owner": "park",
+      "status": "completed",
+      "subject": "Update auto-merge to recognize comment-based reviews"
+    },
+    {
+      "blocked_by": [],
+      "description": "Feature: The daemon should track typical CI check durations and handle stuck/missing checks intelligently.\n\n**Scenarios to handle:**\n\n1. **Stuck check** (pending > 4x typical duration): Re-run the specific check\n2. **Missing/new check** (required check not in PR's CI run): The PR predates the CI workflow change. Daemon should rebase the PR on main to pick up the new workflow, then CI will include the new check.\n\n**Implementation:**\n1. Track historical completion times per CI check name (e.g., \"E2E - idle_break_e2e\" typically takes 2m)\n2. Store rolling average or median of recent runs\n3. For stuck checks: If pending > 4x typical duration, trigger re-run\n4. For missing checks: If a required check never appears in the PR's status checks but exists in main's CI workflow, rebase the PR on main\n5. Add cooldowns to prevent spam\n\n**Key points:**\n- NOT overly aggressive - only at 4x typical time for stuck checks\n- Data-driven based on actual historical times\n- Detect \"new\" required checks that the PR doesn't have and auto-rebase\n\nUse case: PRs #566 and #570 were blocked by missing \"E2E - idle_break_e2e\" - they predated the workflow change. Daemon should have detected this and rebased automatically.",
+      "id": "4",
+      "owner": "broadway",
+      "status": "completed",
+      "subject": "Add daemon auto-retry for stale/missing CI checks"
+    },
+    {
+      "blocked_by": [],
+      "description": "Instead of the daemon parsing review comments to auto-merge, the author coworker should handle merge decisions themselves.\n\nWhen a PR receives a comment or review:\n1. If the author coworker is idle/shutdown, call them in\n2. Nudge the author coworker about the new comment/review\n3. Author reads the feedback and decides whether to merge, address feedback, or take other action\n\nThis is simpler than daemon comment parsing and keeps the merge decision with the agent who has full context of the PR.\n\nReplaces the approach in closed PR #571.\n\nPR #573 is ready - removes auto-merge, author-driven approach. Clean commit without state.json.",
+      "id": "5",
+      "owner": "park",
+      "status": "completed",
+      "subject": "Call-in and nudge PR authors on comments/reviews"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: Park had main checked out in their worktree. Coworkers should NEVER checkout the default branch (main/master).\n\nThis can cause issues:\n1. Multiple worktrees can't share the same branch\n2. Coworkers might accidentally commit directly to main\n3. Blocks other worktrees from using main\n\nFix needed:\n- Add validation when spawning coworkers to ensure they're on a feature branch\n- Add validation in coworker prompts/hooks to prevent `git checkout main`\n- If a coworker somehow ends up on main, detect and fix it (checkout a new feature branch)\n\nCheck how park ended up on main and prevent it from happening.",
+      "id": "6",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Prevent coworkers from checking out default branch"
+    },
+    {
+      "blocked_by": [
+        "8"
+      ],
+      "description": "The `midtown chat` TUI should check every 30 seconds whether it's at the end of the channel. If it got stuck further up (e.g., user scrolled up and forgot), it should auto-scroll back to the end.\n\nThis prevents the chat from appearing frozen/stuck when it's actually just scrolled up in history.",
+      "id": "7",
+      "owner": "vernon",
+      "status": "completed",
+      "subject": "Chat TUI should auto-scroll to end every 30 seconds"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: The `midtown chat` TUI spontaneously scrolled to the beginning of the channel on its own. This should never happen.\n\nThis is a higher priority than the auto-scroll-to-end feature (task #7) - we need to fix this regression/bug first.\n\nInvestigate what's causing unexpected scroll position changes in the chat TUI. Could be:\n- A render loop resetting scroll state\n- File watcher event causing re-render from top\n- State management issue with scroll position\n- Race condition in the async event handling\n\nThe chat should maintain its scroll position unless the user explicitly scrolls or it auto-scrolls to follow new messages at the bottom.",
+      "id": "8",
+      "owner": "york",
+      "status": "completed",
+      "subject": "Fix chat TUI unexpectedly scrolling to beginning"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: The daemon is warning \"Reviewer pleasant is idle but hasn't posted review for PR #572 yet\" but pleasant DID post a review comment (visible via `gh pr view 572 --json comments`).\n\nThe daemon's review detection is not recognizing that the review comment was posted. It should:\n1. Check PR comments for review signatures from the assigned reviewer\n2. Once a review comment is detected, stop warning about missing reviews\n3. Clear the reviewer assignment from the \"pending\" state\n\nThis might be related to how the daemon checks for reviews - it may be looking for formal GitHub reviews instead of comment-based reviews.",
+      "id": "9",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Fix daemon not detecting posted review comments"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: The daemon incorrectly detects coworkers as \"stuck compacting\" when they're not.\n\n**Test cases captured:**\n1. `snapshot-false-positive-bugs-20260204-135417.json` - riverside false positive\n2. `snapshot-20260204-144326.json` - york detected as \"stuck compacting\" but actually had a backlog of nudges in its input box\n\n**Two types of nudge backlogs to distinguish:**\n1. **In the input box** - nudges stacked up IN the input box → needs Enter to process\n2. **Above the input box** - nudges stacked up ABOVE the input box (permission dialogs, etc.) → needs Escape to dismiss\n\n**Root cause:** The daemon may be misinterpreting these nudge backlog states as stuck compaction.\n\n**Fix needed:**\n- Detect and differentiate between:\n  - Actual stuck compaction\n  - Nudge backlog in input box (Enter needed)\n  - Nudge backlog above input box (Escape needed)\n- Don't treat nudge backlogs as stuck state\n- May need different remediation for each backlog type\n- Coordinate with task #11 (smart nudge timing) to prevent backlogs in the first place",
+      "id": "10",
+      "owner": "york",
+      "status": "completed",
+      "subject": "Fix false positive stuck compaction detection"
+    },
+    {
+      "blocked_by": [],
+      "description": "UX Bug: Nudges inject text via tmux send-keys while the user is trying to type, disrupting their input.\n\n**Two types of nudge backlogs to prevent:**\n1. **In the input box** - nudges stacking up IN the input box → needs Enter to clear\n2. **Above the input box** - nudges stacking up ABOVE the input box (permission dialogs, etc.) → needs Escape to dismiss\n\n**New nudge behavior:**\n\n1. Before nudging, check if the input box is empty\n2. If empty → safe to nudge immediately\n3. If not empty, check if the content is mostly from the daemon's last nudge\n   - If yes → safe to nudge (can overwrite stale nudge text)\n   - If no → user is typing something, DON'T nudge yet\n4. When user content detected:\n   - Wait 10 seconds, check again\n   - If input has changed → user still typing, wait another 10 seconds\n   - Repeat this process\n5. Only append onto unrecognized input content if it hasn't changed for 20 seconds\n\nAlso consider:\n- Detecting and handling existing backlog before adding more nudges\n- Different handling for \"above input\" backlog vs \"in input\" backlog\n\nThe daemon should track:\n- Last nudge content sent to each coworker/lead\n- Input box state before nudging\n- Timestamps of input changes\n\n**IMPORTANT: Create an E2E test for this using real Claude to verify the behavior works correctly in practice.**",
+      "id": "11",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Make nudges respect user input in progress"
+    },
+    {
+      "blocked_by": [],
+      "description": "Bug: York received a nudge about PR #577 but that PR was authored by btucker, not york.\n\nThe daemon is sending PR-related nudges to the wrong coworkers. It should:\n1. Correctly identify the PR author (the coworker who created the PR)\n2. Only nudge that author about review feedback, CI status, etc.\n3. Not confuse GitHub username (btucker) with coworker names\n\nThis may be related to the author-driven merge changes (PR #573/task #5) - need to verify the author identification logic is correct.",
+      "id": "12",
+      "owner": "amsterdam",
+      "status": "completed",
+      "subject": "Fix misdirected PR nudges to wrong coworkers"
+    },
+    {
+      "blocked_by": [],
+      "description": "The GitHub CI check notifications in the channel are noisy when many checks complete around the same time:\n\n```\n08:47 Check 'Clippy' passed on main\n08:48 Check 'E2E - idle_break_e2e' passed on main\n08:48 Check 'Test' passed on main\n08:48 Check 'E2E - tailf_integration' passed on main\n08:48 Check 'E2E - spawn_race_test' passed on main\n```\n\n**Improvement:** Batch these into a single message when multiple checks complete within a short window (e.g., 30-60 seconds):\n\n```\n08:48 5 checks passed on main: Clippy, Test, E2E - idle_break_e2e, E2E - tailf_integration, E2E - spawn_race_test\n```\n\nOr even more condensed:\n```\n08:48 All CI checks passed on main\n```\n\n**Implementation ideas:**\n- Buffer CI check events for a short window before posting to channel\n- If multiple checks for the same ref/PR complete, batch them\n- Keep important events (PR opened, failures) as individual messages\n- Only batch \"passed\" checks, always show failures immediately\n\n**IMPORTANT:** This is purely a channel display change. The underlying webhook/event handling and PR author nudging logic should NOT be affected. The daemon should still process each CI event individually for nudge decisions - only the channel message posting gets batched.",
+      "id": "13",
+      "owner": "broadway",
+      "status": "completed",
+      "subject": "Batch repetitive GitHub CI notifications in channel"
+    },
+    {
+      "blocked_by": [],
+      "description": "Fixed: Added direct nudge_lead() calls in dispatch.rs and mod.rs. PR #584 opened.",
+      "id": "14",
+      "owner": "vernon",
+      "status": "completed",
+      "subject": "Investigate broken lead nudges for @lead mentions"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/effects.rs at 0%\n\nAdd E2E tests that exercise the effect execution layer:\n- Effect::SpawnCoworker - test coworker spawning via real daemon\n- Effect::ShutdownCoworker - test coworker shutdown\n- Effect::NudgeCoworker / Effect::NudgeLead - test nudge delivery\n- Effect::PostChannelMessage - test channel posting\n- Effect::AutoMergePr - test PR merge triggering\n\nUse the containerized E2E approach with real Claude where needed. Tests should verify effects actually execute (tmux windows created, messages posted, etc.).",
+      "id": "15",
+      "owner": "lexington",
+      "status": "completed",
+      "subject": "E2E tests for daemon effects execution"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/pr.rs at 0.94%\n\nAdd E2E tests for PR management flows:\n- PR polling and state detection\n- CI status tracking and stale check detection\n- Review comment detection\n- PR author identification and nudging\n- Auto-merge eligibility checking\n- Merge conflict detection\n\nUse real GitHub PRs in test repo or mock webhook events to exercise the PR handling code paths.",
+      "id": "16",
+      "owner": "columbus",
+      "status": "completed",
+      "subject": "E2E tests for daemon PR management"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/health.rs at 8.89%\n\nAdd E2E tests for coworker health monitoring:\n- Stuck detection (various stuck states)\n- Idle detection\n- Compaction detection (avoiding false positives - see task #10)\n- Usage limit detection\n- Orphan worktree detection\n- Session crash detection\n\nUse captured snapshots as test fixtures and verify health decisions match expected behavior.",
+      "id": "17",
+      "owner": "amsterdam",
+      "status": "completed",
+      "subject": "E2E tests for daemon health checks"
+    },
+    {
+      "blocked_by": [],
+      "description": "**TESTS WRITTEN** - 19 new E2E tests added to /Users/btucker/projects/midtown/tests/daemon_e2e.rs (lines 2100-2665)\n\nTests cover:\n- coworker.report-state: phase validation (3 tests)\n- coworker.nudge: response structure (1 test)\n- coworker.asking: channel posting (2 tests)\n- task.updated: params and missing task (3 tests)\n- daemon.check-pending: dispatch trigger (1 test)\n- channel.read: all=true parameter (1 test)\n- channel.post: /me actions, shell unescaping, mentions (4 tests)\n- coworker.break: params and nonexistent (2 tests)\n- reminder.cancel/create: validation (2 tests)\n\n**BLOCKER**: Shell environment completely broken (exit code 1 on all commands including `true`). Cannot:\n- Run cargo check to verify compilation\n- Create feature branch\n- Commit changes\n\nNeed: Working shell to complete git workflow",
+      "id": "18",
+      "owner": "york",
+      "status": "in_progress",
+      "subject": "E2E tests for daemon RPC handlers"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/dispatch.rs at 23.42%\n\nAdd E2E tests for task dispatch and coworker assignment:\n- Task assignment to idle coworkers\n- Task priority handling\n- Blocked task detection (blockedBy dependencies)\n- Orphan task recovery\n- Reviewer spawning for PRs\n- Max coworker limit enforcement\n\nVerify the daemon correctly assigns work and manages coworker lifecycle.",
+      "id": "19",
+      "owner": "park",
+      "status": "completed",
+      "subject": "E2E tests for daemon dispatch logic"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: daemon/webhook_fwd.rs at 0%, daemon/events.rs at 0%\n\nAdd E2E tests for GitHub webhook processing:\n- PR opened/closed/merged events\n- Review submitted events\n- Check run completed events\n- Push events\n- Webhook signature verification\n- Event deduplication\n\nUse mock webhook payloads or test against real GitHub webhooks in test environment.",
+      "id": "20",
+      "owner": "riverside",
+      "status": "in_progress",
+      "subject": "E2E tests for webhook handling"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: web.rs at 31.19%, webserver.rs at 30.63%\n\nAdd E2E tests for the web interface:\n- WebSocket connection and message streaming\n- Chat message display\n- Coworker status updates\n- Kanban board data\n- Static file serving\n- Multi-project routing\n\nCould use Playwright (already have MCP tools) or headless browser testing.",
+      "id": "21",
+      "owner": "vernon",
+      "status": "in_progress",
+      "subject": "E2E tests for web UI and WebSocket"
+    },
+    {
+      "blocked_by": [],
+      "description": "Current coverage: tmux.rs at 41.57%\n\nAdd E2E tests for tmux interactions:\n- Window creation and naming\n- Pane capture and parsing\n- Send-keys for nudges\n- Session management\n- Status bar updates\n- Window killing safety checks\n\nThese tests need real tmux sessions - use the existing tmux_e2e test pattern.",
+      "id": "22",
+      "owner": "pleasant",
+      "status": "completed",
+      "subject": "E2E tests for tmux operations"
+    },
+    {
+      "blocked_by": [],
+      "description": "Vernon's worktree was missing while the daemon still showed them as active. Their Claude Code session was running but couldn't access files or run commands because ~/.midtown/coworkers/midtown/vernon/ didn't exist.\n\nInvestigation needed:\n1. Check daemon logs for any orphan cleanup that might have removed vernon's worktree incorrectly\n2. Check if there's a race condition between worktree creation and coworker startup\n3. Verify the orphan detection logic doesn't incorrectly flag active coworkers\n4. Add safeguards to prevent coworkers from running without valid worktrees\n\nRecent changes to watch:\n- PR #568 merged \"fix: Exclude tmux window orphans from worktree cleanup\"\n- The orphan cleanup logic in tmux.rs\n\nEvidence: Vernon was able to mark task #14 as completed but their bash commands (git, midtown) all failed with \"command not found\" or exit code 1.",
+      "id": "23",
+      "owner": "madison",
+      "status": "pending",
+      "subject": "Investigate and fix coworker worktree corruption (vernon incident)"
+    },
+    {
+      "blocked_by": [],
+      "description": "Madison's review of PR #581 identified that WebhookEvent has grown to 8 optional fields, requiring repetitive `field: None` in every constructor (5 places currently).\n\nRecommended fix:\n1. Derive Default for WebhookEvent\n2. Or use a builder pattern\n\nThis will reduce boilerplate and make adding new optional fields cleaner.\n\nSource: PR #581 review comment",
+      "id": "24",
+      "owner": "columbus",
+      "status": "in_progress",
+      "subject": "Refactor WebhookEvent to use Default or builder pattern"
+    },
+    {
+      "blocked_by": [],
+      "description": "The daemon is not assigning pending tasks to idle coworkers or spawning reviewers for green PRs.\n\nSymptoms:\n- 7 coworkers showing as idle\n- 4 pending tasks available\n- 7 green PRs without reviewer assignments\n- Daemon repeatedly restarts but doesn't dispatch work\n\nExpected behavior:\n- Idle coworkers should be assigned pending tasks\n- Green PRs should get reviewer coworkers spawned\n\nThis appears to be a bug in the task dispatch or reviewer spawning logic in rules.rs or effects.rs.",
+      "id": "25",
+      "owner": "riverside",
+      "status": "completed",
+      "subject": "Fix daemon task dispatch - not assigning pending tasks to idle coworkers"
+    }
+  ],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [
+    "riverside",
+    "vernon",
+    "york",
+    "columbus"
+  ],
+  "ci_passed_pr_coworkers": [
+    "columbus"
+  ],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": false,
+      "name": "riverside",
+      "started_at": "2026-02-04T15:43:42.439736Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "columbus",
+      "started_at": "2026-02-04T15:44:48.919057Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "madison",
+      "started_at": "2026-02-04T15:40:13.601954Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "york",
+      "started_at": "2026-02-04T15:43:50.127855Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "park",
+      "started_at": "2026-02-04T15:38:15.920686Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "lexington",
+      "started_at": "2026-02-04T15:33:46.132557Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "started_at": "2026-02-04T15:33:14.135039Z"
+    },
+    {
+      "isolated_tasks": false,
+      "name": "vernon",
+      "started_at": "2026-02-04T15:43:46.277581Z"
+    }
+  ],
+  "coworker_start_times": {
+    "amsterdam": "2026-02-04T15:33:14.135039Z",
+    "columbus": "2026-02-04T15:44:48.919057Z",
+    "lexington": "2026-02-04T15:33:46.132557Z",
+    "madison": "2026-02-04T15:40:13.601954Z",
+    "park": "2026-02-04T15:38:15.920686Z",
+    "riverside": "2026-02-04T15:43:42.439736Z",
+    "vernon": "2026-02-04T15:43:46.277581Z",
+    "york": "2026-02-04T15:43:50.127855Z"
+  },
+  "coworker_stop_times": {
+    "amsterdam": "2026-02-04T15:32:41.419191Z",
+    "broadway": "2026-02-04T15:37:42.328657Z",
+    "columbus": "2026-02-04T15:44:45.298821Z",
+    "lexington": "2026-02-04T15:32:41.192974Z",
+    "madison": "2026-02-04T15:40:08.709940Z",
+    "park": "2026-02-04T15:37:42.102584Z",
+    "pleasant": "2026-02-04T15:40:08.484901Z",
+    "riverside": "2026-02-04T15:43:38.827236Z",
+    "vernon": "2026-02-04T15:43:42.666786Z",
+    "york": "2026-02-04T15:43:46.504447Z"
+  },
+  "coworkers_with_merged_prs": [
+    "park",
+    "amsterdam",
+    "pleasant",
+    "york",
+    "vernon",
+    "broadway",
+    "lexington",
+    "riverside"
+  ],
+  "coworkers_with_open_prs": [
+    "columbus"
+  ],
+  "coworkers_with_running_subagents": [],
+  "coworkers_with_unblocked_deps": [],
+  "in_progress_tasks": [
+    [
+      "18",
+      "E2E tests for daemon RPC handlers",
+      "york"
+    ],
+    [
+      "20",
+      "E2E tests for webhook handling",
+      "riverside"
+    ],
+    [
+      "21",
+      "E2E tests for web UI and WebSocket",
+      "vernon"
+    ],
+    [
+      "24",
+      "Refactor WebhookEvent to use Default or builder pattern",
+      "columbus"
+    ]
+  ],
+  "is_at_dev_limit": true,
+  "now_utc": "2026-02-04T15:46:19.916007Z",
+  "pane_contents": {
+    "amsterdam": "     … +17 lines (ctrl+o to expand)\n\n⏺ Bash(midtown state reviewing --task 0 && midtown channel post \"/me reviewing PR #589\")\n  ⎿  amsterdam → review\n     Message posted to channel\n\n⏺ Skill(code-review:code-review)\n  ⎿  Successfully loaded skill · 7 tools allowed\n\n⏺ I'll create a todo list and work through this code review systematically.\n✔ Task #1 created: Check PR #589 eligibility for review\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #2 created: Find relevant CLAUDE.md files\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #3 created: Get PR #589 summary\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #4 created: Run 5 parallel code review agents\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 created: Score and filter issues\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #6 created: Post review comment on PR #589\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #1 updated: owner, status → in progress\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #2 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #3 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #4 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #6 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ Now let me run the first three tasks in parallel - eligibility check, finding CLAUDE.md files, and getting the PR summary.\n\n⏺ 3 Task agents finished (ctrl+o to expand)\n   ├─ Check PR #589 eligibility · 1 tool use · 19.8k tokens\n   │  ⎿  Done\n   ├─ Find CLAUDE.md files · 2 tool uses · 19.9k tokens\n   │  ⎿  Done\n   └─ Get PR #589 summary · 4 tool uses · 21.2k tokens\n      ⎿  Done\n\n⏺ PR is eligible. Let me update task status and proceed with the 5 parallel code review agents.\n✔ Task #1 updated: status → completed\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #2 updated: status → completed\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #3 updated: status → completed\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #4 updated: status → in progress\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ Now launching 5 parallel Sonnet agents for the code review:\n\n⏺ 5 Task agents finished (ctrl+o to expand)\n   ├─ CLAUDE.md compliance check · 0 tool uses\n   │  ⎿  Done\n   ├─ Shallow bug scan · 0 tool uses\n   │  ⎿  Done\n   ├─ Git history context review · 0 tool uses\n   │  ⎿  Done\n   ├─ Previous PR comments review · 0 tool uses\n   │  ⎿  Done\n   └─ Code comments compliance · 0 tool uses\n      ⎿  Done\n  ⎿  You've hit your limit · resets 11am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n✻ Sautéed for 1m 33s\n\n  Tasks (3 done, 1 in progress, 2 open) · ctrl+t to hide tasks\n  ◼ #4 Run 5 parallel code review agents (amsterdam)\n  ◻ #5 Score and filter issues (amsterdam)\n  ◻ #6 Post review comment on PR #589 (amsterdam)\n  ✔ #1 Check PR #589 eligibility for review (amsterdam)\n  ✔ #2 Find relevant CLAUDE.md files (amsterdam)\n  ✔ #3 Get PR #589 summary (amsterdam)\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n",
+    "columbus": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/columbus\n\n❯ You've been assigned task #24: Refactor WebhookEvent to use Default or builder pattern. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n  Tasks (18 done, 4 in progress, 1 open) · ctrl+t to hide tasks\n  ◼ #18 E2E tests for daemon RPC handlers (york)\n  ◼ #20 E2E tests for webhook handling (riverside)\n  ◼ #21 E2E tests for web UI and WebSocket (vernon)\n  ◼ #24 Refactor WebhookEvent to use Default or builder pattern (columbus)\n  ◻ #23 Investigate and fix coworker worktree corruption (vernon incident) (madison)\n  ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n  ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n  ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n  ✔ #6 Prevent coworkers from checking out default branch (riverside)\n  ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n   … +13 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "lexington": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/lexington\n\n❯ Review PR #588 using /code-review:code-review 588\n\n⏺ I'll read the channel first to catch up on team activity, then invoke the code-review skill.\n\n⏺ Bash(midtown channel read)\n  ⎿  [2026-02-04T15:33:24.645158+00:00] amsterdam: reviewing PR #589\n     [2026-02-04T15:33:27.200830+00:00] park: waiting for input\n     [2026-02-04T15:33:35.913732+00:00] riverside: 💡 The `webhook_fwd.rs` module manages the `gh webhook forward` process - a watchdog that:\n     … +27 lines (ctrl+o to expand)\n\n⏺ Bash(midtown channel post \"/me reviewing PR #588\")\n  ⎿  Message posted to channel\n\n⏺ Bash(midtown state reviewing --task 0)\n  ⎿  lexington → review\n\n⏺ Skill(code-review:code-review)\n  ⎿  Successfully loaded skill · 7 tools allowed\n\n⏺ I'll create a todo list and work through the code review systematically.\n✔ Task #1 created: Check PR #588 eligibility for review\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #1 updated: owner, status → in progress\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #2 created: Find relevant CLAUDE.md files\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #3 created: Get PR #588 summary\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #4 created: Run 5 parallel code review agents\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 created: Score and filter issues\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #6 created: Post review comment on PR #588\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #2 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #3 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #4 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #5 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n✔ Task #6 updated: owner\n  ⎿  Running PostToolUse hooks… (1/2 done)\n\n⏺ Now let me run the first three tasks in parallel - eligibility check, finding CLAUDE.md files, and getting PR summary:\n\n⏺ 3 Task agents finished (ctrl+o to expand)\n   ├─ Check PR #588 eligibility · 3 tool uses · 20.2k tokens\n   │  ⎿  Done\n   ├─ Find CLAUDE.md files · 2 tool uses · 19.8k tokens\n   │  ⎿  Done\n   └─ Get PR #588 summary · 2 tool uses · 19.7k tokens\n      ⎿  Done\n\n⏺ The eligibility check flagged this PR because it contains \"Generated with Claude Code\" in the description - but that's the standard PR footer, not an indication it shouldn't be reviewed. Let me verify this more carefully:\n\n⏺ Bash(gh pr view 588 --json state,isDraft,author,title,body,comments)\n  ⎿  {\n       \"author\": {\n         \"id\": \"MDQ6VXNlcjYxODE=\",\n     … +12 lines (ctrl+o to expand)\n  ⎿  You've hit your limit · resets 11am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n✻ Worked for 1m 1s\n\n  Tasks (0 done, 1 in progress, 5 open) · ctrl+t to hide tasks\n  ◼ #1 Check PR #588 eligibility for review (lexington)\n  ◻ #2 Find relevant CLAUDE.md files (lexington)\n  ◻ #3 Get PR #588 summary (lexington)\n  ◻ #4 Run 5 parallel code review agents (lexington)\n  ◻ #5 Score and filter issues (lexington)\n  ◻ #6 Post review comment on PR #588 (lexington)\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n",
+    "madison": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/madison\n\n❯ You've been assigned task #23: Investigate and fix coworker worktree corruption (vernon incident). Get started!\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n❯ You have pending task #23: Investigate and fix coworker worktree corruption (vernon incident). Get started!\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n❯ You have pending task #23: Investigate and fix coworker worktree corruption (vernon incident). Get started!\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n  Tasks (18 done, 4 in progress, 1 open) · ctrl+t to hide tasks\n  ◼ #18 E2E tests for daemon RPC handlers (york)\n  ◼ #20 E2E tests for webhook handling (riverside)\n  ◼ #21 E2E tests for web UI and WebSocket (vernon)\n  ◼ #24 Refactor WebhookEvent to use Default or builder pattern (columbus)\n  ◻ #23 Investigate and fix coworker worktree corruption (vernon incident) (madison)\n  ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n  ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n  ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n  ✔ #6 Prevent coworkers from checking out default branch (riverside)\n  ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n   … +13 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "park": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/park\n\n❯ Review PR #587 using /code-review:code-review 587\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "riverside": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/riverside\n\n❯ You've been assigned task #20: E2E tests for webhook handling. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n  Tasks (18 done, 4 in progress, 1 open) · ctrl+t to hide tasks\n  ◼ #18 E2E tests for daemon RPC handlers (york)\n  ◼ #20 E2E tests for webhook handling (riverside)\n  ◼ #21 E2E tests for web UI and WebSocket (vernon)\n  ◼ #24 Refactor WebhookEvent to use Default or builder pattern (columbus)\n  ◻ #23 Investigate and fix coworker worktree corruption (vernon incident) (madison)\n  ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n  ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n  ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n  ✔ #6 Prevent coworkers from checking out default branch (riverside)\n  ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n   … +13 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "vernon": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/vernon\n\n❯ You've been assigned task #21: E2E tests for web UI and WebSocket. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n  Tasks (18 done, 4 in progress, 1 open) · ctrl+t to hide tasks\n  ◼ #18 E2E tests for daemon RPC handlers (york)\n  ◼ #20 E2E tests for webhook handling (riverside)\n  ◼ #21 E2E tests for web UI and WebSocket (vernon)\n  ◼ #24 Refactor WebhookEvent to use Default or builder pattern (columbus)\n  ◻ #23 Investigate and fix coworker worktree corruption (vernon incident) (madison)\n  ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n  ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n  ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n  ✔ #6 Prevent coworkers from checking out default branch (riverside)\n  ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n   … +13 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "york": "\n ▐▛███▜▌   Claude Code v2.1.19\n▝▜█████▛▘  Opus 4.5 · Claude Max\n  ▘▘ ▝▝    ~/.midtown/coworkers/midtown/york\n\n❯ You've been assigned task #18: E2E tests for daemon RPC handlers. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.\n  ⎿  You've hit your limit · resets 10am (America/Chicago)\n     /upgrade to increase your usage limit.\n\n  Tasks (18 done, 4 in progress, 1 open) · ctrl+t to hide tasks\n  ◼ #18 E2E tests for daemon RPC handlers (york)\n  ◼ #20 E2E tests for webhook handling (riverside)\n  ◼ #21 E2E tests for web UI and WebSocket (vernon)\n  ◼ #24 Refactor WebhookEvent to use Default or builder pattern (columbus)\n  ◻ #23 Investigate and fix coworker worktree corruption (vernon incident) (madison)\n  ✔ #3 Update auto-merge to recognize comment-based reviews (park)\n  ✔ #4 Add daemon auto-retry for stale/missing CI checks (broadway)\n  ✔ #5 Call-in and nudge PR authors on comments/reviews (park)\n  ✔ #6 Prevent coworkers from checking out default branch (riverside)\n  ✔ #7 Chat TUI should auto-scroll to end every 30 seconds (vernon)\n   … +13 completed\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+Tab to cycle)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+  },
+  "pending_tasks_with_owners": [
+    [
+      "23",
+      "Investigate and fix coworker worktree corruption (vernon incident)",
+      "madison"
+    ]
+  ],
+  "pending_tasks_without_owners": [],
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {
+    "amsterdam": 589,
+    "lexington": 588,
+    "park": 587
+  },
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "riverside",
+      "session_id": "69828d3c-97cc-4f58-bfb6-8529c258867a",
+      "started_at": "2026-02-04T15:43:42.439736Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/riverside"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "columbus",
+      "session_id": "10ad5b70-bfe7-49dc-a746-4f172ab759cc",
+      "started_at": "2026-02-04T15:44:48.919057Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/columbus"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": "ed41e48e-9c26-4bca-a342-6f91e1e73322",
+      "started_at": "2026-02-04T15:40:13.601954Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "york",
+      "session_id": "e3cada2f-0f70-4e50-9035-d51b0653d34b",
+      "started_at": "2026-02-04T15:43:50.127855Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "park",
+      "session_id": "c2b52ecc-9c0f-4e13-9740-11a31a215f4f",
+      "started_at": "2026-02-04T15:38:15.920686Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/park"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "lexington",
+      "session_id": "fa8ef3e1-fd15-41d8-9026-4b0c3d48285c",
+      "started_at": "2026-02-04T15:33:46.132557Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/lexington"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "amsterdam",
+      "session_id": "f6becc58-c4ad-47a2-81ce-da7585ad5369",
+      "started_at": "2026-02-04T15:33:14.135039Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/amsterdam"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "vernon",
+      "session_id": "0ed547b0-4aa1-4a3f-a20c-a12e9692fe8b",
+      "started_at": "2026-02-04T15:43:46.277581Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/vernon"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": true
+}
