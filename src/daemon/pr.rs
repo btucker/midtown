@@ -667,18 +667,42 @@ async fn collect_stuck_condition_effects(
 
             tracker.track(&pr_id, StuckConditionType::NoReview);
             if tracker.should_nudge(&pr_id, StuckConditionType::NoReview) {
-                let context = if is_assigned {
-                    "I assigned a reviewer but no review has been posted yet"
+                let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::NoReview);
+                let has_available_slots = state.coworkers.next_available_name().is_some();
+
+                let nudge = if prior_nudges >= STUCK_ESCALATION_NUDGE_COUNT {
+                    // Escalation: this has persisted too long, suggest investigation
+                    let context = if is_assigned && has_available_slots {
+                        "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug."
+                    } else if !is_assigned && has_available_slots {
+                        "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug."
+                    } else if is_assigned {
+                        "A reviewer was assigned but hasn't posted a review."
+                    } else {
+                        "No reviewer could be assigned (all slots may be in use)."
+                    };
+                    format!(
+                        "@lead PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
+                        pr_number,
+                        truncate_str(title, 40),
+                        age_secs / 60,
+                        context,
+                    )
                 } else {
-                    "I couldn't assign a reviewer"
+                    // Normal warning
+                    let context = if is_assigned {
+                        "I assigned a reviewer but no review has been posted yet"
+                    } else {
+                        "I couldn't assign a reviewer"
+                    };
+                    format!(
+                        "@lead PR #{} ({}) has been open for {} minutes with no review — {}",
+                        pr_number,
+                        truncate_str(title, 40),
+                        age_secs / 60,
+                        context,
+                    )
                 };
-                let nudge = format!(
-                    "@lead PR #{} ({}) has been open for {} minutes with no review — {}",
-                    pr_number,
-                    truncate_str(title, 40),
-                    age_secs / 60,
-                    context,
-                );
                 effects.extend(stuck_nudge_effects(&nudge));
                 tracker.record_nudge(&pr_id, StuckConditionType::NoReview);
                 nudge_count += 1;
@@ -695,12 +719,24 @@ async fn collect_stuck_condition_effects(
             if stuck_duration >= STUCK_UNRESOLVED_FEEDBACK_DURATION
                 && tracker.should_nudge(&pr_id, StuckConditionType::UnresolvedFeedback)
             {
-                let nudge = format!(
-                    "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
-                    pr_number,
-                    truncate_str(title, 40),
-                    stuck_duration.as_secs() / 60,
-                );
+                let prior_nudges =
+                    tracker.nudge_count(&pr_id, StuckConditionType::UnresolvedFeedback);
+
+                let nudge = if prior_nudges >= STUCK_ESCALATION_NUDGE_COUNT {
+                    format!(
+                        "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't responded despite repeated nudges. The coworker may be stuck or the task may need reassignment.",
+                        pr_number,
+                        truncate_str(title, 40),
+                        stuck_duration.as_secs() / 60,
+                    )
+                } else {
+                    format!(
+                        "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
+                        pr_number,
+                        truncate_str(title, 40),
+                        stuck_duration.as_secs() / 60,
+                    )
+                };
                 effects.extend(stuck_nudge_effects(&nudge));
                 tracker.record_nudge(&pr_id, StuckConditionType::UnresolvedFeedback);
                 nudge_count += 1;
@@ -717,12 +753,23 @@ async fn collect_stuck_condition_effects(
             if stuck_duration >= STUCK_MERGE_READY_DURATION
                 && tracker.should_nudge(&pr_id, StuckConditionType::MergeReady)
             {
-                let nudge = format!(
-                    "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
-                    pr_number,
-                    truncate_str(title, 40),
-                    stuck_duration.as_secs() / 60,
-                );
+                let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::MergeReady);
+
+                let nudge = if prior_nudges >= STUCK_ESCALATION_NUDGE_COUNT {
+                    format!(
+                        "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — the author isn't responding to merge nudges. Consider merging manually or investigating the coworker.",
+                        pr_number,
+                        truncate_str(title, 40),
+                        stuck_duration.as_secs() / 60,
+                    )
+                } else {
+                    format!(
+                        "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
+                        pr_number,
+                        truncate_str(title, 40),
+                        stuck_duration.as_secs() / 60,
+                    )
+                };
                 effects.extend(stuck_nudge_effects(&nudge));
                 tracker.record_nudge(&pr_id, StuckConditionType::MergeReady);
                 nudge_count += 1;
