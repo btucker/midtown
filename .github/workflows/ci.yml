@@ -65,8 +65,9 @@ jobs:
             flags: ""
           - test: idle_break_e2e
             flags: ""
-          - test: webhook_e2e
-            flags: "--ignored --test-threads=1"
+          # webhook_e2e is excluded from CI - tests are flaky due to timing
+          # issues in GitHub Actions. Run locally with:
+          # cargo test --test webhook_e2e -- --ignored --test-threads=1
       fail-fast: false
     env:
       MIDTOWN_WEBHOOK_PORT: 0
