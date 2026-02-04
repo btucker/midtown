@@ -432,22 +432,20 @@ pub(crate) fn has_running_subagent(pane_content: &str) -> bool {
     false
 }
 
-/// Decision output for usage limit detection.
+/// Decision output for usage limit detection (exported for E2E testing).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum UsageLimitDecision {
+pub enum UsageLimitDecision {
     /// Usage limit detected in pane — schedule a nudge.
     Detected { coworker: String },
     /// No usage limit found in any pane.
     NoneDetected,
 }
 
-/// Decide whether pane contents indicate a usage limit.
+/// Decide whether pane contents indicate a usage limit (exported for E2E testing).
 ///
 /// Scans pane contents for known usage/rate limit patterns.
 /// The caller is responsible for skipping this call when a nudge is already scheduled.
-pub(crate) fn decide_usage_limit_detection(
-    pane_contents: &HashMap<String, String>,
-) -> UsageLimitDecision {
+pub fn decide_usage_limit_detection(pane_contents: &HashMap<String, String>) -> UsageLimitDecision {
     for (name, content) in pane_contents {
         if content.contains(USAGE_LIMIT_PATTERN) {
             return UsageLimitDecision::Detected {
@@ -486,16 +484,16 @@ pub(crate) fn decide_usage_limit_expiry(
 // Stuck coworker detection
 // ---------------------------------------------------------------------------
 
-/// A coworker detected as stuck (pane unchanged for the stuck duration).
+/// A coworker detected as stuck (pane unchanged for the stuck duration, exported for E2E testing).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StuckCoworkerRestart {
+pub struct StuckCoworkerRestart {
     pub name: String,
     pub task_id: String,
     pub task_subject: String,
 }
 
-/// Result of stuck coworker detection: restart decisions and updated hash state.
-pub(crate) struct StuckDetectionResult {
+/// Result of stuck coworker detection: restart decisions and updated hash state (exported for E2E testing).
+pub struct StuckDetectionResult {
     /// Coworkers that should be restarted.
     pub restarts: Vec<StuckCoworkerRestart>,
     /// Updated pane hash entries to replace the current state.
@@ -516,7 +514,8 @@ pub(crate) struct StuckDetectionResult {
 /// Pure function: takes the current pane hash state and pane contents,
 /// returns restart decisions and the updated hash state. The caller is
 /// responsible for applying the hash updates to persistent state.
-pub(crate) fn decide_stuck_coworker_restarts(
+/// Exported for E2E testing.
+pub fn decide_stuck_coworker_restarts(
     pane_hashes: &HashMap<String, (u64, Instant)>,
     pane_contents: &HashMap<String, String>,
     in_progress_tasks: &[(String, String, String)],
@@ -590,9 +589,9 @@ pub(crate) fn decide_stuck_coworker_restarts(
 // Compaction whirlpool & queued prompt detection
 // ---------------------------------------------------------------------------
 
-/// Action to recover a coworker from a stuck UI state.
+/// Action to recover a coworker from a stuck UI state (exported for E2E testing).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StuckUiRecovery {
+pub enum StuckUiRecovery {
     /// Coworker is stuck in compaction (whirlpool/baking). Send Escape.
     InterruptCompaction { name: String },
     /// Coworker has queued text sitting in the input but is not processing it.
@@ -907,7 +906,8 @@ fn is_input_separator(line: &str) -> bool {
 /// `coworker_start_times` and `now_utc` are used for age-based protection:
 /// coworkers younger than `min_queued_nudge_age` are excluded from queued
 /// nudge detection (the TUI structure is still forming during startup).
-pub(crate) fn decide_stuck_ui_recoveries(
+/// Exported for E2E testing.
+pub fn decide_stuck_ui_recoveries(
     pane_contents: &HashMap<String, String>,
     min_compaction_duration: Duration,
     coworker_start_times: &HashMap<String, DateTime<Utc>>,
@@ -951,7 +951,8 @@ pub(crate) fn decide_stuck_ui_recoveries(
 ///
 /// The age threshold prevents false positives during the ~3-8s window after
 /// spawn where the TUI hasn't rendered yet.
-pub(crate) fn detect_blank_pane_zombies(
+/// Exported for E2E testing.
+pub fn detect_blank_pane_zombies(
     blank_pane_coworkers: &HashSet<String>,
     coworker_start_times: &HashMap<String, DateTime<Utc>>,
     now_utc: DateTime<Utc>,
