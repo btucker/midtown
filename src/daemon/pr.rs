@@ -670,8 +670,7 @@ async fn collect_stuck_condition_effects(
                 let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::NoReview);
                 let has_available_slots = state.coworkers.next_available_name().is_some();
 
-                // prior_nudges is the count before this nudge, so +1 gives "this nudge number"
-                let nudge = if prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT {
+                let nudge = if should_escalate(prior_nudges) {
                     // Escalation: this has persisted too long, suggest investigation
                     let context = if is_assigned && has_available_slots {
                         "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug."
@@ -723,8 +722,7 @@ async fn collect_stuck_condition_effects(
                 let prior_nudges =
                     tracker.nudge_count(&pr_id, StuckConditionType::UnresolvedFeedback);
 
-                // prior_nudges is the count before this nudge, so +1 gives "this nudge number"
-                let nudge = if prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT {
+                let nudge = if should_escalate(prior_nudges) {
                     format!(
                         "@lead PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't responded despite repeated nudges. The coworker may be stuck or the task may need reassignment.",
                         pr_number,
@@ -757,8 +755,7 @@ async fn collect_stuck_condition_effects(
             {
                 let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::MergeReady);
 
-                // prior_nudges is the count before this nudge, so +1 gives "this nudge number"
-                let nudge = if prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT {
+                let nudge = if should_escalate(prior_nudges) {
                     format!(
                         "@lead PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — the author isn't responding to merge nudges. Consider merging manually or investigating the coworker.",
                         pr_number,
@@ -905,6 +902,19 @@ async fn collect_stuck_condition_effects(
     }
 
     effects
+}
+
+/// Determine if a stuck condition should escalate based on nudge count.
+///
+/// Returns true if this nudge (including the current one) meets or exceeds
+/// the escalation threshold. Since `prior_nudges` is the count *before* the
+/// current nudge is recorded, we add 1 to get "this nudge number".
+///
+/// With STUCK_ESCALATION_NUDGE_COUNT = 2:
+/// - First nudge (prior=0): 0+1=1 < 2, no escalation
+/// - Second nudge (prior=1): 1+1=2 >= 2, escalation
+fn should_escalate(prior_nudges: u32) -> bool {
+    prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT
 }
 
 /// Convert a stuck condition nudge message into effects (system message only).
@@ -2604,26 +2614,22 @@ mod tests {
 
     #[test]
     fn test_escalation_triggers_on_second_nudge() {
-        use crate::daemon::constants::STUCK_ESCALATION_NUDGE_COUNT;
-
-        // The escalation condition is: prior_nudges + 1 >= STUCK_ESCALATION_NUDGE_COUNT
+        // Test the should_escalate helper function directly.
         // With STUCK_ESCALATION_NUDGE_COUNT = 2:
         // - First nudge (prior_nudges=0): 0+1=1 < 2, no escalation
         // - Second nudge (prior_nudges=1): 1+1=2 >= 2, ESCALATION
 
-        let prior_nudges_first = 0u32;
-        let prior_nudges_second = 1u32;
-
-        let should_escalate_first = prior_nudges_first + 1 >= STUCK_ESCALATION_NUDGE_COUNT;
-        let should_escalate_second = prior_nudges_second + 1 >= STUCK_ESCALATION_NUDGE_COUNT;
-
         assert!(
-            !should_escalate_first,
+            !super::should_escalate(0),
             "first nudge (prior=0) should NOT escalate"
         );
         assert!(
-            should_escalate_second,
+            super::should_escalate(1),
             "second nudge (prior=1) should escalate"
+        );
+        assert!(
+            super::should_escalate(2),
+            "third+ nudge (prior=2) should escalate"
         );
     }
 
