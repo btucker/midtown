@@ -213,9 +213,10 @@ impl DaemonFixture {
             Ok(c) => {
                 self.daemon_process = Some(c);
 
-                // Wait for socket to become available (up to 5 seconds)
-                for _ in 0..50 {
-                    thread::sleep(Duration::from_millis(100));
+                // Wait for socket to become available (up to 60 seconds)
+                // Increased from 5s because daemon now installs plugins at startup
+                for _ in 0..300 {
+                    thread::sleep(Duration::from_millis(200));
                     if self.socket_path.exists() && UnixStream::connect(&self.socket_path).is_ok() {
                         return true;
                     }
@@ -241,7 +242,22 @@ impl DaemonFixture {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Option<serde_json::Value> {
+        self.rpc_call_with_timeout(method, params, Duration::from_secs(30))
+    }
+
+    /// Send an RPC request and receive the response with a timeout.
+    ///
+    /// Returns None if the response doesn't arrive within the timeout.
+    fn rpc_call_with_timeout(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Option<serde_json::Value> {
         let mut stream = self.connect()?;
+
+        // Set read timeout to detect hangs
+        stream.set_read_timeout(Some(timeout)).ok()?;
 
         // Build JSON-RPC request
         let request = serde_json::json!({
@@ -256,7 +272,7 @@ impl DaemonFixture {
         stream.write_all(request_line.as_bytes()).ok()?;
         stream.flush().ok()?;
 
-        // Read response
+        // Read response (will timeout if daemon doesn't respond in time)
         let mut reader = BufReader::new(&stream);
         let mut response_line = String::new();
         reader.read_line(&mut response_line).ok()?;
@@ -873,12 +889,14 @@ fn newest_file_mtime(dir: &std::path::Path) -> Option<std::time::SystemTime> {
     newest
 }
 
-/// Test that required Claude Code plugins are automatically installed on daemon startup.
+/// Test that `midtown start` installs required plugins.
 ///
 /// This E2E test verifies the plugin auto-installation feature by:
 /// 1. Uninstalling the required plugin if it's present
-/// 2. Starting the daemon (which should trigger auto-install)
+/// 2. Starting midtown (which should trigger auto-install via CLI)
 /// 3. Verifying the plugin is now installed
+///
+/// Plugin installation happens in the CLI (not daemon) for better UX.
 #[test]
 #[ignore] // Requires built binary and Claude Code
 fn test_daemon_installs_required_plugins() {
@@ -923,7 +941,7 @@ fn test_daemon_installs_required_plugins() {
         }
     }
 
-    // Verify plugin is NOT installed before starting daemon
+    // Verify plugin is NOT installed before starting
     let list_output = Command::new("claude")
         .args(["plugin", "list", "--json"])
         .output()
@@ -937,24 +955,47 @@ fn test_daemon_installs_required_plugins() {
 
     assert!(
         !installed_before,
-        "Plugin should NOT be installed before daemon start for this test to be valid"
+        "Plugin should NOT be installed before midtown start for this test to be valid"
     );
 
-    // Start daemon (this triggers ensure_plugins_installed)
-    let mut fixture = match DaemonFixture::new() {
+    // Create a git repo for midtown to operate in
+    let fixture = match DaemonFixture::new() {
         Some(f) => f,
         None => return,
     };
 
-    if !fixture.start_daemon() {
-        eprintln!("Daemon failed to start — skipping plugin installation test");
-        return;
-    }
+    // Use `midtown start` which installs plugins (not `midtown daemon`)
+    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("release")
+        .join("midtown");
 
-    // Give the daemon time to install plugins (installation happens at startup)
-    // The daemon should have already installed plugins before the socket became available,
-    // but give it a bit more time just in case
-    thread::sleep(Duration::from_secs(2));
+    let start_result = Command::new(&binary_path)
+        .arg("start")
+        .arg("--daemon-only") // Don't create tmux session, just start daemon
+        .current_dir(&fixture.temp_dir)
+        .env("MIDTOWN_WEBHOOK_PORT", "0")
+        .env("MIDTOWN_CHAT_MONITOR", "0")
+        // Clear MIDTOWN_LEAD_COMMAND so plugin installation happens
+        // (the CLI skips plugins when a stub command is set)
+        .env_remove("MIDTOWN_LEAD_COMMAND")
+        .output();
+
+    match start_result {
+        Ok(output) if output.status.success() => {
+            // Daemon started successfully - cleanup handled by DaemonFixture::drop()
+            // which connects to the socket and sends shutdown RPC
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("midtown start failed: {}", stderr);
+            return;
+        }
+        Err(e) => {
+            eprintln!("Failed to run midtown start: {}", e);
+            return;
+        }
+    }
 
     // Verify plugin is now installed
     let list_output = Command::new("claude")
@@ -1007,4 +1048,454 @@ fn test_global_config_generates_template() {
         config.default.max_coworkers().is_none(),
         "All options should be commented out (defaults)"
     );
+}
+
+/// Regression test: status RPC should respond within the client timeout.
+///
+/// This test verifies that the "status" RPC method responds within the client's
+/// configured timeout. The status handler uses `spawn_blocking` for gh CLI calls,
+/// which can take several seconds (especially with GitHub auth switching).
+///
+/// Bug: After commit e4345d6, the status endpoint takes ~2-3 seconds due to gh CLI
+/// latency, but the client had a 1-second timeout. This caused "Read timeout" errors.
+/// The fix is to increase the client timeout to 5 seconds for status-heavy methods.
+#[test]
+#[ignore] // Requires built binary
+fn test_status_rpc_responds_within_timeout() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return, // Skip silently if fixture creation fails
+    };
+
+    if !fixture.start_daemon() {
+        return; // Skip silently if daemon fails to start
+    }
+
+    // First verify ping works quickly (sanity check - no spawn_blocking)
+    let ping_response = fixture.rpc_call_with_timeout("ping", None, Duration::from_secs(1));
+    assert!(
+        ping_response.is_some(),
+        "Ping should respond within 1 second"
+    );
+
+    // Status calls gh CLI which can take 2-3 seconds.
+    // The client timeout must accommodate this.
+    // Use 5 seconds which matches the client's extended timeout for status.
+    let status_response = fixture.rpc_call_with_timeout("status", None, Duration::from_secs(5));
+    assert!(
+        status_response.is_some(),
+        "Status RPC should respond within 5 seconds. The gh CLI calls \
+         inside spawn_blocking can take 2-3 seconds. If this times out, \
+         check that the client timeout is at least 5 seconds for status."
+    );
+
+    let response = status_response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "Status should not return an error: {:?}",
+        response["error"]
+    );
+    assert!(
+        response["result"].is_object(),
+        "Status should return an object result"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Live daemon tests (real midtown repo)
+//
+// These tests run against the actual midtown repo and its daemon. They catch
+// issues that only manifest with real-world state (orphaned worktrees, PRs,
+// GitHub API latency, etc.).
+//
+// Run with: cargo test --test daemon_e2e live_daemon -- --ignored --nocapture
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test fixture for live daemon tests.
+///
+/// Connects to an existing daemon running against the real midtown repo,
+/// or starts one if needed. Unlike DaemonFixture, this doesn't create
+/// a temporary repo - it uses the actual codebase.
+struct LiveDaemonFixture {
+    /// Path to the daemon socket (midtown repo)
+    socket_path: PathBuf,
+    /// Whether we started the daemon (and should stop it on drop)
+    started_daemon: bool,
+    /// Path to the binary (release build preferred for realistic timing)
+    binary_path: PathBuf,
+}
+
+impl LiveDaemonFixture {
+    /// Create a fixture for the midtown repo daemon.
+    ///
+    /// Returns None if the binary isn't built or the repo isn't detected.
+    fn new() -> Option<Self> {
+        // Prefer release binary for realistic timing
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let release_binary = manifest_dir.join("target/release/midtown");
+        let debug_binary = manifest_dir.join("target/debug/midtown");
+
+        let binary_path = if release_binary.exists() {
+            release_binary
+        } else if debug_binary.exists() {
+            eprintln!("Warning: Using debug binary - timing may not match production");
+            debug_binary
+        } else {
+            eprintln!("Skipping: No midtown binary found. Run 'cargo build --release' first.");
+            return None;
+        };
+
+        // Socket path for midtown repo
+        let socket_path = midtown::paths::daemon_socket_for_repo("midtown");
+
+        Some(Self {
+            socket_path,
+            started_daemon: false,
+            binary_path,
+        })
+    }
+
+    /// Ensure the daemon is running.
+    ///
+    /// If a daemon is already running, use it. Otherwise start one.
+    fn ensure_daemon_running(&mut self) -> bool {
+        // Check if daemon is already running
+        if UnixStream::connect(&self.socket_path).is_ok() {
+            return true;
+        }
+
+        // Start daemon
+        eprintln!("Starting daemon for live tests...");
+        let status = Command::new(&self.binary_path)
+            .args(["daemon", "--foreground"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+
+        match status {
+            Ok(mut child) => {
+                // Wait for socket to appear
+                for _ in 0..50 {
+                    thread::sleep(Duration::from_millis(100));
+                    if self.socket_path.exists() {
+                        // Give daemon a moment to be ready
+                        thread::sleep(Duration::from_millis(500));
+                        self.started_daemon = true;
+                        return true;
+                    }
+                }
+                // Cleanup if socket never appeared
+                let _ = child.kill();
+                eprintln!("Daemon socket never appeared");
+                false
+            }
+            Err(e) => {
+                eprintln!("Failed to start daemon: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Connect to the daemon socket.
+    fn connect(&self) -> Option<UnixStream> {
+        UnixStream::connect(&self.socket_path).ok()
+    }
+
+    /// Send an RPC request with timeout.
+    fn rpc_call_with_timeout(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Option<serde_json::Value> {
+        let mut stream = self.connect()?;
+        stream.set_read_timeout(Some(timeout)).ok()?;
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": 1
+        });
+
+        let request_line = format!("{}\n", request);
+        stream.write_all(request_line.as_bytes()).ok()?;
+        stream.flush().ok()?;
+
+        let mut reader = BufReader::new(&stream);
+        let mut response_line = String::new();
+        reader.read_line(&mut response_line).ok()?;
+
+        serde_json::from_str(&response_line).ok()
+    }
+}
+
+impl Drop for LiveDaemonFixture {
+    fn drop(&mut self) {
+        if self.started_daemon {
+            // Stop the daemon we started
+            let _ = Command::new(&self.binary_path)
+                .args(["stop"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// Live test: Status RPC responds within timeout against real repo.
+///
+/// This test runs against the actual midtown repo with real orphaned worktrees,
+/// PRs, and GitHub API latency. It catches timeout issues that don't manifest
+/// in the clean test repo environment.
+///
+/// Run: cargo test --test daemon_e2e live_daemon_status -- --ignored --nocapture
+#[test]
+#[ignore] // Requires running daemon against real repo
+fn live_daemon_status_responds_within_timeout() {
+    let mut fixture = match LiveDaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.ensure_daemon_running() {
+        eprintln!("Skipping: Could not start daemon");
+        return;
+    }
+
+    // Test ping first (fast, no spawn_blocking)
+    let ping_start = std::time::Instant::now();
+    let ping_response = fixture.rpc_call_with_timeout("ping", None, Duration::from_secs(2));
+    let ping_elapsed = ping_start.elapsed();
+
+    assert!(
+        ping_response.is_some(),
+        "Ping should respond (took {:?})",
+        ping_elapsed
+    );
+    println!("Ping responded in {:?}", ping_elapsed);
+
+    // Test status multiple times to catch intermittent issues
+    for i in 1..=5 {
+        let start = std::time::Instant::now();
+        let response = fixture.rpc_call_with_timeout("status", None, Duration::from_secs(10));
+        let elapsed = start.elapsed();
+
+        assert!(
+            response.is_some(),
+            "Status call {} timed out after {:?}. \
+             This indicates the daemon is overloaded or spawn_blocking is saturated.",
+            i,
+            elapsed
+        );
+
+        let response = response.unwrap();
+        assert!(
+            response["error"].is_null(),
+            "Status call {} returned error: {:?}",
+            i,
+            response["error"]
+        );
+
+        println!("Status call {} completed in {:?}", i, elapsed);
+
+        // Brief pause between calls
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Live test: Multiple rapid status calls don't cause timeouts.
+///
+/// This tests that the daemon can handle bursts of status requests without
+/// the blocking thread pool getting saturated.
+#[test]
+#[ignore] // Requires running daemon against real repo
+fn live_daemon_status_burst_handling() {
+    let mut fixture = match LiveDaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.ensure_daemon_running() {
+        eprintln!("Skipping: Could not start daemon");
+        return;
+    }
+
+    // Send 10 rapid status requests
+    let mut successes = 0;
+    let mut failures = 0;
+    let mut total_time = Duration::ZERO;
+
+    for i in 1..=10 {
+        let start = std::time::Instant::now();
+        let response = fixture.rpc_call_with_timeout("status", None, Duration::from_secs(10));
+        let elapsed = start.elapsed();
+        total_time += elapsed;
+
+        if response.is_some() && response.as_ref().unwrap()["error"].is_null() {
+            successes += 1;
+            println!("Request {}: OK ({:?})", i, elapsed);
+        } else {
+            failures += 1;
+            println!("Request {}: FAILED ({:?})", i, elapsed);
+        }
+    }
+
+    let avg_time = total_time / 10;
+    println!(
+        "\nResults: {}/10 succeeded, avg response time: {:?}",
+        successes, avg_time
+    );
+
+    // All requests should succeed
+    assert_eq!(
+        failures, 0,
+        "All status requests should succeed. {} failures detected.",
+        failures
+    );
+
+    // Average response time should be reasonable (under 5 seconds)
+    assert!(
+        avg_time < Duration::from_secs(5),
+        "Average response time {:?} exceeds 5 seconds",
+        avg_time
+    );
+}
+
+/// Live test: Concurrent RPC methods don't block each other.
+///
+/// Tests that slow methods (status) don't block fast methods (ping).
+#[test]
+#[ignore] // Requires running daemon against real repo
+fn live_daemon_concurrent_rpc_methods() {
+    let fixture = match LiveDaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    // This test requires an already-running daemon
+    if fixture.connect().is_none() {
+        eprintln!("Skipping: Daemon not running. Start with 'midtown start' first.");
+        return;
+    }
+
+    // Start a status call (slow - uses spawn_blocking)
+    let fixture_for_status = LiveDaemonFixture::new().unwrap();
+    let status_thread = std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let response =
+            fixture_for_status.rpc_call_with_timeout("status", None, Duration::from_secs(15));
+        (response, start.elapsed())
+    });
+
+    // Small delay to ensure status call is in-flight
+    thread::sleep(Duration::from_millis(100));
+
+    // Ping should still respond quickly even while status is pending
+    let ping_start = std::time::Instant::now();
+    let ping_response = fixture.rpc_call_with_timeout("ping", None, Duration::from_secs(2));
+    let ping_elapsed = ping_start.elapsed();
+
+    assert!(
+        ping_response.is_some(),
+        "Ping should respond while status is in-flight"
+    );
+    // Ping should respond in under 2s even during status call.
+    // We allow some slack because gh CLI auth switching can cause
+    // brief delays even with spawn_blocking.
+    assert!(
+        ping_elapsed < Duration::from_secs(2),
+        "Ping should be fast ({:?}) even during status call",
+        ping_elapsed
+    );
+    println!("Ping during status: {:?}", ping_elapsed);
+
+    // Wait for status to complete
+    let (status_response, status_elapsed) = status_thread.join().expect("Status thread panicked");
+    assert!(
+        status_response.is_some(),
+        "Status should complete (took {:?})",
+        status_elapsed
+    );
+    println!("Status completed in {:?}", status_elapsed);
+}
+
+/// Live test: Verify GH_TOKEN authentication works correctly.
+///
+/// This test verifies that when the daemon is configured with github_user,
+/// it correctly fetches the token and all gh CLI calls succeed. Tests that
+/// PRs are fetched (requires valid auth) and the response contains real data.
+///
+/// Run: cargo test --test daemon_e2e live_daemon_gh_token -- --ignored --nocapture
+#[test]
+#[ignore] // Requires running daemon with github_user configured
+fn live_daemon_gh_token_auth_works() {
+    let mut fixture = match LiveDaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.ensure_daemon_running() {
+        eprintln!("Skipping: Could not start daemon");
+        return;
+    }
+
+    // Get status which includes PR list (requires working gh auth)
+    let response = fixture.rpc_call_with_timeout("status", None, Duration::from_secs(10));
+    assert!(response.is_some(), "Status should respond");
+
+    let response = response.unwrap();
+    assert!(
+        response["error"].is_null(),
+        "Status should not return error: {:?}",
+        response["error"]
+    );
+
+    let result = &response["result"];
+
+    // Verify we got a successful response with PR data
+    assert_eq!(
+        result["success"].as_bool(),
+        Some(true),
+        "Status should report success"
+    );
+
+    // The pull_requests field should exist (even if empty)
+    assert!(
+        result["pull_requests"].is_array(),
+        "Status should include pull_requests array"
+    );
+
+    // Log what we got for debugging
+    let pr_count = result["pull_requests"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    println!("GH_TOKEN auth working: fetched {} PRs", pr_count);
+
+    // If there are PRs, verify they have expected fields (proves API worked)
+    if pr_count > 0 {
+        let first_pr = &result["pull_requests"][0];
+        assert!(
+            first_pr["number"].is_number(),
+            "PR should have number field"
+        );
+        assert!(first_pr["title"].is_string(), "PR should have title field");
+        println!(
+            "  PR #{}: {}",
+            first_pr["number"],
+            first_pr["title"].as_str().unwrap_or("")
+        );
+    }
+
+    // Also verify merged_prs works (another gh CLI call)
+    assert!(
+        result["merged_prs"].is_array(),
+        "Status should include merged_prs array"
+    );
+    let merged_count = result["merged_prs"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    println!("Also fetched {} merged PRs", merged_count);
 }

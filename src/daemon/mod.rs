@@ -204,13 +204,15 @@ pub const REQUIRED_PLUGINS: &[&str] = &[
 ///
 /// Checks the hardcoded list of required plugins and installs any missing ones.
 /// Failures are logged as warnings but don't block daemon startup.
+///
+/// Note: Marketplace configuration and plugin installation are now handled by
+/// `midtown start` (in the CLI) for better user experience. This function remains
+/// as a fallback check but typically does nothing if the CLI already set things up.
 async fn ensure_plugins_installed() {
     if REQUIRED_PLUGINS.is_empty() {
         debug!("No required plugins configured");
         return;
     }
-
-    info!("Checking {} required plugins", REQUIRED_PLUGINS.len());
 
     // Get list of installed plugins
     let installed = match get_installed_plugins().await {
@@ -228,19 +230,17 @@ async fn ensure_plugins_installed() {
         .collect();
 
     if missing.is_empty() {
-        info!("All required plugins are installed");
+        debug!("All required plugins are installed");
         return;
     }
 
-    info!("Installing {} missing plugins", missing.len());
-
-    // Install missing plugins
-    for plugin in missing {
-        match install_plugin(plugin).await {
-            Ok(()) => info!("Installed plugin: {}", plugin),
-            Err(e) => warn!("Failed to install plugin {}: {}", plugin, e),
-        }
-    }
+    // Log missing plugins but don't try to install here
+    // (installation should happen in `midtown start` for better UX)
+    warn!(
+        "Missing {} required plugins: {:?}. Run `midtown start` to install them.",
+        missing.len(),
+        missing
+    );
 }
 
 /// Get list of installed plugin IDs.
@@ -268,22 +268,6 @@ async fn get_installed_plugins() -> Result<HashSet<String>, String> {
         .collect();
 
     Ok(ids)
-}
-
-/// Install a plugin by name.
-async fn install_plugin(name: &str) -> Result<(), String> {
-    let output = tokio::process::Command::new("claude")
-        .args(["plugin", "install", name])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run claude plugin install: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(stderr.to_string());
-    }
-
-    Ok(())
 }
 
 /// Unified cache for PR-to-coworker mappings.
@@ -408,6 +392,13 @@ pub(crate) struct DaemonState {
     /// non-owner comments and nudge PR owners. Uses the same cooldown as webhooks
     /// (`PrIssueType::ReviewComment`) to avoid duplicate notifications.
     comment_tracker: Mutex<trackers::CommentTracker>,
+    /// GitHub username for token refresh. When set, enables automatic token refresh
+    /// when `gh` CLI commands fail with authentication errors.
+    ///
+    /// Infrastructure for future auto-refresh. Currently unused - callers should
+    /// invoke `refresh_gh_token()` when auth errors are detected.
+    #[allow(dead_code)]
+    github_user: Option<String>,
 }
 
 impl DaemonState {
@@ -499,6 +490,7 @@ impl DaemonState {
         max_coworkers: usize,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
+        github_user: Option<String>,
     ) -> crate::Result<Self> {
         // Load unified persistent state (migrates from legacy files if needed)
         let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
@@ -537,6 +529,7 @@ impl DaemonState {
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
+            github_user,
         })
     }
 
@@ -709,6 +702,68 @@ impl DaemonState {
             web::broadcast_coworker_status(tx, name, status, current_task);
         }
     }
+
+    /// Refresh the GitHub auth token and update GH_TOKEN env var.
+    ///
+    /// Called when `gh` CLI commands fail with authentication errors (401, "Bad credentials").
+    /// Runs `gh auth refresh` to get a fresh OAuth token, then updates the process
+    /// environment so subsequent `gh` calls use the new token.
+    ///
+    /// Returns Ok(()) if refresh succeeded, Err with message if it failed.
+    ///
+    /// Infrastructure for future auto-refresh. Callers should detect auth errors using
+    /// `helpers::is_gh_auth_error()` and invoke this method to recover.
+    #[allow(dead_code)]
+    pub(crate) fn refresh_gh_token(&self) -> Result<(), String> {
+        let github_user = match &self.github_user {
+            Some(u) => u,
+            None => return Err("No github_user configured for token refresh".to_string()),
+        };
+
+        info!("Refreshing GitHub auth token for user: {}", github_user);
+
+        // Step 1: Refresh the OAuth token
+        let refresh_status = std::process::Command::new("gh")
+            .args(["auth", "refresh", "--hostname", "github.com"])
+            .status()
+            .map_err(|e| format!("Failed to run gh auth refresh: {}", e))?;
+
+        if !refresh_status.success() {
+            return Err(format!(
+                "gh auth refresh failed (exit code: {})",
+                refresh_status.code().unwrap_or(-1)
+            ));
+        }
+
+        // Step 2: Get the new token
+        let output = std::process::Command::new("gh")
+            .args(["auth", "token", "--user", github_user])
+            .output()
+            .map_err(|e| format!("Failed to run gh auth token: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("gh auth token failed: {}", stderr.trim()));
+        }
+
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            return Err("gh auth token returned empty token".to_string());
+        }
+
+        // Step 3: Update GH_TOKEN env var
+        // SAFETY: Called from single-threaded context (RPC handler via spawn_blocking)
+        unsafe {
+            std::env::set_var("GH_TOKEN", &token);
+        }
+
+        info!(
+            "Refreshed GH_TOKEN for user: {} (token length: {})",
+            github_user,
+            token.len()
+        );
+        Ok(())
+    }
 }
 
 /// Acquire an exclusive lock on the PID file.
@@ -850,30 +905,55 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Ensure required plugins are installed (non-blocking, logs warnings on failure)
     ensure_plugins_installed().await;
 
-    // Switch gh CLI to the configured GitHub user (fail loudly if switch fails)
+    // Get token for configured GitHub user and set GH_TOKEN env var.
+    // This is faster and more reliable than `gh auth switch`:
+    // - No global state modification (env var is process-local)
+    // - No race conditions with other processes
+    // - Token is fetched once, inherited by all child processes
     if let Some(ref github_user) = config.github_user {
-        info!("Switching gh CLI auth to user: {}", github_user);
-        let status = std::process::Command::new("gh")
-            .args(["auth", "switch", "--user", github_user])
-            .status()
+        info!("Fetching gh CLI token for user: {}", github_user);
+        let output = std::process::Command::new("gh")
+            .args(["auth", "token", "--user", github_user])
+            .output()
             .map_err(|e| crate::Error::Rpc {
                 code: -32603,
                 message: format!(
-                    "Failed to run `gh auth switch --user {}`: {}",
+                    "Failed to run `gh auth token --user {}`: {}",
                     github_user, e
                 ),
             })?;
-        if !status.success() {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(crate::Error::Rpc {
                 code: -32603,
                 message: format!(
-                    "gh auth switch --user {} failed (exit code: {}). Is the user logged in? Run `gh auth login` first.",
+                    "gh auth token --user {} failed: {}. Is the user logged in? Run `gh auth login` first.",
                     github_user,
-                    status.code().unwrap_or(-1)
+                    stderr.trim()
                 ),
             });
         }
-        info!("Successfully switched gh auth to user: {}", github_user);
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if token.is_empty() {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "gh auth token --user {} returned empty token. Is the user logged in?",
+                    github_user
+                ),
+            });
+        }
+        // Set GH_TOKEN so all child `gh` processes use this token automatically.
+        // SAFETY: This is called during single-threaded daemon startup before the
+        // async runtime spawns any tasks, so no data races are possible.
+        unsafe {
+            std::env::set_var("GH_TOKEN", &token);
+        }
+        info!(
+            "Set GH_TOKEN for user: {} (token length: {})",
+            github_user,
+            token.len()
+        );
     }
 
     // Acquire exclusive lock on PID file to enforce singleton behavior
@@ -1035,6 +1115,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         config.max_coworkers,
         shared_push_manager,
         default_branch,
+        config.github_user.clone(),
     )?);
     info!(
         "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",

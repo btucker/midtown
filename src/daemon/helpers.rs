@@ -317,6 +317,25 @@ fn coworker_from_frontmatter(body: &str) -> Option<&str> {
         .copied()
 }
 
+// ---------------------------------------------------------------------------
+// GitHub CLI helpers
+// ---------------------------------------------------------------------------
+
+/// Check if gh CLI output indicates an authentication error.
+///
+/// Returns true for errors like:
+/// - "Bad credentials" (invalid or expired token)
+/// - HTTP 401 responses
+/// - "authentication required" messages
+pub fn is_gh_auth_error(stderr: &str) -> bool {
+    let stderr_lower = stderr.to_lowercase();
+    stderr_lower.contains("bad credentials")
+        || stderr_lower.contains("401")
+        || stderr_lower.contains("authentication required")
+        || stderr_lower.contains("requires authentication")
+        || stderr_lower.contains("not logged in")
+}
+
 /// Extract PR number from a message content.
 ///
 /// Looks for patterns like "PR #42", "#42", "PR #123".
@@ -835,5 +854,37 @@ mod tests {
             0,
             "should return 0 when comments field is missing"
         );
+    }
+
+    // =========================================================================
+    // is_gh_auth_error tests
+    // =========================================================================
+
+    #[test]
+    fn is_gh_auth_error_detects_bad_credentials() {
+        assert!(is_gh_auth_error("gh: Bad credentials (HTTP 401)"));
+        assert!(is_gh_auth_error("error: bad credentials"));
+        assert!(is_gh_auth_error("Bad Credentials"));
+    }
+
+    #[test]
+    fn is_gh_auth_error_detects_401() {
+        assert!(is_gh_auth_error("HTTP 401 Unauthorized"));
+        assert!(is_gh_auth_error("status: 401"));
+    }
+
+    #[test]
+    fn is_gh_auth_error_detects_auth_required() {
+        assert!(is_gh_auth_error("authentication required"));
+        assert!(is_gh_auth_error("requires authentication"));
+        assert!(is_gh_auth_error("not logged in to github"));
+    }
+
+    #[test]
+    fn is_gh_auth_error_ignores_other_errors() {
+        assert!(!is_gh_auth_error("network error"));
+        assert!(!is_gh_auth_error("repository not found"));
+        assert!(!is_gh_auth_error("rate limit exceeded"));
+        assert!(!is_gh_auth_error(""));
     }
 }

@@ -433,7 +433,12 @@ impl CoworkerManager {
     ///
     /// Returns a list of coworker names whose worktrees have unmerged commits
     /// and should be flagged to the Lead.
-    pub fn cleanup_orphaned_worktrees(&self) -> Vec<String> {
+    /// Clean up orphaned worktrees that have no active coworker.
+    ///
+    /// To avoid saturating the blocking thread pool with expensive git and gh CLI
+    /// operations, this processes at most `max_per_tick` worktrees per call.
+    /// Pass `None` or a large number to process all orphaned worktrees at once.
+    pub fn cleanup_orphaned_worktrees(&self, max_per_tick: Option<usize>) -> Vec<String> {
         let active_names: Vec<String> = {
             let coworkers = self.coworkers.read().unwrap();
             coworkers.keys().cloned().collect()
@@ -442,7 +447,12 @@ impl CoworkerManager {
         let orphaned = self.worktree_manager.find_orphaned_worktrees(&active_names);
         let mut flagged = Vec::new();
 
-        for name in orphaned {
+        // Limit how many worktrees we process per tick to avoid blocking the
+        // thread pool for too long. Each cleanup involves multiple git/gh calls.
+        let limit = max_per_tick.unwrap_or(usize::MAX);
+        let to_process = orphaned.into_iter().take(limit);
+
+        for name in to_process {
             match self.worktree_manager.safe_cleanup(&name) {
                 Ok(true) => {
                     tracing::info!("Cleaned up empty orphaned worktree for {}", name);
@@ -450,7 +460,6 @@ impl CoworkerManager {
                 Ok(false) => {
                     // Log at debug level - the actual rate-limited warning happens
                     // in dispatch::cleanup_orphaned_worktrees() via OrphanTracker.
-                    // Logging warn! here would spam every tick (5 seconds).
                     tracing::debug!(
                         "Orphaned worktree for {} has unmerged commits - will check filters",
                         name
@@ -464,6 +473,17 @@ impl CoworkerManager {
         }
 
         flagged
+    }
+
+    /// Force cleanup a worktree by name.
+    ///
+    /// This removes the worktree and its associated branch, regardless of whether
+    /// it has commits. Use only when you know it's safe (e.g., PR was merged).
+    pub fn force_cleanup_worktree(
+        &self,
+        coworker_name: &str,
+    ) -> Result<(), crate::worktree::WorktreeError> {
+        self.worktree_manager.force_cleanup(coworker_name)
     }
 
     /// List all coworkers.

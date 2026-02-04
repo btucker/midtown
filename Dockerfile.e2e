@@ -8,8 +8,43 @@
 #   docker build -t midtown-e2e -f Dockerfile.e2e .
 #   docker run midtown-e2e                          # coordination mode (no auth)
 #   docker run -e ANTHROPIC_API_KEY midtown-e2e full # full mode (real Claude)
+#
+# Optimization: Uses cargo-chef for dependency caching. When only source code
+# changes (not Cargo.toml/Cargo.lock), rebuilds are much faster.
 
-FROM rust:bookworm
+# syntax=docker/dockerfile:1
+
+# ─── Stage 1: Chef planner ───────────────────────────────────────────────────
+# Analyzes the project and creates a "recipe" of dependencies
+FROM rust:bookworm AS chef
+RUN cargo install cargo-chef
+WORKDIR /app
+
+# ─── Stage 2: Recipe creation ────────────────────────────────────────────────
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ─── Stage 3: Dependency builder ─────────────────────────────────────────────
+# Builds only dependencies (cached until Cargo.toml/Cargo.lock change)
+FROM chef AS builder
+
+# System dependencies needed for building
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build dependencies from recipe (cached layer)
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Now copy source and build the actual application
+COPY . .
+RUN cargo build --release \
+    && cargo test --release --no-run 2>&1 | tail -5
+
+# ─── Stage 4: Final runtime image ────────────────────────────────────────────
+FROM rust:bookworm AS runtime
 
 # System dependencies: tmux for process model, git for worktrees,
 # procps for process inspection, jq for JSON parsing in scripts
@@ -20,10 +55,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         procps \
         jq \
     && rm -rf /var/lib/apt/lists/*
-
-# Claude Code CLI via native installer
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    || echo "Claude CLI install skipped (may not be available in CI)"
 
 # gh CLI via GitHub's apt repo
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -38,23 +69,29 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # would mask permission bugs that real users would hit
 RUN useradd -m -s /bin/bash testuser
 
-# Copy source into the image — create WORKDIR with correct ownership first,
-# since WORKDIR creates directories as root and COPY --chown only applies to files
+# Copy built artifacts from builder stage
 RUN mkdir -p /home/testuser/midtown && chown testuser:testuser /home/testuser/midtown
 WORKDIR /home/testuser/midtown
-COPY --chown=testuser:testuser . .
+COPY --from=builder --chown=testuser:testuser /app/target ./target
+COPY --from=builder --chown=testuser:testuser /app/Cargo.toml /app/Cargo.lock ./
+COPY --from=builder --chown=testuser:testuser /app/src ./src
+COPY --from=builder --chown=testuser:testuser /app/agents ./agents
+COPY --from=builder --chown=testuser:testuser /app/tests ./tests
+COPY --from=builder --chown=testuser:testuser /app/scripts ./scripts
 
-# Build release binary and pre-compile tests to cache deps in the image layer.
-# This means `cargo test` inside the container only needs to link, not compile.
 USER testuser
-RUN cargo build --release \
-    && cargo test --release --no-run 2>&1 | tail -5
 
-# Default environment: disable webhook server and chat monitor for tests,
-# stub out the lead command so tests don't need a real Claude session
+# Claude Code CLI — install as testuser so it goes to ~/.local/bin/claude
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc \
+    || echo "Claude CLI install failed (may not be available in all environments)"
+
+# Ensure claude is in PATH for subsequent RUN commands
+ENV PATH="/home/testuser/.local/bin:${PATH}"
+
+# Default environment: disable webhook server and chat monitor for tests
 ENV MIDTOWN_WEBHOOK_PORT=0 \
-    MIDTOWN_CHAT_MONITOR=0 \
-    MIDTOWN_LEAD_COMMAND="sleep 300"
+    MIDTOWN_CHAT_MONITOR=0
 
 COPY --chmod=755 scripts/e2e-entrypoint.sh /usr/local/bin/e2e-entrypoint.sh
 

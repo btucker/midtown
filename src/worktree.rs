@@ -413,25 +413,27 @@ impl WorktreeManager {
     /// Returns `Ok(false)` if the worktree has commits or uncommitted changes
     /// and was left intact.
     /// Returns `Err` if the cleanup operation failed.
+    /// Safely clean up a coworker's worktree and branch if it has no commits
+    /// and no uncommitted changes.
+    ///
+    /// Returns `Ok(true)` if the worktree was cleaned up.
+    /// Returns `Ok(false)` if the worktree has commits or uncommitted changes.
+    /// Returns `Err` if the cleanup operation failed.
+    ///
+    /// NOTE: This does NOT check if the branch's PR was merged (squash-merge case).
+    /// That check is done at the dispatch layer using the cached PR data, to avoid
+    /// expensive gh CLI calls on every tick.
     pub fn safe_cleanup(&self, coworker_name: &str) -> WorktreeResult<bool> {
         let worktree_path = self.worktree_path(coworker_name);
         if !worktree_path.exists() {
             return Ok(true); // Already gone
         }
 
-        let has_commits = self.has_commits_beyond_base(coworker_name);
-
-        if has_commits {
-            // Branch has commits beyond base - but check if the PR was already
-            // merged (e.g. via squash-merge, where commit SHAs differ from main).
-            if !self.is_branch_pr_merged(coworker_name) {
-                return Ok(false); // Has genuinely unmerged commits
-            }
-            // PR was merged - safe to clean up despite commit diff
-            tracing::info!(
-                "Orphaned worktree for {} has commits but PR is merged (squash-merge) - cleaning up",
-                coworker_name
-            );
+        // If the branch has commits beyond base, don't delete automatically.
+        // The dispatch layer will use cached PR data to determine if this is
+        // actually safe to clean up (e.g., squash-merged PR).
+        if self.has_commits_beyond_base(coworker_name) {
+            return Ok(false);
         }
 
         if self.has_uncommitted_changes(coworker_name) {

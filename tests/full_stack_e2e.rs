@@ -34,6 +34,16 @@ fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
+fn claude_available() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Kill any orphaned test daemons and tmux sessions from previous runs.
 fn cleanup_orphaned_test_daemons() {
     // Kill any lingering daemon processes
@@ -414,6 +424,12 @@ fn test_daemon_spawns_lead_with_real_claude() {
         return;
     }
 
+    // Verify claude CLI is installed before proceeding
+    if !claude_available() {
+        eprintln!("claude CLI not available, skipping real Claude test");
+        return;
+    }
+
     let mut fixture = match FullStackFixture::new() {
         Some(f) => f,
         None => return,
@@ -474,6 +490,12 @@ fn test_daemon_spawns_lead_with_real_claude() {
 fn test_coworker_spawn_and_tui_renders() {
     if !tmux_available() {
         eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Verify claude CLI is installed before proceeding
+    if !claude_available() {
+        eprintln!("claude CLI not available, skipping");
         return;
     }
 
@@ -556,6 +578,12 @@ fn test_coworker_spawn_and_tui_renders() {
 fn test_nudge_reaches_real_claude() {
     if !tmux_available() {
         eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Verify claude CLI is installed before proceeding
+    if !claude_available() {
+        eprintln!("claude CLI not available, skipping");
         return;
     }
 
@@ -799,6 +827,12 @@ fn test_web_ui_connects() {
 fn test_worktree_isolation() {
     if !tmux_available() {
         eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Verify claude CLI is installed before proceeding
+    if !claude_available() {
+        eprintln!("claude CLI not available, skipping");
         return;
     }
 

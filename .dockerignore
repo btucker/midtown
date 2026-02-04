@@ -1,0 +1,27 @@
+# Build artifacts
+target/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+.dockerignore
+
+# Test fixtures (large JSON files)
+tests/fixtures/snapshot/*.json
+
+# Local config
+*.local.md

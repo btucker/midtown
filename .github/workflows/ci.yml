@@ -20,36 +20,26 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --all-features
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
-  build-e2e:
-    name: Build E2E
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Run tests with coverage
+        run: cargo llvm-cov --all-features --lcov --output-path lcov-unit.info
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Upload binary
+      - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: midtown-binary
-          path: target/release/midtown
+          name: coverage-unit
+          path: lcov-unit.info
           retention-days: 1
 
   e2e:
     name: E2E - ${{ matrix.test }}
-    needs: [build-e2e]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -79,23 +69,18 @@ jobs:
     env:
       MIDTOWN_WEBHOOK_PORT: 0
       MIDTOWN_CHAT_MONITOR: 0
-      MIDTOWN_LEAD_COMMAND: "sleep 300"
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Download pre-built binary
-        uses: actions/download-artifact@v4
-        with:
-          name: midtown-binary
-          path: target/release
-
-      - name: Make binary executable
-        run: chmod +x target/release/midtown
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
@@ -112,9 +97,43 @@ jobs:
       - name: Start tmux server
         run: tmux start-server
 
-      - name: Run ${{ matrix.test }}
-        run: cargo test --release --test ${{ matrix.test }} -- ${{ matrix.flags }}
+      - name: Run ${{ matrix.test }} with coverage
+        run: cargo llvm-cov --no-report --test ${{ matrix.test }} -- ${{ matrix.flags }}
         continue-on-error: ${{ matrix.continue_on_error == true }}
+
+      - name: Generate coverage report
+        run: cargo llvm-cov report --lcov --output-path lcov-${{ matrix.test }}.info
+        if: always()
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.test }}
+          path: lcov-${{ matrix.test }}.info
+          retention-days: 1
+        if: always()
+
+  coverage:
+    name: Upload Coverage
+    needs: [test, e2e]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      - name: List coverage files
+        run: ls -la *.info || echo "No coverage files found"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: "*.info"
+          fail_ci_if_error: false
 
   clippy:
     name: Clippy
