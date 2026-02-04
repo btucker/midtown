@@ -322,6 +322,127 @@ impl OrphanTracker {
 }
 
 // ---------------------------------------------------------------------------
+// CiNotificationBuffer
+// ---------------------------------------------------------------------------
+
+use crate::webhook::CiCheckPassed;
+
+/// How long to buffer CI notifications before posting a batched message.
+const CI_BUFFER_FLUSH_DELAY: Duration = Duration::from_secs(15);
+
+/// Buffers successful CI check notifications for batching.
+///
+/// When multiple checks pass on the same target (PR or branch) within a short
+/// window, we batch them into a single message like:
+/// "5 checks passed on PR #42: Clippy, Test, E2E - foo, ..."
+#[derive(Debug, Default)]
+pub struct CiNotificationBuffer {
+    /// Buffered checks grouped by target (e.g., "main" or "PR #42").
+    /// Each entry contains: (check_name, mention_prefix, added_time)
+    pending: HashMap<String, Vec<(String, String, Instant)>>,
+    /// When the oldest item was added (to know when to flush).
+    oldest_entry: Option<Instant>,
+}
+
+/// A batched CI notification message ready to post.
+#[derive(Debug)]
+pub struct BatchedCiNotification {
+    /// The target (e.g., "main" or "PR #42")
+    pub target: String,
+    /// The coworker mention prefix (e.g., "@columbus " or "")
+    pub mention_prefix: String,
+    /// Names of checks that passed
+    pub check_names: Vec<String>,
+}
+
+impl CiNotificationBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a successful CI check to the buffer.
+    pub fn add(&mut self, check: CiCheckPassed) {
+        let now = Instant::now();
+
+        // Update oldest_entry if this is the first item
+        if self.oldest_entry.is_none() {
+            self.oldest_entry = Some(now);
+        }
+
+        self.pending.entry(check.target).or_default().push((
+            check.check_name,
+            check.mention_prefix,
+            now,
+        ));
+    }
+
+    /// Check if we have buffered items ready to flush.
+    pub fn should_flush(&self) -> bool {
+        self.oldest_entry
+            .is_some_and(|t| t.elapsed() >= CI_BUFFER_FLUSH_DELAY)
+    }
+
+    /// Flush all buffered notifications and return batched messages.
+    ///
+    /// Returns a list of batched notifications, one per target.
+    pub fn flush(&mut self) -> Vec<BatchedCiNotification> {
+        let mut results = Vec::new();
+
+        for (target, checks) in self.pending.drain() {
+            if checks.is_empty() {
+                continue;
+            }
+
+            // Use the mention prefix from the first check (they should all be the same)
+            let mention_prefix = checks
+                .first()
+                .map(|(_, m, _)| m.clone())
+                .unwrap_or_default();
+            let check_names: Vec<String> = checks.into_iter().map(|(name, _, _)| name).collect();
+
+            results.push(BatchedCiNotification {
+                target,
+                mention_prefix,
+                check_names,
+            });
+        }
+
+        self.oldest_entry = None;
+        results
+    }
+
+    /// Check if the buffer is empty.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+}
+
+/// Format a batched CI notification into a channel message.
+///
+/// Examples:
+/// - Single check: "Check 'Clippy' passed on main"
+/// - Multiple checks: "5 checks passed on PR #42: Clippy, Test, E2E - foo, ..."
+pub fn format_batched_ci_notification(batch: &BatchedCiNotification) -> String {
+    let count = batch.check_names.len();
+    let names = batch.check_names.join(", ");
+
+    if count == 1 {
+        // Single check: use original format
+        format!(
+            "{}Check '{}' passed on {}",
+            batch.mention_prefix, batch.check_names[0], batch.target
+        )
+    } else {
+        // Multiple checks: batched format
+        format!(
+            "{}{} checks passed on {}: {}",
+            batch.mention_prefix, count, batch.target, names
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -654,5 +775,154 @@ mod tests {
             !tracker.should_nudge(42, PrIssueType::CiFailed),
             "repeat polling should be blocked after first handled"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // CiNotificationBuffer — batches CI check notifications
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn ci_buffer_batches_checks_by_target() {
+        let mut buffer = CiNotificationBuffer::new();
+
+        // Add checks for two different targets
+        buffer.add(CiCheckPassed {
+            check_name: "Clippy".to_string(),
+            target: "main".to_string(),
+            mention_prefix: "".to_string(),
+        });
+        buffer.add(CiCheckPassed {
+            check_name: "Test".to_string(),
+            target: "main".to_string(),
+            mention_prefix: "".to_string(),
+        });
+        buffer.add(CiCheckPassed {
+            check_name: "Build".to_string(),
+            target: "PR #42".to_string(),
+            mention_prefix: "@columbus ".to_string(),
+        });
+
+        // Buffer should not flush immediately
+        assert!(
+            !buffer.should_flush(),
+            "buffer should not flush immediately"
+        );
+
+        // Force flush by simulating time passing
+        buffer.oldest_entry = Some(Instant::now() - Duration::from_secs(20));
+
+        assert!(buffer.should_flush(), "buffer should flush after delay");
+
+        let batched = buffer.flush();
+        assert_eq!(
+            batched.len(),
+            2,
+            "should have 2 batched notifications (one per target)"
+        );
+
+        // Find the "main" batch
+        let main_batch = batched.iter().find(|b| b.target == "main").unwrap();
+        assert_eq!(main_batch.check_names.len(), 2);
+        assert!(main_batch.check_names.contains(&"Clippy".to_string()));
+        assert!(main_batch.check_names.contains(&"Test".to_string()));
+        assert_eq!(main_batch.mention_prefix, "");
+
+        // Find the "PR #42" batch
+        let pr_batch = batched.iter().find(|b| b.target == "PR #42").unwrap();
+        assert_eq!(pr_batch.check_names.len(), 1);
+        assert!(pr_batch.check_names.contains(&"Build".to_string()));
+        assert_eq!(pr_batch.mention_prefix, "@columbus ");
+    }
+
+    #[test]
+    fn ci_buffer_clears_after_flush() {
+        let mut buffer = CiNotificationBuffer::new();
+
+        buffer.add(CiCheckPassed {
+            check_name: "Test".to_string(),
+            target: "main".to_string(),
+            mention_prefix: "".to_string(),
+        });
+
+        // Force flush
+        buffer.oldest_entry = Some(Instant::now() - Duration::from_secs(20));
+        let _ = buffer.flush();
+
+        assert!(buffer.is_empty(), "buffer should be empty after flush");
+        assert!(
+            !buffer.should_flush(),
+            "should_flush should be false after flush"
+        );
+    }
+
+    #[test]
+    fn ci_buffer_single_check_returns_single_result() {
+        let mut buffer = CiNotificationBuffer::new();
+
+        buffer.add(CiCheckPassed {
+            check_name: "Clippy".to_string(),
+            target: "main".to_string(),
+            mention_prefix: "".to_string(),
+        });
+
+        // Force flush
+        buffer.oldest_entry = Some(Instant::now() - Duration::from_secs(20));
+        let batched = buffer.flush();
+
+        assert_eq!(batched.len(), 1);
+        assert_eq!(batched[0].check_names.len(), 1);
+        assert_eq!(batched[0].check_names[0], "Clippy");
+    }
+
+    // -------------------------------------------------------------------------
+    // format_batched_ci_notification tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn format_batched_ci_single_check() {
+        let batch = BatchedCiNotification {
+            target: "main".to_string(),
+            mention_prefix: "".to_string(),
+            check_names: vec!["Clippy".to_string()],
+        };
+        let msg = format_batched_ci_notification(&batch);
+        assert_eq!(msg, "Check 'Clippy' passed on main");
+    }
+
+    #[test]
+    fn format_batched_ci_single_check_with_mention() {
+        let batch = BatchedCiNotification {
+            target: "PR #42".to_string(),
+            mention_prefix: "@columbus ".to_string(),
+            check_names: vec!["Build".to_string()],
+        };
+        let msg = format_batched_ci_notification(&batch);
+        assert_eq!(msg, "@columbus Check 'Build' passed on PR #42");
+    }
+
+    #[test]
+    fn format_batched_ci_multiple_checks() {
+        let batch = BatchedCiNotification {
+            target: "main".to_string(),
+            mention_prefix: "".to_string(),
+            check_names: vec![
+                "Clippy".to_string(),
+                "Test".to_string(),
+                "E2E - foo".to_string(),
+            ],
+        };
+        let msg = format_batched_ci_notification(&batch);
+        assert_eq!(msg, "3 checks passed on main: Clippy, Test, E2E - foo");
+    }
+
+    #[test]
+    fn format_batched_ci_multiple_checks_with_mention() {
+        let batch = BatchedCiNotification {
+            target: "PR #99".to_string(),
+            mention_prefix: "@park ".to_string(),
+            check_names: vec!["Build".to_string(), "Test".to_string()],
+        };
+        let msg = format_batched_ci_notification(&batch);
+        assert_eq!(msg, "@park 2 checks passed on PR #99: Build, Test");
     }
 }

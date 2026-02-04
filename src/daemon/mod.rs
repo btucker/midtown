@@ -355,6 +355,10 @@ pub(crate) struct DaemonState {
     coworker_stop_times: std::sync::RwLock<HashMap<String, chrono::DateTime<chrono::Utc>>>,
     /// Tracks stuck conditions that warrant nudging the lead (no review, unresolved feedback, etc.)
     stuck_tracker: Mutex<StuckConditionTracker>,
+    /// Buffer for batching CI check success notifications.
+    /// Multiple checks passing on the same target within a short window are
+    /// aggregated into a single channel message to reduce noise.
+    ci_notification_buffer: Mutex<trackers::CiNotificationBuffer>,
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a daemon session, so we cache indefinitely.
     repo_name_cache: std::sync::RwLock<HashMap<PathBuf, String>>,
@@ -523,6 +527,7 @@ impl DaemonState {
             pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
             coworker_stop_times: std::sync::RwLock::new(HashMap::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
+            ci_notification_buffer: Mutex::new(trackers::CiNotificationBuffer::new()),
             repo_name_cache: std::sync::RwLock::new(HashMap::new()),
             user_display_name,
             last_webhook_event_at: Mutex::new(None),
@@ -1186,6 +1191,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Skip the first tick (which fires immediately)
     orphan_process_interval.tick().await;
 
+    // Timer for flushing batched CI notifications (check every 5 seconds).
+    // The actual flush delay is 15 seconds from the oldest buffered item.
+    let mut ci_notification_flush_interval = interval(std::time::Duration::from_secs(5));
+    // Skip the first tick (which fires immediately)
+    ci_notification_flush_interval.tick().await;
+
     // Nudge any coworkers discovered from tmux to continue their tasks.
     // This runs once at startup after the daemon has fully initialized.
     {
@@ -1230,7 +1241,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     *ts = Some(tokio::time::Instant::now());
                 }
 
-                if let Err(e) = state.send_and_broadcast(&webhook_event.message) {
+                // Buffer successful CI checks for batching; post other messages immediately.
+                // When ci_check_passed is set, the webhook's `message` field is ignored in favor
+                // of a later batched message (see WebhookEvent.ci_check_passed doc comment).
+                if let Some(ci_check) = webhook_event.ci_check_passed {
+                    debug!("Buffering CI success for batching: {} on {}", ci_check.check_name, ci_check.target);
+                    let mut buffer = state.ci_notification_buffer.lock().await;
+                    buffer.add(ci_check);
+                } else if let Err(e) = state.send_and_broadcast(&webhook_event.message) {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
 
@@ -1446,6 +1464,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 let killed = crate::tmux::kill_orphaned_processes(pattern);
                 if killed > 0 {
                     info!("Cleaned up {} orphaned claude process(es)", killed);
+                }
+            }
+
+            // Flush batched CI notifications: aggregate success checks by target
+            // into single messages to reduce channel noise.
+            _ = ci_notification_flush_interval.tick() => {
+                let mut buffer = state.ci_notification_buffer.lock().await;
+                if buffer.should_flush() {
+                    let batched = buffer.flush();
+                    for batch in batched {
+                        let msg = trackers::format_batched_ci_notification(&batch);
+                        let message = Message::text("github", msg);
+                        if let Err(e) = state.send_and_broadcast(&message) {
+                            error!("Failed to post batched CI notification: {}", e);
+                        }
+                    }
                 }
             }
 
