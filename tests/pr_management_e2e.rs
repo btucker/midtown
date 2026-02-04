@@ -299,50 +299,52 @@ fn ci_passed_prs_identified_for_merge() {
     // This test verifies the precondition: CI passed.
 }
 
-/// Test that PRs are not auto-merged when still being reviewed.
+/// Test that PRs under active review are excluded from auto-merge candidates.
+///
+/// Auto-merge requires a completed review. PRs that are assigned to reviewers
+/// but not yet in reviewed_prs should not be auto-merged.
 #[test]
 fn prs_under_review_not_auto_merged() {
     let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
-    // PRs that are currently being reviewed (assigned but not in reviewed_prs)
-    let prs_under_review: Vec<u64> = data
-        .reviewer_pr_assignments
-        .values()
-        .filter(|pr_num| !data.reviewed_prs.contains(pr_num))
-        .copied()
-        .collect();
+    // In this snapshot:
+    // - PRs 562, 563, 564 are assigned to reviewers (broadway, madison, riverside)
+    // - reviewed_prs is empty (no reviews completed yet)
+    // - Therefore all assigned PRs are "under review" and should not auto-merge
 
-    // PRs under active review should not be auto-merged
-    // PR 540 and 543 are assigned to reviewers
-    // PR 540 is in reviewed_prs (review complete)
-    // PR 543 is in reviewed_prs (review complete)
+    // Verify we have PRs assigned to reviewers
+    assert!(
+        !data.reviewer_pr_assignments.is_empty(),
+        "snapshot should have PRs assigned to reviewers"
+    );
+
+    // The key invariant: PRs with active reviewers but no completed review
+    // should NOT be in ci_passed_pr_coworkers auto-merge candidates
+    // (auto-merge requires: CI passed + approved + no conflicts)
     //
-    // When a PR is in reviewed_prs, it has a Claude review but may still
-    // need the author to address feedback before merging.
-
-    // Verify reviewed_prs contains the assigned PRs
+    // Since reviewed_prs is empty, none of the assigned PRs have been approved yet,
+    // so they shouldn't auto-merge regardless of CI status.
     for (reviewer, pr_num) in &data.reviewer_pr_assignments {
-        if data.reviewed_prs.contains(pr_num) {
-            // This PR has a completed review
-            assert!(
-                data.reviewed_prs.contains(pr_num),
-                "PR #{} assigned to {} should be in reviewed_prs",
-                pr_num,
-                reviewer
-            );
-        }
-    }
-
-    // If there are PRs under active review, they should not be auto-merged
-    for pr_num in prs_under_review {
-        // Under-review PRs should wait for review completion
+        // A PR under review hasn't been approved yet
+        let review_completed = data.reviewed_prs.contains(pr_num);
         assert!(
-            !data.reviewed_prs.contains(&pr_num),
-            "PR #{} is under review and should not be in reviewed_prs yet",
-            pr_num
+            !review_completed,
+            "PR #{} assigned to {} should not have completed review yet (snapshot shows reviews in progress)",
+            pr_num, reviewer
         );
     }
+
+    // Verify the snapshot state: all reviewer assignments are for in-progress reviews
+    assert_eq!(
+        data.reviewed_prs.len(),
+        0,
+        "snapshot should have no completed reviews"
+    );
+    assert!(
+        !data.reviewer_pr_assignments.is_empty(),
+        "snapshot should have active review assignments"
+    );
 }
 
 // ============================================================================
@@ -518,49 +520,38 @@ fn coworker_from_branch_extracts_owner() {
 // Test: Complete PR Workflow Scenario
 // ============================================================================
 
-/// Test a complete PR workflow scenario using snapshot data.
+/// Test PR workflow behavioral invariants using snapshot data.
 ///
-/// This test walks through the full lifecycle of PR management decisions
-/// using the captured snapshot state.
+/// Rather than asserting specific counts (which are snapshot-dependent),
+/// this test verifies behavioral invariants that should hold for any
+/// valid PR management state.
 #[test]
 fn complete_pr_workflow_scenario() {
     let fixture = include_str!("fixtures/snapshot/snapshot-pr-management-20260204-050821.json");
     let data = load_snapshot(fixture);
 
-    // Scenario: Multiple coworkers have open PRs at various stages
-    //
-    // From snapshot (20260204-050821):
-    // 1. riverside, lexington, vernon, york have open PRs (coworkers_with_open_prs)
-    // 2. madison, broadway, riverside are reviewing PRs (active_reviewers)
-    // 3. No PRs have completed review yet (reviewed_prs is empty)
-    // 4. riverside and vernon have CI-passed PRs (ci_passed_pr_coworkers)
+    // Invariant 1: CI-passed PR coworkers must have open PRs
+    // (you can't have CI pass on a PR that doesn't exist)
+    for coworker in &data.ci_passed_pr_coworkers {
+        assert!(
+            data.coworkers_with_open_prs.contains(coworker),
+            "CI-passed PR coworker {} must have an open PR",
+            coworker
+        );
+    }
 
-    // Verify scenario setup matches actual snapshot data
-    assert_eq!(
-        data.coworkers_with_open_prs.len(),
-        4,
-        "should have 4 coworkers with open PRs"
-    );
-    assert_eq!(
-        data.active_reviewers.len(),
-        3,
-        "should have 3 active reviewers"
-    );
-    assert_eq!(
-        data.reviewed_prs.len(),
-        0,
-        "should have 0 reviewed PRs (reviews in progress)"
-    );
-    assert_eq!(
-        data.ci_passed_pr_coworkers.len(),
-        2,
-        "should have 2 coworkers with CI-passed PRs"
-    );
+    // Invariant 2: Reviewer assignments should reference valid PRs
+    // (reviewers shouldn't be assigned to non-existent PRs)
+    for reviewer in data.reviewer_pr_assignments.keys() {
+        assert!(
+            data.active_reviewers.contains(reviewer),
+            "reviewer {} with assignment should be in active_reviewers",
+            reviewer
+        );
+    }
 
-    // Verify the daemon state allows for proper workflow decisions
+    // Invariant 3: Active coworkers with open PRs can be nudged
     let active_coworkers: Vec<String> = data.active_names.iter().cloned().collect();
-
-    // All coworkers with open PRs should be able to receive nudges if active
     for coworker in &data.coworkers_with_open_prs {
         if data.active_names.contains(coworker) {
             let action = decide_pr_issue_action(
@@ -571,18 +562,33 @@ fn complete_pr_workflow_scenario() {
             );
             assert!(
                 matches!(action, PrAction::NudgeOwner { .. }),
-                "active coworker {} should be nudgeable",
+                "active coworker {} with open PR should be nudgeable",
                 coworker
             );
         }
     }
 
-    // CI-passed PR owners should be candidates for merge nudges
-    for coworker in &data.ci_passed_pr_coworkers {
-        assert!(
-            data.coworkers_with_open_prs.contains(coworker),
-            "CI-passed PR coworker {} should have an open PR",
-            coworker
-        );
-    }
+    // Invariant 4: Inactive coworkers trigger spawn (when not at dev limit)
+    let action = decide_pr_issue_action(
+        "nonexistent_coworker",
+        &active_coworkers,
+        false, // not at dev limit
+        "test spawn",
+    );
+    assert!(
+        matches!(action, PrAction::SpawnOwner { .. }),
+        "inactive coworker should trigger spawn when not at dev limit"
+    );
+
+    // Invariant 5: Dev limit blocks spawning for inactive owners
+    let action = decide_pr_issue_action(
+        "nonexistent_coworker",
+        &active_coworkers,
+        true, // at dev limit
+        "test skip",
+    );
+    assert!(
+        matches!(action, PrAction::Skip { .. }),
+        "should skip spawn when at dev limit"
+    );
 }
