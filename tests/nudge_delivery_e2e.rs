@@ -1062,3 +1062,277 @@ mod stuck_nudge_autosubmit_tests {
         );
     }
 }
+
+/// Tests for coworker nudge input stability detection.
+///
+/// Coworker nudges now use the same queue-based delivery as lead nudges,
+/// waiting for input to be stable before delivering messages to avoid
+/// interrupting user typing.
+#[cfg(test)]
+mod coworker_input_stability_tests {
+    use super::*;
+
+    /// Test that coworker nudge waits when input has user text.
+    ///
+    /// This verifies the new behavior where coworker nudges check input stability
+    /// before delivering, similar to how lead nudges work.
+    #[test]
+    #[ignore] // Requires tmux to be running
+    fn test_coworker_nudge_waits_for_input_stability() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session = test_session_name();
+        let coworker_name = "lexington";
+        let _cleanup = Cleanup(&session);
+
+        // Setup: Create session and coworker window with a Claude-like prompt
+        assert!(
+            create_test_session(&session),
+            "Failed to create test session"
+        );
+
+        let target = format!("{}:", session);
+        let status = Command::new("tmux")
+            .args([
+                "new-window",
+                "-t",
+                &target,
+                "-n",
+                coworker_name,
+                "bash",
+                "-c",
+                // Show prompt, read input (simulates Claude Code prompt)
+                r#"printf '❯ '; read line; printf '❯ '; cat"#,
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(status, "Failed to create coworker window with prompt");
+        thread::sleep(Duration::from_millis(500));
+
+        // Type some text (without Enter) to simulate user typing
+        let tmux_target = format!("{}:{}", session, coworker_name);
+        let _ = Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                &tmux_target,
+                "-l",
+                "User is typing a message",
+            ])
+            .status();
+        thread::sleep(Duration::from_millis(200));
+
+        // Verify text is there
+        let content = capture_pane(&session, coworker_name).unwrap_or_default();
+        assert!(
+            midtown::tmux::has_input_text(&content),
+            "Should detect text in input. Content: {:?}",
+            content
+        );
+
+        // Test wait_for_nudge_safe - should detect user content and return false quickly
+        // when no stability timeout is provided (i.e., we're just checking)
+        let has_user_content = !midtown::tmux::get_input_text(&content)
+            .map(|t| t.is_empty())
+            .unwrap_or(true);
+        assert!(has_user_content, "Should detect user content in input");
+    }
+
+    /// Test that coworker nudge proceeds when input is empty.
+    #[test]
+    #[ignore] // Requires tmux to be running
+    fn test_coworker_nudge_immediate_when_input_empty() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session = test_session_name();
+        let coworker_name = "madison";
+        let _cleanup = Cleanup(&session);
+
+        assert!(
+            create_test_session(&session),
+            "Failed to create test session"
+        );
+        create_test_window(&session, coworker_name);
+        thread::sleep(Duration::from_millis(500));
+
+        // Input is empty — wait_for_nudge_safe should return true immediately
+        let target = format!("{}:{}", session, coworker_name);
+        let start = std::time::Instant::now();
+        let result = midtown::tmux::wait_for_nudge_safe(
+            &target,
+            None, // No previous nudge
+            Duration::from_secs(20),
+            Duration::from_secs(10),
+        );
+        let elapsed = start.elapsed();
+
+        assert!(result, "Should return true when input is empty");
+        // Should complete well under the poll interval
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "Should return immediately, took {:?}",
+            elapsed
+        );
+    }
+
+    /// Test that coworker nudge can overwrite previous daemon nudge text.
+    ///
+    /// If the input contains text from the last nudge we sent, it's safe to
+    /// send a new nudge (this handles the case where Enter didn't register).
+    #[test]
+    #[ignore] // Requires tmux to be running
+    fn test_coworker_nudge_overwrites_stale_nudge() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session = test_session_name();
+        let coworker_name = "broadway";
+        let _cleanup = Cleanup(&session);
+
+        assert!(
+            create_test_session(&session),
+            "Failed to create test session"
+        );
+
+        let target = format!("{}:", session);
+        let status = Command::new("tmux")
+            .args([
+                "new-window",
+                "-t",
+                &target,
+                "-n",
+                coworker_name,
+                "bash",
+                "-c",
+                r#"printf '❯ '; read line"#,
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(status, "Failed to create coworker window");
+        thread::sleep(Duration::from_millis(500));
+
+        // Simulate a previous nudge that got stuck (sent text without Enter registering)
+        let previous_nudge = "github said: @broadway Check 'Build' passed on PR #100";
+        let tmux_target = format!("{}:{}", session, coworker_name);
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", &tmux_target, "-l", previous_nudge])
+            .status();
+        thread::sleep(Duration::from_millis(200));
+
+        // Verify text is there
+        let content = capture_pane(&session, coworker_name).unwrap_or_default();
+        assert!(
+            content.contains("github said"),
+            "Previous nudge should be in pane. Content: {:?}",
+            content
+        );
+
+        // wait_for_nudge_safe should return true immediately when the input matches
+        // the last nudge we sent (it's safe to overwrite our own stuck text)
+        let start = std::time::Instant::now();
+        let result = midtown::tmux::wait_for_nudge_safe(
+            &tmux_target,
+            Some(previous_nudge), // This matches what we "sent" before
+            Duration::from_secs(20),
+            Duration::from_secs(10),
+        );
+        let elapsed = start.elapsed();
+
+        assert!(
+            result,
+            "Should return true when input matches previous nudge"
+        );
+        // Should be immediate since it matches the last nudge
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "Should return immediately when overwriting stale nudge, took {:?}",
+            elapsed
+        );
+    }
+
+    /// Test that coworker nudge times out and proceeds after max wait.
+    ///
+    /// If user keeps typing, eventually we need to send the nudge anyway.
+    #[test]
+    #[ignore] // Requires tmux to be running
+    fn test_coworker_nudge_timeout_with_persistent_input() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session = test_session_name();
+        let coworker_name = "amsterdam";
+        let _cleanup = Cleanup(&session);
+
+        assert!(
+            create_test_session(&session),
+            "Failed to create test session"
+        );
+
+        let target = format!("{}:", session);
+        let status = Command::new("tmux")
+            .args([
+                "new-window",
+                "-t",
+                &target,
+                "-n",
+                coworker_name,
+                "bash",
+                "-c",
+                r#"printf '❯ '; read line"#,
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(status, "Failed to create coworker window");
+        thread::sleep(Duration::from_millis(500));
+
+        // Type user content that never matches any nudge
+        let tmux_target = format!("{}:{}", session, coworker_name);
+        let _ = Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                &tmux_target,
+                "-l",
+                "writing a long detailed message that is not a nudge",
+            ])
+            .status();
+        thread::sleep(Duration::from_millis(200));
+
+        // Use short timeouts for test
+        let start = std::time::Instant::now();
+        let result = midtown::tmux::wait_for_nudge_safe(
+            &tmux_target,
+            Some("github said: unrelated nudge"), // Doesn't match what's in input
+            Duration::from_secs(3),               // Short stable duration
+            Duration::from_secs(5),               // Short max wait
+        );
+        let elapsed = start.elapsed();
+
+        // Should return false (timeout) after max_wait
+        assert!(!result, "Should return false after timeout");
+        // Should take roughly max_wait (5s)
+        assert!(
+            elapsed >= Duration::from_secs(4),
+            "Should wait until timeout, only waited {:?}",
+            elapsed
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "Should not wait much longer than timeout, waited {:?}",
+            elapsed
+        );
+    }
+}

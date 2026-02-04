@@ -856,6 +856,108 @@ pub fn wait_for_empty_input(target: &str, timeout: std::time::Duration) -> bool 
     }
 }
 
+/// Extract the text after the prompt symbol (❯) from pane content.
+///
+/// Returns None if no prompt is visible or the input is empty.
+pub fn get_input_text(pane_content: &str) -> Option<String> {
+    // Skip trailing blank lines and find the most recent prompt line
+    let prompt_line = pane_content
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .find(|l| l.contains('❯'));
+
+    if let Some(line) = prompt_line
+        && let Some(pos) = line.find('❯')
+    {
+        let after_prompt = line[pos + '❯'.len_utf8()..].trim();
+        if !after_prompt.is_empty() {
+            return Some(after_prompt.to_string());
+        }
+    }
+
+    None
+}
+
+/// Wait for a safe opportunity to nudge, respecting user input.
+///
+/// This implements the user-input-aware nudge waiting logic:
+/// 1. If input is empty → safe to nudge immediately
+/// 2. If input contains (mostly) the last nudge text → safe to overwrite
+/// 3. If user content detected → wait until it hasn't changed for `stable_duration`
+/// 4. After `max_wait` total time, proceed anyway (don't block forever)
+///
+/// Returns `true` if safe to nudge, `false` if we timed out with active typing.
+/// The caller should still nudge on `false` but may want to log it.
+pub fn wait_for_nudge_safe(
+    target: &str,
+    last_nudge_text: Option<&str>,
+    stable_duration: std::time::Duration,
+    max_wait: std::time::Duration,
+) -> bool {
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let poll_interval = Duration::from_secs(3);
+    let mut last_input: Option<String> = None;
+    let mut last_change_time = Instant::now();
+
+    loop {
+        let content = match capture_pane(target) {
+            Some(c) => c,
+            None => {
+                // Can't read pane — don't block, proceed
+                return true;
+            }
+        };
+
+        // Check 1: No input text → safe to nudge
+        if !has_input_text(&content) {
+            tracing::debug!("Input empty, safe to nudge");
+            return true;
+        }
+
+        // Get the current input text
+        let current_input = get_input_text(&content);
+
+        // Check 2: Input is (mostly) the last nudge text → safe to overwrite
+        if let (Some(input), Some(last_nudge)) = (&current_input, last_nudge_text) {
+            // Check if input starts with or mostly matches the last nudge
+            let check_len = last_nudge.len().min(30);
+            if check_len > 0 && input.starts_with(&last_nudge[..check_len]) {
+                tracing::debug!("Input contains last nudge text, safe to overwrite");
+                return true;
+            }
+        }
+
+        // Check 3: User content detected - track stability
+        if current_input != last_input {
+            // Content changed, reset stability timer
+            last_change_time = Instant::now();
+            last_input = current_input;
+            tracing::debug!("Input changed, resetting stability timer");
+        } else if last_change_time.elapsed() >= stable_duration {
+            // Content stable for long enough, safe to append
+            tracing::debug!(
+                "Input stable for {}s, safe to append",
+                stable_duration.as_secs()
+            );
+            return true;
+        }
+
+        // Check 4: Max wait exceeded
+        if start.elapsed() >= max_wait {
+            tracing::info!(
+                "Nudge wait timed out after {}s with active user input",
+                max_wait.as_secs()
+            );
+            return false;
+        }
+
+        std::thread::sleep(poll_interval);
+    }
+}
+
 /// Check if the nudge text is still sitting in the input line (not submitted).
 ///
 /// Returns true if the nudge appears to be stuck (Enter didn't work).

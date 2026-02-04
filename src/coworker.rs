@@ -17,6 +17,15 @@ use crate::worktree::{WorktreeError, WorktreeManager};
 /// Timeout for waiting for the lead's input to be empty before nudging.
 const LEAD_INPUT_WAIT_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Timeout for waiting for coworker input to be stable before nudging.
+/// We wait longer than lead (120s vs 90s) because coworkers are typically
+/// controlled by Claude Code and may take longer to process.
+const COWORKER_INPUT_MAX_WAIT: Duration = Duration::from_secs(120);
+
+/// Duration that input must be stable (unchanged) before we consider it safe to nudge.
+/// Per task requirements: "only append if content hasn't changed for 20 seconds"
+const COWORKER_INPUT_STABLE_DURATION: Duration = Duration::from_secs(20);
+
 /// Primary Manhattan avenue names used for coworker naming.
 const AVENUE_NAMES: &[&str] = &[
     "lexington",
@@ -87,6 +96,15 @@ pub struct Coworker {
     pub isolated_tasks: bool,
 }
 
+/// A queued nudge message for a coworker.
+#[derive(Debug, Clone)]
+struct CoworkerNudge {
+    /// Target coworker name
+    name: String,
+    /// The nudge message text
+    message: String,
+}
+
 /// Manager for coworker lifecycle.
 #[derive(Debug, Clone)]
 pub struct CoworkerManager {
@@ -104,6 +122,9 @@ pub struct CoworkerManager {
     /// Queue for lead nudges. A background thread waits for the lead's input to
     /// be empty before delivering each nudge, so the daemon loop is never blocked.
     lead_nudge_tx: mpsc::Sender<String>,
+    /// Queue for coworker nudges. A background thread waits for each coworker's input
+    /// to be stable (no typing) before delivering nudges, preventing interruption.
+    coworker_nudge_tx: mpsc::Sender<CoworkerNudge>,
 }
 
 impl CoworkerManager {
@@ -141,6 +162,25 @@ impl CoworkerManager {
             })
             .expect("Failed to spawn lead nudge worker thread");
 
+        // Spawn a background thread to process coworker nudges with input-stability waiting.
+        // The thread waits for each coworker's input to be stable (not actively typing)
+        // before delivering nudges, preventing interruption of user typing.
+        let (coworker_nudge_tx, coworker_nudge_rx) = mpsc::channel::<CoworkerNudge>();
+        let coworker_nudge_session = session.clone();
+        let last_nudge_map: Arc<RwLock<HashMap<String, String>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let last_nudge_map_clone = Arc::clone(&last_nudge_map);
+        std::thread::Builder::new()
+            .name("coworker-nudge-queue".into())
+            .spawn(move || {
+                Self::coworker_nudge_worker(
+                    &coworker_nudge_session,
+                    coworker_nudge_rx,
+                    last_nudge_map_clone,
+                );
+            })
+            .expect("Failed to spawn coworker nudge worker thread");
+
         let manager = Self {
             coworkers: Arc::new(RwLock::new(HashMap::new())),
             worktree_manager: Arc::new(worktree_manager),
@@ -151,6 +191,7 @@ impl CoworkerManager {
             session_name: session,
             discovered_on_startup: Arc::new(RwLock::new(Vec::new())),
             lead_nudge_tx,
+            coworker_nudge_tx,
         };
 
         // Discover existing coworkers from tmux on startup
@@ -569,6 +610,12 @@ impl CoworkerManager {
     }
 
     /// Send a nudge (input) to a coworker.
+    ///
+    /// The nudge is queued and delivered by a background thread that waits for
+    /// the coworker's input prompt to be stable (no active typing) before sending.
+    /// This prevents nudges from corrupting text the user is currently typing.
+    ///
+    /// Returns immediately — the actual delivery happens asynchronously.
     pub fn nudge(&self, name: &str, message: &str) -> crate::Result<()> {
         // Verify coworker exists
         {
@@ -581,7 +628,35 @@ impl CoworkerManager {
             }
         }
 
-        // Send keys to the tmux window
+        // Queue the nudge for async delivery with input-stability waiting
+        self.coworker_nudge_tx
+            .send(CoworkerNudge {
+                name: name.to_string(),
+                message: message.to_string(),
+            })
+            .map_err(|e| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Coworker nudge queue closed: {}", e),
+            })
+    }
+
+    /// Send a nudge directly to a coworker without waiting for input stability.
+    ///
+    /// This bypasses the normal input-waiting queue and sends immediately.
+    /// Use sparingly - only for urgent interrupts that shouldn't be delayed.
+    pub fn nudge_immediate(&self, name: &str, message: &str) -> crate::Result<()> {
+        // Verify coworker exists
+        {
+            let coworkers = self.coworkers.read().unwrap();
+            if !coworkers.contains_key(name) {
+                return Err(crate::Error::Rpc {
+                    code: -32602,
+                    message: format!("Coworker not found: {}", name),
+                });
+            }
+        }
+
+        // Send keys directly to the tmux window
         tmux::send_keys(&self.session_name, name, message)
     }
 
@@ -668,6 +743,60 @@ impl CoworkerManager {
         }
 
         tracing::debug!("Lead nudge worker shutting down (channel closed)");
+    }
+
+    /// Background worker that processes queued coworker nudges.
+    ///
+    /// For each nudge, waits until the coworker's input is stable (not actively
+    /// being typed into) before delivering. This respects user input and prevents
+    /// corrupting text being typed.
+    ///
+    /// The waiting logic:
+    /// 1. If input is empty → send immediately
+    /// 2. If input contains last nudge text → safe to overwrite
+    /// 3. If user content detected → wait until unchanged for 20s (COWORKER_INPUT_STABLE_DURATION)
+    /// 4. After 120s max wait → send anyway
+    fn coworker_nudge_worker(
+        session: &str,
+        rx: mpsc::Receiver<CoworkerNudge>,
+        last_nudge_map: Arc<RwLock<HashMap<String, String>>>,
+    ) {
+        for nudge in rx {
+            let target = format!("{}:{}", session, nudge.name);
+
+            // Get the last nudge text for this coworker (if any)
+            let last_nudge_text = {
+                let map = last_nudge_map.read().unwrap();
+                map.get(&nudge.name).cloned()
+            };
+
+            // Wait for a safe opportunity to nudge
+            let safe = tmux::wait_for_nudge_safe(
+                &target,
+                last_nudge_text.as_deref(),
+                COWORKER_INPUT_STABLE_DURATION,
+                COWORKER_INPUT_MAX_WAIT,
+            );
+
+            if !safe {
+                tracing::info!(
+                    "Coworker {} input still active after {}s, nudging anyway",
+                    nudge.name,
+                    COWORKER_INPUT_MAX_WAIT.as_secs()
+                );
+            }
+
+            // Deliver the nudge
+            if let Err(e) = tmux::send_keys(session, &nudge.name, &nudge.message) {
+                tracing::error!("Failed to deliver coworker nudge to {}: {}", nudge.name, e);
+            } else {
+                // Record this as the last nudge for this coworker
+                let mut map = last_nudge_map.write().unwrap();
+                map.insert(nudge.name.clone(), nudge.message);
+            }
+        }
+
+        tracing::debug!("Coworker nudge worker shutting down (channel closed)");
     }
 
     /// Send a bell notification to the human's terminal.
