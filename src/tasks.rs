@@ -415,10 +415,13 @@ fn is_within_grace_period(
     }
 }
 
-/// Update a task's owner and set status to in_progress.
+/// Update a task's owner, keeping status as "pending".
 ///
 /// Writes the updated task back to disk. This is called when the daemon assigns
-/// a task to a coworker, so the status transitions from pending to in_progress.
+/// a task to a coworker. The task remains "pending" with an owner set — this
+/// "pending with owner" state is used by dispatch.rs for spawn decisions and
+/// snapshot.rs for idle shutdown protection. The status transitions to
+/// "in_progress" only after the coworker successfully spawns.
 pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
@@ -432,7 +435,12 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
     update_task_owner_in_dir(task_id, owner, &tasks_dir)
 }
 
-/// Update a task's owner and set status to in_progress in a specific directory.
+/// Update a task's owner in a specific directory.
+///
+/// This only sets the owner field, leaving status as "pending". The "pending with
+/// owner" state is load-bearing: dispatch.rs uses it for spawn decisions and
+/// snapshot.rs uses it for idle shutdown protection. The transition to "in_progress"
+/// should happen after the coworker successfully spawns, not at assignment time.
 ///
 /// This is the path-injectable version used by tests and by `update_task_owner`.
 fn update_task_owner_in_dir(
@@ -450,7 +458,6 @@ fn update_task_owner_in_dir(
         serde_json::from_str(&content).map_err(|e| format!("Failed to parse task: {}", e))?;
 
     task["owner"] = serde_json::json!(owner);
-    task["status"] = serde_json::json!("in_progress");
 
     // Write back
     let updated_content = serde_json::to_string_pretty(&task)
@@ -1560,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_task_owner_sets_in_progress() {
+    fn test_update_task_owner_preserves_pending_status() {
         let temp_dir = TempDir::new().unwrap();
         let tasks_dir = temp_dir.path().to_path_buf();
 
@@ -1577,13 +1584,14 @@ mod tests {
         // Assign owner
         update_task_owner_in_dir("42", "vernon", &tasks_dir).unwrap();
 
-        // Verify both owner and status were updated
+        // Verify owner was updated but status stays "pending" (the "pending with
+        // owner" state is load-bearing for dispatch and idle shutdown protection)
         let content = std::fs::read_to_string(&task_file).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["owner"], "vernon");
         assert_eq!(
-            parsed["status"], "in_progress",
-            "Assigning a task owner should set status to in_progress"
+            parsed["status"], "pending",
+            "Assigning a task owner should keep status as pending"
         );
     }
 
@@ -1608,11 +1616,11 @@ mod tests {
         // Assign owner
         update_task_owner_in_dir("7", "park", &tasks_dir).unwrap();
 
-        // Verify owner and status changed, other fields preserved
+        // Verify owner changed, status stays pending, other fields preserved
         let content = std::fs::read_to_string(&task_file).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["owner"], "park");
-        assert_eq!(parsed["status"], "in_progress");
+        assert_eq!(parsed["status"], "pending");
         assert_eq!(parsed["subject"], "Complex task");
         assert_eq!(parsed["description"], "A detailed description");
         assert_eq!(parsed["blockedBy"], serde_json::json!(["5"]));
