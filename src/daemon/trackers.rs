@@ -349,7 +349,7 @@ const CI_BUFFER_FLUSH_DELAY: Duration = Duration::from_secs(15);
 ///
 /// When multiple checks pass on the same target (PR or branch) within a short
 /// window, we batch them into a single message like:
-/// "5 checks passed on PR #42: Clippy, Test, E2E - foo, ..."
+/// "5 checks passed on PR #42"
 #[derive(Debug, Default)]
 pub struct CiNotificationBuffer {
     /// Buffered checks grouped by target (e.g., "main" or "PR #42").
@@ -382,16 +382,16 @@ impl CiNotificationBuffer {
     pub fn add(&mut self, check: CiCheckPassed) {
         let now = Instant::now();
 
-        // Update oldest_entry if this is the first item
-        if self.oldest_entry.is_none() {
-            self.oldest_entry = Some(now);
-        }
-
         let entries = self.pending.entry(check.target).or_default();
 
         // Skip if this check name already exists for this target
         if entries.iter().any(|(name, _, _)| *name == check.check_name) {
             return;
+        }
+
+        // Only set oldest_entry when an entry is actually added
+        if self.oldest_entry.is_none() {
+            self.oldest_entry = Some(now);
         }
 
         entries.push((check.check_name, check.mention_prefix, now));
@@ -1019,5 +1019,34 @@ mod tests {
         assert_eq!(batched[0].check_names.len(), 2);
         assert!(batched[0].check_names.contains(&"Clippy".to_string()));
         assert!(batched[0].check_names.contains(&"Test".to_string()));
+    }
+
+    #[test]
+    fn ci_buffer_oldest_entry_only_set_on_actual_add() {
+        // Defensive: oldest_entry should only be set when an entry is actually
+        // added, not when a duplicate is skipped.
+        let mut buffer = CiNotificationBuffer::new();
+
+        // Add a check — oldest_entry should be set
+        buffer.add(CiCheckPassed {
+            check_name: "Clippy".to_string(),
+            target: "PR #42".to_string(),
+            mention_prefix: "".to_string(),
+        });
+        assert!(buffer.oldest_entry.is_some());
+
+        // Manually clear oldest_entry to simulate an edge case
+        buffer.oldest_entry = None;
+
+        // Add duplicate — oldest_entry should NOT be set since no entry was added
+        buffer.add(CiCheckPassed {
+            check_name: "Clippy".to_string(),
+            target: "PR #42".to_string(),
+            mention_prefix: "".to_string(),
+        });
+        assert!(
+            buffer.oldest_entry.is_none(),
+            "oldest_entry should not be set when duplicate is skipped"
+        );
     }
 }
