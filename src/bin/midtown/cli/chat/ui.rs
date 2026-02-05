@@ -1371,8 +1371,13 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
+    let title = match &usage.account_email {
+        Some(email) => format!(" Usage ({}) ", email),
+        None => " Usage ".to_string(),
+    };
+
     let block = Block::default()
-        .title(" Usage ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
