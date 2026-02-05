@@ -4,6 +4,7 @@
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
+  import AuthSwitcher from './lib/AuthSwitcher.svelte'
   import { messages, connected, coworkers, projects, activeProject } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from './lib/api.js'
   import {
@@ -53,6 +54,7 @@
       <h1>Midtown</h1>
     </div>
     <div class="header-controls">
+      <AuthSwitcher />
       {#if $pushSupported}
         <button
           class="push-toggle"

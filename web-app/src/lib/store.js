@@ -45,3 +45,9 @@ export const activeProject = writable(null)
 
 // Whether the app is running in multi-project mode (always true — served from shared webserver)
 export const multiProjectMode = writable(true)
+
+// Auth profiles: [{name, is_current, has_credentials}]
+export const authProfiles = writable([])
+
+// Whether an auth switch is in progress
+export const authSwitching = writable(false)
