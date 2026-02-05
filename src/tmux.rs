@@ -2013,6 +2013,11 @@ pub fn spawn_lead(
         }
     }
 
+    // Clear stale task ID mappings from previous /resume sessions.
+    // Fresh sessions use CLAUDE_CODE_TASK_LIST_ID correctly, so old mappings
+    // from a /resume cycle are no longer valid and could cause mis-remapping.
+    crate::tasks::clear_lead_task_id_map(project_name);
+
     let prompt_file = write_lead_prompt_file()?;
     let settings_file = write_lead_settings_file()?;
 
