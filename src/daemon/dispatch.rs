@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
-use crate::message::Message;
 use crate::{config, daemon_messages};
 
 use super::constants::*;
@@ -138,18 +137,18 @@ pub(super) fn check_and_recover_orphans(
     }]
 }
 
-/// Nudge coworkers that were discovered from tmux on daemon startup.
+/// Gather data and build effects for nudging coworkers discovered on daemon startup.
 ///
 /// After a daemon restart, existing coworkers are found in tmux but they may
 /// be stuck waiting for input or idle. This function checks if each discovered
 /// coworker has an assigned task (in_progress with them as owner) or a reviewer
-/// assignment (in github-state.json), and nudges them to continue.
+/// assignment (in github-state.json), and returns nudge effects.
 ///
-/// This runs once at startup, with a short delay to let coworkers settle.
-pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
+/// The caller is responsible for the initial startup delay and executing effects.
+pub(super) async fn gather_discovered_coworker_nudges(state: &DaemonState) -> Vec<Effect> {
     let discovered = state.coworkers.take_discovered_on_startup();
     if discovered.is_empty() {
-        return;
+        return vec![];
     }
 
     info!(
@@ -164,8 +163,7 @@ pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
     let in_progress = crate::tasks::get_in_progress_tasks_with_subjects();
 
     // Build a map of owner -> (task_id, task_subject)
-    let mut owner_tasks: std::collections::HashMap<String, (String, String)> =
-        std::collections::HashMap::new();
+    let mut owner_tasks: HashMap<String, (String, String)> = HashMap::new();
     for (task_id, task_subject, owner) in &in_progress {
         let owner_lower = owner.trim().trim_matches('"').to_lowercase();
         if !owner_lower.is_empty() {
@@ -174,7 +172,7 @@ pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
     }
 
     // Check reviewer assignments from daemon-state.json
-    let reviewer_prs: std::collections::HashMap<String, u64> = {
+    let reviewer_prs: HashMap<String, u64> = {
         let ps = state.persistent_state.lock().await;
         discovered
             .iter()
@@ -186,7 +184,22 @@ pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
             .collect()
     };
 
-    for name in &discovered {
+    // Build effects using pure decision function
+    decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs)
+}
+
+/// Build effects for nudging discovered coworkers based on their task/review assignments.
+///
+/// Pure function: takes immutable data, returns effects. All I/O (nudging,
+/// channel posting) flows through Effect variants.
+fn decide_discovered_coworker_nudges(
+    discovered: &[String],
+    owner_tasks: &HashMap<String, (String, String)>,
+    reviewer_prs: &HashMap<String, u64>,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for name in discovered {
         let name_lower = name.to_lowercase();
 
         // Check for an in_progress task owned by this coworker
@@ -204,23 +217,18 @@ pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
                 name, task_id
             );
 
-            if let Err(e) = state.coworkers.nudge(name, &prompt) {
-                warn!("Failed to nudge discovered coworker {}: {}", name, e);
-            }
-
-            // Post recovery message to channel
-            let msg = Message::text(
-                "midtown",
-                format!(
+            effects.push(Effect::NudgeCoworker {
+                name: name.clone(),
+                message: prompt,
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
                     "♻️ Nudged discovered coworker {} to resume task #{}",
                     name, task_id
                 ),
-            );
-            if let Err(e) = state.send_and_broadcast(&msg) {
-                warn!("Failed to post discovery nudge message: {}", e);
-            }
+            });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
-            // Coworker was assigned to review a PR
             let prompt = crate::agents::reviewer_resume_prompt(*pr_number);
 
             info!(
@@ -228,30 +236,26 @@ pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
                 name, pr_number
             );
 
-            if let Err(e) = state.coworkers.nudge(name, &prompt) {
-                warn!("Failed to nudge discovered reviewer {}: {}", name, e);
-            }
-
-            let msg = Message::text(
-                "midtown",
-                format!(
+            effects.push(Effect::NudgeCoworker {
+                name: name.clone(),
+                message: prompt,
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
                     "♻️ Nudged discovered reviewer {} to resume PR #{} review",
                     name, pr_number
                 ),
-            );
-            if let Err(e) = state.send_and_broadcast(&msg) {
-                warn!("Failed to post discovery nudge message: {}", e);
-            }
+            });
         } else {
             debug!(
                 "Discovered coworker {} has no assigned task or review - skipping nudge",
                 name
             );
         }
-
-        // Small delay between nudges to avoid overwhelming tmux
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+
+    effects
 }
 
 /// Detect and kill duplicate task workers.
@@ -459,23 +463,30 @@ fn partition_orphans_by_merged_status(
     (merged, unmerged)
 }
 
-/// Clean up orphaned worktrees that have no active coworker.
+/// Data gathered from blocking worktree operations and PR cache for orphan cleanup.
 ///
-/// Worktrees with no commits beyond the base branch are deleted.
-/// Worktrees whose PRs were merged (squash-merge) are also cleaned up.
-/// Worktrees with genuinely unmerged commits are flagged to the Lead via channel.
-///
-/// The worktree operations run in a blocking task to avoid blocking the async
-/// runtime. We process a limited number per tick to avoid saturating the
-/// blocking thread pool.
-///
-/// Returns effects for clearing reviewer assignments of orphaned coworkers,
-/// but only after the first PR poll completes (when we have accurate PR data).
-/// Coworkers with open PRs are excluded from reviewer assignment clearing
-/// since they may be "on break" waiting for reviews.
-pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effect> {
-    let mut effects = Vec::new();
+/// Collected once in the async wrapper, then passed to the pure decision function.
+pub(super) struct OrphanCleanupData {
+    /// All orphaned worktree names (before any filtering).
+    pub all_orphaned: Vec<String>,
+    /// Worktrees whose PRs were merged (safe to force-delete).
+    pub merged_worktrees_to_cleanup: Vec<String>,
+    /// Whether the first PR poll has completed.
+    pub pr_poll_initialized: bool,
+    /// Coworkers who have open PRs (excluded from cleanup/clearing).
+    pub open_pr_owners: HashSet<String>,
+    /// Worktrees due for a warning (orphan tracker determined they need alerting).
+    pub due_for_warning: Vec<String>,
+}
 
+/// Gather data needed for orphan worktree cleanup decisions.
+///
+/// Runs blocking git operations in a separate thread pool and reads PR cache
+/// state. Also consults the orphan tracker to determine which worktrees need
+/// warnings (the tracker is in-memory state management, not I/O).
+///
+/// Returns `None` if the PR poll hasn't initialized yet (too early to decide).
+pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<OrphanCleanupData> {
     // Clone the coworker manager for use in the blocking task.
     // CoworkerManager is Clone and contains Arc<> internally.
     let coworkers = state.coworkers.clone();
@@ -503,118 +514,108 @@ pub(super) async fn cleanup_orphaned_worktrees(state: &DaemonState) -> Vec<Effec
     });
 
     // Skip orphan flagging and reviewer assignment clearing until the first PR poll completes.
-    let (pr_poll_initialized, open_pr_owners) = {
+    let (pr_poll_initialized, open_pr_owners, merged_pr_branches) = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        (cache.pr_poll_initialized, cache.open_pr_owners.clone())
+        (
+            cache.pr_poll_initialized,
+            cache.open_pr_owners.clone(),
+            cache.merged_pr_branches.clone(),
+        )
     };
     if should_skip_orphan_flagging(pr_poll_initialized) {
         debug!("Skipping orphan flagging - PR poll not yet initialized");
-        return effects;
+        return None;
     }
 
-    // Queue effect to clear reviewer assignments for orphaned coworkers.
-    // Uses pure helper function for testability.
-    if let Some(orphans) =
-        compute_orphans_for_reviewer_clearing(pr_poll_initialized, all_orphaned, &open_pr_owners)
-    {
-        effects.push(Effect::ClearOrphanedReviewerAssignments {
-            orphaned_coworkers: orphans,
-        });
-    }
-
-    // Filter out worktrees whose branches have open PRs (by coworker name).
-    let flagged = filter_orphans_with_open_prs(flagged, &open_pr_owners);
-
-    // Partition worktrees by whether their PR was merged.
-    // Merged PRs can be safely cleaned up; unmerged need investigation.
-    let merged_pr_branches = {
-        let cache = state.pr_coworker_cache.read().unwrap();
-        cache.merged_pr_branches.clone()
-    };
+    // Filter and partition using pure helper functions.
+    let filtered = filter_orphans_with_open_prs(flagged, &open_pr_owners);
     let (merged_pr_worktrees, unmerged) =
-        partition_orphans_by_merged_status(flagged, &merged_pr_branches, |name| {
+        partition_orphans_by_merged_status(filtered, &merged_pr_branches, |name| {
             branch_map.get(name).cloned().flatten()
         });
-
-    // Clean up worktrees whose PRs were merged (squash-merge case).
-    // This runs in a blocking task since it involves git commands.
-    if !merged_pr_worktrees.is_empty() {
-        let coworkers = state.coworkers.clone();
-        let to_cleanup = merged_pr_worktrees.clone();
-        tokio::task::spawn_blocking(move || {
-            for name in to_cleanup {
-                match coworkers.force_cleanup_worktree(&name) {
-                    Ok(()) => {
-                        info!("Cleaned up orphaned worktree for {} (PR was merged)", name);
-                    }
-                    Err(e) => {
-                        warn!("Failed to cleanup merged-PR worktree for {}: {}", name, e);
-                    }
-                }
-            }
-        })
-        .await
-        .ok();
-    }
 
     for name in &unmerged {
         debug!("Orphan worktree flagged (no open or merged PR): {}", name);
     }
 
-    let mut tracker = state.orphan_tracker.write().unwrap();
+    // Consult the orphan tracker to determine which worktrees need warnings.
+    // The tracker is in-memory state management (not I/O) — similar to how
+    // cooldowns are accessed in other decision functions.
+    let due_for_warning = {
+        let mut tracker = state.orphan_tracker.write().unwrap();
+        tracker.prune(&unmerged);
+        let due: Vec<_> = unmerged
+            .into_iter()
+            .filter(|name| {
+                tracker.track(name.clone());
+                tracker.should_warn(name)
+            })
+            .collect();
+        for name in &due {
+            warn!(
+                "Orphaned worktree for {} has unmerged commits - flagging to lead",
+                name
+            );
+            tracker.record_warn(name);
+        }
+        due
+    };
 
-    // Prune entries for worktrees that are no longer flagged
-    tracker.prune(&unmerged);
+    Some(OrphanCleanupData {
+        all_orphaned,
+        merged_worktrees_to_cleanup: merged_pr_worktrees,
+        pr_poll_initialized,
+        open_pr_owners,
+        due_for_warning,
+    })
+}
 
-    // Track newly flagged worktrees and collect those due for a warning
-    let due_for_warning: Vec<_> = unmerged
-        .into_iter()
-        .filter(|name| {
-            tracker.track(name.clone());
-            tracker.should_warn(name)
-        })
-        .collect();
+/// Build effects for orphan worktree cleanup based on gathered data.
+///
+/// Pure function: takes immutable data, returns effects. All I/O flows through
+/// Effect variants executed by `effects::execute_effects`.
+pub(super) fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
+    let mut effects = Vec::new();
 
-    if due_for_warning.is_empty() {
-        return effects;
+    // Clear reviewer assignments for orphaned coworkers.
+    if let Some(orphans) = compute_orphans_for_reviewer_clearing(
+        data.pr_poll_initialized,
+        data.all_orphaned.clone(),
+        &data.open_pr_owners,
+    ) {
+        effects.push(Effect::ClearOrphanedReviewerAssignments {
+            orphaned_coworkers: orphans,
+        });
     }
 
-    // Record warnings and log (rate-limited by OrphanTracker)
-    for name in &due_for_warning {
-        warn!(
-            "Orphaned worktree for {} has unmerged commits - flagging to lead",
-            name
+    // Force-delete worktrees whose PRs were merged (squash-merge case).
+    if !data.merged_worktrees_to_cleanup.is_empty() {
+        effects.push(Effect::ForceCleanupWorktrees {
+            names: data.merged_worktrees_to_cleanup.clone(),
+        });
+    }
+
+    // Warn about orphaned worktrees with unmerged commits.
+    if !data.due_for_warning.is_empty() {
+        let names_list = data.due_for_warning.join(", ");
+        let nudge_text = format!(
+            "⚠️ @lead Orphaned worktrees with unmerged commits: {}. \
+             Please investigate and decide whether to merge or delete these branches.",
+            names_list
         );
-        tracker.record_warn(name);
-    }
-    drop(tracker);
 
-    // Notify @lead about orphaned worktrees with unmerged commits
-    let names_list = due_for_warning.join(", ");
-    let nudge_text = format!(
-        "⚠️ @lead Orphaned worktrees with unmerged commits: {}. \
-         Please investigate and decide whether to merge or delete these branches.",
-        names_list
-    );
-    let msg = Message::system(nudge_text.clone());
-    if let Err(e) = state.send_and_broadcast(&msg) {
-        warn!("Failed to send orphan flag message: {}", e);
+        effects.push(Effect::PostSystemMessage {
+            message: nudge_text.clone(),
+        });
+        effects.push(Effect::NudgeLead {
+            message: nudge_text.clone(),
+        });
+        effects.push(Effect::SendPushNotification {
+            title: "Orphaned worktrees need attention".to_string(),
+            body: nudge_text,
+            tag: "orphan_warning".to_string(),
+        });
     }
-
-    // Directly nudge the lead (don't rely solely on chat monitor).
-    // This matches the pattern used for CI failures on the default branch.
-    if let Err(e) = state.coworkers.nudge_lead(&nudge_text) {
-        warn!("Failed to nudge lead for orphaned worktrees: {}", e);
-    } else {
-        info!("Nudged lead about orphaned worktrees with unmerged commits");
-    }
-
-    // Send push notification for mobile alerts
-    state.send_push_notification(
-        "Orphaned worktrees need attention",
-        &nudge_text,
-        "orphan_warning",
-    );
 
     effects
 }
@@ -1409,5 +1410,231 @@ mod tests {
             effects.is_empty(),
             "Should return empty vec when no task ID in title"
         );
+    }
+
+    // ======================================================================
+    // decide_orphan_cleanup tests
+    // ======================================================================
+
+    #[test]
+    fn test_decide_orphan_cleanup_empty_data() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec![],
+            merged_worktrees_to_cleanup: vec![],
+            pr_poll_initialized: true,
+            open_pr_owners: HashSet::new(),
+            due_for_warning: vec![],
+        };
+        let effects = decide_orphan_cleanup(&data);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_clears_reviewer_assignments() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec!["amsterdam".to_string(), "york".to_string()],
+            merged_worktrees_to_cleanup: vec![],
+            pr_poll_initialized: true,
+            open_pr_owners: ["amsterdam".to_string()].into_iter().collect(),
+            due_for_warning: vec![],
+        };
+        let effects = decide_orphan_cleanup(&data);
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::ClearOrphanedReviewerAssignments { orphaned_coworkers } => {
+                assert_eq!(orphaned_coworkers, &vec!["york".to_string()]);
+            }
+            _ => panic!("Expected ClearOrphanedReviewerAssignments"),
+        }
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_force_deletes_merged_worktrees() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec![],
+            merged_worktrees_to_cleanup: vec!["york".to_string(), "park".to_string()],
+            pr_poll_initialized: true,
+            open_pr_owners: HashSet::new(),
+            due_for_warning: vec![],
+        };
+        let effects = decide_orphan_cleanup(&data);
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::ForceCleanupWorktrees { names } => {
+                assert_eq!(names, &vec!["york".to_string(), "park".to_string()]);
+            }
+            _ => panic!("Expected ForceCleanupWorktrees"),
+        }
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_warns_about_unmerged() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec![],
+            merged_worktrees_to_cleanup: vec![],
+            pr_poll_initialized: true,
+            open_pr_owners: HashSet::new(),
+            due_for_warning: vec!["amsterdam".to_string()],
+        };
+        let effects = decide_orphan_cleanup(&data);
+        // Should produce: PostSystemMessage, NudgeLead, SendPushNotification
+        assert_eq!(effects.len(), 3);
+        assert!(matches!(&effects[0], Effect::PostSystemMessage { .. }));
+        assert!(matches!(&effects[1], Effect::NudgeLead { .. }));
+        assert!(matches!(
+            &effects[2],
+            Effect::SendPushNotification { tag, .. } if tag == "orphan_warning"
+        ));
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_full_scenario() {
+        // All three kinds of effects: reviewer clearing, force cleanup, warnings
+        let data = OrphanCleanupData {
+            all_orphaned: vec![
+                "amsterdam".to_string(),
+                "york".to_string(),
+                "park".to_string(),
+            ],
+            merged_worktrees_to_cleanup: vec!["york".to_string()],
+            pr_poll_initialized: true,
+            open_pr_owners: ["amsterdam".to_string()].into_iter().collect(),
+            due_for_warning: vec!["park".to_string()],
+        };
+        let effects = decide_orphan_cleanup(&data);
+        // ClearOrphanedReviewerAssignments(york, park) + ForceCleanupWorktrees(york) +
+        // PostSystemMessage + NudgeLead + SendPushNotification
+        assert_eq!(effects.len(), 5);
+        assert!(matches!(
+            &effects[0],
+            Effect::ClearOrphanedReviewerAssignments { .. }
+        ));
+        assert!(matches!(&effects[1], Effect::ForceCleanupWorktrees { .. }));
+        assert!(matches!(&effects[2], Effect::PostSystemMessage { .. }));
+        assert!(matches!(&effects[3], Effect::NudgeLead { .. }));
+        assert!(matches!(&effects[4], Effect::SendPushNotification { .. }));
+    }
+
+    // ======================================================================
+    // decide_discovered_coworker_nudges tests
+    // ======================================================================
+
+    #[test]
+    fn test_discovered_nudges_empty() {
+        let effects = decide_discovered_coworker_nudges(&[], &HashMap::new(), &HashMap::new());
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn test_discovered_nudges_task_owner() {
+        let discovered = vec!["lexington".to_string()];
+        let mut owner_tasks = HashMap::new();
+        owner_tasks.insert(
+            "lexington".to_string(),
+            ("42".to_string(), "Fix auth bug".to_string()),
+        );
+        let reviewer_prs = HashMap::new();
+
+        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        // NudgeCoworker + PostToChannel
+        assert_eq!(effects.len(), 2);
+        match &effects[0] {
+            Effect::NudgeCoworker { name, message } => {
+                assert_eq!(name, "lexington");
+                assert!(message.contains("Resume task #42"));
+            }
+            _ => panic!("Expected NudgeCoworker"),
+        }
+        match &effects[1] {
+            Effect::PostToChannel { sender, message } => {
+                assert_eq!(sender, "midtown");
+                assert!(message.contains("lexington"));
+                assert!(message.contains("task #42"));
+            }
+            _ => panic!("Expected PostToChannel"),
+        }
+    }
+
+    #[test]
+    fn test_discovered_nudges_reviewer() {
+        let discovered = vec!["park".to_string()];
+        let owner_tasks = HashMap::new();
+        let mut reviewer_prs = HashMap::new();
+        reviewer_prs.insert("park".to_string(), 99);
+
+        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        // NudgeCoworker + PostToChannel
+        assert_eq!(effects.len(), 2);
+        match &effects[0] {
+            Effect::NudgeCoworker { name, .. } => {
+                assert_eq!(name, "park");
+            }
+            _ => panic!("Expected NudgeCoworker"),
+        }
+        match &effects[1] {
+            Effect::PostToChannel { message, .. } => {
+                assert!(message.contains("PR #99"));
+            }
+            _ => panic!("Expected PostToChannel"),
+        }
+    }
+
+    #[test]
+    fn test_discovered_nudges_no_assignment() {
+        let discovered = vec!["broadway".to_string()];
+        let owner_tasks = HashMap::new();
+        let reviewer_prs = HashMap::new();
+
+        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        assert!(
+            effects.is_empty(),
+            "Coworker with no task or review should produce no effects"
+        );
+    }
+
+    #[test]
+    fn test_discovered_nudges_mixed() {
+        let discovered = vec![
+            "lexington".to_string(), // has task
+            "park".to_string(),      // has review
+            "broadway".to_string(),  // no assignment
+        ];
+        let mut owner_tasks = HashMap::new();
+        owner_tasks.insert(
+            "lexington".to_string(),
+            ("42".to_string(), "Fix auth bug".to_string()),
+        );
+        let mut reviewer_prs = HashMap::new();
+        reviewer_prs.insert("park".to_string(), 99);
+
+        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        // lexington: NudgeCoworker + PostToChannel = 2
+        // park: NudgeCoworker + PostToChannel = 2
+        // broadway: nothing = 0
+        assert_eq!(effects.len(), 4);
+    }
+
+    #[test]
+    fn test_discovered_nudges_task_takes_priority_over_review() {
+        // If a coworker has both a task and a review assignment,
+        // the task takes priority (task check comes first in code)
+        let discovered = vec!["lexington".to_string()];
+        let mut owner_tasks = HashMap::new();
+        owner_tasks.insert(
+            "lexington".to_string(),
+            ("42".to_string(), "Fix auth bug".to_string()),
+        );
+        let mut reviewer_prs = HashMap::new();
+        reviewer_prs.insert("lexington".to_string(), 99);
+
+        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        assert_eq!(effects.len(), 2);
+        // Should nudge about the task, not the review
+        match &effects[0] {
+            Effect::NudgeCoworker { message, .. } => {
+                assert!(message.contains("Resume task #42"));
+            }
+            _ => panic!("Expected NudgeCoworker"),
+        }
     }
 }

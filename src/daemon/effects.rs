@@ -162,6 +162,19 @@ pub enum Effect {
         pr_title: String,
         owner: String,
     },
+    /// Force-delete orphaned worktrees whose PRs were merged (squash-merge).
+    ///
+    /// These worktrees appear to have "unmerged commits" because the squash-merge
+    /// changed commit SHAs, but the work is already in main. Safe to force-remove.
+    ForceCleanupWorktrees { names: Vec<String> },
+    /// Send a push notification to the mobile PWA.
+    ///
+    /// Fire-and-forget: the push manager runs in a background task.
+    SendPushNotification {
+        title: String,
+        body: String,
+        tag: String,
+    },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -573,6 +586,30 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         );
                     }
                 }
+            }
+            Effect::ForceCleanupWorktrees { names } => {
+                if names.is_empty() {
+                    continue;
+                }
+                let coworkers = state.coworkers.clone();
+                let to_cleanup = names;
+                tokio::task::spawn_blocking(move || {
+                    for name in to_cleanup {
+                        match coworkers.force_cleanup_worktree(&name) {
+                            Ok(()) => {
+                                info!("Cleaned up orphaned worktree for {} (PR was merged)", name);
+                            }
+                            Err(e) => {
+                                warn!("Failed to cleanup merged-PR worktree for {}: {}", name, e);
+                            }
+                        }
+                    }
+                })
+                .await
+                .ok();
+            }
+            Effect::SendPushNotification { title, body, tag } => {
+                state.send_push_notification(&title, &body, &tag);
             }
         }
     }

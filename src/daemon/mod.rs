@@ -1540,10 +1540,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Nudge any coworkers discovered from tmux to continue their tasks.
     // This runs once at startup after the daemon has fully initialized.
+    // Data gathering + pure decision → effects executed in background task.
     {
         let state = Arc::clone(&state);
         tokio::spawn(async move {
-            dispatch::nudge_discovered_coworkers(&state).await;
+            let nudge_effects = dispatch::gather_discovered_coworker_nudges(&state).await;
+            effects::execute_effects(nudge_effects, &state).await;
         });
     }
 
@@ -1805,9 +1807,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // If the next tick fires while effects are executing, it will skip these tasks.
                 state.mark_in_flight_spawns_from_effects(&tick_effects);
                 effects::execute_effects(tick_effects, &state).await;
-                // cleanup_orphaned_worktrees returns effects for reviewer assignment cleanup
-                let orphan_effects = dispatch::cleanup_orphaned_worktrees(&state).await;
-                effects::execute_effects(orphan_effects, &state).await;
+                // Orphan worktree cleanup: gather data (blocking git ops + cache reads),
+                // then build effects via pure decision function.
+                if let Some(orphan_data) = dispatch::gather_orphan_cleanup_data(&state).await {
+                    let orphan_effects = dispatch::decide_orphan_cleanup(&orphan_data);
+                    effects::execute_effects(orphan_effects, &state).await;
+                }
                 // Process any pending webhook review spawns whose delay has expired
                 let review_effects = pr::process_pending_review_spawns(&state).await;
                 effects::execute_effects(review_effects, &state).await;
