@@ -379,6 +379,12 @@ pub fn create_window(
 /// SAFETY: Refuses to kill the last window in a session, as that would
 /// terminate the session (and potentially the tmux server if it's the only session).
 pub fn kill_window(session: &str, name: &str) -> crate::Result<()> {
+    // Idempotent: if window doesn't exist, it's already "killed"
+    if !window_exists(session, name).unwrap_or(false) {
+        tracing::debug!("Window {}:{} doesn't exist, nothing to kill", session, name);
+        return Ok(());
+    }
+
     // Safety check: don't kill the last window in the session
     let window_count = count_session_windows(session);
     if window_count <= 1 {

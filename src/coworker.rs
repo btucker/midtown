@@ -1665,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn test_shutdown_cleans_up_even_on_tmux_failure() {
+    fn test_shutdown_succeeds_when_window_missing() {
         let (manager, _temp_dir) = test_manager();
 
         // Insert a coworker into the HashMap
@@ -1687,11 +1687,29 @@ mod tests {
 
         assert_eq!(manager.count(), 1);
 
-        // shutdown() will fail because there's no real tmux session,
-        // but it should still remove the coworker from the HashMap
-        let _ = manager.shutdown("lexington");
+        // shutdown() should succeed even when tmux window doesn't exist
+        // (idempotent behavior - the window is already "gone")
+        let result = manager.shutdown("lexington");
+        assert!(
+            result.is_ok(),
+            "shutdown should succeed when window is already gone"
+        );
 
-        // The coworker should be removed from tracking regardless of tmux failure
+        // The coworker should be removed from tracking
         assert_eq!(manager.count(), 0);
+    }
+
+    #[test]
+    fn test_shutdown_coworker_not_tracked() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Try to shutdown a coworker that was never tracked
+        let result = manager.shutdown("nonexistent");
+
+        // Should return an error since the coworker isn't tracked
+        assert!(
+            result.is_err(),
+            "shutdown should error for untracked coworker"
+        );
     }
 }

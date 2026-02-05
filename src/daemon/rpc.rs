@@ -379,6 +379,18 @@ fn handle_coworker_spawn(
 
 /// Handle coworker.break RPC method.
 fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Response {
+    // Check if the coworker is tracked - if not, they're already "on break"
+    if state.coworkers.get(name).is_none() {
+        info!("Coworker {} is already on break (not tracked)", name);
+        return Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": format!("{} is already on break", name),
+            }),
+        );
+    }
+
     state.broadcast_coworker_update(name, "stopped", None);
     match state.coworkers.shutdown(name) {
         Ok(()) => {
