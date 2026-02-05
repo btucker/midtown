@@ -990,7 +990,15 @@ struct AuthSwitchRequest {
 async fn api_auth_switch(
     State(state): State<Arc<WebState>>,
     Json(body): Json<AuthSwitchRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    // Validate profile name at the API boundary before touching the RPC
+    if let Err(e) = crate::auth::validate_profile_name(&body.profile) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        ));
+    }
+
     let repo = state.config.repo.clone();
     let profile = body.profile;
 
@@ -1001,6 +1009,7 @@ async fn api_auth_switch(
         let socket = crate::paths::daemon_socket_for_repo(&repo);
         let mut stream =
             UnixStream::connect(&socket).map_err(|e| format!("Cannot connect to daemon: {}", e))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
         stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
 
         let request = serde_json::json!({
@@ -1039,14 +1048,20 @@ async fn api_auth_switch(
     .await
     .map_err(|e| {
         error!("spawn_blocking panic in auth switch: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Internal server error" })),
+        )
     })?;
 
     match result {
         Ok(data) => Ok(axum::Json(data)),
         Err(msg) => {
             warn!("Auth switch failed: {}", msg);
-            Err(StatusCode::BAD_REQUEST)
+            Err((
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": msg })),
+            ))
         }
     }
 }

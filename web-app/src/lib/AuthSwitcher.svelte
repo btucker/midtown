@@ -4,6 +4,7 @@
   import { onMount } from 'svelte'
 
   let open = $state(false)
+  let error = $state(null)
 
   onMount(() => {
     fetchAuthProfiles()
@@ -12,13 +13,19 @@
   function toggle() {
     if (!$authSwitching) {
       open = !open
+      error = null
     }
   }
 
   async function select(profile) {
     if (profile.is_current || $authSwitching) return
     open = false
-    await switchAuthProfile(profile.name)
+    error = null
+    const result = await switchAuthProfile(profile.name)
+    if (!result.ok) {
+      error = result.error
+      setTimeout(() => { error = null }, 5000)
+    }
   }
 
   function handleClickOutside(event) {
@@ -53,6 +60,10 @@
       {/if}
       <span class="profile-name">{currentProfile?.name || '...'}</span>
     </button>
+
+    {#if error}
+      <div class="auth-error">{error}</div>
+    {/if}
 
     {#if open}
       <div class="auth-dropdown">
@@ -195,5 +206,20 @@
     color: #1c1c1c;
     border-radius: 3px;
     flex-shrink: 0;
+  }
+
+  .auth-error {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    padding: 4px 8px;
+    background: #3a2020;
+    border: 1px solid #af5f5f;
+    border-radius: 4px;
+    color: #e08080;
+    font-size: 0.7rem;
+    white-space: nowrap;
+    z-index: 100;
   }
 </style>
