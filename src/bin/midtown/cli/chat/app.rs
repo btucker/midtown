@@ -1370,6 +1370,39 @@ mod tests {
     use super::*;
     use midtown::Message;
 
+    /// Create a default App for testing. Tests can override specific fields
+    /// using struct update syntax: `App { messages, ..test_app() }`
+    fn test_app() -> App {
+        App {
+            messages: VecDeque::new(),
+            scroll_offset: 0,
+            visible_height: 20,
+            channel: None,
+            initial_load_done: true,
+            history_start_position: 0,
+            history_fully_loaded: true,
+            tasks: Vec::new(),
+            prs: Vec::new(),
+            merged_prs: Vec::new(),
+            repo_name: "test".to_string(),
+            kanban_last_refresh: Instant::now(),
+            kanban_receiver: None,
+            repo_status: RepoStatus::default(),
+            repo_statuses: Vec::new(),
+            repo_status_last_refresh: Instant::now(),
+            repo_status_receiver: None,
+            selection_mode: false,
+            user_display_name: None,
+            current_tasks_cache: HashMap::new(),
+            tasks_cache_hash: 0,
+            intentionally_at_top: false,
+            mermaid_cache: MermaidCache::new(),
+            usage_data: None,
+            usage_receiver: None,
+            usage_last_refresh: Instant::now(),
+        }
+    }
+
     #[test]
     fn test_task_status_from_string() {
         // Test the status parsing logic
@@ -1417,13 +1450,6 @@ mod tests {
     #[test]
     fn test_tasks_by_status_groups_correctly() {
         let app = App {
-            messages: VecDeque::new(),
-            scroll_offset: 0,
-            visible_height: 20,
-            channel: None,
-            initial_load_done: true,
-            history_start_position: 0,
-            history_fully_loaded: true,
             tasks: vec![
                 KanbanTask {
                     id: "1".to_string(),
@@ -1447,24 +1473,7 @@ mod tests {
                     modified_at: None,
                 },
             ],
-            prs: Vec::new(),
-            merged_prs: Vec::new(),
-            repo_name: "test".to_string(),
-            kanban_last_refresh: Instant::now(),
-            kanban_receiver: None,
-            repo_status: RepoStatus::default(),
-            repo_statuses: Vec::new(),
-            repo_status_last_refresh: Instant::now(),
-            repo_status_receiver: None,
-            selection_mode: false,
-            user_display_name: None,
-            current_tasks_cache: HashMap::new(),
-            tasks_cache_hash: 0,
-            intentionally_at_top: false,
-            mermaid_cache: MermaidCache::new(),
-            usage_data: None,
-            usage_receiver: None,
-            usage_last_refresh: Instant::now(),
+            ..test_app()
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -1492,31 +1501,8 @@ mod tests {
 
         let mut app = App {
             messages,
-            scroll_offset: 0, // "at bottom" - should show most recent
             visible_height: 10,
-            channel: None,
-            initial_load_done: true,
-            history_start_position: 0,
-            history_fully_loaded: true,
-            tasks: Vec::new(),
-            prs: Vec::new(),
-            merged_prs: Vec::new(),
-            repo_name: "test".to_string(),
-            kanban_last_refresh: Instant::now(),
-            kanban_receiver: None,
-            repo_status: RepoStatus::default(),
-            repo_statuses: Vec::new(),
-            repo_status_last_refresh: Instant::now(),
-            repo_status_receiver: None,
-            selection_mode: false,
-            user_display_name: None,
-            current_tasks_cache: HashMap::new(),
-            tasks_cache_hash: 0,
-            intentionally_at_top: false,
-            mermaid_cache: MermaidCache::new(),
-            usage_data: None,
-            usage_receiver: None,
-            usage_last_refresh: Instant::now(),
+            ..test_app()
         };
 
         let visible = app.visible_messages();
@@ -1627,8 +1613,6 @@ mod tests {
 
     #[test]
     fn test_is_at_max_scroll() {
-        use std::time::Instant;
-
         // Create an App with 100 messages and visible_height of 20
         let messages: VecDeque<Message> = (0..100)
             .map(|i| Message {
@@ -1642,31 +1626,7 @@ mod tests {
 
         let mut app = App {
             messages,
-            scroll_offset: 0,
-            visible_height: 20,
-            channel: None,
-            initial_load_done: true,
-            history_start_position: 0,
-            history_fully_loaded: true,
-            tasks: Vec::new(),
-            prs: Vec::new(),
-            merged_prs: Vec::new(),
-            repo_name: "test".to_string(),
-            kanban_last_refresh: Instant::now(),
-            kanban_receiver: None,
-            repo_status: RepoStatus::default(),
-            repo_statuses: Vec::new(),
-            repo_status_last_refresh: Instant::now(),
-            repo_status_receiver: None,
-            selection_mode: false,
-            user_display_name: None,
-            current_tasks_cache: HashMap::new(),
-            tasks_cache_hash: 0,
-            intentionally_at_top: false,
-            mermaid_cache: MermaidCache::new(),
-            usage_data: None,
-            usage_receiver: None,
-            usage_last_refresh: Instant::now(),
+            ..test_app()
         };
 
         // At bottom (scroll_offset=0): not at max scroll
@@ -1716,8 +1676,6 @@ mod tests {
 
     #[test]
     fn test_visible_height_increase_should_not_trigger_max_scroll() {
-        use std::time::Instant;
-
         // BUG REPRODUCTION: When visible_height increases (e.g., kanban shrinks),
         // a previously mid-scroll position can suddenly become "at max scroll",
         // causing the display to jump to showing oldest messages.
@@ -1742,30 +1700,7 @@ mod tests {
         let mut app = App {
             messages,
             scroll_offset: 50, // User scrolled to middle
-            visible_height: 20,
-            channel: None,
-            initial_load_done: true,
-            history_start_position: 0,
-            history_fully_loaded: true,
-            tasks: Vec::new(),
-            prs: Vec::new(),
-            merged_prs: Vec::new(),
-            repo_name: "test".to_string(),
-            kanban_last_refresh: Instant::now(),
-            kanban_receiver: None,
-            repo_status: RepoStatus::default(),
-            repo_statuses: Vec::new(),
-            repo_status_last_refresh: Instant::now(),
-            repo_status_receiver: None,
-            selection_mode: false,
-            user_display_name: None,
-            current_tasks_cache: HashMap::new(),
-            tasks_cache_hash: 0,
-            intentionally_at_top: false,
-            mermaid_cache: MermaidCache::new(),
-            usage_data: None,
-            usage_receiver: None,
-            usage_last_refresh: Instant::now(),
+            ..test_app()
         };
 
         // Verify initial state: NOT at max scroll
@@ -1802,8 +1737,6 @@ mod tests {
 
     #[test]
     fn test_incremental_scroll_up_to_top_sets_intentionally_at_top() {
-        use std::time::Instant;
-
         // Verify that scrolling up incrementally (not via scroll_to_top) still
         // sets intentionally_at_top when reaching max_scroll.
         let messages: VecDeque<Message> = (0..20)
@@ -1818,31 +1751,8 @@ mod tests {
 
         let mut app = App {
             messages,
-            scroll_offset: 0, // Start at bottom (newest)
             visible_height: 10,
-            channel: None,
-            initial_load_done: true,
-            history_start_position: 0,
-            history_fully_loaded: true,
-            tasks: Vec::new(),
-            prs: Vec::new(),
-            merged_prs: Vec::new(),
-            repo_name: "test".to_string(),
-            kanban_last_refresh: Instant::now(),
-            kanban_receiver: None,
-            repo_status: RepoStatus::default(),
-            repo_statuses: Vec::new(),
-            repo_status_last_refresh: Instant::now(),
-            repo_status_receiver: None,
-            selection_mode: false,
-            user_display_name: None,
-            current_tasks_cache: HashMap::new(),
-            tasks_cache_hash: 0,
-            intentionally_at_top: false,
-            mermaid_cache: MermaidCache::new(),
-            usage_data: None,
-            usage_receiver: None,
-            usage_last_refresh: Instant::now(),
+            ..test_app()
         };
 
         // max_scroll = 20 - 10 = 10
