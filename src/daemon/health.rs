@@ -15,6 +15,7 @@ use crate::{config, daemon_messages, web};
 
 use super::constants::*;
 use super::effects::Effect;
+use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
 
 /// Check if the lead's tmux pane has changed and broadcast typing status.
@@ -439,9 +440,12 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             restart.task_id
         );
 
-        let prompt = format!(
-            "You've been assigned task #{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.\n\nRun `midtown task view {}` for full details.",
-            restart.task_id, restart.task_subject, restart.task_id
+        let prompt = format_task_prompt(
+            &restart.task_id,
+            &format!(
+                "You've been assigned task #{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.",
+                restart.task_id, restart.task_subject
+            ),
         );
 
         effects.push(Effect::ShutdownCoworker {
