@@ -633,7 +633,10 @@ pub(super) fn spawn_for_pending_tasks(
 
     let mut effects = Vec::new();
 
-    // Case 1: Pending tasks with owners assigned but coworker not running
+    // Case 1: Pending tasks with owners assigned but coworker not running.
+    // With the new task.claim flow, this case is rare (tasks go directly to in_progress
+    // via the Lead). It mainly handles backward compatibility with pre-existing tasks
+    // or tasks where the Lead manually set an owner.
     let pending_with_owners = &snap.pending_tasks_with_owners;
     for (task_id, task_subject, owner) in pending_with_owners.iter() {
         // Check nudge cooldown for this task
@@ -900,34 +903,48 @@ pub(super) fn spawn_for_pending_tasks(
         }
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
 
-        // Build the prompt message
-        let prompt = format_task_prompt(
-            &task.id,
-            &format!(
-                "You've been assigned task #{}: {}. Get started!",
-                task.id, task.subject
-            ),
-        );
+        // Build the prompt message — already-running coworkers need explicit claim instruction
+        let prompt = if already_running {
+            format_task_prompt(
+                &task.id,
+                &format!(
+                    "You've been assigned task #{}: {}. Run `midtown task claim {}` to claim it, then get started!",
+                    task.id, task.subject, task.id
+                ),
+            )
+        } else {
+            format_task_prompt(
+                &task.id,
+                &format!(
+                    "You've been assigned task #{}: {}. Get started!",
+                    task.id, task.subject
+                ),
+            )
+        };
 
         if already_running {
-            // Step 2a: Coworker is already running (grouped task) — assign ownership, then nudge
+            // Step 2a: Coworker is already running (grouped task) — nudge to claim the task.
+            // The coworker runs `midtown task claim`, which nudges the Lead to set ownership
+            // via TaskUpdate. No direct disk write needed.
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
                 &task.id.to_string(),
                 &task.subject,
                 config::get_personality(),
             );
-            effects.push(Effect::AssignTaskOwner {
-                task_id: task.id.clone(),
-                owner: coworker_name.clone(),
-            });
             effects.push(Effect::NudgeCoworkerWithCallbacks {
                 name: coworker_name.clone(),
                 message: prompt,
-                on_success: vec![Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: channel_msg,
-                }],
+                on_success: vec![
+                    Effect::RecordTaskAssignment {
+                        coworker: coworker_name.clone(),
+                        task_id: task.id.clone(),
+                    },
+                    Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: channel_msg,
+                    },
+                ],
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
@@ -1007,6 +1024,97 @@ pub(super) fn build_task_completion_effects(
             ),
         },
     ]
+}
+
+// ============================================================================
+// Stale claim reconciliation
+// ============================================================================
+
+/// Reconcile stale task claim assignments.
+///
+/// Detects claims where the daemon recorded an in-memory assignment but the
+/// Lead has not yet processed the nudge (task is still pending on disk).
+/// After `TASK_CLAIM_TIMEOUT`, re-nudges the Lead. After `TASK_CLAIM_MAX_RETRIES`
+/// failed retries, falls back to direct disk write via `Effect::AssignTaskOwnerDirect`.
+pub(super) fn reconcile_stale_claims(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<Effect> {
+    let on_disk_in_progress: HashSet<String> = snap
+        .in_progress_tasks
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .collect();
+
+    let stale = state.get_stale_claim_assignments(TASK_CLAIM_TIMEOUT, &on_disk_in_progress);
+
+    if stale.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+
+    for (coworker, task_id, retries) in stale {
+        // Check cooldown to avoid spamming the Lead
+        {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            if !cooldowns.check(
+                "claim_reconciliation",
+                &task_id,
+                CLAIM_RECONCILIATION_COOLDOWN,
+            ) {
+                continue;
+            }
+        }
+
+        if retries >= TASK_CLAIM_MAX_RETRIES {
+            // Exhausted retries — fall back to direct disk write
+            info!(
+                "Task claim reconciliation: exhausted {} retries for task #{} ({}), \
+                 falling back to direct disk write",
+                retries, task_id, coworker
+            );
+            effects.push(Effect::AssignTaskOwnerDirect {
+                task_id: task_id.clone(),
+                owner: coworker.clone(),
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "⚠️ Lead did not process claim for task #{} by {} after {} retries. \
+                     Set ownership directly.",
+                    task_id, coworker, retries
+                ),
+            });
+        } else {
+            // Re-nudge the Lead
+            info!(
+                "Task claim reconciliation: re-nudging Lead for task #{} ({}) — retry {}",
+                task_id,
+                coworker,
+                retries + 1
+            );
+            effects.push(Effect::NudgeLead {
+                message: format!(
+                    "Reminder: Set task #{} owner to \"{}\" and status to in_progress using TaskUpdate. \
+                     (retry {}/{})",
+                    task_id,
+                    coworker,
+                    retries + 1,
+                    TASK_CLAIM_MAX_RETRIES
+                ),
+            });
+            effects.push(Effect::RecordCooldown {
+                category: "claim_reconciliation".to_string(),
+                key: task_id.clone(),
+            });
+            effects.push(Effect::IncrementClaimRetry {
+                coworker: coworker.clone(),
+            });
+        }
+    }
+
+    effects
 }
 
 #[cfg(test)]

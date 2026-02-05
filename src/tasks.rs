@@ -417,11 +417,11 @@ fn is_within_grace_period(
 
 /// Update a task's owner, keeping status as "pending".
 ///
-/// Writes the updated task back to disk. This is called when the daemon assigns
-/// a task to a coworker. The task remains "pending" with an owner set — this
-/// "pending with owner" state is used by dispatch.rs for spawn decisions and
-/// snapshot.rs for idle shutdown protection. The status transitions to
-/// "in_progress" only after the coworker successfully spawns.
+/// Writes the updated task back to disk. This is called by the Lead (via
+/// TaskUpdate) when a coworker claims a task through `midtown task claim`.
+/// The task remains "pending" with an owner set — this "pending with owner"
+/// state is used by dispatch.rs for spawn decisions and snapshot.rs for idle
+/// shutdown protection. The status transitions to "in_progress" separately.
 pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
@@ -440,7 +440,7 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
 /// This only sets the owner field, leaving status as "pending". The "pending with
 /// owner" state is load-bearing: dispatch.rs uses it for spawn decisions and
 /// snapshot.rs uses it for idle shutdown protection. The transition to "in_progress"
-/// should happen after the coworker successfully spawns, not at assignment time.
+/// happens separately (e.g., when the Lead processes the claim).
 ///
 /// This is the path-injectable version used by tests and by `update_task_owner`.
 fn update_task_owner_in_dir(
@@ -1661,6 +1661,15 @@ mod tests {
             parsed["status"], "pending",
             "Assigning a task owner should keep status as pending"
         );
+    }
+
+    #[test]
+    fn test_update_task_owner_in_dir_nonexistent_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        let result = update_task_owner_in_dir("nonexistent", "bob", &tasks_dir);
+        assert!(result.is_err(), "Should error for nonexistent task");
     }
 
     /// Reproduces the reassignment loop bug: a coworker completes its task but

@@ -86,7 +86,9 @@ pub struct WorldSnapshot {
     /// These coworkers are protected from idle shutdown (prevents spawn→idle→break loop).
     pub review_feedback_pr_coworkers: HashSet<String>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
-    /// These coworkers are protected from idle shutdown even though their task isn't in-progress.
+    /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
+    /// (in-memory assignment tracking). Both paths are checked to prevent the
+    /// spawn→idle→break loop (see PR #650).
     pub pending_task_owners: HashSet<String>,
 
     // ── Reviewer state ──────────────────────────────────────────────────

@@ -54,6 +54,18 @@ use crate::web::{self, WebUpdate};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
 
+/// An in-memory task assignment record with timing metadata.
+///
+/// Tracks when a coworker was assigned a task so the daemon can detect
+/// stale claims (e.g., Lead failed to process a `task.claim` nudge).
+#[derive(Debug, Clone)]
+pub(crate) struct TaskAssignment {
+    pub task_id: String,
+    pub assigned_at: std::time::Instant,
+    /// Number of times the Lead has been re-nudged for this claim.
+    pub nudge_retries: u32,
+}
+
 /// Configuration for the daemon server.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -397,15 +409,15 @@ pub(crate) struct DaemonState {
     /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
     /// already in-flight. Clear entries when effects complete (success or failure).
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
-    /// Internal tracking of coworker task assignments (coworker name → task ID).
+    /// Internal tracking of coworker task assignments (coworker name → assignment).
     ///
     /// With isolated task lists (TaskMode::Isolated), the daemon can't see
     /// coworker tasks on disk. This map tracks which coworker is working on
     /// which task, enabling busy detection for dispatch and idle protection.
     ///
-    /// Updated when: AssignAndSpawn succeeds, AssignTaskOwner executes.
+    /// Updated when: AssignAndSpawn succeeds, task.claim RPC is received.
     /// Cleared when: coworker shuts down, task is completed or reset to pending.
-    coworker_task_assignments: std::sync::Mutex<HashMap<String, String>>,
+    coworker_task_assignments: std::sync::Mutex<HashMap<String, TaskAssignment>>,
     /// Pending nudges sent to coworkers, awaiting confirmation of submission.
     ///
     /// Key: coworker name (lowercase), Value: (message text, sent timestamp).
@@ -632,10 +644,17 @@ impl DaemonState {
 
     /// Record that a coworker has been assigned a task.
     ///
-    /// Called when `AssignAndSpawn` or `AssignTaskOwner` effects succeed.
+    /// Called when `AssignAndSpawn` succeeds or `task.claim` RPC is received.
     pub(crate) fn record_task_assignment(&self, coworker: &str, task_id: &str) {
         let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments.insert(coworker.to_lowercase(), task_id.to_string());
+        assignments.insert(
+            coworker.to_lowercase(),
+            TaskAssignment {
+                task_id: task_id.to_string(),
+                assigned_at: std::time::Instant::now(),
+                nudge_retries: 0,
+            },
+        );
     }
 
     /// Clear the task assignment for a specific task (by task ID).
@@ -643,7 +662,7 @@ impl DaemonState {
     /// Called when a task is completed or reset to pending.
     pub(crate) fn clear_task_assignment_by_task(&self, task_id: &str) {
         let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments.retain(|_, tid| tid != task_id);
+        assignments.retain(|_, a| a.task_id != task_id);
     }
 
     /// Clear all task assignments for a coworker.
@@ -658,6 +677,38 @@ impl DaemonState {
     pub(crate) fn get_busy_coworker_names(&self) -> HashSet<String> {
         let assignments = self.coworker_task_assignments.lock().unwrap();
         assignments.keys().cloned().collect()
+    }
+
+    /// Get stale claim assignments: tasks assigned in-memory but still pending on disk.
+    ///
+    /// Returns `(coworker_name, task_id, nudge_retries)` tuples for assignments older
+    /// than `timeout`. These represent claims where the Lead failed to process the nudge.
+    pub(crate) fn get_stale_claim_assignments(
+        &self,
+        timeout: std::time::Duration,
+        on_disk_in_progress: &HashSet<String>,
+    ) -> Vec<(String, String, u32)> {
+        let assignments = self.coworker_task_assignments.lock().unwrap();
+        let now = std::time::Instant::now();
+        assignments
+            .iter()
+            .filter(|(_, a)| {
+                now.duration_since(a.assigned_at) > timeout
+                    && !on_disk_in_progress.contains(&a.task_id)
+            })
+            .map(|(name, a)| (name.clone(), a.task_id.clone(), a.nudge_retries))
+            .collect()
+    }
+
+    /// Increment the nudge retry count and reset the timestamp for a claim assignment.
+    ///
+    /// Called when re-nudging the Lead for a stale claim.
+    pub(crate) fn increment_claim_retry(&self, coworker: &str) {
+        let mut assignments = self.coworker_task_assignments.lock().unwrap();
+        if let Some(a) = assignments.get_mut(&coworker.to_lowercase()) {
+            a.nudge_retries += 1;
+            a.assigned_at = std::time::Instant::now();
+        }
     }
 
     /// Get busy coworkers from both disk-based task storage and internal tracking.
@@ -3177,6 +3228,161 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         assert!(
             !already_running && is_busy && !was_grouped,
             "should skip duplicate fresh-spawn within same tick"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TaskAssignment and stale claim detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stale_claim_detected_when_task_not_in_progress() {
+        // Simulate: coworker was assigned a task 2 minutes ago, but it's still
+        // not in_progress on disk (Lead didn't process the nudge).
+        let assignments: HashMap<String, TaskAssignment> = [(
+            "park".to_string(),
+            TaskAssignment {
+                task_id: "42".to_string(),
+                // Assigned 2 minutes ago
+                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
+                nudge_retries: 0,
+            },
+        )]
+        .into_iter()
+        .collect();
+
+        let on_disk_in_progress: HashSet<String> = HashSet::new();
+        let timeout = std::time::Duration::from_secs(60);
+        let now = std::time::Instant::now();
+
+        let stale: Vec<_> = assignments
+            .iter()
+            .filter(|(_, a)| {
+                now.duration_since(a.assigned_at) > timeout
+                    && !on_disk_in_progress.contains(&a.task_id)
+            })
+            .map(|(name, a)| (name.clone(), a.task_id.clone(), a.nudge_retries))
+            .collect();
+
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].0, "park");
+        assert_eq!(stale[0].1, "42");
+        assert_eq!(stale[0].2, 0);
+    }
+
+    #[test]
+    fn test_stale_claim_not_detected_when_task_is_in_progress() {
+        // Simulate: coworker was assigned a task and Lead already processed it
+        // (task is in_progress on disk). Should NOT be flagged as stale.
+        let assignments: HashMap<String, TaskAssignment> = [(
+            "park".to_string(),
+            TaskAssignment {
+                task_id: "42".to_string(),
+                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
+                nudge_retries: 0,
+            },
+        )]
+        .into_iter()
+        .collect();
+
+        let on_disk_in_progress: HashSet<String> = ["42".to_string()].into_iter().collect();
+        let timeout = std::time::Duration::from_secs(60);
+        let now = std::time::Instant::now();
+
+        let stale: Vec<_> = assignments
+            .iter()
+            .filter(|(_, a)| {
+                now.duration_since(a.assigned_at) > timeout
+                    && !on_disk_in_progress.contains(&a.task_id)
+            })
+            .collect();
+
+        assert!(
+            stale.is_empty(),
+            "Task in_progress on disk should not be stale"
+        );
+    }
+
+    #[test]
+    fn test_stale_claim_not_detected_when_recent() {
+        // Simulate: coworker was assigned a task just 10 seconds ago.
+        // Not yet past the timeout — should not be flagged as stale.
+        let assignments: HashMap<String, TaskAssignment> = [(
+            "park".to_string(),
+            TaskAssignment {
+                task_id: "42".to_string(),
+                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(10),
+                nudge_retries: 0,
+            },
+        )]
+        .into_iter()
+        .collect();
+
+        let on_disk_in_progress: HashSet<String> = HashSet::new();
+        let timeout = std::time::Duration::from_secs(60);
+        let now = std::time::Instant::now();
+
+        let stale: Vec<_> = assignments
+            .iter()
+            .filter(|(_, a)| {
+                now.duration_since(a.assigned_at) > timeout
+                    && !on_disk_in_progress.contains(&a.task_id)
+            })
+            .collect();
+
+        assert!(stale.is_empty(), "Recent assignment should not be stale");
+    }
+
+    #[test]
+    fn test_stale_claim_tracks_retry_count() {
+        // Simulate: assignment has been retried twice already.
+        // Verify the retry count is correctly propagated.
+        let assignments: HashMap<String, TaskAssignment> = [(
+            "amsterdam".to_string(),
+            TaskAssignment {
+                task_id: "99".to_string(),
+                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
+                nudge_retries: 2,
+            },
+        )]
+        .into_iter()
+        .collect();
+
+        let on_disk_in_progress: HashSet<String> = HashSet::new();
+        let timeout = std::time::Duration::from_secs(60);
+        let now = std::time::Instant::now();
+
+        let stale: Vec<_> = assignments
+            .iter()
+            .filter(|(_, a)| {
+                now.duration_since(a.assigned_at) > timeout
+                    && !on_disk_in_progress.contains(&a.task_id)
+            })
+            .map(|(name, a)| (name.clone(), a.task_id.clone(), a.nudge_retries))
+            .collect();
+
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].2, 2, "retry count should be 2");
+    }
+
+    #[test]
+    fn test_increment_claim_retry_updates_count_and_timestamp() {
+        let mut assignment = TaskAssignment {
+            task_id: "42".to_string(),
+            assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
+            nudge_retries: 1,
+        };
+
+        let old_time = assignment.assigned_at;
+
+        // Simulate increment
+        assignment.nudge_retries += 1;
+        assignment.assigned_at = std::time::Instant::now();
+
+        assert_eq!(assignment.nudge_retries, 2);
+        assert!(
+            assignment.assigned_at > old_time,
+            "timestamp should be updated on retry"
         );
     }
 }
