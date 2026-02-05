@@ -1430,12 +1430,13 @@ pub struct PrSessionContext {
 ///
 /// This is an enhanced version of `decide_pr_issue_action` that considers
 /// handing off the PR to a different coworker when:
-/// - The original author is not active
+/// - The original author is not active, or is active but busy on another task
 /// - A stored session context is available
 /// - There are idle coworkers available to take over
 ///
-/// The handoff preserves the original author's session context so the new
-/// coworker has full history of decisions and code understanding.
+/// Only nudges the owner if they are both active and idle. The handoff
+/// preserves the original author's session context so the new coworker
+/// has full history of decisions and code understanding.
 pub fn decide_pr_issue_action_with_handoff(
     owner: &str,
     active_coworkers: &[String],
@@ -1543,7 +1544,8 @@ pub(crate) fn decide_pr_comment_action(
 ///
 /// Enhanced version of `decide_pr_comment_action` that considers handing off
 /// the PR to a different coworker when the original author is unavailable
-/// and session context is available.
+/// (inactive or active but busy on another task) and session context is
+/// available. Only nudges the owner if they are both active and idle.
 pub fn decide_pr_comment_action_with_handoff(
     owner: &str,
     actor: &str,
