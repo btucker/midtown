@@ -67,6 +67,10 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
 }
 
 /// List tasks from the shared task storage (client-side, no daemon needed).
+///
+/// Always reads from the shared `midtown-<repo>` task list, even when called by
+/// isolated coworkers. This is intentional: `midtown task list` shows the daemon's
+/// coordinated task list (assignments, ownership), not Claude Code's private tasks.
 fn handle_list(show_all: bool) -> Result<Response, String> {
     let tasks = midtown::tasks::read_tasks();
 
@@ -93,6 +97,10 @@ fn handle_list(show_all: bool) -> Result<Response, String> {
 }
 
 /// View a single task's details (client-side, no daemon needed).
+///
+/// Reads from the shared `midtown-<repo>` task list. Task IDs in nudge messages
+/// (e.g., "midtown task view 777") reference the shared list, so this always reads
+/// from the correct location regardless of the caller's task isolation mode.
 fn handle_view(id: &str) -> Result<Response, String> {
     let tasks = midtown::tasks::read_tasks();
     let task = tasks
