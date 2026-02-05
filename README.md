@@ -207,6 +207,10 @@ docker run -it --rm -v /path/to/repo:/repo -w /repo midtown start
 
 Midtown supports multiple Claude authentication profiles, allowing you to switch between different Claude accounts (e.g., personal and work accounts) without re-authenticating each time.
 
+### Profile Names
+
+Profile names can only contain alphanumeric characters, hyphens, and underscores. If no profile is specified, commands default to a profile named `default`.
+
 ### Profile Storage
 
 Profiles are stored in `~/.midtown/auth/`:
@@ -224,27 +228,28 @@ When midtown spawns Claude sessions (Lead or Coworkers), it sets `CLAUDE_CONFIG_
 
 | Command | Description |
 |---------|-------------|
-| `midtown auth login <profile>` | Create a new profile or re-authenticate an existing one. Launches Claude's OAuth flow. |
+| `midtown auth login --profile <name>` | Create a new profile or re-authenticate an existing one. Launches a Claude session where you run `/login` to complete OAuth. |
 | `midtown auth list` | List all available profiles, marking the currently active one. |
 | `midtown auth switch <profile>` | Switch to a different profile. The new profile becomes active for all future Claude sessions. |
-| `midtown auth status` | Show the current profile and its authentication status. |
+| `midtown auth status` | Show the current profile, config directory, and authentication status. |
 | `midtown auth remove <profile>` | Remove a profile and its stored credentials. |
 
 ### Example Workflow
 
 ```bash
 # Set up a work profile
-midtown auth login work
-# Claude opens for OAuth...
+midtown auth login --profile work
+# Claude opens — run /login inside to authenticate
 
 # Set up a personal profile
-midtown auth login personal
-# Claude opens for OAuth...
+midtown auth login --profile personal
+# Claude opens — run /login inside to authenticate
 
 # List profiles
 midtown auth list
-#   work
-# * personal (current)
+# Profiles:
+#   work - authenticated
+#   personal (active) - authenticated
 
 # Switch to work account
 midtown auth switch work
@@ -252,6 +257,7 @@ midtown auth switch work
 # Check current status
 midtown auth status
 # Current profile: work
+# Config dir: /home/user/.midtown/auth/work
 # Status: authenticated
 ```
 
