@@ -646,13 +646,35 @@ fn mention_prefix(coworker: Option<&str>) -> String {
 
 /// Determine the commenter identity from a comment body.
 ///
-/// If the comment contains a coworker signature (e.g., `<!-- midtown: columbus -->`),
-/// returns the coworker name. Otherwise, returns the GitHub username.
-fn commenter_identity(comment_body: &str, github_username: &str) -> String {
+/// Priority: comment frontmatter > PR coworker (from branch/body) > GitHub username.
+/// The `pr_coworker` fallback handles the common case where a coworker posts a comment
+/// without the `<!-- midtown: name -->` signature — we infer their identity from the PR
+/// owner. This only applies when the commenter is the repo owner (the shared GitHub
+/// account used by all coworkers), since external users should keep their username.
+fn commenter_identity(
+    comment_body: &str,
+    github_username: &str,
+    pr_coworker: Option<&str>,
+    repo_owner: Option<&str>,
+) -> String {
     if let Some(coworker) = coworker_from_frontmatter(comment_body) {
         return coworker.to_string();
     }
+    // Only fall back to PR coworker when the GitHub username matches the repo owner
+    // (the shared account). External users (bots, other humans) keep their username.
+    if let Some(coworker) = pr_coworker {
+        let is_repo_owner =
+            repo_owner.is_some_and(|owner| owner.eq_ignore_ascii_case(github_username));
+        if is_repo_owner {
+            return coworker.to_string();
+        }
+    }
     github_username.to_string()
+}
+
+/// Extract the owner (username) from a repository full_name like "owner/repo".
+fn repo_owner(full_name: &str) -> Option<&str> {
+    full_name.split('/').next()
 }
 
 /// Strip the midtown frontmatter line from a comment body.
@@ -814,8 +836,14 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
         return Ok(None);
     }
 
-    // Determine commenter: use coworker name from signature if present, else GitHub username
-    let commenter = commenter_identity(&event.comment.body, &event.comment.user.login);
+    // Determine commenter: use coworker name from signature if present, else GitHub username.
+    // issue_comment webhooks don't include the PR branch, so no branch-based fallback.
+    let commenter = commenter_identity(
+        &event.comment.body,
+        &event.comment.user.login,
+        None,
+        repo_owner(&event.repository.full_name),
+    );
 
     // Strip frontmatter from comment before preview
     let clean_body = strip_frontmatter(&event.comment.body);
@@ -861,8 +889,15 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
     let coworker = determine_pr_coworker(branch, pr_body);
     let mention = mention_prefix(coworker);
 
-    // Determine commenter: use coworker name from comment signature if present
-    let commenter = commenter_identity(&event.comment.body, &event.comment.user.login);
+    // Determine commenter: use coworker name from comment signature if present,
+    // fall back to PR coworker (from branch/body) when signature is missing
+    // and commenter is the repo owner (shared account)
+    let commenter = commenter_identity(
+        &event.comment.body,
+        &event.comment.user.login,
+        coworker,
+        repo_owner(&event.repository.full_name),
+    );
 
     // Strip frontmatter from comment before preview
     let clean_body = strip_frontmatter(&event.comment.body);
@@ -1735,6 +1770,66 @@ mod tests {
         assert_eq!(activity.pr_number, 77);
         assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
         assert_eq!(activity.actor, "lexington");
+    }
+
+    #[test]
+    fn test_handle_review_comment_without_signature_uses_branch() {
+        // When no coworker signature in the comment, but the PR branch
+        // maps to a coworker and the commenter is the repo owner (shared account),
+        // use the branch-derived coworker name
+        let payload = r#"{
+            "action": "created",
+            "pull_request": {
+                "number": 77,
+                "head": {"ref": "madison/refactor"},
+                "body": "<!-- midtown: madison -->\n\nPR body"
+            },
+            "comment": {
+                "id": 204,
+                "user": {"login": "btucker"},
+                "body": "Good point, I'll fix that."
+            },
+            "repository": {"full_name": "btucker/midtown"}
+        }"#;
+
+        let event = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
+        // Should use coworker name from PR branch/body, not GitHub username
+        assert_eq!(
+            event.message.content,
+            "@madison madison left review comment on PR #77: Good point, I'll fix that."
+        );
+        // Actor should be the coworker, not the GitHub username
+        let activity = event.pr_activity.unwrap();
+        assert_eq!(activity.actor, "madison");
+    }
+
+    #[test]
+    fn test_handle_review_comment_external_user_keeps_username() {
+        // When the commenter is NOT the repo owner (e.g., an external reviewer),
+        // keep the GitHub username even without frontmatter
+        let payload = r#"{
+            "action": "created",
+            "pull_request": {
+                "number": 77,
+                "head": {"ref": "madison/refactor"},
+                "body": "PR body here"
+            },
+            "comment": {
+                "id": 205,
+                "user": {"login": "external_reviewer"},
+                "body": "Nice work!"
+            },
+            "repository": {"full_name": "btucker/midtown"}
+        }"#;
+
+        let event = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
+        // Should keep the external user's GitHub username
+        assert_eq!(
+            event.message.content,
+            "@madison external_reviewer left review comment on PR #77: Nice work!"
+        );
+        let activity = event.pr_activity.unwrap();
+        assert_eq!(activity.actor, "external_reviewer");
     }
 
     #[test]
