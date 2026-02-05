@@ -3,9 +3,6 @@
 //! Fetches session (5-hour) and weekly (7-day) utilization data from
 //! the Anthropic API using the OAuth token from macOS Keychain.
 
-use std::sync::mpsc;
-use std::thread;
-
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -82,7 +79,7 @@ pub fn get_oauth_token() -> Option<String> {
 }
 
 /// Fetch usage data from the Anthropic API.
-fn fetch_usage(token: &str) -> Option<UsageData> {
+pub fn fetch_usage(token: &str) -> Option<UsageData> {
     // Use blocking reqwest since we run this on a background thread
     let client = reqwest::blocking::Client::new();
     let resp = client
@@ -117,20 +114,6 @@ fn fetch_usage(token: &str) -> Option<UsageData> {
         week_util: seven_day.utilization,
         week_resets,
     })
-}
-
-/// Spawn a background thread to fetch usage data.
-///
-/// Returns a receiver that will produce `Some(UsageData)` on success or `None` on failure.
-pub fn spawn_usage_fetch() -> mpsc::Receiver<Option<UsageData>> {
-    let (tx, rx) = mpsc::channel();
-
-    thread::spawn(move || {
-        let result = get_oauth_token().and_then(|token| fetch_usage(&token));
-        let _ = tx.send(result);
-    });
-
-    rx
 }
 
 #[cfg(test)]

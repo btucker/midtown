@@ -1434,7 +1434,11 @@ fn usage_color(utilization: f64) -> Color {
 ///
 /// Session: "H:MMam/pm" (e.g., "4:59pm")
 /// Weekly: "Mon DD" (e.g., "Feb 11")
+/// Returns "now" if the reset time is in the past.
 fn format_reset_time(resets_at: &DateTime<Utc>, is_session: bool) -> String {
+    if *resets_at <= Utc::now() {
+        return "now".to_string();
+    }
     let local = resets_at.with_timezone(&Local);
     if is_session {
         local.format("%-I:%M%P").to_string()
@@ -2485,5 +2489,29 @@ mod tests {
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 20);
         assert_eq!(empty_content.chars().count(), 0);
+    }
+
+    #[test]
+    fn test_format_reset_time_past_returns_now() {
+        let past = Utc::now() - chrono::Duration::hours(1);
+        assert_eq!(format_reset_time(&past, true), "now");
+        assert_eq!(format_reset_time(&past, false), "now");
+    }
+
+    #[test]
+    fn test_format_reset_time_future_returns_formatted() {
+        let future = Utc::now() + chrono::Duration::hours(2);
+        let result = format_reset_time(&future, true);
+        // Should be a time format like "4:59pm", not "now"
+        assert_ne!(result, "now");
+        assert!(
+            result.contains(':'),
+            "Session format should contain colon: {}",
+            result
+        );
+
+        let result = format_reset_time(&future, false);
+        // Should be a date format like "Feb 11", not "now"
+        assert_ne!(result, "now");
     }
 }

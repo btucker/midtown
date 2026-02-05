@@ -186,6 +186,9 @@ const REPO_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 /// Interval between usage data refreshes (120 seconds)
 const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 
+/// Shorter retry interval when usage fetch fails (15 seconds)
+const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
+
 impl App {
     pub fn new() -> Self {
         // Use detect_repo_name() which correctly handles worktrees by using
@@ -365,8 +368,13 @@ impl App {
                 Ok(data) => {
                     if data.is_some() {
                         self.usage_data = data;
+                        // Only advance refresh timer on success
+                        self.usage_last_refresh = Instant::now();
+                    } else {
+                        // On failure, use shorter retry interval
+                        self.usage_last_refresh =
+                            Instant::now() - USAGE_REFRESH_INTERVAL + USAGE_RETRY_INTERVAL;
                     }
-                    // On failure, retain last known data
                     self.usage_receiver = None;
                 }
                 Err(TryRecvError::Empty) => {
@@ -382,8 +390,12 @@ impl App {
         if self.usage_last_refresh.elapsed() >= USAGE_REFRESH_INTERVAL
             && self.usage_receiver.is_none()
         {
-            self.usage_receiver = Some(usage::spawn_usage_fetch());
-            self.usage_last_refresh = Instant::now();
+            let (tx, rx) = mpsc::channel();
+            self.usage_receiver = Some(rx);
+            thread::spawn(move || {
+                let result = usage::get_oauth_token().and_then(|token| usage::fetch_usage(&token));
+                let _ = tx.send(result);
+            });
         }
 
         // Poll for completed mermaid renders
