@@ -373,7 +373,7 @@ mod tests {
     fn test_coworker_system_prompt_contains_required_sections() {
         let prompt = coworker_system_prompt("park");
         assert!(prompt.contains("Channel Usage"));
-        assert!(prompt.contains("Task Workflow"));
+        assert!(prompt.contains("Your Task"));
         assert!(prompt.contains("Git Workflow"));
         assert!(prompt.contains("Coordination"));
         assert!(prompt.contains("Read the Channel"));

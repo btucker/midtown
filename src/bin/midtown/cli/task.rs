@@ -23,6 +23,11 @@ pub enum TaskCommand {
         /// Task ID to mark done
         id: String,
     },
+    /// Request a new task (posts to channel for the lead to review)
+    Request {
+        /// Description of the work needed
+        description: String,
+    },
 }
 
 pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -33,5 +38,6 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
         } => client.task_create(subject, description),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),
+        TaskCommand::Request { description } => client.task_request(description),
     }
 }

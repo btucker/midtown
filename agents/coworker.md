@@ -90,97 +90,26 @@ midtown channel post "/me idle, ready for next task"
 
 These are **informational only** - do not ask questions or request confirmation. The daemon will auto-shutdown idle coworkers or assign new work when available.
 
-## Task Workflow
-Use Claude Code's built-in task tools to manage tasks:
-- `TaskCreate` - Create new tasks and sub-tasks
-- `TaskList` - See available tasks
-- `TaskGet` - Get task details
-- `TaskUpdate` - Update task status and ownership
+## Your Task
+Your task is assigned by the daemon and included in your initial prompt. You don't need to check a shared task list — just work on what you were given.
 
-**IMPORTANT: Use `TaskCreate` for sub-tasks, NOT `TodoWrite`.** The midtown task list is shared across all coworkers and the daemon via Claude Code's task system. `TaskCreate` adds tasks to this shared list where the team can see them. `TodoWrite` creates a session-local checklist that is invisible to the rest of the team and the daemon. Always use `TaskCreate` when you need to break your work into sub-tasks.
+You can use Claude Code's built-in task tools (`TaskCreate`, `TaskList`, `TaskUpdate`) for your own private sub-task tracking if needed. These are local to your session and invisible to other coworkers.
 
-**Always set yourself as owner immediately after creating a sub-task.** Unowned tasks in the shared list will be picked up by the daemon and assigned to other coworkers. To keep your sub-tasks under your control:
-```
-TaskCreate with subject: "...", description: "..."
-TaskUpdate with taskId: <new task id>, status: "in_progress", owner: "{name}"
-```
-
-**When claiming a task**, always set BOTH the status AND owner:
-```
-TaskUpdate with taskId, status: "in_progress", owner: "{name}"
-```
-
-This ensures `midtown status` shows who's working on each task.
-
-After updating a task status, **report your phase with `midtown state`** and announce it to the channel:
+### Keeping PRs Focused
+Your PR should address your assigned task and nothing else. When you encounter related work that should be a separate PR, immediately run:
 
 ```bash
-# Example: claiming task 5
-midtown state claiming --task 5
-midtown channel post "/me claimed task 5 - auth endpoint"
-
-# Example: starting development
-midtown state developing --task 5
-midtown channel post "/me working on auth endpoint for task 5"
+midtown task request "Description of the work needed"
 ```
 
-### Avoiding Duplicate Claims
-After claiming a task, **wait 10 seconds** then read the channel to check if another coworker also claimed it:
+This notifies the lead to create a task. Another coworker can work on it in parallel. Don't expand your PR scope — keep it focused.
 
-```bash
-# After claiming, wait and check for collisions
-sleep 10
-midtown channel read
-```
-
-If you see another coworker also claimed the same task:
-- Check the timestamps of the claim messages in the channel
-- **The later claimer** should post: `@{other} you claimed first, I'll find another task`
-- Then pick a different task from the list
-
-This prevents wasted effort from duplicate work.
-
-Don't hoard tasks - claim one, finish it, then claim another.
-
-### Claiming Follow-Up Tasks
-When you complete a task, check if any newly unblocked tasks are closely related to your work. If the next task is a natural continuation and should be part of the same PR (e.g., it builds directly on your changes), claim it and continue working on the same branch rather than waiting for the daemon to assign it to a new coworker.
-
-```bash
-# After completing task 5, you see task 6 was unblocked and is closely related:
-midtown channel post "claiming task 6 as continuation of task 5, will include in same PR"
-```
-
-This avoids unnecessary PR sprawl when sequential tasks are tightly coupled. Only do this when the follow-up task genuinely belongs in the same changeset — if it can be reviewed independently, let the daemon assign it normally.
-
-### Blocked Tasks
-**Never work on a task that has unresolved `blockedBy` dependencies.** Before claiming a task, check its `blockedBy` list using `TaskGet`. If any blocking task is not yet `Completed`, do NOT claim or start work on it. Instead:
-1. Report idle: `midtown state idle` and post to channel
-2. Move on to an unblocked task, or stand by if none are available.
-
-If you discover mid-work that your task is blocked (e.g., a dependency was added after you started), stop immediately and notify the lead:
-```bash
-midtown channel post "@lead stopping task #X - blocked by incomplete task #Y"
-```
-Then update your task status back to `pending` and remove yourself as owner.
-
-### Unblocking Dependencies: Review and Merge First
-When your task has a `blockedBy` dependency whose work is done but not yet merged, **help get it merged before starting your own work**. This avoids stacked PRs (branching off another coworker's branch) and keeps each PR cleanly targeting main.
-
-Before starting your own work on a blocked task:
-1. **Check if the blocking task has an open PR** — read the channel (`midtown channel read`) to find the PR number for the blocking task
-2. **If the PR needs review, review it** — use the `/code-review:code-review <PR number>` skill to review and post a GitHub comment
-3. **Wait for the PR to merge** — once approved with green CI, the author will merge (they'll be nudged). Read the channel to confirm it merged.
-4. **Pull main and start fresh** — after the dependency merges, update your branch from main before beginning your work:
-   ```bash
-   git fetch origin main
-   git rebase origin/main
-   ```
-
-This ensures every PR cleanly targets main with only its own incremental changes. Never branch off another coworker's feature branch.
-
-**Exception:** Do NOT claim "Code review PR #X" tasks from the task list. PR reviews are assigned directly by the daemon to prevent duplicate reviews. Only review PRs when specifically assigned to do so.
-
-Also do NOT claim code-review sub-tasks (e.g., "Run 5 parallel code review agents", "Score and filter issues", "Post review comment on PR #X", "Find relevant CLAUDE.md files", "Check PR #X eligibility", "Get PR #X summary"). These are internal workflow steps owned by the coworker running the review.
+**When to use `midtown task request`:**
+- Found a bug while working on something else
+- A refactor would help but isn't part of the current task
+- A dependency needs to be built first by someone else
+- Test coverage gap you noticed but shouldn't address in this PR
+- Documentation that's out of date
 
 ## Git Workflow
 - You're in an isolated worktree (detached HEAD at the Lead's current commit)
@@ -244,12 +173,7 @@ When you are assigned a PR review:
 /code-review:code-review <PR number>
 ```
 
-**IMPORTANT: Own your sub-tasks.** The code-review skill creates a todo list of sub-tasks (eligibility check, find CLAUDE.md files, run review agents, score issues, post comment, etc.). After creating each sub-task, **immediately set yourself as owner** so other coworkers don't claim them:
-```
-TaskCreate with subject: "...", description: "..."
-TaskUpdate with taskId: <new task id>, owner: "{name}"
-```
-Review sub-tasks are internal workflow steps — they should not appear as claimable work for other coworkers.
+The code-review skill creates sub-tasks to track its progress. These are private to your session — other coworkers cannot see or claim them.
 
 2. **Post your review as a GitHub comment** on the PR. The skill will guide you through this, but you MUST ensure your review is posted to GitHub (not just the channel). **Even if the skill finds no issues above the scoring threshold and says "do not proceed", you MUST still post a comment** using the "no issues found" format. The daemon and PR author cannot see that a review happened unless a GitHub comment exists.
 
@@ -270,18 +194,17 @@ When your PR receives review comments with suggested changes:
    - Push to the branch
    - Reply to the comment confirming it's addressed
 
-2. **Create a follow-up task** - If the suggestion is out of scope or would significantly expand the PR:
-   - Create a new task describing the improvement
+2. **Request a follow-up task** - If the suggestion is out of scope or would significantly expand the PR:
+   - Run `midtown task request "description"` to notify the lead
    - Reply to the comment explaining it will be handled separately
-   - Link to the task number in your reply
 
 **Never ignore review feedback.** Every suggestion must be either:
 - Addressed in the current PR, OR
-- Captured in a follow-up task
+- Captured via `midtown task request`
 
 ```bash
-# Example: creating follow-up task for out-of-scope suggestion
-TaskCreate with subject: "Add input validation for edge case", description: "From PR #42 review: handle empty string input. Depends on PR #42 being merged first."
+# Example: requesting follow-up for out-of-scope suggestion
+midtown task request "Add input validation for edge case (from PR #42 review)"
 ```
 
 ## Don't Poll GitHub — The Daemon Notifies You

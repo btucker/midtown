@@ -273,10 +273,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         warn!(
             "IDLE_SHUTDOWN: {} coworkers flagged for shutdown: {:?}",
             to_shutdown.len(),
-            to_shutdown
-                .iter()
-                .map(|d| (&d.name, d.is_isolated))
-                .collect::<Vec<_>>()
+            to_shutdown.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
         // Log protection state for each coworker being shut down
         for decision in &to_shutdown {
@@ -302,14 +299,8 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(name));
             warn!(
-                "IDLE_SHUTDOWN: {} - is_busy={}, has_open_pr={}, is_reviewing={}, has_subagent={}, ci_passed={}, is_isolated={}",
-                name,
-                is_busy,
-                has_open_pr,
-                is_reviewing,
-                has_subagent,
-                ci_passed,
-                decision.is_isolated
+                "IDLE_SHUTDOWN: {} - is_busy={}, has_open_pr={}, is_reviewing={}, has_subagent={}, ci_passed={}",
+                name, is_busy, has_open_pr, is_reviewing, has_subagent, ci_passed,
             );
         }
     }
@@ -320,65 +311,35 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
     for decision in to_shutdown {
         let name = &decision.name;
 
-        // For isolated coworkers (reviewers), verify the review was actually posted
-        let (should_shutdown, shutdown_msg) = if decision.is_isolated {
-            // Look up the PR this reviewer was assigned to (from snapshot)
-            let pr_number = snap.reviewer_pr_assignments.get(name).copied();
-
-            match pr_number {
-                Some(pr) => {
-                    // Check if review was actually posted (from snapshot, no API call)
-                    if snap.reviewed_prs.contains(&pr) {
-                        info!(
-                            "Sending reviewer {} on a break (review verified for PR #{})",
-                            name, pr
-                        );
-                        (
-                            true,
-                            daemon_messages::break_review_complete(
-                                name,
-                                pr,
-                                config::get_personality(),
-                            ),
-                        )
-                    } else {
-                        warn!(
-                            "Reviewer {} is idle but no review found for PR #{} - keeping alive",
-                            name, pr
-                        );
-                        // Don't shutdown - post a warning to the channel so the team knows
-                        effects.push(Effect::PostToChannel {
-                            sender: "system".to_string(),
-                            message: format!(
-                                "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
-                                name, pr
-                            ),
-                        });
-                        (false, String::new())
-                    }
-                }
-                None => {
-                    // Can't find PR assignment — check if their work already merged
-                    if snap.coworkers_with_merged_prs.contains(name) {
-                        info!(
-                            "Isolated coworker {} has no PR assignment but has merged PR, sending on a break",
-                            name
-                        );
-                        (
-                            true,
-                            daemon_messages::break_work_merged(name, config::get_personality()),
-                        )
-                    } else {
-                        warn!(
-                            "Isolated coworker {} has no PR assignment found, sending on a break",
-                            name
-                        );
-                        (
-                            true,
-                            daemon_messages::break_no_pr(name, config::get_personality()),
-                        )
-                    }
-                }
+        // For reviewers (identified by having a PR assignment), verify the review
+        // was actually posted before shutting down. All other coworkers can be shut
+        // down normally.
+        let reviewer_pr = snap.reviewer_pr_assignments.get(name).copied();
+        let (should_shutdown, shutdown_msg) = if let Some(pr) = reviewer_pr {
+            // Check if review was actually posted (from snapshot, no API call)
+            if snap.reviewed_prs.contains(&pr) {
+                info!(
+                    "Sending reviewer {} on a break (review verified for PR #{})",
+                    name, pr
+                );
+                (
+                    true,
+                    daemon_messages::break_review_complete(name, pr, config::get_personality()),
+                )
+            } else {
+                warn!(
+                    "Reviewer {} is idle but no review found for PR #{} - keeping alive",
+                    name, pr
+                );
+                // Don't shutdown - post a warning to the channel so the team knows
+                effects.push(Effect::PostToChannel {
+                    sender: "system".to_string(),
+                    message: format!(
+                        "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
+                        name, pr
+                    ),
+                });
+                (false, String::new())
             }
         } else if snap.coworkers_with_merged_prs.contains(name) {
             info!("Sending idle coworker {} on a break (PR merged)", name);
@@ -865,23 +826,14 @@ pub(super) async fn check_and_respawn_zombies(
         chrono::Duration::seconds(ZOMBIE_MIN_AGE_SECS),
     );
 
-    // Build a set of isolated (reviewer) coworker names for fast lookup
-    let isolated_coworkers: HashSet<&str> = snap
-        .coworker_snapshots
-        .iter()
-        .filter(|cw| cw.isolated_tasks)
-        .map(|cw| cw.name.as_str())
-        .collect();
-
     let mut effects = Vec::new();
     for name in zombies {
-        // Skip isolated (reviewer) coworkers — they were one-shot tasks spawned
-        // with a specific review prompt. Respawning with --continue and no prompt
-        // would produce a confused coworker that joins the shared task list without
-        // knowing which PR to review. Just shut them down and alert.
-        if isolated_coworkers.contains(name.as_str()) {
+        // Skip active reviewers — they were spawned with a specific review prompt.
+        // Respawning with --continue would produce a confused coworker that doesn't
+        // know which PR to review. Just shut them down and alert.
+        if snap.active_reviewers.contains(&name.to_lowercase()) {
             warn!(
-                "Blank-pane zombie {} is an isolated reviewer — shutting down instead of respawning",
+                "Blank-pane zombie {} is an active reviewer — shutting down instead of respawning",
                 name
             );
             effects.push(Effect::ShutdownCoworker {

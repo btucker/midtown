@@ -105,11 +105,6 @@ pub struct WorldSnapshot {
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
     pub coworkers_with_unblocked_deps: HashSet<String>,
 
-    // ── Isolation state ──────────────────────────────────────────────────
-    /// Coworkers with `isolated_tasks=true` (separate task namespace).
-    /// These are typically PR reviewers who should not receive main task list updates.
-    pub isolated_coworkers: HashSet<String>,
-
     // ── Usage limit state ────────────────────────────────────────────────
     /// Whether a usage-limit nudge is already scheduled.
     pub usage_limit_nudge_scheduled: bool,
@@ -336,13 +331,6 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Dependency state ──────────────────────────────────────────────────
     let coworkers_with_unblocked_deps = crate::tasks::get_coworkers_with_unblocked_dependents();
 
-    // ── Isolation state ──────────────────────────────────────────────────
-    let isolated_coworkers: HashSet<String> = coworker_snapshots
-        .iter()
-        .filter(|cw| cw.isolated_tasks)
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
-
     // ── Usage limit state ────────────────────────────────────────────────
     let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
         let nudge_at = state.usage_limit_nudge_at.lock().await;
@@ -409,7 +397,6 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         reviewed_prs,
         prs_needing_review,
         coworkers_with_unblocked_deps,
-        isolated_coworkers,
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
         usage_limited_coworkers,
@@ -534,7 +521,6 @@ mod tests {
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
             coworkers_with_unblocked_deps: HashSet::new(),
-            isolated_coworkers: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
@@ -616,7 +602,6 @@ mod tests {
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
             coworkers_with_unblocked_deps: HashSet::new(),
-            isolated_coworkers: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),

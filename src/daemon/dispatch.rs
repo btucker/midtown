@@ -633,8 +633,9 @@ pub(super) fn spawn_for_pending_tasks(
             !cooldowns.check("task_nudge", &task_key, Duration::from_secs(300))
         };
 
-        // Check if the owner is an isolated reviewer (has their own task namespace)
-        let is_owner_isolated = snap.isolated_coworkers.contains(&owner.to_lowercase());
+        // Check if the owner is an active reviewer (reviewers should not be nudged
+        // about main task list updates — they have their own review assignments)
+        let is_owner_reviewer = snap.active_reviewers.contains(&owner.to_lowercase());
 
         // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
@@ -644,7 +645,7 @@ pub(super) fn spawn_for_pending_tasks(
             &snap.active_names,
             snap.is_at_dev_limit,
             on_nudge_cooldown,
-            is_owner_isolated,
+            is_owner_reviewer,
         );
 
         match action {
@@ -831,15 +832,16 @@ pub(super) fn spawn_for_pending_tasks(
         // Check if this coworker is already running (grouped to an active coworker)
         let already_running = snap.active_names.contains(&coworker_name.to_lowercase());
 
-        // Check if this coworker is an isolated reviewer (has their own task namespace)
-        let is_coworker_isolated = snap
-            .isolated_coworkers
+        // Check if this coworker is an active reviewer (reviewers should not
+        // receive dev task assignments — they have their own review work)
+        let is_coworker_reviewer = snap
+            .active_reviewers
             .contains(&coworker_name.to_lowercase());
 
-        // Skip assigning main task list tasks to isolated reviewers
-        if already_running && is_coworker_isolated {
+        // Skip assigning main task list tasks to active reviewers
+        if already_running && is_coworker_reviewer {
             debug!(
-                "Task #{}: skipping isolated reviewer {} (separate task namespace)",
+                "Task #{}: skipping active reviewer {} (has review assignment)",
                 task.id, coworker_name
             );
             continue;
