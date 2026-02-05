@@ -533,8 +533,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                      Once feedback is addressed, the reviewer will re-check and approve.",
                     pr_number, pr_title
                 );
-                match crate::tasks::create_task_for_repo(&subject, &description, &owner, &repo_name)
-                {
+                let active_form = format!("Addressing review feedback on PR #{}", pr_number);
+                match crate::tasks::create_task_for_repo(
+                    &subject,
+                    &description,
+                    &active_form,
+                    &owner,
+                    &repo_name,
+                ) {
                     Ok(task_id) => {
                         info!(
                             "Created review feedback task #{} for {} (PR #{})",
