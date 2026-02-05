@@ -520,6 +520,21 @@ async fn handle_coworker_report_state(
                         records.remove(name);
                     }
 
+                    // Immediately trigger task dispatch so pending tasks get picked up
+                    // without waiting for the next TaskDispatchTick (up to 10 seconds).
+                    // This is the same pattern as daemon.check-pending RPC.
+                    let snap = snapshot::collect_world_snapshot(state).await;
+                    let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+                    if !pending_effects.is_empty() {
+                        info!(
+                            "Immediate dispatch after {} idle: {} effect(s)",
+                            name,
+                            pending_effects.len()
+                        );
+                        state.mark_in_flight_spawns_from_effects(&pending_effects);
+                        effects::execute_effects(pending_effects, state).await;
+                    }
+
                     info!("Coworker {} went on break after reporting idle", name);
                     return Response::success(
                         id,
