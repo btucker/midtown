@@ -284,6 +284,19 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "auth.switch" => {
+            let profile = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("profile"))
+                .and_then(|v| v.as_str());
+
+            match profile {
+                Some(name) => handle_auth_switch(request.id, name, state).await,
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "snapshot" => {
             // Collect and return the full WorldSnapshot for debugging/testing.
             // Debug context (channel messages, daemon logs) is only populated here,
@@ -408,6 +421,139 @@ fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Resp
             Response::error(id, RpcError::new(-32603, e.to_string()))
         }
     }
+}
+
+/// Handle auth.switch RPC method.
+///
+/// Switches the active auth profile and re-launches all Claude instances:
+/// 1. Validates and switches the profile on disk
+/// 2. Shuts down all running coworkers (daemon will re-spawn for pending tasks)
+/// 3. Re-launches the lead window with the new credentials
+async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -> Response {
+    // Validate the profile exists
+    if !crate::auth::profile_exists(profile) {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "Profile '{}' does not exist. Create it with: midtown auth login --profile {}",
+                    profile, profile
+                ),
+            ),
+        );
+    }
+
+    // Check if already on this profile
+    let current = crate::auth::current_profile();
+    if current == profile {
+        return Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": format!("Already on profile '{}'", profile),
+                "switched": false,
+            }),
+        );
+    }
+
+    // Switch the profile on disk
+    if let Err(e) = crate::auth::set_current_profile(profile) {
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
+        );
+    }
+
+    info!("Auth profile switched to '{}'", profile);
+
+    // Shut down all running coworkers
+    let running_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|cw| cw.name.clone())
+        .collect();
+
+    let shutdown_count = running_coworkers.len();
+    for name in &running_coworkers {
+        let coworkers = state.coworkers.clone();
+        let name_owned = name.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await {
+            warn!("Failed to shut down coworker {}: {}", name, e);
+        }
+        // Clear state and records
+        crate::coworker_state::clear_state(&state.repo_name, name);
+        {
+            let mut records = state.coworker_records.write().await;
+            records.remove(name);
+        }
+        state.broadcast_coworker_update(name, "stopped", None);
+    }
+
+    // Re-launch the lead window with new auth credentials
+    let session = state.coworkers.session_name().to_string();
+    let workdir = state
+        .all_repo_paths
+        .first()
+        .cloned()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let project_name = state.repo_name.clone();
+    let additional_dirs: Vec<std::path::PathBuf> =
+        state.all_repo_paths.iter().skip(1).cloned().collect();
+
+    let lead_result = tokio::task::spawn_blocking(move || {
+        crate::tmux::spawn_lead(&session, &workdir, &project_name, &additional_dirs)
+    })
+    .await;
+
+    let lead_relaunched = match lead_result {
+        Ok(Ok(())) => {
+            info!("Re-launched lead with auth profile '{}'", profile);
+            true
+        }
+        Ok(Err(e)) => {
+            warn!("Failed to re-launch lead: {}", e);
+            false
+        }
+        Err(e) => {
+            warn!("spawn_blocking panic while re-launching lead: {}", e);
+            false
+        }
+    };
+
+    // Post to channel
+    let msg = Message::system(format!(
+        "Switched to auth profile '{}' — shut down {} coworker(s), {}",
+        profile,
+        shutdown_count,
+        if lead_relaunched {
+            "re-launched lead"
+        } else {
+            "failed to re-launch lead"
+        }
+    ));
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post auth switch message: {}", e);
+    }
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!(
+                "Switched to profile '{}'. Shut down {} coworker(s), {}.",
+                profile,
+                shutdown_count,
+                if lead_relaunched { "re-launched lead" } else { "lead re-launch failed" }
+            ),
+            "switched": true,
+            "coworkers_shutdown": shutdown_count,
+            "lead_relaunched": lead_relaunched,
+        }),
+    )
 }
 
 /// Handle coworker.list RPC method.

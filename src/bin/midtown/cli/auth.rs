@@ -120,10 +120,20 @@ fn handle_list() -> Result<Response, String> {
 }
 
 fn handle_switch(profile: &str) -> Result<Response, String> {
+    // If the daemon is running, use RPC to switch profile and re-launch all claudes.
+    // This ensures running coworkers and the lead pick up the new credentials.
+    if let Ok(client) = crate::client::DaemonClient::connect() {
+        return client.auth_switch(profile);
+    }
+
+    // No daemon running — just switch the profile file for the next session.
     midtown::auth::set_current_profile(profile).map_err(|e| e.to_string())?;
 
     Ok(Response::Message {
-        message: format!("Switched to profile '{}'.", profile),
+        message: format!(
+            "Switched to profile '{}'. No daemon running — new sessions will use this profile.",
+            profile
+        ),
     })
 }
 
