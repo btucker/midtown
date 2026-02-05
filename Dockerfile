@@ -42,7 +42,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release
 
-# ─── Stage 2: Runtime ───────────────────────────────────────────────────────
+# ─── Stage 4: Runtime ───────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
 # Runtime dependencies:
@@ -70,6 +70,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy the binary from builder (must happen before USER switch)
+COPY --from=builder /app/target/release/midtown /usr/local/bin/midtown
+
 # Non-root user for security and proper $HOME handling
 RUN useradd -m -s /bin/bash midtown
 USER midtown
@@ -81,9 +84,6 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
     || echo "Claude CLI install failed (may not be available in all environments)"
 
 ENV PATH="/home/midtown/.local/bin:${PATH}"
-
-# Copy the binary from builder
-COPY --from=builder /app/target/release/midtown /usr/local/bin/midtown
 
 # Default git config (can be overridden via environment)
 RUN git config --global user.email "midtown@docker.local" \

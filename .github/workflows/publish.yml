@@ -6,7 +6,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  REGISTRY: docker.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -48,12 +47,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version from tag
+      - name: Verify version matches release tag
         id: version
         run: |
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           RELEASE_TAG="${{ github.event.release.tag_name }}"
-          VERSION="${RELEASE_TAG#v}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          if [ "$CARGO_VERSION" != "$RELEASE_VERSION" ]; then
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match release tag ($RELEASE_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $CARGO_VERSION"
+          echo "version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
