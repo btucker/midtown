@@ -86,6 +86,11 @@ pub enum Effect {
         pr_number: u64,
         issue_type: PrIssueType,
     },
+    /// Record an in-memory task assignment for busy tracking.
+    ///
+    /// Defers the mutation from the decision phase to the effect executor,
+    /// keeping decision functions pure.
+    RecordTaskAssignment { coworker: String, task_id: String },
     /// Clear a saved PR break session after successful resume.
     ClearPrBreakSession { name: String },
     /// Send raw tmux keys to a coworker (e.g., Escape, Enter) without the
@@ -395,6 +400,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 let mut tracker = state.pr_issue_tracker.lock().await;
                 tracker.record_nudge(pr_number, issue_type);
+            }
+            Effect::RecordTaskAssignment { coworker, task_id } => {
+                state.record_task_assignment(&coworker, &task_id);
             }
             Effect::ClearPrBreakSession { name } => {
                 let mut sessions = state.pr_break_sessions.write().unwrap();

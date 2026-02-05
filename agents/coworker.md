@@ -95,6 +95,15 @@ Your task is assigned by the daemon and included in your initial prompt. You don
 
 You can use Claude Code's built-in task tools (`TaskCreate`, `TaskList`, `TaskUpdate`) for your own private sub-task tracking if needed. These are local to your session and invisible to other coworkers.
 
+### Claiming Tasks
+When the daemon assigns you a new task via a nudge (while you're already running), **immediately claim it** so the Lead can record ownership:
+
+```bash
+midtown task claim <task-id>
+```
+
+This notifies the Lead to set you as the task owner. Always run this before starting work on the new task.
+
 ### Keeping PRs Focused
 Your PR should address your assigned task and nothing else. When you encounter related work that should be a separate PR, immediately run:
 

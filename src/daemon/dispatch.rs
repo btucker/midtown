@@ -900,14 +900,24 @@ pub(super) fn spawn_for_pending_tasks(
         }
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
 
-        // Build the prompt message
-        let prompt = format_task_prompt(
-            &task.id,
-            &format!(
-                "You've been assigned task #{}: {}. Get started!",
-                task.id, task.subject
-            ),
-        );
+        // Build the prompt message — already-running coworkers need explicit claim instruction
+        let prompt = if already_running {
+            format_task_prompt(
+                &task.id,
+                &format!(
+                    "You've been assigned task #{}: {}. Run `midtown task claim {}` to claim it, then get started!",
+                    task.id, task.subject, task.id
+                ),
+            )
+        } else {
+            format_task_prompt(
+                &task.id,
+                &format!(
+                    "You've been assigned task #{}: {}. Get started!",
+                    task.id, task.subject
+                ),
+            )
+        };
 
         if already_running {
             // Step 2a: Coworker is already running (grouped task) — nudge to claim the task.
@@ -919,15 +929,19 @@ pub(super) fn spawn_for_pending_tasks(
                 &task.subject,
                 config::get_personality(),
             );
-            // Record in-memory assignment for busy tracking
-            state.record_task_assignment(&coworker_name, &task.id);
             effects.push(Effect::NudgeCoworkerWithCallbacks {
                 name: coworker_name.clone(),
                 message: prompt,
-                on_success: vec![Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: channel_msg,
-                }],
+                on_success: vec![
+                    Effect::RecordTaskAssignment {
+                        coworker: coworker_name.clone(),
+                        task_id: task.id.clone(),
+                    },
+                    Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: channel_msg,
+                    },
+                ],
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
