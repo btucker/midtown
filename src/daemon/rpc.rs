@@ -964,9 +964,9 @@ async fn handle_task_request(
 /// the owner, sends a nudge so the owner sees the change immediately.
 ///
 /// The `task_list_id` parameter (from `CLAUDE_CODE_TASK_LIST_ID` env var) is used to
-/// verify the update came from the shared team task list. If it refers to a different
-/// session (e.g., a coworker's local subtasks), we skip the lookup to avoid cross-list
-/// ID collisions causing spurious nudges.
+/// verify the update came from the lead's task list. If it refers to a different
+/// session (e.g., a coworker's isolated task list), we skip the lookup to avoid
+/// cross-list ID collisions causing spurious nudges.
 fn handle_task_updated(
     id: RequestId,
     task_id: &str,
@@ -1049,14 +1049,14 @@ fn handle_task_updated(
     )
 }
 
-/// Check whether a task.updated RPC should look up the task in the main project list.
+/// Check whether a task.updated RPC should look up the task in the lead's task list.
 ///
 /// Returns true if:
 /// - `task_list_id` is None (backwards compatibility with old clients)
-/// - `task_list_id` matches `midtown-{repo_name}` (the shared team task list)
+/// - `task_list_id` matches `midtown-{repo_name}` (the lead's task list)
 ///
 /// Returns false if `task_list_id` refers to a different session (e.g., a coworker's
-/// local subtask list), preventing cross-list ID collisions from causing spurious nudges.
+/// isolated task list), preventing cross-list ID collisions from causing spurious nudges.
 fn should_lookup_task(task_list_id: Option<&str>, repo_name: &str) -> bool {
     let expected = crate::paths::task_list_id_for_repo(repo_name);
     match task_list_id {
