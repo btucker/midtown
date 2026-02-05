@@ -461,7 +461,7 @@ mod tests {
         };
         let rows = estimate_image_rows(&image, 80);
         assert!(
-            rows >= 10 && rows <= 20,
+            (10..=20).contains(&rows),
             "Expected 10-20 rows, got {}",
             rows
         );
