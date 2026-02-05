@@ -86,6 +86,9 @@ pub mod tasks;
 // Path utilities (socket paths, repo detection)
 pub mod paths;
 
+// Auth profile management for multi-account support
+pub mod auth;
+
 // Persistent GitHub state (PR reviewer assignments)
 pub mod github_state;
 

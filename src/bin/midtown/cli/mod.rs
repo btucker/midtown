@@ -1,3 +1,4 @@
+mod auth;
 mod channel;
 mod chat;
 mod coworker;
@@ -9,6 +10,7 @@ mod pr;
 mod response;
 mod task;
 
+pub use auth::AuthCommand;
 pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
 pub use e2e::E2eCommand;
@@ -127,6 +129,11 @@ pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
 /// Handle E2E test commands (auth, run) - no daemon required
 pub fn handle_e2e(cmd: &E2eCommand) -> Result<(), String> {
     e2e::handle(cmd)
+}
+
+/// Handle auth profile commands (login, list, switch, status, remove) - no daemon required
+pub fn handle_auth(cmd: &AuthCommand) -> Result<Response, String> {
+    auth::handle(cmd)
 }
 
 /// Handle `midtown lead remind` subcommands

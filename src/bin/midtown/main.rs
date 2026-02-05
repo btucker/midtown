@@ -8,7 +8,9 @@ use clap::{Parser, Subcommand};
 mod cli;
 mod client;
 
-use cli::{ChannelCommand, CoworkerCommand, E2eCommand, HookCommand, PrCommand, TaskCommand};
+use cli::{
+    AuthCommand, ChannelCommand, CoworkerCommand, E2eCommand, HookCommand, PrCommand, TaskCommand,
+};
 use client::DaemonClient;
 
 #[derive(Parser)]
@@ -127,6 +129,11 @@ enum Commands {
     E2e {
         #[command(subcommand)]
         command: E2eCommand,
+    },
+    /// Manage authentication profiles for multi-account support
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
     },
     /// Report coworker workflow state (called by coworkers to update status)
     State {
@@ -444,6 +451,13 @@ fn main() {
         return;
     }
 
+    // Auth command (no daemon required - profile management)
+    if let Commands::Auth { command } = &command {
+        let result = cli::handle_auth(command);
+        handle_result(format, result);
+        return;
+    }
+
     // State command (no daemon required - writes state file directly)
     if let Commands::State { phase, task } = &command {
         let result = cli::handle_state(*phase, *task);
@@ -653,6 +667,7 @@ fn main() {
         | Commands::Project { .. }
         | Commands::Chat
         | Commands::E2e { .. }
+        | Commands::Auth { .. }
         | Commands::State { .. }
         | Commands::Hook { .. }
         | Commands::Log { .. }

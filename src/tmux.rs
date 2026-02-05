@@ -1684,6 +1684,9 @@ impl ClaudeLaunchConfig {
             let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
             env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
         }
+        // Set Claude config directory from the active auth profile
+        let config_dir = crate::auth::current_profile_dir();
+        env_parts.push(format!("CLAUDE_CONFIG_DIR='{}'", config_dir.display()));
         let env_export = format!("export {}", env_parts.join(" "));
 
         // -- Claude CLI arguments (as structured Vec, not format! interpolation) --
