@@ -1774,10 +1774,17 @@ pub(crate) struct OrphanRecovery {
 ///
 /// An orphaned task is `in_progress` but its owner is not active.
 /// Returns at most ONE recovery action (rate-limited to one per tick).
+///
+/// Skips recovery when the owner has an open PR with passing CI and no
+/// review feedback — the coworker is correctly waiting for human review
+/// and should not be respawned until there is actionable work.
 pub(crate) fn decide_orphan_recovery(
     in_progress: &[(String, String, String)], // (task_id, task_subject, owner)
     active_names: &HashSet<String>,
     at_dev_limit: bool,
+    coworkers_with_open_prs: &HashSet<String>,
+    ci_passed_pr_coworkers: &HashSet<String>,
+    review_feedback_pr_coworkers: &HashSet<String>,
 ) -> Option<OrphanRecovery> {
     if at_dev_limit {
         return None;
@@ -1790,10 +1797,20 @@ pub(crate) fn decide_orphan_recovery(
         }
         // Skip invalid coworker names — can't spawn a coworker with this name
         // Use lowercase to match how avenue names are stored
-        if !crate::coworker::is_coworker_name(&owner_clean.to_lowercase()) {
+        let owner_lower = owner_clean.to_lowercase();
+        if !crate::coworker::is_coworker_name(&owner_lower) {
             continue;
         }
-        if active_names.contains(&owner_clean.to_lowercase()) {
+        if active_names.contains(&owner_lower) {
+            continue;
+        }
+        // Skip coworkers whose PR is open with green CI and no review feedback.
+        // They are correctly on break waiting for human review — recovering them
+        // would create a loop (recover → idle → shutdown → recover).
+        let has_open_pr = coworkers_with_open_prs.contains(&owner_lower);
+        let ci_passed = ci_passed_pr_coworkers.contains(&owner_lower);
+        let has_review_feedback = review_feedback_pr_coworkers.contains(&owner_lower);
+        if has_open_pr && ci_passed && !has_review_feedback {
             continue;
         }
         // Found an orphan — return the first one (rate-limited)
@@ -3285,7 +3302,8 @@ mod tests {
     fn orphan_recovery_finds_orphan() {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
-        let result = decide_orphan_recovery(&tasks, &active, false);
+        let empty = HashSet::new();
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert_eq!(
             result,
             Some(OrphanRecovery {
@@ -3300,7 +3318,8 @@ mod tests {
     fn orphan_recovery_skips_active_owner() {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["york"]);
-        let result = decide_orphan_recovery(&tasks, &active, false);
+        let empty = HashSet::new();
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3308,7 +3327,8 @@ mod tests {
     fn orphan_recovery_skips_at_dev_limit() {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
-        let result = decide_orphan_recovery(&tasks, &active, true);
+        let empty = HashSet::new();
+        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3316,7 +3336,8 @@ mod tests {
     fn orphan_recovery_skips_lead_owner() {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "lead".to_string())];
         let active = set(&["amsterdam"]);
-        let result = decide_orphan_recovery(&tasks, &active, false);
+        let empty = HashSet::new();
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3331,7 +3352,8 @@ mod tests {
             ),
         ];
         let active = set(&["amsterdam"]);
-        let result = decide_orphan_recovery(&tasks, &active, false);
+        let empty = HashSet::new();
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert_eq!(result.unwrap().task_id, "1");
     }
 
@@ -3341,7 +3363,8 @@ mod tests {
         // not returned for recovery, since we can't spawn a coworker named "fix"
         let tasks = vec![("42".to_string(), "Fix bug".to_string(), "fix".to_string())];
         let active = set(&["amsterdam"]);
-        let result = decide_orphan_recovery(&tasks, &active, false);
+        let empty = HashSet::new();
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         // Should be None because "fix" is not a valid coworker name
         assert!(result.is_none());
     }
@@ -3351,10 +3374,121 @@ mod tests {
         // Uppercase owner names should still be recognized as valid coworkers
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "YORK".to_string())];
         let active = set(&["amsterdam"]);
-        let result = decide_orphan_recovery(&tasks, &active, false);
+        let empty = HashSet::new();
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         // Should return recovery because "YORK" maps to valid coworker "york"
         assert!(result.is_some());
         assert_eq!(result.unwrap().owner, "YORK");
+    }
+
+    #[test]
+    fn orphan_recovery_skips_coworker_awaiting_review() {
+        // Bug: coworker opened a PR with green CI and is awaiting review.
+        // The idle shutdown correctly lets them go on break, but orphan
+        // recovery kept respawning them because it didn't check PR state.
+        let tasks = vec![(
+            "789".to_string(),
+            "Add usage bars".to_string(),
+            "amsterdam".to_string(),
+        )];
+        let active = set(&[]); // amsterdam is not active (on break)
+        let coworkers_with_open_prs = set(&["amsterdam"]);
+        let ci_passed = set(&["amsterdam"]);
+        let review_feedback = set(&[]); // no review feedback yet
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &ci_passed,
+            &review_feedback,
+        );
+        // Should NOT recover — coworker is correctly waiting for review
+        assert!(
+            result.is_none(),
+            "Should not recover coworker awaiting review on green PR"
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_recovers_coworker_with_review_feedback() {
+        // When review feedback arrives, the coworker should be recovered
+        // so they can address the comments.
+        let tasks = vec![(
+            "789".to_string(),
+            "Add usage bars".to_string(),
+            "amsterdam".to_string(),
+        )];
+        let active = set(&[]); // amsterdam is not active
+        let coworkers_with_open_prs = set(&["amsterdam"]);
+        let ci_passed = set(&["amsterdam"]);
+        let review_feedback = set(&["amsterdam"]); // review feedback posted
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &ci_passed,
+            &review_feedback,
+        );
+        // SHOULD recover — there's actionable review feedback
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().task_id, "789");
+    }
+
+    #[test]
+    fn orphan_recovery_recovers_coworker_with_failed_ci() {
+        // When CI fails on the PR, the coworker should be recovered
+        // so they can investigate and fix.
+        let tasks = vec![(
+            "789".to_string(),
+            "Add usage bars".to_string(),
+            "amsterdam".to_string(),
+        )];
+        let active = set(&[]); // amsterdam is not active
+        let coworkers_with_open_prs = set(&["amsterdam"]);
+        let ci_passed = set(&[]); // CI not passed (failed or pending)
+        let review_feedback = set(&[]);
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &ci_passed,
+            &review_feedback,
+        );
+        // SHOULD recover — CI is not green, coworker needs to fix
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().task_id, "789");
+    }
+
+    #[test]
+    fn orphan_recovery_recovers_coworker_without_pr() {
+        // Coworker without an open PR should still be recovered normally.
+        let tasks = vec![(
+            "789".to_string(),
+            "Add usage bars".to_string(),
+            "amsterdam".to_string(),
+        )];
+        let active = set(&[]); // amsterdam is not active
+        let coworkers_with_open_prs = set(&[]); // no open PR
+        let ci_passed = set(&[]);
+        let review_feedback = set(&[]);
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &ci_passed,
+            &review_feedback,
+        );
+        // SHOULD recover — no PR means work isn't done yet
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().task_id, "789");
     }
 
     // -----------------------------------------------------------------------
