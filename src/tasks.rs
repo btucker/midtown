@@ -886,6 +886,15 @@ mod tests {
     }
 
     #[test]
+    fn test_set_task_in_progress_in_dir_nonexistent_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        let result = set_task_in_progress_in_dir("999", &tasks_dir);
+        assert!(result.is_err(), "Should error for nonexistent task");
+    }
+
+    #[test]
     fn test_busy_coworkers_from_in_progress_tasks() {
         let temp_dir = TempDir::new().unwrap();
         let tasks_dir = temp_dir.path().to_path_buf();
