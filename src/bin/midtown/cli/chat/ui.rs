@@ -15,6 +15,8 @@ use ratatui::{
 use midtown::{Message, MessageType};
 
 use super::app::{App, CiStatus, RepoStatus};
+use super::kitty::InlineImage;
+use super::mermaid::{self, ContentSegment, MermaidCache};
 
 /// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
 #[derive(Debug, Clone)]
@@ -145,17 +147,10 @@ fn repo_status_height(app: &App) -> u16 {
 
 /// Draw the main UI
 ///
-/// Returns a list of hyperlinks that should be rendered after ratatui draws.
-/// These hyperlinks need to be written directly to the terminal using OSC 8
-/// sequences, bypassing ratatui's buffer system (which doesn't support hyperlinks).
-///
-/// Note: The Team panel has been removed - coworker status is now shown
-/// in tmux tab names instead, providing better visibility even when the
-/// chat TUI is not in focus.
-///
-/// Note: The input box has been removed - users should interact with the
-/// Lead directly, not through this read-only chat monitor.
-pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
+/// Returns hyperlinks and inline images that should be rendered after ratatui draws.
+/// These need to be written directly to the terminal using escape sequences,
+/// bypassing ratatui's buffer system (which doesn't support hyperlinks or images).
+pub fn draw(f: &mut Frame, app: &mut App) -> (Vec<Hyperlink>, Vec<InlineImage>) {
     // Calculate dynamic kanban height based on In Progress and Review columns
     let (_pending, in_progress, _completed) = app.tasks_by_status();
     let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
@@ -173,9 +168,9 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
 
     draw_repo_status_lines(f, app, chunks[0]);
     let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
-    draw_chat_panel(f, app, chunks[2]);
+    let images = draw_chat_panel(f, app, chunks[2]);
 
-    hyperlinks
+    (hyperlinks, images)
 }
 
 /// Format relative time (e.g., "3 minutes ago", "2 hours ago", "1 day ago")
@@ -705,8 +700,23 @@ fn extract_identifier(s: &str) -> Option<String> {
     Some(format!("#{}", digits))
 }
 
+/// Tracks an image that needs to be rendered at a specific line position
+struct ImagePlacement {
+    /// Line index in the pre-truncation line array where the image starts
+    line_index: usize,
+    /// Number of rows the image occupies
+    rows: u16,
+    /// Number of columns the image occupies
+    cols: u16,
+    /// PNG image data
+    png_data: Vec<u8>,
+}
+
 /// Draw the chat panel showing messages
-fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
+///
+/// Returns inline images to be rendered after ratatui draws using
+/// the Kitty graphics protocol.
+fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<InlineImage> {
     // Show selection mode indicator in title
     let title = if app.selection_mode {
         " #midtown [SELECT: press 's' to exit] "
@@ -734,55 +744,105 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     app.clamp_scroll_offset();
 
     // Get cached current_tasks lookup first, then visible messages.
-    // We clone current_tasks to avoid holding a mutable borrow across the loop.
+    // We clone current_tasks and visible messages to avoid holding a mutable
+    // borrow across the loop (needed because we also read mermaid_cache).
     let current_tasks = app.current_tasks().clone();
     let user_display_name = app.user_display_name.clone();
-    let visible = app.visible_messages();
+    let visible: Vec<Message> = app.visible_messages().to_vec();
 
-    // Build lines for messages, tracking previous sender for grouping
+    // Build lines for messages, tracking previous sender for grouping.
+    // Also collect image placements for mermaid diagrams.
     let mut lines: Vec<Line> = Vec::new();
-    let mut prev_sender: Option<&str> = None;
+    let mut image_placements: Vec<ImagePlacement> = Vec::new();
+    let prev_sender: Option<&str> = None;
 
-    for msg in visible.iter() {
-        let msg_lines = render_message(
-            msg,
-            inner.width as usize,
-            prev_sender,
-            &current_tasks,
-            user_display_name.as_deref(),
-        );
-        lines.extend(msg_lines);
-        prev_sender = Some(&msg.from);
+    // Collect mermaid sources that need rendering (to avoid borrow conflicts)
+    let mut mermaid_to_render: Vec<String> = Vec::new();
+
+    // Track previous sender by index for lifetime management
+    for (idx, msg) in visible.iter().enumerate() {
+        let segments = mermaid::parse_content_segments(&msg.content);
+        let has_mermaid = segments
+            .iter()
+            .any(|s| matches!(s, ContentSegment::Mermaid(_)));
+        let prev = if idx > 0 {
+            Some(visible[idx - 1].from.as_str())
+        } else {
+            prev_sender
+        };
+
+        if !has_mermaid {
+            // Fast path: no mermaid content, use existing render pipeline
+            let msg_lines = render_message(
+                msg,
+                inner.width as usize,
+                prev,
+                &current_tasks,
+                user_display_name.as_deref(),
+            );
+            lines.extend(msg_lines);
+        } else {
+            // Message contains mermaid: render segments individually
+            render_message_with_mermaid(
+                msg,
+                &segments,
+                inner.width as usize,
+                prev,
+                &current_tasks,
+                user_display_name.as_deref(),
+                &app.mermaid_cache,
+                &mut lines,
+                &mut image_placements,
+                &mut mermaid_to_render,
+            );
+        }
+    }
+
+    // Queue any un-cached mermaid diagrams for background rendering
+    for source in mermaid_to_render {
+        app.mermaid_cache.get_or_render(&source);
     }
 
     // Handle line truncation based on scroll position.
-    // Each message can render to multiple lines (sender + content + continuations),
-    // so the total rendered lines often exceeds visible_height.
-    //
-    // The scroll system uses message-level offsets (scroll_offset), but we render
-    // to lines. To provide smooth scrolling:
-    // - Default: take LAST N lines (shows most recent of selected messages)
-    // - At max scroll: take FIRST N lines (shows the very oldest messages)
-    //
-    // This fixes a jarring discontinuity where scroll_offset 0→1 would previously
-    // switch from LAST to FIRST lines, causing a massive visual jump.
-    let visible_lines = if lines.len() > inner.height as usize {
+    let total_lines = lines.len();
+    let truncation_offset;
+    let visible_lines = if total_lines > inner.height as usize {
         if app.is_at_max_scroll() {
-            // At very top of history: take first N lines to show oldest messages
+            truncation_offset = 0;
             lines.truncate(inner.height as usize);
             lines
         } else {
-            // Normal case: take last N lines for smooth scrolling
-            lines.split_off(lines.len() - inner.height as usize)
+            truncation_offset = total_lines - inner.height as usize;
+            lines.split_off(truncation_offset)
         }
     } else {
+        truncation_offset = 0;
         lines
     };
+
+    // Resolve image placements to screen coordinates after truncation
+    let mut inline_images = Vec::new();
+    for placement in &image_placements {
+        // Check if this image's start line is in the visible window
+        let start = placement.line_index;
+        if start >= truncation_offset && start < truncation_offset + inner.height as usize {
+            let screen_y = inner.y + (start - truncation_offset) as u16;
+            inline_images.push(InlineImage {
+                x: inner.x,
+                y: screen_y,
+                cols: placement.cols,
+                rows: placement.rows.min(inner.y + inner.height - screen_y),
+                png_data: placement.png_data.clone(),
+            });
+        }
+    }
 
     let paragraph = Paragraph::new(visible_lines);
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+
+    inline_images
 }
 
 /// Render a single message into one or more Lines
@@ -920,6 +980,146 @@ fn render_message(
     }
 
     result
+}
+
+/// Render a message that contains mermaid code fences.
+///
+/// Splits the message content into text and mermaid segments, rendering
+/// text normally and inserting image placeholders (blank lines) for
+/// mermaid diagrams that have been rendered to PNG. Tracks image placements
+/// so they can be overlaid after ratatui draws.
+#[allow(clippy::too_many_arguments)]
+fn render_message_with_mermaid(
+    msg: &Message,
+    segments: &[ContentSegment],
+    width: usize,
+    prev_sender: Option<&str>,
+    current_tasks: &HashMap<String, String>,
+    user_display_name: Option<&str>,
+    mermaid_cache: &MermaidCache,
+    lines: &mut Vec<Line<'static>>,
+    image_placements: &mut Vec<ImagePlacement>,
+    mermaid_to_render: &mut Vec<String>,
+) {
+    let local_time = msg.timestamp.with_timezone(&Local);
+    let time = local_time.format("%H:%M").to_string();
+    let display_from: String = if msg.from == "user" {
+        user_display_name.unwrap_or("user").to_string()
+    } else {
+        msg.from.clone()
+    };
+    let color = get_sender_color(&display_from);
+    let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
+    let content_style = match msg.message_type {
+        MessageType::Action => Style::default().fg(color),
+        MessageType::System => Style::default().fg(Color::DarkGray),
+        _ if is_dim_sender(&msg.from) => Style::default().fg(Color::DarkGray),
+        _ => Style::default().fg(Color::White),
+    };
+
+    let is_action = msg.message_type == MessageType::Action;
+    // Action messages have "* " prefix that reduces available content width
+    let extra_indent = if is_action { 2 } else { 0 };
+    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + extra_indent);
+    if content_width == 0 {
+        return;
+    }
+
+    // Add sender header (action messages use different blank-line logic)
+    if show_sender {
+        let add_blank = if is_action {
+            prev_sender.is_some_and(|prev| !is_system_like_sender(prev))
+        } else if let Some(prev) = prev_sender {
+            !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
+        } else {
+            false
+        };
+        if add_blank {
+            lines.push(Line::from(""));
+        }
+        let current_task = current_tasks.get(&msg.from.to_lowercase());
+        lines.push(build_sender_line(
+            &display_from,
+            &msg.message_type,
+            color,
+            current_task,
+            width,
+        ));
+    }
+
+    let indent_width = TIMESTAMP_GUTTER_WIDTH + extra_indent;
+    let mut is_first_content_line = true;
+
+    for segment in segments {
+        match segment {
+            ContentSegment::Text(text) => {
+                let content_lines = wrap_content(text, content_width);
+                for content in &content_lines {
+                    if is_first_content_line {
+                        if is_action {
+                            lines.push(build_action_timestamp_line(
+                                &time,
+                                content,
+                                color,
+                                content_style,
+                            ));
+                        } else {
+                            lines.push(build_timestamp_line(&time, content, content_style));
+                        }
+                        is_first_content_line = false;
+                    } else {
+                        let indent = " ".repeat(indent_width);
+                        let mut spans = vec![Span::raw(indent)];
+                        spans.extend(parse_markdown(content, content_style));
+                        lines.push(Line::from(spans));
+                    }
+                }
+            }
+            ContentSegment::Mermaid(source) => {
+                if let Some(image) = mermaid_cache.get_cached(source) {
+                    // Image is ready: insert placeholder lines and track placement
+                    let image_rows = mermaid::estimate_image_rows(image, content_width as u16);
+                    let image_cols = content_width as u16;
+
+                    // Record the line index where the image starts
+                    let start_line = lines.len();
+                    image_placements.push(ImagePlacement {
+                        line_index: start_line,
+                        rows: image_rows,
+                        cols: image_cols,
+                        png_data: image.png_data.clone(),
+                    });
+
+                    // Insert blank placeholder lines for the image
+                    for _ in 0..image_rows {
+                        lines.push(Line::from(""));
+                    }
+                    is_first_content_line = false;
+                } else if mermaid_cache.is_pending(source) {
+                    // Rendering in progress: show placeholder
+                    let placeholder = format!("{}[rendering diagram...]", " ".repeat(indent_width));
+                    lines.push(Line::from(Span::styled(
+                        placeholder,
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    )));
+                    is_first_content_line = false;
+                } else {
+                    // Not yet queued: show placeholder and queue for rendering
+                    let placeholder = format!("{}[mermaid diagram]", " ".repeat(indent_width));
+                    lines.push(Line::from(Span::styled(
+                        placeholder,
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    )));
+                    mermaid_to_render.push(source.clone());
+                    is_first_content_line = false;
+                }
+            }
+        }
+    }
 }
 
 /// Build a line with the sender name and optionally their current task
