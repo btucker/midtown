@@ -1,10 +1,10 @@
 //! Mermaid diagram parsing and rendering for the chat TUI
 //!
 //! Detects ```mermaid code fences in chat messages, renders them to PNG
-//! using the mmdc CLI, and caches results by content hash.
+//! using selkie-rs (a pure Rust mermaid implementation), and caches results
+//! by content hash.
 
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
@@ -120,22 +120,6 @@ fn content_hash(source: &str) -> u64 {
     hasher.finish()
 }
 
-/// Read PNG dimensions from the IHDR chunk
-fn read_png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
-    // PNG signature (8 bytes) + IHDR length (4 bytes) + "IHDR" (4 bytes) + width (4 bytes) + height (4 bytes)
-    if data.len() < 24 {
-        return None;
-    }
-    // Check PNG signature
-    if &data[0..8] != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
-    // Width and height are at bytes 16-23 (big-endian u32)
-    let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
-    let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
-    Some((width, height))
-}
-
 /// Cache for rendered mermaid diagrams
 pub struct MermaidCache {
     /// Completed renders: hash -> RenderedImage
@@ -146,8 +130,6 @@ pub struct MermaidCache {
     receiver: Option<Receiver<(u64, Option<RenderedImage>)>>,
     /// Sender for queueing render requests
     sender: Option<std::sync::mpsc::Sender<(u64, Option<RenderedImage>)>>,
-    /// Whether mmdc is available on the system
-    mmdc_available: Option<bool>,
 }
 
 impl MermaidCache {
@@ -157,18 +139,7 @@ impl MermaidCache {
             pending: HashMap::new(),
             receiver: None,
             sender: None,
-            mmdc_available: None,
         }
-    }
-
-    /// Check if mmdc CLI is available
-    fn is_mmdc_available(&mut self) -> bool {
-        if let Some(available) = self.mmdc_available {
-            return available;
-        }
-        let available = Command::new("mmdc").arg("--version").output().is_ok();
-        self.mmdc_available = Some(available);
-        available
     }
 
     /// Get a cached rendered image, or queue it for rendering
@@ -185,11 +156,6 @@ impl MermaidCache {
 
         // Already pending render
         if self.pending.contains_key(&hash) {
-            return None;
-        }
-
-        // Check if mmdc is available
-        if !self.is_mmdc_available() {
             return None;
         }
 
@@ -256,59 +222,46 @@ impl MermaidCache {
     }
 }
 
-/// Render mermaid source to PNG using the mmdc CLI
+/// Render mermaid source to PNG using selkie-rs (pure Rust, no external process)
 ///
-/// Returns None if rendering fails (mmdc not found, invalid syntax, etc.)
+/// Returns None if rendering fails (invalid syntax, etc.)
 fn render_mermaid_to_png(source: &str) -> Option<RenderedImage> {
-    let temp_dir = std::env::temp_dir();
-    let id = uuid::Uuid::new_v4();
-    let input_path = temp_dir.join(format!("midtown-mermaid-{}.mmd", id));
-    let output_path = temp_dir.join(format!("midtown-mermaid-{}.png", id));
+    // Use selkie-rs to render mermaid source to SVG with dark theme
+    let svg = selkie::render::render_text(&format!(
+        "%%{{init: {{\"theme\": \"dark\"}}}}%%\n{}",
+        source
+    ))
+    .ok()?;
 
-    // Write mermaid source to temp file
-    if std::fs::write(&input_path, source).is_err() {
-        return None;
-    }
+    // Convert SVG to PNG using resvg
+    svg_to_png(&svg, 800)
+}
 
-    // Run mmdc to render
-    let result = Command::new("mmdc")
-        .args([
-            "-i",
-            input_path.to_str()?,
-            "-o",
-            output_path.to_str()?,
-            "-w",
-            "800",
-            "-t",
-            "dark",
-            "-b",
-            "transparent",
-            "--quiet",
-        ])
-        .output();
+/// Convert SVG string to PNG image data at a given width
+fn svg_to_png(svg: &str, target_width: u32) -> Option<RenderedImage> {
+    use resvg::{tiny_skia, usvg};
 
-    // Clean up input file
-    let _ = std::fs::remove_file(&input_path);
+    let mut opt = usvg::Options::default();
+    let fontdb = opt.fontdb_mut();
+    fontdb.load_system_fonts();
 
-    match result {
-        Ok(output) if output.status.success() => {
-            // Read the PNG output
-            let png_data = std::fs::read(&output_path).ok()?;
-            let _ = std::fs::remove_file(&output_path);
+    let tree = usvg::Tree::from_str(svg, &opt).ok()?;
 
-            let (width, height) = read_png_dimensions(&png_data)?;
+    let svg_size = tree.size();
+    let scale = target_width as f32 / svg_size.width();
+    let target_height = (svg_size.height() * scale) as u32;
 
-            Some(RenderedImage {
-                png_data,
-                width,
-                height,
-            })
-        }
-        _ => {
-            let _ = std::fs::remove_file(&output_path);
-            None
-        }
-    }
+    let mut pixmap = tiny_skia::Pixmap::new(target_width, target_height)?;
+    let transform = tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    let png_data = pixmap.encode_png().ok()?;
+
+    Some(RenderedImage {
+        png_data,
+        width: target_width,
+        height: target_height,
+    })
 }
 
 /// Estimate the number of terminal rows an image will occupy
@@ -428,30 +381,6 @@ mod tests {
     }
 
     #[test]
-    fn test_read_png_dimensions() {
-        // Minimal valid PNG header with 100x50 dimensions
-        let data = vec![
-            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-            0x00, 0x00, 0x00, 0x0D, // IHDR length
-            b'I', b'H', b'D', b'R', // IHDR type
-            0x00, 0x00, 0x00, 0x64, // width = 100
-            0x00, 0x00, 0x00, 0x32, // height = 50
-        ];
-        assert_eq!(read_png_dimensions(&data), Some((100, 50)));
-    }
-
-    #[test]
-    fn test_read_png_dimensions_too_short() {
-        assert_eq!(read_png_dimensions(&[0; 10]), None);
-    }
-
-    #[test]
-    fn test_read_png_dimensions_bad_signature() {
-        let data = vec![0u8; 24];
-        assert_eq!(read_png_dimensions(&data), None);
-    }
-
-    #[test]
     fn test_estimate_image_rows() {
         // 800x400 image at 80 cols -> aspect ratio 2:1
         let image = RenderedImage {
@@ -484,5 +413,24 @@ mod tests {
         let cache = MermaidCache::new();
         assert!(cache.images.is_empty());
         assert!(cache.pending.is_empty());
+    }
+
+    #[test]
+    fn test_render_mermaid_to_png_simple_flowchart() {
+        let result = render_mermaid_to_png("graph TD\n  A-->B");
+        assert!(result.is_some(), "Simple flowchart should render");
+        let image = result.unwrap();
+        assert!(!image.png_data.is_empty(), "PNG data should not be empty");
+        assert!(image.width > 0, "Width should be positive");
+        assert!(image.height > 0, "Height should be positive");
+        // Verify it's a valid PNG (check signature)
+        assert_eq!(&image.png_data[0..4], b"\x89PNG");
+    }
+
+    #[test]
+    fn test_render_mermaid_to_png_invalid_input() {
+        let result = render_mermaid_to_png("this is not valid mermaid syntax }{}{}{");
+        // Invalid input should return None (selkie-rs parse failure)
+        assert!(result.is_none());
     }
 }

@@ -994,16 +994,24 @@ fn render_message_with_mermaid(
         _ => Style::default().fg(Color::White),
     };
 
-    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
+    let is_action = msg.message_type == MessageType::Action;
+    // Action messages have "* " prefix that reduces available content width
+    let extra_indent = if is_action { 2 } else { 0 };
+    let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + extra_indent);
     if content_width == 0 {
         return;
     }
 
-    // Add sender header
+    // Add sender header (action messages use different blank-line logic)
     if show_sender {
-        if let Some(prev) = prev_sender
-            && !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
-        {
+        let add_blank = if is_action {
+            prev_sender.is_some_and(|prev| !is_system_like_sender(prev))
+        } else if let Some(prev) = prev_sender {
+            !(is_system_like_sender(prev) && is_system_like_sender(&msg.from))
+        } else {
+            false
+        };
+        if add_blank {
             lines.push(Line::from(""));
         }
         let current_task = current_tasks.get(&msg.from.to_lowercase());
@@ -1016,6 +1024,7 @@ fn render_message_with_mermaid(
         ));
     }
 
+    let indent_width = TIMESTAMP_GUTTER_WIDTH + extra_indent;
     let mut is_first_content_line = true;
 
     for segment in segments {
@@ -1024,10 +1033,19 @@ fn render_message_with_mermaid(
                 let content_lines = wrap_content(text, content_width);
                 for content in &content_lines {
                     if is_first_content_line {
-                        lines.push(build_timestamp_line(&time, content, content_style));
+                        if is_action {
+                            lines.push(build_action_timestamp_line(
+                                &time,
+                                content,
+                                color,
+                                content_style,
+                            ));
+                        } else {
+                            lines.push(build_timestamp_line(&time, content, content_style));
+                        }
                         is_first_content_line = false;
                     } else {
-                        let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
+                        let indent = " ".repeat(indent_width);
                         let mut spans = vec![Span::raw(indent)];
                         spans.extend(parse_markdown(content, content_style));
                         lines.push(Line::from(spans));
@@ -1056,10 +1074,7 @@ fn render_message_with_mermaid(
                     is_first_content_line = false;
                 } else if mermaid_cache.is_pending(source) {
                     // Rendering in progress: show placeholder
-                    let placeholder = format!(
-                        "{}[rendering diagram...]",
-                        " ".repeat(TIMESTAMP_GUTTER_WIDTH)
-                    );
+                    let placeholder = format!("{}[rendering diagram...]", " ".repeat(indent_width));
                     lines.push(Line::from(Span::styled(
                         placeholder,
                         Style::default()
@@ -1069,8 +1084,7 @@ fn render_message_with_mermaid(
                     is_first_content_line = false;
                 } else {
                     // Not yet queued: show placeholder and queue for rendering
-                    let placeholder =
-                        format!("{}[mermaid diagram]", " ".repeat(TIMESTAMP_GUTTER_WIDTH));
+                    let placeholder = format!("{}[mermaid diagram]", " ".repeat(indent_width));
                     lines.push(Line::from(Span::styled(
                         placeholder,
                         Style::default()
