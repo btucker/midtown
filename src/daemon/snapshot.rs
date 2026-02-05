@@ -276,6 +276,18 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
 
+    // Clear pending task creation markers when the Lead has created the task.
+    // Match by extracting PR number from subject "Address review feedback on PR #X".
+    for task in &all_tasks {
+        if let Some(pr_num_str) = task.subject.strip_prefix("Address review feedback on PR #")
+            && let Ok(pr_number) = pr_num_str.parse::<u64>()
+            && let Some(ref owner) = task.owner
+        {
+            let key = super::DaemonState::task_creation_key(pr_number, owner);
+            state.clear_task_creation_pending(&key);
+        }
+    }
+
     // ── PR / GitHub state ───────────────────────────────────────────────
     let coworkers_with_open_prs: HashSet<String> = super::pr::get_coworkers_with_open_prs(state)
         .into_iter()
