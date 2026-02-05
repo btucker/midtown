@@ -35,9 +35,14 @@ must be updated in two places. For example, the polling `SpawnOwner` path in
 on_success callbacks, while the webhook `SpawnOwner` path (e.g., line 2181-2210)
 does the session cleanup inline — same logic, different code.
 
-**Recommendation**: Refactor webhook handlers to return `Vec<Effect>` and share
+**Note**: This gap is already acknowledged in `events.rs:22-24`, which documents
+the plan to add webhook event variants to `DaemonEvent`, converting the remaining
+inline side effects to the evaluate/execute pattern. This finding recommends
+prioritizing that existing plan as the single highest-impact consolidation.
+
+**Recommendation**: Accelerate the planned webhook-to-Effect migration documented
+in `events.rs`. Refactor webhook handlers to return `Vec<Effect>` and share
 `pr_action_to_effects()` / `comment_action_to_effects()` with the polling path.
-This is the single highest-impact consolidation.
 
 ---
 
@@ -96,7 +101,7 @@ from `daemon_messages.rs` while the webhook spawn posts an ad-hoc message:
 // Webhook (pr.rs:2193-2196) — ad-hoc, no personality support
 "Called in {} to address review feedback on PR #{}"
 
-// Polling (pr.rs:700-705) via comment_action_to_effects → daemon_messages
+// Polling (pr.rs:1263-1267) via comment_action_to_effects → daemon_messages
 called_in_review_feedback(name, pr_number, personality)
 → "🚀 Called in {name} to address review feedback on PR #{pr}"
 ```
@@ -197,8 +202,9 @@ unowned task pattern.
 
 ### High Priority
 
-1. **Refactor webhook handlers to use the Effect pipeline** (Finding 1)
+1. **Accelerate planned webhook-to-Effect migration** (Finding 1)
    - `handle_pr_comment_nudge`, `handle_webhook_ci_failure`, `handle_webhook_review_state_change`
+   - Already documented as future work in `events.rs:22-24`
    - Should return `Vec<Effect>` and reuse `pr_action_to_effects()` / `comment_action_to_effects()`
    - Eliminates the primary source of format divergence
 
