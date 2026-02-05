@@ -1,4 +1,4 @@
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::DaemonState;
 use super::trackers::PrIssueType;
@@ -154,14 +154,13 @@ pub enum Effect {
     },
     /// Create a new task for a PR author to address review feedback.
     ///
-    /// Emitted when a PR has CI green + review feedback but no existing task
-    /// for the author. Prevents the spawn→idle→break loop by giving the author
-    /// concrete work to do.
+    /// Nudges the Lead to create the task via TaskCreate (routed through the
+    /// Lead's Claude Code session to avoid TOCTTOU races on task file writes).
+    /// Includes in-memory deduplication to prevent repeated nudges.
     CreateReviewFeedbackTask {
         pr_number: u64,
         pr_title: String,
         owner: String,
-        repo_name: String,
     },
 }
 
@@ -549,33 +548,28 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 pr_number,
                 pr_title,
                 owner,
-                repo_name,
             } => {
-                let subject = format!("Address review feedback on PR #{}", pr_number);
-                let description = format!(
-                    "PR #{} ({}) has review feedback that needs to be addressed.\n\n\
-                     Please review the comments, make the requested changes, and push updates.\n\
-                     Once feedback is addressed, the reviewer will re-check and approve.",
-                    pr_number, pr_title
-                );
-                let active_form = format!("Addressing review feedback on PR #{}", pr_number);
-                match crate::tasks::create_task_for_repo(
-                    &subject,
-                    &description,
-                    &active_form,
-                    &owner,
-                    &repo_name,
-                ) {
-                    Ok(task_id) => {
-                        info!(
-                            "Created review feedback task #{} for {} (PR #{})",
-                            task_id, owner, pr_number
-                        );
-                    }
-                    Err(e) => {
+                let key = DaemonState::task_creation_key(pr_number, &owner);
+                if state.is_task_creation_pending(&key) {
+                    debug!(
+                        "Skipping duplicate task creation for {} (PR #{}): already pending",
+                        owner, pr_number
+                    );
+                } else {
+                    let nudge_message =
+                        DaemonState::task_creation_nudge(pr_number, &pr_title, &owner);
+                    state.mark_task_creation_pending(&key);
+                    if let Err(e) = state.coworkers.nudge_lead(&nudge_message) {
                         warn!(
-                            "Failed to create review feedback task for {} (PR #{}): {}",
-                            owner, pr_number, e
+                            "Failed to nudge lead for task creation (PR #{}, {}): {}",
+                            pr_number, owner, e
+                        );
+                        // Clear pending marker so it can be retried next tick
+                        state.clear_task_creation_pending(&key);
+                    } else {
+                        info!(
+                            "Nudged lead to create review feedback task for {} (PR #{})",
+                            owner, pr_number
                         );
                     }
                 }

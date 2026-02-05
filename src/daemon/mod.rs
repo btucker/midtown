@@ -444,6 +444,19 @@ pub(crate) struct DaemonState {
     /// from being posted to the channel multiple times. Resets on daemon restart,
     /// which is acceptable because transcript cursors prevent re-extraction.
     insight_hashes: std::sync::Mutex<HashSet<u64>>,
+    /// In-memory deduplication for task creation nudges sent to the Lead.
+    ///
+    /// When the daemon needs to create a task (e.g., review feedback), it nudges the
+    /// Lead to call TaskCreate instead of writing task files directly. This prevents
+    /// TOCTTOU races when concurrent webhook + polling paths try to create the same task.
+    ///
+    /// Key format: "review-feedback-PR#<number>-<owner>". Value is the timestamp when
+    /// the marker was set. Entries are:
+    /// - Added when a nudge is sent to the Lead
+    /// - Cleared when a non-completed matching task appears in the shared task list
+    /// - Pre-populated for existing pending/in_progress tasks (prevents re-nudges after restart)
+    /// - Auto-expired after 5 minutes (handles Lead not acting on the nudge)
+    pending_task_creations: std::sync::Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl DaemonState {
@@ -591,6 +604,7 @@ impl DaemonState {
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             github_user,
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
+            pending_task_creations: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -769,6 +783,65 @@ impl DaemonState {
         } else {
             false
         }
+    }
+
+    /// Build the deduplication key for a pending task creation.
+    ///
+    /// Matches the subject pattern used in task creation so that once the
+    /// Lead creates the task, the key can be cleared via `clear_task_creation_pending`.
+    pub(crate) fn task_creation_key(pr_number: u64, owner: &str) -> String {
+        format!("review-feedback-PR#{}-{}", pr_number, owner)
+    }
+
+    /// Check if a task creation nudge has already been sent to the Lead.
+    ///
+    /// Returns false if the marker has expired (> 5 minutes), clearing it
+    /// to allow a retry nudge.
+    pub(crate) fn is_task_creation_pending(&self, key: &str) -> bool {
+        const STALE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
+
+        let mut pending = self.pending_task_creations.lock().unwrap();
+        if let Some(created_at) = pending.get(key) {
+            if std::time::Instant::now().duration_since(*created_at) > STALE_THRESHOLD {
+                // Expired — clear and allow retry
+                pending.remove(key);
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Mark a task creation as pending (nudge sent to Lead).
+    pub(crate) fn mark_task_creation_pending(&self, key: &str) {
+        self.pending_task_creations
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), std::time::Instant::now());
+    }
+
+    /// Clear a pending task creation marker.
+    ///
+    /// Called when a non-completed matching task appears in the shared task list,
+    /// confirming the Lead created it successfully.
+    pub(crate) fn clear_task_creation_pending(&self, key: &str) {
+        self.pending_task_creations.lock().unwrap().remove(key);
+    }
+
+    /// Build the Lead nudge message for creating a review feedback task.
+    ///
+    /// The message instructs the Lead to use TaskCreate with specific fields.
+    pub(crate) fn task_creation_nudge(pr_number: u64, pr_title: &str, owner: &str) -> String {
+        format!(
+            "Create a task for {owner} to address review feedback on PR #{pr_number} ({pr_title}). \
+             Use TaskCreate with subject \"Address review feedback on PR #{pr_number}\", \
+             description \"PR #{pr_number} ({pr_title}) has review feedback that needs to be addressed. \
+             Please review the comments, make the requested changes, and push updates. \
+             Once feedback is addressed, the reviewer will re-check and approve.\", \
+             owner \"{owner}\", and activeForm \"Addressing review feedback on PR #{pr_number}\"."
+        )
     }
 }
 
@@ -3384,5 +3457,39 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
             assignment.assigned_at > old_time,
             "timestamp should be updated on retry"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task creation dedup tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_task_creation_key_format() {
+        let key = DaemonState::task_creation_key(42, "broadway");
+        assert_eq!(key, "review-feedback-PR#42-broadway");
+    }
+
+    #[test]
+    fn test_task_creation_key_different_prs() {
+        let key1 = DaemonState::task_creation_key(42, "broadway");
+        let key2 = DaemonState::task_creation_key(99, "broadway");
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_task_creation_key_different_owners() {
+        let key1 = DaemonState::task_creation_key(42, "broadway");
+        let key2 = DaemonState::task_creation_key(42, "park");
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_task_creation_nudge_contains_fields() {
+        let msg = DaemonState::task_creation_nudge(42, "Add auth endpoint", "broadway");
+        assert!(msg.contains("broadway"));
+        assert!(msg.contains("PR #42"));
+        assert!(msg.contains("Add auth endpoint"));
+        assert!(msg.contains("TaskCreate"));
+        assert!(msg.contains("Address review feedback on PR #42"));
     }
 }
