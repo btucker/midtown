@@ -269,11 +269,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
-    let busy_coworkers: HashSet<String> =
-        crate::tasks::get_busy_coworkers_for_repo(&state.repo_name)
-            .into_iter()
-            .map(|n| n.to_lowercase())
-            .collect();
+    let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
     let all_tasks = crate::tasks::read_tasks();
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();

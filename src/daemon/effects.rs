@@ -215,6 +215,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Clear any pending nudge for this coworker
                 state.clear_pending_nudge(&name);
+                // Clear task assignment tracking (coworker is no longer active)
+                state.clear_coworker_assignments(&name);
             }
             Effect::NudgeCoworker { name, message } => {
                 match state.coworkers.nudge(&name, &message) {
@@ -256,6 +258,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {
                     warn!("Failed to reset task #{} to pending: {}", task_id, e);
                 }
+                // Clear task assignment tracking (task is no longer assigned)
+                state.clear_task_assignment_by_task(&task_id);
             }
             Effect::RespawnZombieCoworker { name } => {
                 // Shut down properly (kills window + removes from internal registry)
@@ -361,6 +365,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         info!("Spawned coworker {} successfully", name);
                         // Clear in-flight marker on success (task is now owned)
                         state.clear_task_spawn_in_flight(&task_id);
+                        // Record task assignment for busy tracking
+                        state.record_task_assignment(&owner, &task_id);
                         Box::pin(execute_effects(on_success, state)).await;
                     }
                     Err(e) => {
@@ -388,6 +394,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::AssignTaskOwner { task_id, owner } => {
                 if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
                     warn!("Failed to assign task #{} to {}: {}", task_id, owner, e);
+                } else {
+                    // Record task assignment for busy tracking
+                    state.record_task_assignment(&owner, &task_id);
                 }
             }
             Effect::MarkRemindersFired {
@@ -500,6 +509,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to complete task #{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task #{}", task_id);
+                    // Clear task assignment tracking (coworker is now free)
+                    state.clear_task_assignment_by_task(&task_id);
                 }
             }
             Effect::ClearBlockedBy {

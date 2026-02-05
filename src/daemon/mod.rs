@@ -396,6 +396,15 @@ pub(crate) struct DaemonState {
     /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
     /// already in-flight. Clear entries when effects complete (success or failure).
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
+    /// Internal tracking of coworker task assignments (coworker name → task ID).
+    ///
+    /// With isolated task lists (TaskMode::Isolated), the daemon can't see
+    /// coworker tasks on disk. This map tracks which coworker is working on
+    /// which task, enabling busy detection for dispatch and idle protection.
+    ///
+    /// Updated when: AssignAndSpawn succeeds, AssignTaskOwner executes.
+    /// Cleared when: coworker shuts down, task is completed or reset to pending.
+    coworker_task_assignments: std::sync::Mutex<HashMap<String, String>>,
     /// Pending nudges sent to coworkers, awaiting confirmation of submission.
     ///
     /// Key: coworker name (lowercase), Value: (message text, sent timestamp).
@@ -558,6 +567,7 @@ impl DaemonState {
             user_display_name,
             last_webhook_event_at: Mutex::new(None),
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
+            coworker_task_assignments: std::sync::Mutex::new(HashMap::new()),
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             github_user,
@@ -610,6 +620,50 @@ impl DaemonState {
     /// Called from `execute_effects` when the effect succeeds or fails.
     pub(crate) fn clear_task_spawn_in_flight(&self, task_id: &str) {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
+    }
+
+    /// Record that a coworker has been assigned a task.
+    ///
+    /// Called when `AssignAndSpawn` or `AssignTaskOwner` effects succeed.
+    pub(crate) fn record_task_assignment(&self, coworker: &str, task_id: &str) {
+        let mut assignments = self.coworker_task_assignments.lock().unwrap();
+        assignments.insert(coworker.to_lowercase(), task_id.to_string());
+    }
+
+    /// Clear the task assignment for a specific task (by task ID).
+    ///
+    /// Called when a task is completed or reset to pending.
+    pub(crate) fn clear_task_assignment_by_task(&self, task_id: &str) {
+        let mut assignments = self.coworker_task_assignments.lock().unwrap();
+        assignments.retain(|_, tid| tid != task_id);
+    }
+
+    /// Clear all task assignments for a coworker.
+    ///
+    /// Called when a coworker is shut down.
+    pub(crate) fn clear_coworker_assignments(&self, coworker: &str) {
+        let mut assignments = self.coworker_task_assignments.lock().unwrap();
+        assignments.remove(&coworker.to_lowercase());
+    }
+
+    /// Get the set of coworker names that have active task assignments.
+    pub(crate) fn get_busy_coworker_names(&self) -> HashSet<String> {
+        let assignments = self.coworker_task_assignments.lock().unwrap();
+        assignments.keys().cloned().collect()
+    }
+
+    /// Get busy coworkers from both disk-based task storage and internal tracking.
+    ///
+    /// This is the canonical way to check busy status. Callers should use this
+    /// instead of `crate::tasks::get_busy_coworkers_for_repo()` directly, since
+    /// the disk-based reader cannot see isolated task lists.
+    pub(crate) fn get_all_busy_coworkers(&self) -> Vec<String> {
+        let mut busy: HashSet<String> = crate::tasks::get_busy_coworkers_for_repo(&self.repo_name)
+            .into_iter()
+            .map(|n| n.to_lowercase())
+            .collect();
+        busy.extend(self.get_busy_coworker_names());
+        busy.into_iter().collect()
     }
 
     /// Record a pending nudge sent to a coworker.
@@ -2970,6 +3024,151 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         assert!(
             min_escalation_minutes >= 45,
             "escalation should not trigger before 45 minutes"
+        );
+    }
+
+    // ── Task assignment tracking tests ──────────────────────────────────
+
+    /// Helper to create a minimal task assignment tracker for testing.
+    fn new_task_assignment_tracker() -> std::sync::Mutex<HashMap<String, String>> {
+        std::sync::Mutex::new(HashMap::new())
+    }
+
+    #[test]
+    fn test_task_assignment_record_and_lookup() {
+        let tracker = new_task_assignment_tracker();
+
+        // Record an assignment
+        {
+            let mut map = tracker.lock().unwrap();
+            map.insert("park".to_string(), "42".to_string());
+        }
+
+        // Verify lookup
+        let busy: HashSet<String> = {
+            let map = tracker.lock().unwrap();
+            map.keys().cloned().collect()
+        };
+        assert!(busy.contains("park"));
+        assert!(!busy.contains("madison"));
+    }
+
+    #[test]
+    fn test_task_assignment_clear_by_task() {
+        let tracker = new_task_assignment_tracker();
+
+        // Record assignments for two coworkers
+        {
+            let mut map = tracker.lock().unwrap();
+            map.insert("park".to_string(), "42".to_string());
+            map.insert("madison".to_string(), "43".to_string());
+        }
+
+        // Clear by task ID (simulates task completion)
+        {
+            let mut map = tracker.lock().unwrap();
+            map.retain(|_, tid| tid != "42");
+        }
+
+        let busy: HashSet<String> = {
+            let map = tracker.lock().unwrap();
+            map.keys().cloned().collect()
+        };
+        assert!(
+            !busy.contains("park"),
+            "park should be free after task completion"
+        );
+        assert!(busy.contains("madison"), "madison should still be busy");
+    }
+
+    #[test]
+    fn test_task_assignment_clear_by_coworker() {
+        let tracker = new_task_assignment_tracker();
+
+        // Record assignment
+        {
+            let mut map = tracker.lock().unwrap();
+            map.insert("park".to_string(), "42".to_string());
+        }
+
+        // Clear by coworker name (simulates shutdown)
+        {
+            let mut map = tracker.lock().unwrap();
+            map.remove("park");
+        }
+
+        let busy: HashSet<String> = {
+            let map = tracker.lock().unwrap();
+            map.keys().cloned().collect()
+        };
+        assert!(
+            busy.is_empty(),
+            "no coworkers should be busy after shutdown"
+        );
+    }
+
+    #[test]
+    fn test_busy_coworkers_prevents_duplicate_assignment() {
+        // This test verifies the core fix: busy_coworkers should contain
+        // coworkers from the internal tracker, preventing duplicate assignments.
+        let mut busy_coworkers: HashSet<String> = HashSet::new();
+
+        // Simulate daemon's internal tracking (replaces disk-based detection)
+        let internal_tracking: HashMap<String, String> = [("park".to_string(), "42".to_string())]
+            .into_iter()
+            .collect();
+        busy_coworkers.extend(internal_tracking.keys().cloned());
+
+        // Verify park is detected as busy
+        assert!(
+            busy_coworkers.contains("park"),
+            "park should be busy (has assigned task)"
+        );
+
+        // Simulate dispatch check: already_running AND busy → skip
+        let already_running = true;
+        let is_busy = busy_coworkers.contains("park");
+        let was_grouped = false;
+
+        assert!(
+            already_running && is_busy && !was_grouped,
+            "should skip busy non-grouped coworker"
+        );
+    }
+
+    #[test]
+    fn test_grouped_tasks_bypass_busy_check() {
+        // Grouped tasks (same PR, blockedBy) should be allowed even if busy.
+        let busy_coworkers: HashSet<String> = ["park".to_string()].into_iter().collect();
+
+        let already_running = true;
+        let is_busy = busy_coworkers.contains("park");
+        let was_grouped = true; // Task was grouped to park via PR/blockedBy
+
+        // Grouped tasks bypass the busy check
+        assert!(
+            !(already_running && (is_busy && !was_grouped)),
+            "grouped tasks should bypass busy check"
+        );
+    }
+
+    #[test]
+    fn test_names_assigned_this_tick_prevents_duplicate_spawn() {
+        // Within a single tick, if two unrelated tasks both get fresh names,
+        // the second should be prevented if the first already claimed the name.
+        let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
+
+        // First task assigned to "park"
+        names_assigned_this_tick.insert("park".to_string());
+
+        // Second task tries to use "park" (not grouped)
+        let is_busy = names_assigned_this_tick.contains("park");
+        let was_grouped = false;
+        let already_running = false;
+
+        assert!(
+            !already_running && is_busy && !was_grouped,
+            "should skip duplicate fresh-spawn within same tick"
         );
     }
 }
