@@ -403,7 +403,8 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
             } else {
                 format!("{} {}PR#{} {}", ci_dot, repo_badge, pr.number, pr.title)
             };
-            let line2 = format!("  └ PR #{}", pr.number);
+            let pr_age = format_duration_minutes(pr.created_at);
+            let line2 = format!("  └ PR #{} {}", pr.number, pr_age);
             let line3 = match (&pr.reviewer, &pr.reviewed_at) {
                 (Some(reviewer), Some(at)) => {
                     if pr.review_posted {
