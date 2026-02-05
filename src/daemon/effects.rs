@@ -367,6 +367,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         state.clear_task_spawn_in_flight(&task_id);
                         // Record task assignment for busy tracking
                         state.record_task_assignment(&owner, &task_id);
+                        // Transition task from pending to in_progress now that the coworker is running
+                        if let Err(e) =
+                            crate::tasks::set_task_in_progress_for_repo(&task_id, &repo_name)
+                        {
+                            warn!(
+                                "Failed to set task #{} to in_progress after spawn: {}",
+                                task_id, e
+                            );
+                        }
                         Box::pin(execute_effects(on_success, state)).await;
                     }
                     Err(e) => {
