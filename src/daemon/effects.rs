@@ -351,7 +351,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::AssignAndSpawn {
                 task_id,
                 owner,
-                repo_name: _,
+                repo_name,
                 config,
                 on_success,
                 on_failure,

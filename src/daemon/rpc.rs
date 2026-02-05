@@ -944,7 +944,9 @@ async fn handle_coworker_report_state(
         // or fall back to the task tracked in the daemon's in-memory assignment map.
         let effective_task_id: Option<String> = task_id.map(|id| id.to_string()).or_else(|| {
             let assignments = state.coworker_task_assignments.lock().unwrap();
-            assignments.get(&name.to_lowercase()).cloned()
+            assignments
+                .get(&name.to_lowercase())
+                .map(|a| a.task_id.clone())
         });
 
         if let Some(ref tid) = effective_task_id {
