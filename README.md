@@ -16,7 +16,7 @@ When you're working with Claude Code on a complex project, you might want to par
 - Multiple "coworkers" implement independent components simultaneously but with context of the full project
 - The "coworkers"" review & merge PRs while the "lead"" & human collaborate on what's next
 
-Midtown provides to UIs:
+Midtown provides two UIs:
 
 1. A tmux-based TUI
 2. A web interface (meant to be run as a PWA) so you can collaborate with the lead (and the team) while on the go.
