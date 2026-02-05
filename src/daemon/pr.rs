@@ -456,9 +456,7 @@ pub(super) async fn poll_prs_for_issues(
     }
 
     // Polling fallback for review comment notifications (when webhooks are degraded)
-    effects.extend(
-        collect_comment_notification_effects(state, &prs, &active_coworkers, &idle_coworkers).await,
-    );
+    effects.extend(collect_comment_notification_effects(state, &prs).await);
 
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(state, &prs).await);
@@ -1107,15 +1105,14 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
 ///
 /// For each coworker-owned PR:
 /// 1. Count non-owner comments (excludes PR author and coworker's own comments)
-/// 2. If count increased since last poll, check cooldown and nudge owner
+/// 2. If count increased since last poll, create a review feedback task for the owner
 ///
 /// This enables the polling path to fill the gap identified in graceful degradation:
 /// webhooks handle real-time notifications, polling handles the fallback case.
+/// Both paths create tasks so dispatch.rs handles notification with consistent formatting.
 async fn collect_comment_notification_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
-    active_coworkers: &[String],
-    idle_coworkers: &[String],
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
@@ -1181,168 +1178,34 @@ async fn collect_comment_notification_effects(
         }
 
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-        let nudge_msg = format!(
-            "Your PR #{} ({}) has new review comments — please address feedback.",
-            pr_number,
-            truncate_str(title, 40)
-        );
 
         debug!(
-            "Polling detected new review comments on PR #{}, nudging {}",
+            "Polling detected new review comments on PR #{}, creating task for {}",
             pr_number, owner
         );
 
-        // Look up session context for potential handoff
-        let session_context = get_pr_session_context(state, pr_number).await;
-
-        // Decide action using handoff-aware decision function (matches webhook path)
-        let action = crate::rules::decide_pr_comment_action_with_handoff(
-            &owner,
-            "reviewer", // Generic actor since we don't know the specific commenter from polling
-            active_coworkers,
-            idle_coworkers,
-            state.is_at_dev_limit(),
-            session_context.as_ref(),
-            &nudge_msg,
-        );
-
-        effects.extend(comment_action_to_effects(action, pr_number, title, state));
+        // Create a review feedback task — dispatch.rs will handle nudge/spawn with
+        // consistent "task #X" formatting. Task creation is idempotent (deduplicates
+        // by subject + owner).
+        effects.push(Effect::CreateReviewFeedbackTask {
+            pr_number,
+            pr_title: title.to_string(),
+            owner: owner.clone(),
+            repo_name: state.repo_name.clone(),
+        });
+        effects.push(Effect::RecordPrNudge {
+            pr_number,
+            issue_type: PrIssueType::ReviewComment,
+        });
     }
 
     effects
 }
 
-/// Convert a comment notification `PrAction` into effects.
-///
-/// Similar to `pr_action_to_effects` but uses the comment-specific cooldown
-/// and messages.
-fn comment_action_to_effects(
-    action: crate::rules::PrAction,
-    pr_number: u64,
-    title: &str,
-    state: &DaemonState,
-) -> Vec<Effect> {
-    use crate::rules::PrAction;
-    let issue_type = PrIssueType::ReviewComment;
-
-    match action {
-        PrAction::NudgeOwner { owner, message } => {
-            vec![Effect::NudgeCoworkerWithCallbacks {
-                name: owner,
-                message,
-                on_success: vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
-            }]
-        }
-        PrAction::SpawnOwner { owner, message } => {
-            let saved_session = {
-                let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(&owner).cloned()
-            };
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
-            };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
-                owner.clone(),
-                state.repo_name.clone(),
-                session_mode,
-                Some(message),
-            );
-
-            let mut on_success = vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: owner.clone(),
-                    status: "running".to_string(),
-                    current_task: None,
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: crate::daemon_messages::called_in_review_feedback(
-                        &owner,
-                        pr_number,
-                        crate::config::get_personality(),
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-            if saved_session.is_some() {
-                on_success.push(Effect::ClearPrBreakSession {
-                    name: owner.clone(),
-                });
-            }
-
-            let on_failure = vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "PR #{} ({}) owned by {} - review comment: {} (call-in failed)",
-                        pr_number,
-                        truncate_str(title, 40),
-                        owner,
-                        get_issue_action(PrIssueType::ReviewComment)
-                    ),
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            vec![Effect::SpawnCoworkerWithCallbacks {
-                config,
-                on_success,
-                on_failure,
-            }]
-        }
-        PrAction::HandoffToCoworker {
-            assignee,
-            original_author,
-            pr_number: pr_num,
-            branch,
-            session_id,
-            message,
-        } => handoff_to_coworker_effects(
-            &assignee,
-            &original_author,
-            pr_num,
-            &branch,
-            session_id,
-            &message,
-            "to address review feedback",
-            title,
-            pr_number,
-            issue_type,
-            state,
-        ),
-        PrAction::PostToChannel { message } => {
-            vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ]
-        }
-        PrAction::Skip { reason } => {
-            debug!("Polling comment notification skipped: {}", reason);
-            vec![]
-        }
-    }
-}
-
 /// Build effects for handing off a PR to a different coworker.
 ///
 /// Shared helper that consolidates the HandoffToCoworker effect-building logic
-/// used across `pr_action_to_effects`, `comment_action_to_effects`, and
+/// used across `pr_action_to_effects` and
 /// `review_complete_action_to_effects`. The only variation is the `context_suffix`
 /// that describes why the handoff is happening (e.g., "resuming their session for
 /// full context" or "to address review feedback").
@@ -2091,6 +1954,19 @@ pub(super) async fn handle_pr_comment_nudge(
         return;
     };
 
+    // Don't create tasks for self-comments
+    if activity
+        .owner_coworker
+        .as_ref()
+        .is_some_and(|o| o == &activity.actor)
+    {
+        debug!(
+            "PR #{} comment is from owner {}, skipping self-nudge",
+            pr_number, activity.actor
+        );
+        return;
+    }
+
     // Check cooldown to avoid spamming
     {
         let tracker = state.pr_issue_tracker.lock().await;
@@ -2103,154 +1979,46 @@ pub(super) async fn handle_pr_comment_nudge(
         }
     }
 
-    let nudge_msg = format!(
-        "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.",
+    // Create a review feedback task — dispatch.rs will handle nudge/spawn with
+    // consistent "task #X" formatting. Task creation is idempotent (deduplicates
+    // by subject + owner).
+    let subject = format!("Address review feedback on PR #{}", pr_number);
+    let description = format!(
+        "PR #{} has review feedback from {} that needs to be addressed.\n\n\
+         Please review the comments, make the requested changes, and push updates.\n\
+         Once feedback is addressed, the reviewer will re-check and approve.",
         pr_number, activity.actor
     );
-
-    // Get active and idle coworkers for the decision function
-    let active_coworkers: Vec<String> = state
-        .coworkers
-        .list()
-        .iter()
-        .map(|c| c.name.clone())
-        .collect();
-    let busy_coworkers = state.get_all_busy_coworkers();
-    let idle_coworkers: Vec<String> = active_coworkers
-        .iter()
-        .filter(|c| !busy_coworkers.contains(*c))
-        .cloned()
-        .collect();
-
-    // Get session context for potential handoff
-    let session_context = get_pr_session_context(state, pr_number).await;
-
-    // Decide action using pure decision function with handoff support
-    let action = crate::rules::decide_pr_comment_action_with_handoff(
+    let active_form = format!("Addressing review feedback on PR #{}", pr_number);
+    match crate::tasks::create_task_for_repo(
+        &subject,
+        &description,
+        &active_form,
         &owner,
-        &activity.actor,
-        &active_coworkers,
-        &idle_coworkers,
-        state.is_at_dev_limit(),
-        session_context.as_ref(),
-        &nudge_msg,
-    );
-
-    let success = match action {
-        crate::rules::PrAction::NudgeOwner {
-            owner: ref o,
-            message: ref msg,
-        } => match state.coworkers.nudge(o, msg) {
-            Ok(()) => {
-                info!(
-                    "Nudged {} about review comment on PR #{} from {}",
-                    o, pr_number, activity.actor
-                );
-                true
-            }
-            Err(e) => {
-                warn!("Failed to nudge {} about PR #{}: {}", o, pr_number, e);
-                false
-            }
-        },
-        crate::rules::PrAction::SpawnOwner {
-            owner: ref o,
-            message: ref msg,
-        } => {
+        &state.repo_name,
+    ) {
+        Ok(task_id) => {
             info!(
-                "PR #{} owner {} is not active, spawning to address review feedback",
-                pr_number, o
+                "Created review feedback task #{} for {} (PR #{}, comment from {})",
+                task_id, owner, pr_number, activity.actor
             );
-            let saved_session = {
-                let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(o).cloned()
-            };
-            if saved_session.is_some() {
-                info!("Resuming saved PR break session for {}", o);
-            }
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
-            };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
-                o.clone(),
-                state.repo_name.clone(),
-                session_mode,
-                Some(msg.clone()),
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create review feedback task for {} (PR #{}): {}",
+                owner, pr_number, e
             );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    if saved_session.is_some() {
-                        let mut sessions = state.pr_break_sessions.write().unwrap();
-                        sessions.remove(o);
-                    }
-                    info!(
-                        "Spawned {} to address review feedback on PR #{}",
-                        o, pr_number
-                    );
-                    let call_msg = Message::text(
-                        "daemon",
-                        format!(
-                            "Called in {} to address review feedback on PR #{}",
-                            o, pr_number
-                        ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&call_msg) {
-                        warn!("Failed to post call-in message: {}", e);
-                    }
-                    true
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to spawn {} for PR #{} review feedback: {}",
-                        o, pr_number, e
-                    );
-                    false
-                }
-            }
         }
-        crate::rules::PrAction::PostToChannel { message: ref msg } => {
-            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
-            if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                warn!("Failed to post PR comment to channel: {}", e);
-            }
-            true
-        }
-        crate::rules::PrAction::Skip { ref reason } => {
-            debug!("{}", reason);
-            false
-        }
-        crate::rules::PrAction::HandoffToCoworker {
-            ref assignee,
-            ref original_author,
-            pr_number: pr_num,
-            ref branch,
-            ref session_id,
-            message: ref _msg,
-        } => {
-            execute_pr_handoff(
-                state,
-                assignee,
-                original_author,
-                pr_num,
-                branch,
-                session_id,
-                "to address review feedback",
-            )
-            .await
-        }
-    };
+    }
 
-    // Record the nudge to prevent spamming
-    if success {
+    // Record the nudge to prevent duplicate task creation
+    {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
     }
 
     // Add eyes reaction to the comment to provide visual feedback that it was received
-    if success
-        && let (Some(ref node), Some(ref repo)) = (activity.comment_node, activity.repo_full_name)
-    {
+    if let (Some(ref node), Some(ref repo)) = (activity.comment_node, activity.repo_full_name) {
         add_eyes_reaction(repo, node).await;
     }
 }
