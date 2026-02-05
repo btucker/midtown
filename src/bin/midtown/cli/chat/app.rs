@@ -10,6 +10,8 @@ use chrono::{DateTime, Utc};
 use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
+use super::mermaid::MermaidCache;
+
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
     prs: Vec<KanbanPr>,
@@ -165,6 +167,8 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
+    /// Cache for rendered mermaid diagrams (content hash -> PNG image)
+    pub mermaid_cache: MermaidCache,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -208,6 +212,7 @@ impl App {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mermaid_cache: MermaidCache::new(),
         };
 
         // Initial load
@@ -341,6 +346,9 @@ impl App {
             self.refresh_repo_status();
             self.repo_status_last_refresh = Instant::now();
         }
+
+        // Poll for completed mermaid renders
+        self.mermaid_cache.poll_completed();
     }
 
     /// Refresh kanban board data (tasks and PRs)
@@ -1402,6 +1410,7 @@ mod tests {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mermaid_cache: MermaidCache::new(),
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -1450,6 +1459,7 @@ mod tests {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mermaid_cache: MermaidCache::new(),
         };
 
         let visible = app.visible_messages();
@@ -1596,6 +1606,7 @@ mod tests {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mermaid_cache: MermaidCache::new(),
         };
 
         // At bottom (scroll_offset=0): not at max scroll
@@ -1691,6 +1702,7 @@ mod tests {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mermaid_cache: MermaidCache::new(),
         };
 
         // Verify initial state: NOT at max scroll
@@ -1764,6 +1776,7 @@ mod tests {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mermaid_cache: MermaidCache::new(),
         };
 
         // max_scroll = 20 - 10 = 10

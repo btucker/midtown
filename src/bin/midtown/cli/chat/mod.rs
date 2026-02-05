@@ -7,6 +7,8 @@
 //! the channel.jsonl file changes, rather than polling.
 
 mod app;
+mod kitty;
+mod mermaid;
 mod ui;
 
 use std::io::{self, Write};
@@ -88,15 +90,23 @@ async fn run_app_async(
     let mut auto_scroll_interval = interval(Duration::from_secs(30));
 
     loop {
-        // Draw UI and collect hyperlinks
+        // Draw UI and collect post-render overlays (hyperlinks + images)
         let mut hyperlinks = Vec::new();
+        let mut inline_images = Vec::new();
         terminal.draw(|f| {
-            hyperlinks = ui::draw(f, app);
+            let (h, i) = ui::draw(f, app);
+            hyperlinks = h;
+            inline_images = i;
         })?;
 
         // Write hyperlinks using OSC 8 sequences (after ratatui draws)
         // This bypasses ratatui's buffer system which doesn't support escape sequences
         render_hyperlinks(terminal.backend_mut(), &hyperlinks)?;
+
+        // Write inline images using Kitty graphics protocol (after ratatui draws)
+        if !inline_images.is_empty() {
+            kitty::render_kitty_images(terminal.backend_mut(), &inline_images)?;
+        }
 
         // Use tokio::select! to wait for either:
         // 1. Terminal events (keyboard/mouse)
