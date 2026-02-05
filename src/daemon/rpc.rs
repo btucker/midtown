@@ -455,6 +455,11 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 /// Stores the coworker's workflow phase in daemon memory and updates the
 /// tmux tab display. Replaces the previous file-based state.json approach
 /// so the daemon is the single authority for coworker state.
+///
+/// When a coworker reports `Idle`, they are immediately sent on break.
+/// This eliminates the race between idle detection (daemon tick) and stuck
+/// detection (pane unchanged), which could cause idle coworkers to be
+/// incorrectly restarted as "stuck".
 async fn handle_coworker_report_state(
     id: RequestId,
     name: &str,
@@ -479,6 +484,62 @@ async fn handle_coworker_report_state(
             );
         }
     };
+
+    // For Idle phase, immediately send the coworker on break.
+    // This prevents the race condition where stuck detection fires before
+    // the daemon's periodic idle check.
+    if phase == crate::coworker_state::WorkflowPhase::Idle {
+        // Check if coworker is tracked (should be, since they're reporting state)
+        if state.coworkers.get(name).is_some() {
+            // Shut down the coworker's tmux window
+            let coworkers = state.coworkers.clone();
+            let name_owned = name.to_string();
+            let shutdown_result =
+                tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await;
+
+            match shutdown_result {
+                Ok(Ok(())) => {
+                    // Post channel message about the break (only after successful shutdown)
+                    let break_msg = crate::message::Message::system(format!(
+                        "☕ {} reported idle, taking a break",
+                        name
+                    ));
+                    if let Err(e) = state.send_and_broadcast_async(&break_msg).await {
+                        warn!("Failed to post break message for {}: {}", name, e);
+                    }
+
+                    // Broadcast WebSocket update (only after successful shutdown)
+                    state.broadcast_coworker_update(name, "stopped", None);
+
+                    // Clear state file
+                    crate::coworker_state::clear_state(&state.repo_name, name);
+
+                    // Remove from coworker_records
+                    {
+                        let mut records = state.coworker_records.write().await;
+                        records.remove(name);
+                    }
+
+                    info!("Coworker {} went on break after reporting idle", name);
+                    return Response::success(
+                        id,
+                        serde_json::json!({
+                            "success": true,
+                            "message": format!("{} → break (idle)", name),
+                        }),
+                    );
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to send coworker {} on break: {}", name, e);
+                    // Fall through to normal state update
+                }
+                Err(e) => {
+                    error!("spawn_blocking panic while shutting down {}: {}", name, e);
+                    // Fall through to normal state update
+                }
+            }
+        }
+    }
 
     // Store in unified coworker record
     let status_display = {
