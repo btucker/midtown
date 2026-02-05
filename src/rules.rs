@@ -1447,15 +1447,18 @@ pub fn decide_pr_issue_action_with_handoff(
     let is_active = active_coworkers
         .iter()
         .any(|c| c.eq_ignore_ascii_case(owner));
+    let is_idle = idle_coworkers.iter().any(|c| c.eq_ignore_ascii_case(owner));
 
-    if is_active {
-        // Owner is active — just nudge them
+    if is_active && is_idle {
+        // Owner is active and idle — nudge them directly
         PrAction::NudgeOwner {
             owner: owner.to_string(),
             message: message.to_string(),
         }
-    } else if !owner.is_empty() {
-        if at_dev_limit {
+    } else if (is_active && !is_idle) || !owner.is_empty() {
+        // Owner is either active-but-busy (working on a different task) or inactive.
+        // In both cases, don't interrupt their current session — use handoff/spawn.
+        if !is_active && at_dev_limit {
             PrAction::Skip {
                 reason: format!("dev limit reached, cannot spawn {} for PR issue", owner),
             }
@@ -1560,34 +1563,44 @@ pub fn decide_pr_comment_action_with_handoff(
     let is_active = active_coworkers
         .iter()
         .any(|c| c.eq_ignore_ascii_case(owner));
+    let is_idle = idle_coworkers.iter().any(|c| c.eq_ignore_ascii_case(owner));
 
-    if is_active {
+    if is_active && is_idle {
+        // Owner is active and idle — nudge them directly
         PrAction::NudgeOwner {
             owner: owner.to_string(),
             message: message.to_string(),
         }
-    } else if at_dev_limit {
-        PrAction::Skip {
-            reason: format!("dev limit reached, cannot spawn {} for PR comment", owner),
-        }
-    } else if let Some(ctx) = session_context {
-        // We have session context — try to hand off to an idle coworker
-        let assignee = idle_coworkers
-            .iter()
-            .find(|c| !c.eq_ignore_ascii_case(owner))
-            .cloned();
+    } else if is_active || !owner.is_empty() {
+        // Owner is either active-but-busy or inactive — use handoff/spawn
+        if !is_active && at_dev_limit {
+            PrAction::Skip {
+                reason: format!("dev limit reached, cannot spawn {} for PR comment", owner),
+            }
+        } else if let Some(ctx) = session_context {
+            // We have session context — try to hand off to an idle coworker
+            let assignee = idle_coworkers
+                .iter()
+                .find(|c| !c.eq_ignore_ascii_case(owner))
+                .cloned();
 
-        if let Some(assignee) = assignee {
-            PrAction::HandoffToCoworker {
-                assignee,
-                original_author: ctx.original_author.clone(),
-                pr_number: ctx.pr_number,
-                branch: ctx.branch.clone(),
-                session_id: ctx.session_id.clone(),
-                message: message.to_string(),
+            if let Some(assignee) = assignee {
+                PrAction::HandoffToCoworker {
+                    assignee,
+                    original_author: ctx.original_author.clone(),
+                    pr_number: ctx.pr_number,
+                    branch: ctx.branch.clone(),
+                    session_id: ctx.session_id.clone(),
+                    message: message.to_string(),
+                }
+            } else {
+                // No idle coworkers available — fall back to spawning the original owner
+                PrAction::SpawnOwner {
+                    owner: owner.to_string(),
+                    message: message.to_string(),
+                }
             }
         } else {
-            // No idle coworkers available — fall back to spawning the original owner
             PrAction::SpawnOwner {
                 owner: owner.to_string(),
                 message: message.to_string(),
@@ -1604,24 +1617,26 @@ pub fn decide_pr_comment_action_with_handoff(
 /// Decide what action to take when a PR has a completed review and the
 /// author needs to address feedback.
 ///
-/// Same logic as `decide_pr_issue_action` — nudge if active, spawn if not,
+/// Nudge if active and idle, spawn if inactive or busy on another task,
 /// skip if at dev limit.
 pub(crate) fn decide_review_complete_action(
     owner: &str,
     active_coworkers: &[String],
+    idle_coworkers: &[String],
     at_dev_limit: bool,
     message: &str,
 ) -> PrAction {
     let is_active = active_coworkers
         .iter()
         .any(|c| c.eq_ignore_ascii_case(owner));
+    let is_idle = idle_coworkers.iter().any(|c| c.eq_ignore_ascii_case(owner));
 
-    if is_active {
+    if is_active && is_idle {
         PrAction::NudgeOwner {
             owner: owner.to_string(),
             message: message.to_string(),
         }
-    } else if at_dev_limit {
+    } else if !is_active && at_dev_limit {
         PrAction::Skip {
             reason: format!(
                 "dev limit reached, cannot spawn {} for review complete",
@@ -2606,21 +2621,26 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn pr_comment_handoff_nudges_active_owner() {
+    fn pr_comment_handoff_hands_off_active_busy_owner() {
+        // Active-but-busy owner (not in idle list) should be handed off
         let session = make_session_context("york", 42);
         let action = decide_pr_comment_action_with_handoff(
             "york",
             "amsterdam",
             &active(&["york", "amsterdam"]),
-            &active(&["amsterdam"]),
+            &active(&["amsterdam"]), // york not idle — busy on another task
             false,
             Some(&session),
             "review feedback",
         );
         assert_eq!(
             action,
-            PrAction::NudgeOwner {
-                owner: "york".to_string(),
+            PrAction::HandoffToCoworker {
+                assignee: "amsterdam".to_string(),
+                original_author: "york".to_string(),
+                pr_number: 42,
+                branch: "york/feature".to_string(),
+                session_id: "session-42".to_string(),
                 message: "review feedback".to_string(),
             }
         );
@@ -2706,9 +2726,14 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn review_complete_nudges_active_owner() {
-        let action =
-            decide_review_complete_action("york", &active(&["york"]), false, "review complete");
+    fn review_complete_nudges_active_idle_owner() {
+        let action = decide_review_complete_action(
+            "york",
+            &active(&["york"]),
+            &active(&["york"]), // york is idle too
+            false,
+            "review complete",
+        );
         assert!(matches!(action, PrAction::NudgeOwner { .. }));
     }
 
@@ -2716,6 +2741,7 @@ mod tests {
     fn review_complete_spawns_inactive_owner() {
         let action = decide_review_complete_action(
             "york",
+            &active(&["amsterdam"]),
             &active(&["amsterdam"]),
             false,
             "review complete",
@@ -2725,9 +2751,27 @@ mod tests {
 
     #[test]
     fn review_complete_skips_at_dev_limit() {
-        let action =
-            decide_review_complete_action("york", &active(&["amsterdam"]), true, "review complete");
+        let action = decide_review_complete_action(
+            "york",
+            &active(&["amsterdam"]),
+            &active(&["amsterdam"]),
+            true,
+            "review complete",
+        );
         assert!(matches!(action, PrAction::Skip { .. }));
+    }
+
+    #[test]
+    fn review_complete_spawns_when_owner_active_but_busy() {
+        // york is active but not idle — should spawn, not nudge
+        let action = decide_review_complete_action(
+            "york",
+            &active(&["york", "amsterdam"]),
+            &active(&["amsterdam"]), // york is NOT idle
+            false,
+            "review complete",
+        );
+        assert!(matches!(action, PrAction::SpawnOwner { .. }));
     }
 
     // -----------------------------------------------------------------------
@@ -2744,21 +2788,25 @@ mod tests {
     }
 
     #[test]
-    fn pr_handoff_nudges_active_owner_even_with_session() {
-        // Even with a session context available, active owners get nudged
+    fn pr_handoff_hands_off_active_busy_owner_with_session() {
+        // Active-but-busy owner (not in idle list) should be handed off, not nudged
         let session = make_session_context("york", 42);
         let action = decide_pr_issue_action_with_handoff(
             "york",
             &active(&["york", "amsterdam"]),
-            &active(&["amsterdam"]),
+            &active(&["amsterdam"]), // york not idle — busy on another task
             false,
             Some(&session),
             "fix checks",
         );
         assert_eq!(
             action,
-            PrAction::NudgeOwner {
-                owner: "york".to_string(),
+            PrAction::HandoffToCoworker {
+                assignee: "amsterdam".to_string(),
+                original_author: "york".to_string(),
+                pr_number: 42,
+                branch: "york/feature".to_string(),
+                session_id: "session-42".to_string(),
                 message: "fix checks".to_string(),
             }
         );
@@ -2884,6 +2932,129 @@ mod tests {
             action,
             PrAction::PostToChannel {
                 message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Active-but-busy owner tests (issue #759)
+    //
+    // When a coworker is active (running session) but busy on a different
+    // task, they should NOT be nudged about old PRs. Instead, the daemon
+    // should use the handoff/spawn path.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pr_handoff_uses_handoff_when_owner_active_but_busy() {
+        // york is active but busy (not in idle list) — should hand off, not nudge
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["york", "amsterdam"]), // york is active
+            &active(&["amsterdam"]),         // york is NOT idle (busy on another task)
+            false,
+            Some(&session),
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::HandoffToCoworker {
+                assignee: "amsterdam".to_string(),
+                original_author: "york".to_string(),
+                pr_number: 42,
+                branch: "york/feature".to_string(),
+                session_id: "session-42".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_handoff_spawns_owner_when_active_busy_no_idle() {
+        // york is active but busy, no idle coworkers — should spawn, not nudge
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["york", "amsterdam"]), // york is active
+            &active(&[]),                    // no idle coworkers
+            false,
+            Some(&session),
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::SpawnOwner {
+                owner: "york".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_handoff_nudges_active_idle_owner() {
+        // york is active AND idle — should still nudge (they're available)
+        let session = make_session_context("york", 42);
+        let action = decide_pr_issue_action_with_handoff(
+            "york",
+            &active(&["york", "amsterdam"]), // york is active
+            &active(&["york", "amsterdam"]), // york is also idle
+            false,
+            Some(&session),
+            "fix checks",
+        );
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "fix checks".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_handoff_uses_handoff_when_owner_active_but_busy() {
+        // york is active but busy — should hand off, not nudge
+        let session = make_session_context("york", 42);
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "amsterdam",
+            &active(&["york", "amsterdam"]), // york is active
+            &active(&["amsterdam"]),         // york is NOT idle
+            false,
+            Some(&session),
+            "review feedback",
+        );
+        assert_eq!(
+            action,
+            PrAction::HandoffToCoworker {
+                assignee: "amsterdam".to_string(),
+                original_author: "york".to_string(),
+                pr_number: 42,
+                branch: "york/feature".to_string(),
+                session_id: "session-42".to_string(),
+                message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_handoff_nudges_active_idle_owner() {
+        // york is active AND idle — should nudge
+        let session = make_session_context("york", 42);
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "amsterdam",
+            &active(&["york", "amsterdam"]), // york is active
+            &active(&["york", "amsterdam"]), // york is also idle
+            false,
+            Some(&session),
+            "review feedback",
+        );
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "review feedback".to_string(),
             }
         );
     }

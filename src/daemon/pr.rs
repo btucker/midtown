@@ -1512,10 +1512,18 @@ async fn collect_reviewer_effects_with_source(
                         .iter()
                         .map(|c| c.name.clone())
                         .collect();
+                    let busy_coworkers =
+                        crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+                    let idle_coworkers: Vec<String> = active_coworkers
+                        .iter()
+                        .filter(|c| !busy_coworkers.contains(*c))
+                        .cloned()
+                        .collect();
 
                     let action = crate::rules::decide_review_complete_action(
                         &owner,
                         &active_coworkers,
+                        &idle_coworkers,
                         state.is_at_dev_limit(),
                         &nudge_msg,
                     );
