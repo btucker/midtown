@@ -14,6 +14,7 @@ use crate::{config, daemon_messages};
 
 use super::constants::*;
 use super::effects::{self, Effect};
+use super::helpers::format_task_prompt;
 use super::{DaemonState, snapshot};
 
 // ============================================================================
@@ -73,9 +74,12 @@ pub(super) fn check_and_recover_orphans(
         recovery.task_id, recovery.owner
     );
 
-    let prompt = format!(
-        "You've been assigned task #{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!\n\nRun `midtown task view {}` for full details.",
-        recovery.task_id, recovery.task_subject, recovery.task_id
+    let prompt = format_task_prompt(
+        &recovery.task_id,
+        &format!(
+            "You've been assigned task #{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!",
+            recovery.task_id, recovery.task_subject
+        ),
     );
 
     // Spawn fresh (no --continue) — the coworker keeps the same name so they
@@ -184,9 +188,12 @@ pub(super) async fn nudge_discovered_coworkers(state: &DaemonState) {
 
         // Check for an in_progress task owned by this coworker
         if let Some((task_id, task_subject)) = owner_tasks.get(&name_lower) {
-            let prompt = format!(
-                "Resume task #{}: {}. The daemon was restarted and discovered you still running. Check your git status and continue where you left off.\n\nRun `midtown task view {}` for full details.",
-                task_id, task_subject, task_id
+            let prompt = format_task_prompt(
+                task_id,
+                &format!(
+                    "Resume task #{}: {}. The daemon was restarted and discovered you still running. Check your git status and continue where you left off.",
+                    task_id, task_subject
+                ),
             );
 
             info!(
@@ -654,9 +661,9 @@ pub(super) fn spawn_for_pending_tasks(
                 task_id: ref tid,
                 task_subject: ref subj,
             } => {
-                let nudge_msg = format!(
-                    "You have pending task #{}: {}. Get started!\n\nRun `midtown task view {}` for full details.",
-                    tid, subj, tid
+                let nudge_msg = format_task_prompt(
+                    tid,
+                    &format!("You have pending task #{}: {}. Get started!", tid, subj),
                 );
                 effects.push(Effect::NudgeCoworkerWithCallbacks {
                     name: o.clone(),
@@ -676,9 +683,9 @@ pub(super) fn spawn_for_pending_tasks(
                     "Pending task #{} is assigned to {} but coworker not running - spawning",
                     tid, o
                 );
-                let prompt = format!(
-                    "You've been assigned task #{}: {}. Get started!\n\nRun `midtown task view {}` for full details.",
-                    tid, subj, tid
+                let prompt = format_task_prompt(
+                    tid,
+                    &format!("You've been assigned task #{}: {}. Get started!", tid, subj),
                 );
                 let config = crate::tmux::ClaudeLaunchConfig::coworker(
                     o.clone(),
@@ -891,9 +898,12 @@ pub(super) fn spawn_for_pending_tasks(
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
 
         // Build the prompt message
-        let prompt = format!(
-            "You've been assigned task #{}: {}. Get started!\n\nRun `midtown task view {}` for full details.",
-            task.id, task.subject, task.id
+        let prompt = format_task_prompt(
+            &task.id,
+            &format!(
+                "You've been assigned task #{}: {}. Get started!",
+                task.id, task.subject
+            ),
         );
 
         if already_running {

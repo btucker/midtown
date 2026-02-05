@@ -393,6 +393,22 @@ pub(super) fn extract_pr_number(content: &str) -> Option<u64> {
 }
 
 // ---------------------------------------------------------------------------
+// Task prompt helpers
+// ---------------------------------------------------------------------------
+
+/// Format a task prompt with the standard `midtown task view` footer.
+///
+/// Appends `\n\nRun midtown task view {id} for full details.` to the given
+/// context message, ensuring consistent formatting across all task assignment
+/// and nudge paths (dispatch, health, recovery).
+pub fn format_task_prompt(task_id: &str, context_message: &str) -> String {
+    format!(
+        "{}\n\nRun `midtown task view {}` for full details.",
+        context_message, task_id
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -931,5 +947,41 @@ mod tests {
         assert!(!is_gh_auth_error("repository not found"));
         assert!(!is_gh_auth_error("rate limit exceeded"));
         assert!(!is_gh_auth_error(""));
+    }
+
+    // =========================================================================
+    // format_task_prompt tests
+    // =========================================================================
+
+    #[test]
+    fn format_task_prompt_appends_footer() {
+        let result = format_task_prompt(
+            "42",
+            "You've been assigned task #42: Fix auth bug. Get started!",
+        );
+        assert_eq!(
+            result,
+            "You've been assigned task #42: Fix auth bug. Get started!\n\nRun `midtown task view 42` for full details."
+        );
+    }
+
+    #[test]
+    fn format_task_prompt_works_with_recovery_context() {
+        let result = format_task_prompt(
+            "99",
+            "Resume task #99: Add tests. The daemon was restarted and discovered you still running. Check your git status and continue where you left off.",
+        );
+        assert!(result.starts_with("Resume task #99:"));
+        assert!(result.ends_with("Run `midtown task view 99` for full details."));
+    }
+
+    #[test]
+    fn format_task_prompt_works_with_nudge_context() {
+        let result = format_task_prompt(
+            "7",
+            "You have pending task #7: Deploy service. Get started!",
+        );
+        assert!(result.contains("pending task #7"));
+        assert!(result.contains("midtown task view 7"));
     }
 }
