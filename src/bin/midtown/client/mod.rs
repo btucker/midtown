@@ -284,6 +284,15 @@ impl DaemonClient {
         )
     }
 
+    // Insight commands
+
+    pub fn report_insight(&self, agent: &str, insight: &str) -> Result<Value, String> {
+        self.send_raw(
+            "insight.report",
+            Some(serde_json::json!({ "agent": agent, "insight": insight })),
+        )
+    }
+
     // Status command
 
     pub fn status(&self) -> Result<Response, String> {

@@ -313,6 +313,21 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "insight.report" => {
+            let params = request.params.as_ref();
+            let agent = params.and_then(|p| p.get("agent")).and_then(|v| v.as_str());
+            let insight = params
+                .and_then(|p| p.get("insight"))
+                .and_then(|v| v.as_str());
+
+            match (agent, insight) {
+                (Some(agent), Some(insight)) => {
+                    handle_insight_report(request.id, agent, insight, state).await
+                }
+                _ => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "headless.execute" => {
             let params = request.params.as_ref();
             let prompt = params
@@ -662,6 +677,94 @@ async fn handle_headless_execute(
             )
         }
     }
+}
+
+/// Handle insight.report RPC method.
+///
+/// Called by the insight PostToolUse hook when a coworker or lead generates
+/// an insight block. Deduplicates via in-memory hash set, posts the insight
+/// to the channel, and spawns a headless architect session to optionally
+/// generate a Mermaid diagram.
+async fn handle_insight_report(
+    id: RequestId,
+    agent: &str,
+    insight: &str,
+    state: &DaemonState,
+) -> Response {
+    // Deduplicate: normalize and hash the insight content
+    let hash = hash_insight(insight);
+    {
+        let mut hashes = state.insight_hashes.lock().unwrap();
+        if !hashes.insert(hash) {
+            debug!("insight.report: duplicate insight from {}, skipping", agent);
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "posted": false,
+                    "reason": "duplicate",
+                }),
+            );
+        }
+    }
+
+    // Post insight to channel
+    let msg = Message::text(agent, format!("💡 {}", insight));
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("insight.report: failed to post to channel: {}", e);
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to post insight: {}", e)),
+        );
+    }
+
+    info!("insight.report: posted insight from {}", agent);
+
+    // Determine working directory for the architect session.
+    // For coworkers, use their worktree; for lead, use the main repo dir.
+    let cwd = if is_coworker_sender(agent) {
+        let worktree = crate::paths::coworkers_dir_for_repo(&state.repo_name).join(agent);
+        if worktree.exists() {
+            worktree
+        } else {
+            // Worktree gone — fall back to main repo dir
+            state.all_repo_paths.first().cloned().unwrap_or_default()
+        }
+    } else {
+        state.all_repo_paths.first().cloned().unwrap_or_default()
+    };
+
+    // Spawn the architect task asynchronously
+    let repo_name = state.repo_name.clone();
+    let insight_owned = insight.to_string();
+    tokio::spawn(async move {
+        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name).await;
+    });
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "posted": true,
+        }),
+    )
+}
+
+/// Hash insight content for deduplication.
+///
+/// Normalizes text (trim, collapse whitespace, lowercase) before hashing
+/// to prevent duplicates from minor formatting variations.
+fn hash_insight(insight: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let normalized: String = insight
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Handle coworker.list RPC method.
@@ -2257,5 +2360,31 @@ mod tests {
         };
         let result = should_nudge_task_owner(&task, "lead");
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_hash_insight_deterministic() {
+        let hash1 = hash_insight("Test insight content");
+        let hash2 = hash_insight("Test insight content");
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_insight_different_content() {
+        let hash1 = hash_insight("Insight one");
+        let hash2 = hash_insight("Insight two");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_insight_normalizes_whitespace() {
+        let hash1 = hash_insight("This is an insight");
+        let hash2 = hash_insight("  This  is   an   insight  ");
+        let hash3 = hash_insight("This\n  is\nan\ninsight");
+        let hash4 = hash_insight("THIS IS AN INSIGHT");
+
+        assert_eq!(hash1, hash2, "extra whitespace should be normalized");
+        assert_eq!(hash1, hash3, "newlines should be normalized");
+        assert_eq!(hash1, hash4, "case should be normalized");
     }
 }

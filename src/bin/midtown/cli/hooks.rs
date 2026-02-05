@@ -3,7 +3,6 @@
 //! These hooks are used by both Lead and coworkers to share insights
 //! and notify when idle.
 
-use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -71,11 +70,15 @@ pub fn handle(cmd: &HookCommand) -> Result<Response, String> {
     }
 }
 
-/// Handle the insight hook - parse transcript for ★ Insight blocks and post new ones.
+/// Handle the insight hook - parse transcript for ★ Insight blocks and report them.
 ///
 /// This hook fires on EVERY PostToolUse event from every coworker and the Lead.
 /// With many concurrent Claude Code instances, it must be fast and non-blocking
 /// to avoid stalling the calling Claude process (hooks are synchronous).
+///
+/// Insights are reported to the daemon via RPC, which handles deduplication,
+/// channel posting, and spawning headless architect sessions for diagram
+/// generation. If the daemon is not running, falls back to direct channel posting.
 fn handle_insight_hook() -> Result<Response, String> {
     // Read hook input from stdin
     let mut input = String::new();
@@ -99,53 +102,45 @@ fn handle_insight_hook() -> Result<Response, String> {
         });
     }
 
-    // Detect repo first - needed for both channel and insight tracking
     let repo = detect_git_repo().ok_or("Not in a git repository")?;
+    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
 
     hook_log(
         &repo,
         &format!("insight: found {} candidate(s)", insights.len()),
     );
 
-    // Get previously posted insights (tracked per-repo, not per-transcript)
-    let mut posted = get_posted_insights(&repo);
-
-    // Post new insights to channel
-    let channel =
-        midtown::Channel::for_repo(&repo).map_err(|e| format!("Failed to open channel: {}", e))?;
-
-    let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+    // Try to report insights via daemon RPC (handles dedup + architect pipeline)
+    let client = crate::client::DaemonClient::connect().ok();
 
     let mut posted_count = 0;
     for insight in &insights {
-        // Use hash to check if already posted
-        let hash = hash_insight(insight);
-        if posted.contains(&hash) {
-            continue;
-        }
-
-        // Atomically try to claim this insight - prevents race conditions
-        // between concurrent hook invocations
-        if !try_claim_insight(&repo, &hash) {
-            // Another process beat us to it
-            posted.insert(hash);
-            continue;
-        }
-
-        // Post insight to channel — if the lock is contended, the send will
-        // time out after 2s rather than blocking indefinitely
-        let message = midtown::Message::text(&agent, format!("💡 {}", insight));
-        match channel.send(&message) {
-            Ok(()) => {
-                posted_count += 1;
-                posted.insert(hash);
+        if let Some(ref client) = client {
+            match client.report_insight(&agent, insight) {
+                Ok(result) => {
+                    if result
+                        .get("posted")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        posted_count += 1;
+                    }
+                }
+                Err(e) => {
+                    hook_log(
+                        &repo,
+                        &format!("insight: RPC failed ({}), falling back to channel", e),
+                    );
+                    // Fallback: post directly to channel
+                    if post_insight_to_channel(&repo, &agent, insight) {
+                        posted_count += 1;
+                    }
+                }
             }
-            Err(e) => {
-                // Channel lock contention — log and skip rather than blocking Claude
-                hook_log(
-                    &repo,
-                    &format!("insight: channel send failed ({}), skipping", e),
-                );
+        } else {
+            // Daemon not running — post directly to channel (standalone mode)
+            if post_insight_to_channel(&repo, &agent, insight) {
+                posted_count += 1;
             }
         }
     }
@@ -158,6 +153,29 @@ fn handle_insight_hook() -> Result<Response, String> {
     Ok(Response::Message {
         message: format!("Posted {} new insight(s)", posted_count),
     })
+}
+
+/// Post an insight directly to the channel (fallback when daemon is unavailable).
+fn post_insight_to_channel(repo: &str, agent: &str, insight: &str) -> bool {
+    let channel = match midtown::Channel::for_repo(repo) {
+        Ok(ch) => ch,
+        Err(e) => {
+            hook_log(repo, &format!("insight: failed to open channel ({})", e));
+            return false;
+        }
+    };
+
+    let message = midtown::Message::text(agent, format!("💡 {}", insight));
+    match channel.send(&message) {
+        Ok(()) => true,
+        Err(e) => {
+            hook_log(
+                repo,
+                &format!("insight: channel send failed ({}), skipping", e),
+            );
+            false
+        }
+    }
 }
 
 /// Handle the Lead stop hook - read channel messages for the Lead.
@@ -446,68 +464,6 @@ fn extract_insights(text: &str) -> Vec<String> {
     }
 
     insights
-}
-
-/// Get the path to the insights directory for the current repository.
-/// Each posted insight hash becomes a file in this directory.
-/// Uses repo name (not transcript) to prevent duplicates across sessions.
-fn insights_dir_path(repo_name: &str) -> PathBuf {
-    midtown::paths::projects_dir_for_repo(repo_name).join("insights")
-}
-
-/// Get set of already-posted insight hashes for the given repository.
-fn get_posted_insights(repo_name: &str) -> HashSet<String> {
-    let dir_path = insights_dir_path(repo_name);
-    if let Ok(entries) = std::fs::read_dir(&dir_path) {
-        entries
-            .filter_map(|e| e.ok())
-            .filter_map(|e| e.file_name().into_string().ok())
-            .collect()
-    } else {
-        HashSet::new()
-    }
-}
-
-/// Atomically try to claim an insight for posting.
-/// Returns true if we successfully claimed it (file didn't exist and we created it).
-/// Returns false if another process already claimed it (file exists).
-fn try_claim_insight(repo_name: &str, hash: &str) -> bool {
-    let dir_path = insights_dir_path(repo_name);
-    let _ = std::fs::create_dir_all(&dir_path);
-
-    let hash_path = dir_path.join(hash);
-
-    // Use create_new(true) for atomic "create only if not exists"
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&hash_path)
-    {
-        Ok(_) => true, // We created it - we own this insight
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(_) => false, // Other errors - fail safe by not posting
-    }
-}
-
-/// Simple hash of insight content.
-/// Normalizes text before hashing to prevent duplicates from whitespace variations:
-/// - Trims leading/trailing whitespace
-/// - Collapses multiple whitespace/newlines to single space
-/// - Lowercases for consistency
-fn hash_insight(insight: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    // Normalize: trim, collapse whitespace, lowercase
-    let normalized: String = insight
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-
-    let mut hasher = DefaultHasher::new();
-    normalized.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
 }
 
 /// Handle the PostToolUse hook for task operations (TaskUpdate/TaskCreate).
@@ -825,21 +781,6 @@ Second insight
     }
 
     #[test]
-    fn test_hash_insight_deterministic() {
-        let insight = "Test insight content";
-        let hash1 = hash_insight(insight);
-        let hash2 = hash_insight(insight);
-        assert_eq!(hash1, hash2);
-    }
-
-    #[test]
-    fn test_hash_insight_different() {
-        let hash1 = hash_insight("Insight one");
-        let hash2 = hash_insight("Insight two");
-        assert_ne!(hash1, hash2);
-    }
-
-    #[test]
     fn test_cursor_read_write() {
         let dir = tempfile::tempdir().unwrap();
         let transcript = dir.path().join("transcript.jsonl");
@@ -908,18 +849,5 @@ Second insight
         let insights = parse_insights_from_transcript(path_str).unwrap();
         assert_eq!(insights.len(), 1);
         assert!(insights[0].contains("Second insight"));
-    }
-
-    #[test]
-    fn test_hash_insight_normalizes_whitespace() {
-        // Same insight with different whitespace should produce same hash
-        let hash1 = hash_insight("This is an insight");
-        let hash2 = hash_insight("  This  is   an   insight  ");
-        let hash3 = hash_insight("This\n  is\nan\ninsight");
-        let hash4 = hash_insight("THIS IS AN INSIGHT");
-
-        assert_eq!(hash1, hash2, "extra whitespace should be normalized");
-        assert_eq!(hash1, hash3, "newlines should be normalized");
-        assert_eq!(hash1, hash4, "case should be normalized");
     }
 }

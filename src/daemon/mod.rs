@@ -5,6 +5,7 @@
 //! runs a webhook server to receive GitHub events, and polls PRs for
 //! actionable issues.
 
+mod architect;
 mod chat;
 mod constants;
 mod dispatch;
@@ -425,6 +426,12 @@ pub(crate) struct DaemonState {
     /// invoke `refresh_gh_token()` when auth errors are detected.
     #[allow(dead_code)]
     github_user: Option<String>,
+    /// In-memory deduplication of reported insights.
+    ///
+    /// Stores hashes of normalized insight content to prevent the same insight
+    /// from being posted to the channel multiple times. Resets on daemon restart,
+    /// which is acceptable because transcript cursors prevent re-extraction.
+    insight_hashes: std::sync::Mutex<HashSet<u64>>,
 }
 
 impl DaemonState {
@@ -571,6 +578,7 @@ impl DaemonState {
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             github_user,
+            insight_hashes: std::sync::Mutex::new(HashSet::new()),
         })
     }
 
