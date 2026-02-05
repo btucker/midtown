@@ -35,7 +35,7 @@ pub struct Hyperlink {
 fn format_duration_minutes(since: DateTime<Utc>) -> String {
     let now = Utc::now();
     let duration = now.signed_duration_since(since);
-    let minutes = duration.num_minutes();
+    let minutes = duration.num_minutes().max(0);
     if minutes >= 60 {
         format!("({}h)", minutes / 60)
     } else {
@@ -123,7 +123,7 @@ const MIN_KANBAN_HEIGHT: u16 = 6;
 /// because they're expected to have many items.
 fn calculate_kanban_height(in_progress_count: usize, review_count: usize) -> u16 {
     // In Progress items take 2 lines (title + owner/duration)
-    // Review items take 3 lines (title + author + reviewer)
+    // Review items take 3 lines (title + PR#/elapsed + reviewer)
     let in_progress_lines = in_progress_count * 2;
     let review_lines = review_count * 3;
 
@@ -2059,5 +2059,27 @@ mod tests {
             height, 8,
             "2 review PRs at 3 lines = 6 > 2 in-progress at 2 lines = 4, so 6 + 2 border = 8"
         );
+    }
+
+    #[test]
+    fn test_format_duration_minutes_future_timestamp() {
+        // A future timestamp (clock skew) should not produce negative duration
+        let future = Utc::now() + chrono::Duration::minutes(5);
+        let result = format_duration_minutes(future);
+        assert_eq!(result, "(0m)");
+    }
+
+    #[test]
+    fn test_format_duration_minutes_hours() {
+        let two_hours_ago = Utc::now() - chrono::Duration::hours(2);
+        let result = format_duration_minutes(two_hours_ago);
+        assert_eq!(result, "(2h)");
+    }
+
+    #[test]
+    fn test_format_duration_minutes_minutes() {
+        let thirty_min_ago = Utc::now() - chrono::Duration::minutes(30);
+        let result = format_duration_minutes(thirty_min_ago);
+        assert_eq!(result, "(30m)");
     }
 }
