@@ -272,6 +272,18 @@ impl DaemonClient {
         self.send("task.done", Some(serde_json::json!({ "id": id })))
     }
 
+    pub fn task_request(&self, description: &str) -> Result<Response, String> {
+        // Include the caller's MIDTOWN_AGENT name so the daemon knows who's requesting
+        let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+        self.send(
+            "task.request",
+            Some(serde_json::json!({
+                "message": description,
+                "from": from
+            })),
+        )
+    }
+
     // Status command
 
     pub fn status(&self) -> Result<Response, String> {

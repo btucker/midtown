@@ -265,7 +265,6 @@ pub(crate) fn apply_health_transitions(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShutdownDecision {
     pub name: String,
-    pub is_isolated: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +385,6 @@ pub(crate) fn decide_idle_shutdowns(
             // take a while (PR reviews, blocked dependencies, etc.)
             to_shutdown.push(ShutdownDecision {
                 name: coworker.clone(),
-                is_isolated: cw.isolated_tasks,
             });
         }
     }
@@ -1665,8 +1663,8 @@ pub(crate) enum PendingTaskAction {
 /// inactive one, or skip.
 ///
 /// # Arguments
-/// * `is_owner_isolated` - If true, the owner is an isolated reviewer with their own
-///   task namespace. Main task list updates should not nudge isolated reviewers.
+/// * `is_owner_reviewer` - If true, the owner is an active reviewer. Reviewers should
+///   not be nudged about main task list updates — they have their own review work.
 pub(crate) fn decide_pending_task_action(
     task_id: &str,
     task_subject: &str,
@@ -1674,7 +1672,7 @@ pub(crate) fn decide_pending_task_action(
     active_names: &HashSet<String>,
     at_dev_limit: bool,
     on_nudge_cooldown: bool,
-    is_owner_isolated: bool,
+    is_owner_reviewer: bool,
 ) -> PendingTaskAction {
     // Skip empty or lead-owned tasks
     if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
@@ -1693,12 +1691,12 @@ pub(crate) fn decide_pending_task_action(
         };
     }
 
-    // Skip isolated reviewers — they have their own task namespace and should
-    // not be nudged about main task list updates (task ID collision issue).
-    if is_owner_isolated {
+    // Skip active reviewers — they have their own review assignments and should
+    // not be nudged about main task list updates.
+    if is_owner_reviewer {
         return PendingTaskAction::Skip {
             reason: format!(
-                "task #{} owner '{}' is an isolated reviewer (separate task namespace)",
+                "task #{} owner '{}' is an active reviewer (has review assignment)",
                 task_id, owner
             ),
         };
@@ -2038,7 +2036,6 @@ mod tests {
 
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "york");
-        assert!(!decisions[0].is_isolated);
         assert!(get_health(&phases, "york").is_none());
     }
 
@@ -2213,7 +2210,6 @@ mod tests {
 
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "reviewer");
-        assert!(decisions[0].is_isolated);
     }
 
     #[test]
@@ -4954,16 +4950,15 @@ Now implementing the fix.
     }
 
     // -----------------------------------------------------------------------
-    // decide_pending_task_action tests (isolated namespace handling)
+    // decide_pending_task_action tests (reviewer handling)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn pending_task_action_skips_isolated_reviewer() {
-        // Bug: Task ID collision between reviewer's isolated namespace and main task list.
-        // Isolated reviewers should NOT be nudged about main task list updates.
+    fn pending_task_action_skips_active_reviewer() {
+        // Active reviewers should NOT be nudged about main task list updates.
         let active_names: HashSet<String> = ["madison".to_string()].into_iter().collect();
 
-        // Main task #6 has owner="madison", but madison is an isolated reviewer
+        // Main task #6 has owner="madison", but madison is an active reviewer
         let action = decide_pending_task_action(
             "6",
             "Prevent coworkers from checking out default branch",
@@ -4971,28 +4966,28 @@ Now implementing the fix.
             &active_names,
             false, // not at dev limit
             false, // not on cooldown
-            true,  // IS isolated reviewer
+            true,  // IS active reviewer
         );
 
         assert!(
             matches!(action, PendingTaskAction::Skip { .. }),
-            "isolated reviewer should be skipped for main task list updates, got: {:?}",
+            "active reviewer should be skipped for main task list updates, got: {:?}",
             action
         );
 
-        // Verify the skip reason mentions isolation
+        // Verify the skip reason mentions reviewer
         if let PendingTaskAction::Skip { reason } = action {
             assert!(
-                reason.contains("isolated"),
-                "skip reason should mention isolation: {}",
+                reason.contains("reviewer"),
+                "skip reason should mention reviewer: {}",
                 reason
             );
         }
     }
 
     #[test]
-    fn pending_task_action_nudges_non_isolated_coworker() {
-        // Non-isolated coworkers SHOULD be nudged about their pending tasks
+    fn pending_task_action_nudges_non_reviewer_coworker() {
+        // Non-reviewer coworkers SHOULD be nudged about their pending tasks
         let active_names: HashSet<String> = ["york".to_string()].into_iter().collect();
 
         let action = decide_pending_task_action(
@@ -5002,19 +4997,19 @@ Now implementing the fix.
             &active_names,
             false, // not at dev limit
             false, // not on cooldown
-            false, // NOT isolated
+            false, // NOT a reviewer
         );
 
         assert!(
             matches!(action, PendingTaskAction::NudgeOwner { .. }),
-            "non-isolated coworker should be nudged, got: {:?}",
+            "non-reviewer coworker should be nudged, got: {:?}",
             action
         );
     }
 
     #[test]
-    fn pending_task_action_spawns_non_isolated_inactive_owner() {
-        // Inactive non-isolated owners should be spawned
+    fn pending_task_action_spawns_non_reviewer_inactive_owner() {
+        // Inactive non-reviewer owners should be spawned
         let active_names: HashSet<String> = HashSet::new(); // york is not active
 
         let action = decide_pending_task_action(
@@ -5024,20 +5019,20 @@ Now implementing the fix.
             &active_names,
             false, // not at dev limit
             false, // not on cooldown
-            false, // NOT isolated
+            false, // NOT a reviewer
         );
 
         assert!(
             matches!(action, PendingTaskAction::SpawnOwner { .. }),
-            "inactive non-isolated owner should be spawned, got: {:?}",
+            "inactive non-reviewer owner should be spawned, got: {:?}",
             action
         );
     }
 
     #[test]
-    fn pending_task_action_skips_isolated_inactive_owner() {
-        // Regression test from PR #614 review: isolation check fires before active check.
-        // An inactive isolated owner should still be skipped, not spawned.
+    fn pending_task_action_skips_reviewer_inactive_owner() {
+        // Reviewer check fires before active check.
+        // An inactive reviewer owner should still be skipped, not spawned.
         let active_names: HashSet<String> = HashSet::new(); // madison is NOT active
 
         let action = decide_pending_task_action(
@@ -5047,20 +5042,20 @@ Now implementing the fix.
             &active_names,
             false, // not at dev limit
             false, // not on cooldown
-            true,  // IS isolated (even though inactive)
+            true,  // IS reviewer (even though inactive)
         );
 
         assert!(
             matches!(action, PendingTaskAction::Skip { .. }),
-            "inactive isolated owner should still be skipped, got: {:?}",
+            "inactive reviewer owner should still be skipped, got: {:?}",
             action
         );
 
-        // Verify the skip reason mentions isolation
+        // Verify the skip reason mentions reviewer
         if let PendingTaskAction::Skip { reason } = action {
             assert!(
-                reason.contains("isolated"),
-                "skip reason should mention isolation: {}",
+                reason.contains("reviewer"),
+                "skip reason should mention reviewer: {}",
                 reason
             );
         }

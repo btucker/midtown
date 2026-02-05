@@ -1572,22 +1572,22 @@ pub struct LaunchCommand {
 }
 
 impl ClaudeLaunchConfig {
-    /// Create a config for a standard shared-task coworker.
+    /// Create a config for a standard coworker with an isolated task list.
     ///
-    /// This covers the common case: a named coworker with shared task list,
-    /// restricted setting sources, and no additional directories.
+    /// Coworkers don't share the lead's task list. The daemon bakes the task
+    /// description into the initial prompt and tracks assignment internally.
+    /// The `repo_name` parameter is retained for compatibility but is no longer
+    /// used for task list sharing.
     pub fn coworker(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        _repo_name: impl Into<String>,
         session_mode: SessionMode,
         initial_prompt: Option<String>,
     ) -> Self {
         ClaudeLaunchConfig {
             name: name.into(),
             session_mode,
-            task_mode: TaskMode::Shared {
-                repo_name: repo_name.into(),
-            },
+            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt,
             additional_dirs: vec![],
@@ -1627,7 +1627,7 @@ impl ClaudeLaunchConfig {
     /// 4. Push changes to the branch
     pub fn pr_handoff(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        _repo_name: impl Into<String>,
         session_id: String,
         pr_number: u64,
         branch: &str,
@@ -1650,9 +1650,7 @@ impl ClaudeLaunchConfig {
         ClaudeLaunchConfig {
             name: name.into(),
             session_mode: SessionMode::ResumeSession(session_id),
-            task_mode: TaskMode::Shared {
-                repo_name: repo_name.into(),
-            },
+            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt: Some(initial_prompt),
             additional_dirs: vec![],
@@ -2754,9 +2752,7 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Shared {
-                repo_name: "myrepo".to_string(),
-            },
+            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2791,9 +2787,7 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Resume,
-            task_mode: TaskMode::Shared {
-                repo_name: "myrepo".to_string(),
-            },
+            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2824,9 +2818,7 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::ResumeSession("abc-123".to_string()),
-            task_mode: TaskMode::Shared {
-                repo_name: "myrepo".to_string(),
-            },
+            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -3069,9 +3061,7 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Resume,
-            task_mode: TaskMode::Shared {
-                repo_name: "myrepo".to_string(),
-            },
+            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: Some("task prompt".to_string()),
             additional_dirs: vec![],

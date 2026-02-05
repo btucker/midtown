@@ -264,6 +264,22 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
 
+        "task.request" => {
+            let params = request.params.as_ref();
+            let message = params
+                .and_then(|p| p.get("message"))
+                .and_then(|v| v.as_str());
+            let from = params
+                .and_then(|p| p.get("from"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+
+            match message {
+                Some(msg) => handle_task_request(request.id, from, msg, state).await,
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "task.updated" => {
             let params = request.params.as_ref();
             let task_id = params
@@ -385,7 +401,7 @@ fn handle_coworker_spawn(
     }
 
     // Pass prompt to spawn() - it handles waiting and nudging internally
-    // Use shared task list (not isolated) for manual spawns
+    // Coworkers use isolated task lists (don't share the lead's task list)
     let config = crate::tmux::ClaudeLaunchConfig {
         name: String::new(), // spawn() picks a name
         session_mode: if resume {
@@ -393,9 +409,7 @@ fn handle_coworker_spawn(
         } else {
             crate::tmux::SessionMode::Fresh
         },
-        task_mode: crate::tmux::TaskMode::Shared {
-            repo_name: state.repo_name.clone(),
-        },
+        task_mode: crate::tmux::TaskMode::Isolated,
         role: crate::tmux::CoworkerRole::Coworker,
         initial_prompt: prompt,
         additional_dirs: vec![],
@@ -911,6 +925,35 @@ fn handle_coworker_asking(
         serde_json::json!({
             "success": true,
             "message": format!("Notified Lead about question from {}", name),
+        }),
+    )
+}
+
+/// Handle task.request RPC — a coworker surfaces work that should be a separate task.
+///
+/// Posts a formatted message to the channel so the lead can see the request
+/// and decide whether to create a task for it.
+async fn handle_task_request(
+    id: RequestId,
+    from: &str,
+    message: &str,
+    state: &DaemonState,
+) -> Response {
+    let channel_message = format!("@lead [Task Request] from {}: \"{}\"", from, message);
+
+    let msg = Message::new("midtown", channel_message.clone(), MessageType::Text);
+
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post task request to channel: {}", e);
+        return Response::error(id, RpcError::new(-32603, format!("Failed to post: {}", e)));
+    }
+
+    info!("Task request from {}: {}", from, message);
+    Response::success(
+        id,
+        serde_json::json!({
+            "posted": true,
+            "from": from,
         }),
     )
 }
