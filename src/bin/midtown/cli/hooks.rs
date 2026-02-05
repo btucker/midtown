@@ -156,7 +156,17 @@ fn handle_insight_hook() -> Result<Response, String> {
 }
 
 /// Post an insight directly to the channel (fallback when daemon is unavailable).
+///
+/// Uses atomic file creation for deduplication to prevent concurrent hook
+/// invocations from posting the same insight when the daemon is down.
 fn post_insight_to_channel(repo: &str, agent: &str, insight: &str) -> bool {
+    // Atomic file-based dedup: prevents TOCTOU race between concurrent hooks.
+    // Uses create_new(true) so only one process can claim a given insight hash.
+    let hash = hash_insight_for_fallback(insight);
+    if !try_claim_insight(repo, &hash) {
+        return false;
+    }
+
     let channel = match midtown::Channel::for_repo(repo) {
         Ok(ch) => ch,
         Err(e) => {
@@ -176,6 +186,40 @@ fn post_insight_to_channel(repo: &str, agent: &str, insight: &str) -> bool {
             false
         }
     }
+}
+
+/// Atomically try to claim an insight for posting (fallback dedup).
+///
+/// Creates a file named by the insight hash in the per-repo insights directory.
+/// Returns true if we created it (we own this insight), false if it already exists.
+fn try_claim_insight(repo_name: &str, hash: &str) -> bool {
+    let dir_path = midtown::paths::projects_dir_for_repo(repo_name).join("insights");
+    let _ = std::fs::create_dir_all(&dir_path);
+
+    let hash_path = dir_path.join(hash);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&hash_path)
+        .is_ok()
+}
+
+/// Hash insight content for fallback deduplication.
+///
+/// Normalizes text (trim, collapse whitespace, lowercase) before hashing.
+fn hash_insight_for_fallback(insight: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let normalized: String = insight
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Handle the Lead stop hook - read channel messages for the Lead.
