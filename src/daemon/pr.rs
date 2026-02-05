@@ -1107,10 +1107,13 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
 ///
 /// For each coworker-owned PR:
 /// 1. Count non-owner comments (excludes PR author and coworker's own comments)
-/// 2. If count increased since last poll, check cooldown and nudge owner
+/// 2. If count increased since last poll, nudge/spawn the owner AND create a review
+///    feedback task for consistent "task #X" formatting
 ///
 /// This enables the polling path to fill the gap identified in graceful degradation:
 /// webhooks handle real-time notifications, polling handles the fallback case.
+/// Both paths create tasks so the Lead sees consistent formatting, while preserving
+/// handoff-to-idle-coworker and session resume capabilities.
 async fn collect_comment_notification_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -1188,14 +1191,15 @@ async fn collect_comment_notification_effects(
         );
 
         debug!(
-            "Polling detected new review comments on PR #{}, nudging {}",
+            "Polling detected new review comments on PR #{}, nudging {} and creating task",
             pr_number, owner
         );
 
         // Look up session context for potential handoff
         let session_context = get_pr_session_context(state, pr_number).await;
 
-        // Decide action using handoff-aware decision function (matches webhook path)
+        // Decide action using handoff-aware decision function (preserves session
+        // resume and idle-coworker handoff capabilities)
         let action = crate::rules::decide_pr_comment_action_with_handoff(
             &owner,
             "reviewer", // Generic actor since we don't know the specific commenter from polling
@@ -1207,6 +1211,15 @@ async fn collect_comment_notification_effects(
         );
 
         effects.extend(comment_action_to_effects(action, pr_number, title, state));
+
+        // Also create a review feedback task for consistent "task #X" formatting.
+        // Task creation is idempotent (deduplicates by subject + owner).
+        effects.push(Effect::CreateReviewFeedbackTask {
+            pr_number,
+            pr_title: title.to_string(),
+            owner: owner.clone(),
+            repo_name: state.repo_name.clone(),
+        });
     }
 
     effects
@@ -1214,8 +1227,8 @@ async fn collect_comment_notification_effects(
 
 /// Convert a comment notification `PrAction` into effects.
 ///
-/// Similar to `pr_action_to_effects` but uses the comment-specific cooldown
-/// and messages.
+/// Similar to `pr_action_to_effects` but uses the comment-specific cooldown,
+/// messages, and `called_in_review_feedback` channel message.
 fn comment_action_to_effects(
     action: crate::rules::PrAction,
     pr_number: u64,
@@ -2091,6 +2104,19 @@ pub(super) async fn handle_pr_comment_nudge(
         return;
     };
 
+    // Don't create tasks for self-comments
+    if activity
+        .owner_coworker
+        .as_ref()
+        .is_some_and(|o| o == &activity.actor)
+    {
+        debug!(
+            "PR #{} comment is from owner {}, skipping self-nudge",
+            pr_number, activity.actor
+        );
+        return;
+    }
+
     // Check cooldown to avoid spamming
     {
         let tracker = state.pr_issue_tracker.lock().await;
@@ -2245,6 +2271,39 @@ pub(super) async fn handle_pr_comment_nudge(
     if success {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
+    }
+
+    // Also create a review feedback task for consistent "task #X" formatting.
+    // Task creation is idempotent (deduplicates by subject + owner).
+    if success {
+        let subject = format!("Address review feedback on PR #{}", pr_number);
+        let description = format!(
+            "PR #{} has review feedback from {} that needs to be addressed.\n\n\
+             Please review the comments, make the requested changes, and push updates.\n\
+             Once feedback is addressed, the reviewer will re-check and approve.",
+            pr_number, activity.actor
+        );
+        let active_form = format!("Addressing review feedback on PR #{}", pr_number);
+        match crate::tasks::create_task_for_repo(
+            &subject,
+            &description,
+            &active_form,
+            &owner,
+            &state.repo_name,
+        ) {
+            Ok(task_id) => {
+                info!(
+                    "Created review feedback task #{} for {} (PR #{})",
+                    task_id, owner, pr_number
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to create review feedback task for {} (PR #{}): {}",
+                    owner, pr_number, e
+                );
+            }
+        }
     }
 
     // Add eyes reaction to the comment to provide visual feedback that it was received
