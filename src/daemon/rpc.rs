@@ -491,18 +491,6 @@ async fn handle_coworker_report_state(
     if phase == crate::coworker_state::WorkflowPhase::Idle {
         // Check if coworker is tracked (should be, since they're reporting state)
         if state.coworkers.get(name).is_some() {
-            // Post channel message about the break
-            let break_msg = crate::message::Message::system(format!(
-                "☕ {} reported idle, taking a break",
-                name
-            ));
-            if let Err(e) = state.send_and_broadcast_async(&break_msg).await {
-                warn!("Failed to post break message for {}: {}", name, e);
-            }
-
-            // Broadcast WebSocket update
-            state.broadcast_coworker_update(name, "stopped", None);
-
             // Shut down the coworker's tmux window
             let coworkers = state.coworkers.clone();
             let name_owned = name.to_string();
@@ -511,6 +499,18 @@ async fn handle_coworker_report_state(
 
             match shutdown_result {
                 Ok(Ok(())) => {
+                    // Post channel message about the break (only after successful shutdown)
+                    let break_msg = crate::message::Message::system(format!(
+                        "☕ {} reported idle, taking a break",
+                        name
+                    ));
+                    if let Err(e) = state.send_and_broadcast_async(&break_msg).await {
+                        warn!("Failed to post break message for {}: {}", name, e);
+                    }
+
+                    // Broadcast WebSocket update (only after successful shutdown)
+                    state.broadcast_coworker_update(name, "stopped", None);
+
                     // Clear state file
                     crate::coworker_state::clear_state(&state.repo_name, name);
 
