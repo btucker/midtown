@@ -376,6 +376,9 @@ impl CiNotificationBuffer {
     }
 
     /// Add a successful CI check to the buffer.
+    ///
+    /// Deduplicates by check name within each target — the same check
+    /// completing multiple times (e.g., from re-runs) is only counted once.
     pub fn add(&mut self, check: CiCheckPassed) {
         let now = Instant::now();
 
@@ -384,11 +387,14 @@ impl CiNotificationBuffer {
             self.oldest_entry = Some(now);
         }
 
-        self.pending.entry(check.target).or_default().push((
-            check.check_name,
-            check.mention_prefix,
-            now,
-        ));
+        let entries = self.pending.entry(check.target).or_default();
+
+        // Skip if this check name already exists for this target
+        if entries.iter().any(|(name, _, _)| *name == check.check_name) {
+            return;
+        }
+
+        entries.push((check.check_name, check.mention_prefix, now));
     }
 
     /// Check if we have buffered items ready to flush.
@@ -437,22 +443,19 @@ impl CiNotificationBuffer {
 ///
 /// Examples:
 /// - Single check: "Check 'Clippy' passed on main"
-/// - Multiple checks: "5 checks passed on PR #42: Clippy, Test, E2E - foo, ..."
+/// - Multiple checks: "5 checks passed on PR #42"
 pub fn format_batched_ci_notification(batch: &BatchedCiNotification) -> String {
     let count = batch.check_names.len();
-    let names = batch.check_names.join(", ");
 
     if count == 1 {
-        // Single check: use original format
         format!(
             "{}Check '{}' passed on {}",
             batch.mention_prefix, batch.check_names[0], batch.target
         )
     } else {
-        // Multiple checks: batched format
         format!(
-            "{}{} checks passed on {}: {}",
-            batch.mention_prefix, count, batch.target, names
+            "{}{} checks passed on {}",
+            batch.mention_prefix, count, batch.target
         )
     }
 }
@@ -952,7 +955,7 @@ mod tests {
             ],
         };
         let msg = format_batched_ci_notification(&batch);
-        assert_eq!(msg, "3 checks passed on main: Clippy, Test, E2E - foo");
+        assert_eq!(msg, "3 checks passed on main");
     }
 
     #[test]
@@ -963,6 +966,58 @@ mod tests {
             check_names: vec!["Build".to_string(), "Test".to_string()],
         };
         let msg = format_batched_ci_notification(&batch);
-        assert_eq!(msg, "@park 2 checks passed on PR #99: Build, Test");
+        assert_eq!(msg, "@park 2 checks passed on PR #99");
+    }
+
+    #[test]
+    fn format_batched_ci_many_checks_omits_names() {
+        let batch = BatchedCiNotification {
+            target: "PR #42".to_string(),
+            mention_prefix: "@madison ".to_string(),
+            check_names: vec![
+                "Clippy".to_string(),
+                "Test".to_string(),
+                "E2E - chat_e2e".to_string(),
+                "E2E - daemon_e2e".to_string(),
+                "Format".to_string(),
+            ],
+        };
+        let msg = format_batched_ci_notification(&batch);
+        // Should NOT list individual check names — just the count
+        assert_eq!(msg, "@madison 5 checks passed on PR #42");
+        assert!(!msg.contains("Clippy"));
+        assert!(!msg.contains("E2E"));
+    }
+
+    #[test]
+    fn ci_buffer_deduplicates_check_names() {
+        let mut buffer = CiNotificationBuffer::new();
+
+        // Add the same check name twice (e.g., from multiple workflow runs)
+        buffer.add(CiCheckPassed {
+            check_name: "Clippy".to_string(),
+            target: "PR #42".to_string(),
+            mention_prefix: "@columbus ".to_string(),
+        });
+        buffer.add(CiCheckPassed {
+            check_name: "Clippy".to_string(),
+            target: "PR #42".to_string(),
+            mention_prefix: "@columbus ".to_string(),
+        });
+        buffer.add(CiCheckPassed {
+            check_name: "Test".to_string(),
+            target: "PR #42".to_string(),
+            mention_prefix: "@columbus ".to_string(),
+        });
+
+        // Force flush
+        buffer.oldest_entry = Some(Instant::now() - Duration::from_secs(20));
+        let batched = buffer.flush();
+
+        assert_eq!(batched.len(), 1);
+        // Should have 2 unique checks, not 3
+        assert_eq!(batched[0].check_names.len(), 2);
+        assert!(batched[0].check_names.contains(&"Clippy".to_string()));
+        assert!(batched[0].check_names.contains(&"Test".to_string()));
     }
 }
