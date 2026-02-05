@@ -479,16 +479,26 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
     for name in &running_coworkers {
         let coworkers = state.coworkers.clone();
         let name_owned = name.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await {
-            warn!("Failed to shut down coworker {}: {}", name, e);
+        let shutdown_result =
+            tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await;
+
+        match shutdown_result {
+            Ok(Ok(())) => {
+                // Only clear state and records on successful shutdown
+                crate::coworker_state::clear_state(&state.repo_name, name);
+                {
+                    let mut records = state.coworker_records.write().await;
+                    records.remove(name);
+                }
+                state.broadcast_coworker_update(name, "stopped", None);
+            }
+            Ok(Err(e)) => {
+                warn!("Failed to shut down coworker {}: {}", name, e);
+            }
+            Err(e) => {
+                warn!("spawn_blocking panic while shutting down {}: {}", name, e);
+            }
         }
-        // Clear state and records
-        crate::coworker_state::clear_state(&state.repo_name, name);
-        {
-            let mut records = state.coworker_records.write().await;
-            records.remove(name);
-        }
-        state.broadcast_coworker_update(name, "stopped", None);
     }
 
     // Re-launch the lead window with new auth credentials
