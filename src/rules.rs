@@ -1775,15 +1775,16 @@ pub(crate) struct OrphanRecovery {
 /// An orphaned task is `in_progress` but its owner is not active.
 /// Returns at most ONE recovery action (rate-limited to one per tick).
 ///
-/// Skips recovery when the owner has an open PR with passing CI and no
-/// review feedback — the coworker is correctly waiting for human review
-/// and should not be respawned until there is actionable work.
+/// Skips recovery when the owner has an open PR and no review feedback —
+/// the coworker is correctly waiting for human review and should not be
+/// respawned until there is actionable work. CI failures on PRs are
+/// handled separately by the webhook/PR poll pathway and do not need
+/// orphan recovery to intervene.
 pub(crate) fn decide_orphan_recovery(
     in_progress: &[(String, String, String)], // (task_id, task_subject, owner)
     active_names: &HashSet<String>,
     at_dev_limit: bool,
     coworkers_with_open_prs: &HashSet<String>,
-    ci_passed_pr_coworkers: &HashSet<String>,
     review_feedback_pr_coworkers: &HashSet<String>,
 ) -> Option<OrphanRecovery> {
     if at_dev_limit {
@@ -1804,13 +1805,21 @@ pub(crate) fn decide_orphan_recovery(
         if active_names.contains(&owner_lower) {
             continue;
         }
-        // Skip coworkers whose PR is open with green CI and no review feedback.
+        // Skip coworkers whose PR is open and has no review feedback.
         // They are correctly on break waiting for human review — recovering them
         // would create a loop (recover → idle → shutdown → recover).
+        //
+        // Previously this also required CI to have passed, but that created a
+        // race: coworkers_with_open_prs has a gh CLI fallback (available immediately),
+        // while ci_passed_pr_coworkers is only populated by the PR poll (every 30s).
+        // In the window before the PR poll caches CI status, the skip check failed
+        // and the coworker was repeatedly recovered for a completed task.
+        //
+        // CI failures on PRs are handled separately by handle_webhook_ci_failure()
+        // and the PR poll pathway — orphan recovery does not need to duplicate that.
         let has_open_pr = coworkers_with_open_prs.contains(&owner_lower);
-        let ci_passed = ci_passed_pr_coworkers.contains(&owner_lower);
         let has_review_feedback = review_feedback_pr_coworkers.contains(&owner_lower);
-        if has_open_pr && ci_passed && !has_review_feedback {
+        if has_open_pr && !has_review_feedback {
             continue;
         }
         // Found an orphan — return the first one (rate-limited)
@@ -3303,7 +3312,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
         assert_eq!(
             result,
             Some(OrphanRecovery {
@@ -3319,7 +3328,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["york"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3328,7 +3337,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3337,7 +3346,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "lead".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3353,7 +3362,7 @@ mod tests {
         ];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
         assert_eq!(result.unwrap().task_id, "1");
     }
 
@@ -3364,7 +3373,7 @@ mod tests {
         let tasks = vec![("42".to_string(), "Fix bug".to_string(), "fix".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
         // Should be None because "fix" is not a valid coworker name
         assert!(result.is_none());
     }
@@ -3375,7 +3384,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "YORK".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
         // Should return recovery because "YORK" maps to valid coworker "york"
         assert!(result.is_some());
         assert_eq!(result.unwrap().owner, "YORK");
@@ -3393,7 +3402,6 @@ mod tests {
         )];
         let active = set(&[]); // amsterdam is not active (on break)
         let coworkers_with_open_prs = set(&["amsterdam"]);
-        let ci_passed = set(&["amsterdam"]);
         let review_feedback = set(&[]); // no review feedback yet
 
         let result = decide_orphan_recovery(
@@ -3401,7 +3409,6 @@ mod tests {
             &active,
             false,
             &coworkers_with_open_prs,
-            &ci_passed,
             &review_feedback,
         );
         // Should NOT recover — coworker is correctly waiting for review
@@ -3422,7 +3429,6 @@ mod tests {
         )];
         let active = set(&[]); // amsterdam is not active
         let coworkers_with_open_prs = set(&["amsterdam"]);
-        let ci_passed = set(&["amsterdam"]);
         let review_feedback = set(&["amsterdam"]); // review feedback posted
 
         let result = decide_orphan_recovery(
@@ -3430,7 +3436,6 @@ mod tests {
             &active,
             false,
             &coworkers_with_open_prs,
-            &ci_passed,
             &review_feedback,
         );
         // SHOULD recover — there's actionable review feedback
@@ -3439,9 +3444,12 @@ mod tests {
     }
 
     #[test]
-    fn orphan_recovery_recovers_coworker_with_failed_ci() {
-        // When CI fails on the PR, the coworker should be recovered
-        // so they can investigate and fix.
+    fn orphan_recovery_skips_coworker_with_failed_ci_and_open_pr() {
+        // When CI fails on the PR, the coworker should NOT be recovered
+        // by orphan recovery — CI failures are handled separately by
+        // handle_webhook_ci_failure() and the PR poll pathway. Recovering
+        // via orphan recovery created a loop because the coworker would
+        // be spawned, go idle (not knowing about CI failure), and shut down.
         let tasks = vec![(
             "789".to_string(),
             "Add usage bars".to_string(),
@@ -3449,7 +3457,6 @@ mod tests {
         )];
         let active = set(&[]); // amsterdam is not active
         let coworkers_with_open_prs = set(&["amsterdam"]);
-        let ci_passed = set(&[]); // CI not passed (failed or pending)
         let review_feedback = set(&[]);
 
         let result = decide_orphan_recovery(
@@ -3457,12 +3464,14 @@ mod tests {
             &active,
             false,
             &coworkers_with_open_prs,
-            &ci_passed,
             &review_feedback,
         );
-        // SHOULD recover — CI is not green, coworker needs to fix
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().task_id, "789");
+        // Should NOT recover — coworker has an open PR. CI failures
+        // are handled by the webhook/PR poll pathway, not orphan recovery.
+        assert!(
+            result.is_none(),
+            "Should not recover coworker with open PR (CI failures handled separately)"
+        );
     }
 
     #[test]
@@ -3475,7 +3484,6 @@ mod tests {
         )];
         let active = set(&[]); // amsterdam is not active
         let coworkers_with_open_prs = set(&[]); // no open PR
-        let ci_passed = set(&[]);
         let review_feedback = set(&[]);
 
         let result = decide_orphan_recovery(
@@ -3483,12 +3491,88 @@ mod tests {
             &active,
             false,
             &coworkers_with_open_prs,
-            &ci_passed,
             &review_feedback,
         );
         // SHOULD recover — no PR means work isn't done yet
         assert!(result.is_some());
         assert_eq!(result.unwrap().task_id, "789");
+    }
+
+    #[test]
+    fn orphan_recovery_skips_coworker_with_open_pr_before_ci_cached() {
+        // Bug: coworker opens a PR, goes idle, shuts down. Orphan recovery fires
+        // before the PR poll has cached CI status. coworkers_with_open_prs contains
+        // the coworker (fallback to gh CLI), but ci_passed_pr_coworkers is empty
+        // (only populated by PR poll). The skip check fails because it requires
+        // BOTH has_open_pr AND ci_passed, creating a recovery loop.
+        //
+        // This is the root cause of the lexington recovery loop (task #810):
+        // - lexington opened PR #682, went idle, shut down
+        // - orphan check fires every 10s, PR poll every 30s
+        // - In the window before PR poll caches CI status, recovery fires
+        // - coworker spawns, goes idle, shuts down, recovery fires again
+        let tasks = vec![(
+            "810".to_string(),
+            "Fix auth endpoint".to_string(),
+            "lexington".to_string(),
+        )];
+        let active = set(&[]); // lexington is not active (shut down)
+        let coworkers_with_open_prs = set(&["lexington"]); // PR detected via fallback
+        let review_feedback = set(&[]);
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &review_feedback,
+        );
+        // Should NOT recover — coworker has an open PR and no review feedback.
+        // CI status is unknown (not cached yet), but the safe default should be
+        // to skip recovery. CI failures are handled by the webhook/PR poll pathway.
+        assert!(
+            result.is_none(),
+            "Should not recover coworker with open PR even when CI status is not yet cached"
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_skips_multi_task_coworker_with_open_pr_before_ci() {
+        // Bug: coworker has TWO in_progress tasks and an open PR, but the PR
+        // poll hasn't cached CI status yet. ci_passed_pr_coworkers is empty.
+        // The skip check fails for both tasks, and the first one triggers
+        // recovery — creating a loop where the coworker is spawned for a task
+        // whose work is already done (PR opened).
+        let tasks = vec![
+            (
+                "810".to_string(),
+                "Fix auth endpoint".to_string(),
+                "lexington".to_string(),
+            ),
+            (
+                "811".to_string(),
+                "Address review feedback".to_string(),
+                "lexington".to_string(),
+            ),
+        ];
+        let active = set(&[]);
+        let coworkers_with_open_prs = set(&["lexington"]);
+        let review_feedback = set(&[]);
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &review_feedback,
+        );
+        // Should NOT recover — coworker has an open PR. Even though CI status
+        // is unknown, the safe default is to wait for the PR poll to determine
+        // if recovery is actually needed. CI failures are handled separately.
+        assert!(
+            result.is_none(),
+            "Should not recover coworker with open PR even when CI status is not yet cached"
+        );
     }
 
     // -----------------------------------------------------------------------
