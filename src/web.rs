@@ -316,6 +316,8 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/push/vapid-key", get(api_push_vapid_key))
         .route("/api/push/subscribe", post(api_push_subscribe))
         .route("/api/push/unsubscribe", post(api_push_unsubscribe))
+        .route("/api/auth/profiles", get(api_auth_profiles))
+        .route("/api/auth/switch", post(api_auth_switch))
         .with_state(state)
 }
 
@@ -944,6 +946,109 @@ async fn api_push_unsubscribe(
 
     info!("Push subscription removed");
     Ok(StatusCode::OK)
+}
+
+/// List all auth profiles with their status.
+///
+/// Returns a JSON array of `{name, is_current, has_credentials}`.
+async fn api_auth_profiles() -> Result<impl IntoResponse, StatusCode> {
+    let profiles = tokio::task::spawn_blocking(|| {
+        let current = crate::auth::current_profile();
+        let names = crate::auth::list_profiles().unwrap_or_default();
+        names
+            .into_iter()
+            .map(|name| {
+                let status = crate::auth::profile_status(&name);
+                let has_credentials = status.as_ref().map(|s| s.has_credentials).unwrap_or(false);
+                serde_json::json!({
+                    "name": name,
+                    "is_current": name == current,
+                    "has_credentials": has_credentials,
+                })
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| {
+        error!("Failed to list auth profiles: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(axum::Json(profiles))
+}
+
+/// Request body for switching auth profiles.
+#[derive(Debug, Deserialize)]
+struct AuthSwitchRequest {
+    profile: String,
+}
+
+/// Switch the active auth profile via the daemon's RPC.
+///
+/// Proxies to the daemon's `auth.switch` RPC, which shuts down all coworkers,
+/// switches the profile on disk, and re-launches the lead.
+async fn api_auth_switch(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<AuthSwitchRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let repo = state.config.repo.clone();
+    let profile = body.profile;
+
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let socket = crate::paths::daemon_socket_for_repo(&repo);
+        let mut stream =
+            UnixStream::connect(&socket).map_err(|e| format!("Cannot connect to daemon: {}", e))?;
+        stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "auth.switch",
+            "params": { "profile": profile },
+            "id": 1
+        });
+        writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {}", e))?;
+        stream
+            .flush()
+            .map_err(|e| format!("Failed to flush: {}", e))?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        let resp: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid response: {}", e))?;
+
+        if let Some(error) = resp.get("error") {
+            let msg = error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error");
+            return Err(msg.to_string());
+        }
+
+        Ok(resp
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::json!({"message": "Profile switched"})))
+    })
+    .await
+    .map_err(|e| {
+        error!("spawn_blocking panic in auth switch: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Ok(data) => Ok(axum::Json(data)),
+        Err(msg) => {
+            warn!("Auth switch failed: {}", msg);
+            Err(StatusCode::BAD_REQUEST)
+        }
+    }
 }
 
 /// WebSocket upgrade handler

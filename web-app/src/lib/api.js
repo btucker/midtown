@@ -9,6 +9,8 @@ import {
   projects,
   activeProject,
   repoStatuses,
+  authProfiles,
+  authSwitching,
 } from './store.js'
 
 let ws = null
@@ -273,4 +275,43 @@ export function sendWsMessage(msg) {
     return true
   }
   return false
+}
+
+// Fetch auth profiles from the current project's daemon
+export async function fetchAuthProfiles() {
+  try {
+    const res = await fetch(`${getApiBase()}/auth/profiles`)
+    if (res.ok) {
+      const data = await res.json()
+      authProfiles.set(data)
+      return data
+    }
+  } catch (err) {
+    console.error('Failed to fetch auth profiles:', err)
+  }
+  return []
+}
+
+// Switch to a different auth profile via the daemon RPC
+export async function switchAuthProfile(profile) {
+  authSwitching.set(true)
+  try {
+    const res = await fetch(`${getApiBase()}/auth/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile }),
+    })
+    if (res.ok) {
+      // Refresh profiles to reflect the switch
+      await fetchAuthProfiles()
+      return true
+    }
+    console.error('Auth switch failed:', res.status)
+    return false
+  } catch (err) {
+    console.error('Failed to switch auth profile:', err)
+    return false
+  } finally {
+    authSwitching.set(false)
+  }
 }
