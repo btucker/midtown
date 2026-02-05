@@ -1,0 +1,625 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "pleasant",
+      "session_id": "14b9cee3-5a2c-4f55-83ca-dfe2e4532813",
+      "started_at": "2026-02-05T03:55:38.998015Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/pleasant"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "york",
+      "session_id": "3754137f-c1e2-452f-83d8-468bb1640842",
+      "started_at": "2026-02-05T03:56:08.994307Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    }
+  ],
+  "active_names": [
+    "york",
+    "pleasant"
+  ],
+  "active_reviewers": [
+    "pleasant",
+    "york"
+  ],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "When the `midtown chat` TUI encounters a ```mermaid fenced code block in a channel message, eagerly render it as an inline image using Selkie and the Kitty terminal graphics protocol.\n\n## Dependencies\n\nAdd `selkie` as a dependency in `Cargo.toml` with the `kitty` and `png` features enabled:\n```toml\nselkie = { path = \"../selkie\", features = [\"kitty\", \"png\"] }\n```\n\nNote: selkie is at `~/projects/selkie`. For now use a path dependency; we can publish to crates.io later.\n\n## Detection: Parse Mermaid Fences\n\nIn the message rendering pipeline (`src/bin/midtown/cli/chat/ui.rs`), detect fenced Mermaid blocks:\n\n````\n```mermaid\nflowchart LR\n    A --> B\n```\n````\n\nThe `render_message()` function (line 778) processes message content into `Vec<Line>`. Before passing content through `parse_markdown()` and `wrap_content()`, split the content by mermaid fences. For each mermaid block, render it as an image placeholder; for non-mermaid text, render normally.\n\n## Rendering Pipeline\n\nFor each detected mermaid fence:\n\n1. **Parse + render to SVG**: `selkie::render_text(mermaid_source)` → SVG string\n2. **SVG to PNG**: Use selkie's resvg integration to rasterize at the proper width. The image width should match the available chat content width in pixels. Calculate: `terminal_columns * cell_width_pixels` (cell width is typically 7-10px depending on font; can query or use a reasonable default). Height is determined by aspect ratio.\n3. **PNG to Kitty protocol**: Use selkie's `kitty::display_png()` or construct the protocol manually for more control over placement.\n\n## TUI Integration\n\nThe key challenge is that ratatui uses a cell-based buffer but Kitty images are pixel-based overlays. Follow the same **post-render pattern** used for hyperlinks (see `render_hyperlinks()` in `mod.rs` lines 192-236):\n\n1. During `render_message()`, when a mermaid fence is detected:\n   - Calculate image height in terminal rows (image_pixel_height / cell_height_pixels)\n   - Insert that many blank `Line` objects as placeholder space\n   - Record the image metadata (PNG bytes, position, dimensions) in a list (similar to `hyperlinks` return value)\n\n2. After `terminal.draw()` completes, iterate over the image list and emit Kitty graphics protocol sequences at the recorded coordinates.\n\n3. For the Kitty protocol with placement control, use:\n   ```\n   \\x1b_Ga=T,f=32,s=WIDTH,v=HEIGHT,t=d,C=1,c=COL,r=ROW;BASE64DATA\\x1b\\\n   ```\n   Where `C=1` enables cursor positioning and `c=COL,r=ROW` specify placement.\n\n## Width Handling\n\n- Get terminal width from ratatui's layout `Rect` (already available as `inner.width`)\n- Subtract the message indent (7 chars for timestamp + space) to get content width\n- Render the SVG at that content width for proper sizing\n- If the terminal is resized, images will need re-rendering on the next draw\n\n## Fallback\n\n- If Kitty protocol is not supported (`selkie::kitty::is_supported()` returns false), fall back to displaying the raw mermaid source as a cyan-colored code block (current behavior for any code fence)\n- If selkie parsing fails (invalid mermaid syntax), show the raw text with an error indicator\n\n## Caching\n\n- Cache rendered PNG bytes keyed by (mermaid_source, width) to avoid re-rendering on every draw cycle\n- A simple HashMap in App state is sufficient; channel messages are immutable\n\n## Key Files\n\n- `src/bin/midtown/cli/chat/ui.rs` — Message rendering, mermaid detection, placeholder insertion\n- `src/bin/midtown/cli/chat/mod.rs` — Post-render image emission (alongside hyperlinks)\n- `src/bin/midtown/cli/chat/app.rs` — Image cache in App state\n- `Cargo.toml` — Add selkie dependency\n\n## Scope Boundaries\n\n- Only render mermaid fences (not other code fences)\n- Only Kitty protocol (no sixel, no iTerm2 inline images)\n- No web UI changes (separate task later)\n- No headless executor integration yet (diagrams come from message content)\n- Theme: use selkie's default theme; dark theme detection via `selkie::kitty::is_terminal_dark()` is a nice-to-have",
+      "id": "749",
+      "owner": null,
+      "status": "pending",
+      "subject": "Render Mermaid fences as inline Kitty images in chat TUI"
+    },
+    {
+      "blocked_by": [],
+      "description": "The daemon's orphan worktree detection is incorrectly flagging worktrees as orphaned when their coworker is on break but has an open PR. Broadway had an active PR (#645) open but was still flagged as orphaned because the coworker process wasn't running.\n\n**Expected behavior:** A worktree should NOT be flagged as orphaned if:\n1. Its branch has an associated open PR, OR\n2. Its branch name matches a known coworker branch pattern with an open PR\n\n**Current behavior:** The orphan detection only checks if the coworker process is running. If the coworker is on break (process not running) but left behind a worktree with unmerged commits, it's flagged as orphaned — even if there's a PR open for that branch.\n\n**Fix:** In the orphan detection logic (likely in `src/rules.rs` or `src/daemon/health.rs`), cross-reference orphan candidates against open PRs. If a worktree's branch has an open PR, skip the orphan warning.\n\n**How to find the bug:** Search for \"orphan\" in the rules/health modules. The detection likely runs on a timer tick and checks for worktrees where the coworker isn't in the active coworker list. Add a check against the PR list in the WorldSnapshot.",
+      "id": "750",
+      "owner": null,
+      "status": "pending",
+      "subject": "Fix orphan detection: don't flag worktrees with open PRs as orphaned"
+    },
+    {
+      "blocked_by": [],
+      "description": "In the kanban Review column, show the time since the PR was opened after the PR number, e.g. `PR #645 (12m)`.\n\n## TUI (`src/bin/midtown/cli/chat/ui.rs`)\n\nThe kanban panel is rendered by `draw_kanban_panel()` (line 336) and `draw_kanban_column()` (line 458). Review column items already show PR numbers. Add `(Xm)` after the PR number showing minutes since the PR was created.\n\n- The PR creation time should be available from the kanban data (fetched via `kanban.data` RPC which does a GraphQL query). If `created_at` isn't currently in the kanban data, add it.\n- Format: `(1m)`, `(15m)`, `(1h)`, `(2h)` — use minutes for < 60m, hours for >= 60m.\n- Check `app.rs` for the kanban data structures to see what fields are available on PR items.\n\n## Web UI (`web-app/src/lib/Kanban.svelte`)\n\nSame change in the Svelte kanban component. Show `(Xm)` or `(Xh)` after the PR number in Review cards. The kanban data comes from `/api/status` which calls the `kanban.data` RPC.\n\n- Ensure `created_at` is included in the PR data sent to the frontend.\n- Format should match the TUI format.\n- Time should update live (re-calculate on each render or use a reactive timer).\n\n## Data\n\nCheck `src/daemon/rpc.rs` `kanban.data` handler (line 1277) — the GraphQL query for PRs. Ensure `createdAt` is included in the query fields and passed through to the kanban response. Also check `src/web.rs` `/api/status` endpoint to ensure it forwards the field.\n\n## Both columns\n\nApply to the Review column specifically, but also to In Progress if PRs appear there (PRs waiting for CI before review).",
+      "id": "751",
+      "owner": null,
+      "status": "pending",
+      "subject": "Show elapsed minutes on PR cards in Review column (TUI + web)"
+    }
+  ],
+  "api_error_coworkers": [],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [],
+  "channel_messages": [
+    {
+      "content": "reviewing PR #644",
+      "from": "pleasant",
+      "id": "f77e5b1b-75be-403f-b538-59db6d1cffba",
+      "timestamp": "2026-02-05T03:55:44.447854Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Check PR #644 eligibility",
+      "from": "pleasant",
+      "id": "27a85de5-087d-47d4-8387-bce6443e7502",
+      "timestamp": "2026-02-05T03:55:52.458333Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Find relevant CLAUDE.md files",
+      "from": "pleasant",
+      "id": "925aab68-0908-499b-9065-bf44cea6eeb0",
+      "timestamp": "2026-02-05T03:55:55.762047Z",
+      "type": "action"
+    },
+    {
+      "content": "Check 'E2E - task_sharing' passed on PR #644",
+      "from": "github",
+      "id": "5624536e-1878-48b9-adef-b3912220eca3",
+      "timestamp": "2026-02-05T03:55:56.257505Z",
+      "type": "text"
+    },
+    {
+      "content": "created task: Get PR #644 summary",
+      "from": "pleasant",
+      "id": "267a8ea3-23ca-4224-adfa-368011e048d4",
+      "timestamp": "2026-02-05T03:55:59.409954Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Run 5 parallel code review agents",
+      "from": "pleasant",
+      "id": "45bc89e7-5c3b-4b5f-92f3-a5d09748f8bc",
+      "timestamp": "2026-02-05T03:56:02.857776Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Score and filter issues",
+      "from": "pleasant",
+      "id": "44298b89-7ec6-4fba-92d5-ea1726dd213e",
+      "timestamp": "2026-02-05T03:56:06.213755Z",
+      "type": "action"
+    },
+    {
+      "content": "🔍 Called in york to review PR #645",
+      "from": "midtown",
+      "id": "d8d92355-4515-49fd-bad9-39487466539d",
+      "timestamp": "2026-02-05T03:56:08.994605Z",
+      "type": "text"
+    },
+    {
+      "content": "created task: Post review comment on PR #644",
+      "from": "pleasant",
+      "id": "f24632ab-72ad-482b-b210-03db6412a6d8",
+      "timestamp": "2026-02-05T03:56:12.547222Z",
+      "type": "action"
+    },
+    {
+      "content": "reviewing PR #645",
+      "from": "york",
+      "id": "b8a812f2-15c0-4cc2-8128-6244c02eecb2",
+      "timestamp": "2026-02-05T03:56:15.322574Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 1",
+      "from": "pleasant",
+      "id": "40a0f13c-0035-459e-95fd-433df9288116",
+      "timestamp": "2026-02-05T03:56:16.223254Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 2",
+      "from": "pleasant",
+      "id": "06d9b7cd-d3aa-49a7-bc7c-ea4ef6f8a49d",
+      "timestamp": "2026-02-05T03:56:16.700286Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 3",
+      "from": "pleasant",
+      "id": "f25f1770-da8c-4734-a2fe-cdc318f5dd60",
+      "timestamp": "2026-02-05T03:56:17.025947Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 4",
+      "from": "pleasant",
+      "id": "74c0467d-3695-4d12-88c2-05a934233372",
+      "timestamp": "2026-02-05T03:56:17.440972Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 5",
+      "from": "pleasant",
+      "id": "ca74fcbf-0cce-4287-ba7f-6118fd8ebbda",
+      "timestamp": "2026-02-05T03:56:17.768629Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 6",
+      "from": "pleasant",
+      "id": "3d30f9a2-4b63-43fe-96d9-0ea5e1778b1b",
+      "timestamp": "2026-02-05T03:56:18.163528Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Check PR #645 eligibility",
+      "from": "york",
+      "id": "e70e9c85-ea0d-4085-b7c4-5c6dc8afe713",
+      "timestamp": "2026-02-05T03:56:24.373081Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Find relevant CLAUDE.md files",
+      "from": "york",
+      "id": "6c6b61c8-563d-41fe-8731-2693873ff599",
+      "timestamp": "2026-02-05T03:56:30.675324Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Get PR #645 summary",
+      "from": "york",
+      "id": "5ca32126-1538-40ce-8a40-c05c6187ab0f",
+      "timestamp": "2026-02-05T03:56:34.027186Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Run 5 parallel code review agents",
+      "from": "york",
+      "id": "daecdaef-28d7-4226-a676-81ca8269f99b",
+      "timestamp": "2026-02-05T03:56:38.084021Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Score and filter issues",
+      "from": "york",
+      "id": "0af4d08a-f827-4a42-9cd2-342e8b4d52d8",
+      "timestamp": "2026-02-05T03:56:41.349421Z",
+      "type": "action"
+    },
+    {
+      "content": "completed task 1",
+      "from": "pleasant",
+      "id": "1b260f50-a844-4ed3-a170-27260f316c80",
+      "timestamp": "2026-02-05T03:56:43.998239Z",
+      "type": "action"
+    },
+    {
+      "content": "completed task 2",
+      "from": "pleasant",
+      "id": "aa7eab3d-31e1-4676-a8c0-465932fcefd0",
+      "timestamp": "2026-02-05T03:56:44.334693Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Post review comment on PR #645",
+      "from": "york",
+      "id": "97e47d4b-e18d-4d2d-b7dc-92e8ebc80b28",
+      "timestamp": "2026-02-05T03:56:44.662676Z",
+      "type": "action"
+    },
+    {
+      "content": "completed task 3",
+      "from": "pleasant",
+      "id": "2fddee7d-8e4e-4d11-b003-0b6c83e63f85",
+      "timestamp": "2026-02-05T03:56:44.688625Z",
+      "type": "action"
+    },
+    {
+      "content": "started task 4",
+      "from": "pleasant",
+      "id": "a1ebd82e-2323-4322-a5b3-ef9707cfea9a",
+      "timestamp": "2026-02-05T03:56:45.166425Z",
+      "type": "action"
+    },
+    {
+      "content": "The orphan detection has a bug then. Open a task",
+      "from": "user",
+      "id": "3790c077-34c9-4440-a5bd-546a95cfb59d",
+      "timestamp": "2026-02-05T03:56:46.964463Z",
+      "type": "text"
+    },
+    {
+      "content": "created task: Render Mermaid fences as inline Kitty images in chat TUI",
+      "from": "lead",
+      "id": "3010656b-3e69-4a42-a5d7-e6543d9603cd",
+      "timestamp": "2026-02-05T03:56:47.118726Z",
+      "type": "action"
+    },
+    {
+      "content": "💡 The chat TUI uses **ratatui + crossterm** with a line-based rendering model. Hyperlinks already use a **post-render** pattern — ratatui draws the buffer, then OSC 8 escape sequences are overlaid at specific coordinates. Kitty graphics would follow the same pattern: ratatui reserves vertical space for the image, then the Kitty protocol escape sequences are emitted post-render at those coordinates. Selkie's `kitty::display_png()` takes raw PNG bytes and chunks them via the Kitty graphics protocol.",
+      "from": "lead",
+      "id": "57469275-3341-4683-86cd-a72a30f9c85d",
+      "timestamp": "2026-02-05T03:56:47.130467Z",
+      "type": "text"
+    },
+    {
+      "content": "claimed task 1",
+      "from": "york",
+      "id": "2e053978-c1a8-475d-aa74-eca9aeabe927",
+      "timestamp": "2026-02-05T03:56:48.884609Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 2",
+      "from": "york",
+      "id": "069a8f63-d257-4448-9f29-00fecbd7c25f",
+      "timestamp": "2026-02-05T03:56:49.237179Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 3",
+      "from": "york",
+      "id": "38561f10-b90d-44a9-bad6-6a488f14542d",
+      "timestamp": "2026-02-05T03:56:49.732701Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 4",
+      "from": "york",
+      "id": "8d95ac7d-a2cb-4acd-8e25-264726dccfbc",
+      "timestamp": "2026-02-05T03:56:50.002122Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 5",
+      "from": "york",
+      "id": "20b3269e-3b74-4cde-83b5-9781e3a2de1c",
+      "timestamp": "2026-02-05T03:56:50.343237Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 6",
+      "from": "york",
+      "id": "4e9743f6-995e-4683-9ea2-e9cc83dffcd2",
+      "timestamp": "2026-02-05T03:56:50.780761Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Fix orphan detection: don't flag worktrees with open PRs as orphaned",
+      "from": "lead",
+      "id": "73fb93ce-4fa6-40e1-8fd4-e8f924a9acbc",
+      "timestamp": "2026-02-05T03:56:58.651155Z",
+      "type": "action"
+    },
+    {
+      "content": "Created task #749 (render mermaid fences as Kitty images in chat TUI) and task #750 (fix orphan detection false positives for worktrees with open PRs).",
+      "from": "lead",
+      "id": "788e96f1-e3f7-4326-8a2e-41a0ac10bbc4",
+      "timestamp": "2026-02-05T03:57:05.060360Z",
+      "type": "text"
+    },
+    {
+      "content": "completed task 1",
+      "from": "york",
+      "id": "7930064e-d7e8-443e-b80f-0a6e1361b337",
+      "timestamp": "2026-02-05T03:57:14.696583Z",
+      "type": "action"
+    },
+    {
+      "content": "completed task 2",
+      "from": "york",
+      "id": "177fe67b-d51b-4651-8e3c-dbc1062b77e3",
+      "timestamp": "2026-02-05T03:57:15.058296Z",
+      "type": "action"
+    },
+    {
+      "content": "completed task 3",
+      "from": "york",
+      "id": "896d780e-8080-42b4-9685-9d1edcecac20",
+      "timestamp": "2026-02-05T03:57:15.474253Z",
+      "type": "action"
+    },
+    {
+      "content": "started task 4",
+      "from": "york",
+      "id": "4ebb4eac-86d4-416b-ab72-a96aa2ba5362",
+      "timestamp": "2026-02-05T03:57:15.946041Z",
+      "type": "action"
+    },
+    {
+      "content": "In the Review card both in the TUI & web it should have the (Xm) after the PR #{number} showing the minutes since the PR was opened",
+      "from": "user",
+      "id": "80d2f877-57e3-47c9-9d2b-5b8cca7fdbb7",
+      "timestamp": "2026-02-05T03:59:30.149219Z",
+      "type": "text"
+    },
+    {
+      "content": "completed task 4",
+      "from": "york",
+      "id": "a7198e92-40d7-47b5-bbf8-f2c1703511c3",
+      "timestamp": "2026-02-05T03:59:41.708580Z",
+      "type": "action"
+    },
+    {
+      "content": "started task 5",
+      "from": "york",
+      "id": "e4cafebc-4c29-4544-849b-2f74e00490c8",
+      "timestamp": "2026-02-05T03:59:42.049705Z",
+      "type": "action"
+    },
+    {
+      "content": "created task: Show elapsed minutes on PR cards in Review column (TUI + web)",
+      "from": "lead",
+      "id": "85b9251a-13cc-464e-9464-3b8097613596",
+      "timestamp": "2026-02-05T03:59:49.096192Z",
+      "type": "action"
+    },
+    {
+      "content": "Created task #751: Show elapsed time (Xm) after PR number in kanban Review cards, both TUI and web UI.",
+      "from": "lead",
+      "id": "9f185e01-fb67-43d9-8d1b-b01358e51036",
+      "timestamp": "2026-02-05T03:59:56.651684Z",
+      "type": "text"
+    },
+    {
+      "content": "completed task 4",
+      "from": "pleasant",
+      "id": "f0c7cdbd-312b-4f78-bfac-5b69b9ca0d37",
+      "timestamp": "2026-02-05T04:00:16.487924Z",
+      "type": "action"
+    },
+    {
+      "content": "started task 5",
+      "from": "pleasant",
+      "id": "988b8e81-5ab2-4251-bd91-b0dec60cae71",
+      "timestamp": "2026-02-05T04:00:16.830083Z",
+      "type": "action"
+    },
+    {
+      "content": "Why isn’t the daemon calling in coworkers for the backlog tasks?",
+      "from": "user",
+      "id": "e30815a9-43cf-4c18-8571-9e7195777f90",
+      "timestamp": "2026-02-05T04:01:29.762899Z",
+      "type": "text"
+    },
+    {
+      "content": "Is there a bug?",
+      "from": "user",
+      "id": "068ff394-24e1-4c8b-a44a-b5348f930588",
+      "timestamp": "2026-02-05T04:01:48.883311Z",
+      "type": "text"
+    }
+  ],
+  "ci_passed_pr_coworkers": [
+    "broadway",
+    "vernon"
+  ],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": true,
+      "name": "pleasant",
+      "started_at": "2026-02-05T03:55:38.998015Z"
+    },
+    {
+      "isolated_tasks": true,
+      "name": "york",
+      "started_at": "2026-02-05T03:56:08.994307Z"
+    }
+  ],
+  "coworker_start_times": {
+    "pleasant": "2026-02-05T03:55:38.998015Z",
+    "york": "2026-02-05T03:56:08.994307Z"
+  },
+  "coworker_stop_times": {
+    "broadway": "2026-02-05T03:50:24.661683Z",
+    "vernon": "2026-02-05T03:51:25.748376Z"
+  },
+  "coworkers_with_merged_prs": [
+    "columbus",
+    "vernon",
+    "park",
+    "riverside",
+    "broadway",
+    "lexington",
+    "york",
+    "amsterdam"
+  ],
+  "coworkers_with_open_prs": [
+    "vernon",
+    "broadway"
+  ],
+  "coworkers_with_running_subagents": [
+    "pleasant",
+    "york"
+  ],
+  "coworkers_with_unblocked_deps": [],
+  "daemon_logs": [
+    "2026-02-05T04:01:13.978656Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T04:01:13.982922Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:13.987436Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:14.817820Z DEBUG Task assignment state: active=2",
+    "2026-02-05T04:01:14.817841Z DEBUG Deferring unowned task pickup: 2 PR(s) need review, 2/4 active reviewers, capacity available",
+    "2026-02-05T04:01:14.839796Z DEBUG Orphaned worktree for broadway has unmerged commits - will check filters",
+    "2026-02-05T04:01:14.852349Z DEBUG Orphaned worktree for vernon has unmerged commits - will check filters",
+    "2026-02-05T04:01:20.144154Z DEBUG Loaded daemon state: 2 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T04:01:20.144250Z DEBUG New connection",
+    "2026-02-05T04:01:20.144292Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T04:01:20.630350Z DEBUG Client disconnected",
+    "2026-02-05T04:01:23.974439Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:23.978428Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:24.723793Z DEBUG Idle shutdown check: active=2, busy=[], open_prs=[vernon, broadway], reviewers=[pleasant, york], unblocked_deps=[]",
+    "2026-02-05T04:01:24.738995Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"pleasant\", \"york\"] window_count=2",
+    "2026-02-05T04:01:24.739026Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T04:01:24.742408Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:24.745714Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:25.507128Z DEBUG Polling PRs for actionable issues...",
+    "2026-02-05T04:01:26.628926Z DEBUG Saved daemon state: 2 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T04:01:26.933196Z DEBUG PR #645 already assigned for review",
+    "2026-02-05T04:01:27.338707Z DEBUG PR #644 already assigned for review",
+    "2026-02-05T04:01:28.159826Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:28.163048Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:28.946408Z DEBUG Task assignment state: active=2",
+    "2026-02-05T04:01:28.946427Z DEBUG Deferring unowned task pickup: 2 PR(s) need review, 2/4 active reviewers, capacity available",
+    "2026-02-05T04:01:28.965824Z DEBUG Orphaned worktree for broadway has unmerged commits - will check filters",
+    "2026-02-05T04:01:28.975614Z DEBUG Orphaned worktree for vernon has unmerged commits - will check filters",
+    "2026-02-05T04:01:29.762878Z  INFO User sent: Why isn’t the daemon calling in coworkers for the backlog tasks?",
+    "2026-02-05T04:01:29.768396Z  INFO Channel post from user: Why isn’t the daemon calling in coworkers for the backlog tasks?",
+    "2026-02-05T04:01:29.768438Z  INFO Nudging Lead about user message",
+    "2026-02-05T04:01:30.221665Z DEBUG Loaded daemon state: 2 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T04:01:30.221746Z DEBUG New connection",
+    "2026-02-05T04:01:30.221775Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T04:01:30.735470Z DEBUG Client disconnected",
+    "2026-02-05T04:01:32.599507Z DEBUG conn 2 viewing window lead at 80 cols",
+    "2026-02-05T04:01:33.876526Z DEBUG New connection",
+    "2026-02-05T04:01:33.876571Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T04:01:33.976314Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"pleasant\", \"york\"] window_count=2",
+    "2026-02-05T04:01:33.976347Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T04:01:33.980013Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:33.983393Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:34.281520Z DEBUG Client disconnected",
+    "2026-02-05T04:01:34.702174Z DEBUG Task assignment state: active=2",
+    "2026-02-05T04:01:34.702196Z DEBUG Deferring unowned task pickup: 2 PR(s) need review, 2/4 active reviewers, capacity available",
+    "2026-02-05T04:01:34.725406Z DEBUG Orphaned worktree for broadway has unmerged commits - will check filters",
+    "2026-02-05T04:01:34.740074Z DEBUG Orphaned worktree for vernon has unmerged commits - will check filters",
+    "2026-02-05T04:01:35.595721Z DEBUG New connection",
+    "2026-02-05T04:01:35.595769Z DEBUG Received request: method=status",
+    "2026-02-05T04:01:36.329020Z DEBUG Client disconnected",
+    "2026-02-05T04:01:36.499947Z DEBUG New connection",
+    "2026-02-05T04:01:36.499999Z DEBUG Received request: method=channel.read",
+    "2026-02-05T04:01:36.500454Z  WARN Skipping malformed line 1041 in channel file: expected value at line 1 column 1",
+    "2026-02-05T04:01:36.503258Z DEBUG Client disconnected",
+    "2026-02-05T04:01:40.369670Z DEBUG conn 2 left window view",
+    "2026-02-05T04:01:40.559915Z DEBUG Loaded daemon state: 2 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T04:01:40.559998Z DEBUG New connection",
+    "2026-02-05T04:01:40.560031Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T04:01:41.247157Z DEBUG Client disconnected",
+    "2026-02-05T04:01:43.976802Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"pleasant\", \"york\"] window_count=2",
+    "2026-02-05T04:01:43.976838Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T04:01:43.980430Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:43.984336Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:44.698765Z DEBUG Task assignment state: active=2",
+    "2026-02-05T04:01:44.698791Z DEBUG Deferring unowned task pickup: 2 PR(s) need review, 2/4 active reviewers, capacity available",
+    "2026-02-05T04:01:44.721792Z DEBUG Orphaned worktree for broadway has unmerged commits - will check filters",
+    "2026-02-05T04:01:44.733464Z DEBUG Orphaned worktree for vernon has unmerged commits - will check filters",
+    "2026-02-05T04:01:48.883274Z  INFO User sent: Is there a bug?",
+    "2026-02-05T04:01:48.889266Z  INFO Channel post from user: Is there a bug?",
+    "2026-02-05T04:01:48.889295Z  INFO Nudging Lead about user message",
+    "2026-02-05T04:01:50.359608Z DEBUG New connection",
+    "2026-02-05T04:01:50.359659Z DEBUG Client disconnected",
+    "2026-02-05T04:01:50.554287Z DEBUG Loaded daemon state: 2 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T04:01:50.554358Z DEBUG New connection",
+    "2026-02-05T04:01:50.554389Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T04:01:51.184600Z DEBUG Client disconnected",
+    "2026-02-05T04:01:53.974054Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:53.977541Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:54.721619Z DEBUG Idle shutdown check: active=2, busy=[], open_prs=[broadway, vernon], reviewers=[york, pleasant], unblocked_deps=[]",
+    "2026-02-05T04:01:54.726006Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:54.730185Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:55.438729Z DEBUG Task assignment state: active=2",
+    "2026-02-05T04:01:55.438749Z DEBUG Deferring unowned task pickup: 2 PR(s) need review, 2/4 active reviewers, capacity available",
+    "2026-02-05T04:01:55.460376Z DEBUG Orphaned worktree for broadway has unmerged commits - will check filters",
+    "2026-02-05T04:01:55.472092Z DEBUG Orphaned worktree for vernon has unmerged commits - will check filters",
+    "2026-02-05T04:01:55.491315Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"pleasant\", \"york\"] window_count=2",
+    "2026-02-05T04:01:55.491345Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T04:01:55.494304Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:55.497497Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:01:55.609464Z DEBUG conn 2 viewing window lead at 80 cols",
+    "2026-02-05T04:01:56.228547Z DEBUG Polling PRs for actionable issues...",
+    "2026-02-05T04:01:56.951986Z DEBUG PR poll: data unchanged, skipping processing",
+    "2026-02-05T04:02:00.540382Z DEBUG New connection",
+    "2026-02-05T04:02:00.540432Z DEBUG Received request: method=snapshot",
+    "2026-02-05T04:02:00.543542Z DEBUG captured pane content coworker=pleasant lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:02:00.546618Z DEBUG captured pane content coworker=york lines=63 has_output=true has_input_text=false",
+    "2026-02-05T04:02:00.629012Z DEBUG Loaded daemon state: 2 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T04:02:00.629081Z DEBUG New connection",
+    "2026-02-05T04:02:00.629106Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T04:02:01.194393Z DEBUG Client disconnected"
+  ],
+  "in_progress_tasks": [],
+  "is_at_coworker_limit": false,
+  "is_at_dev_limit": false,
+  "isolated_coworkers": [
+    "pleasant",
+    "york"
+  ],
+  "now_utc": "2026-02-05T04:02:01.280764Z",
+  "pane_contents": {
+    "pleasant": "⏺ Here are the consolidated issues to score:\n\n  1. Missing screenshots for visual changes (CLAUDE.md adherence)\n  2. Race condition: WebSocket disconnection after auth switch (bug)\n  3. Silent failure: fetchAuthProfiles returns empty array on error (bug)\n  4. Auth switch error loses error message details (bug)\n  5. Missing import for Duration (bug - compiler would catch)\n  6. WebSocket not handled after auth switch - no state reset (historical git context)\n  7. No user feedback on auth switch disruption (historical git context)\n  8. 30-second timeout may be too short (historical git context)\n  9. Error response loses detail on BAD_REQUEST (historical git context)\n  10. Missing write timeout on Unix socket (previous PR pattern)\n  11. Silent .ok() on timeout setting (previous PR pattern)\n  12. No unit tests for new endpoints (previous PR pattern)\n  13. Inconsistent timeout value without documentation (previous PR pattern)\n  14. Missing input validation at API boundary (code comment compliance)\n\n  Let me launch scoring agents for all of these in parallel.\n\n  Running 14 Task agents… (ctrl+o to expand)\n   ├─ Score issue 1: screenshots · 1 tool use · 18.7k tokens\n   │  ⎿  Done\n   ├─ Score issue 2: websocket race · 21 tool uses · 66.1k tokens\n   │  ⎿  Done\n   ├─ Score issue 3: silent failure · 16 tool uses · 30.5k tokens\n   │  ⎿  Done\n   ├─ Score issue 4: error msg lost · 6 tool uses · 27.6k tokens\n   │  ⎿  Done\n   ├─ Score issue 5: missing import · 2 tool uses · 23.1k tokens\n   │  ⎿  Done\n   ├─ Score issue 6: no state reset · 11 tool uses · 29.6k tokens\n   │  ⎿  Done\n   ├─ Score issue 7: no user feedback · 4 tool uses · 26.5k tokens\n   │  ⎿  Done\n   ├─ Score issue 8: timeout length · 7 tool uses · 53.1k tokens\n   │  ⎿  Done\n   ├─ Score issue 9: BAD_REQUEST detail · 9 tool uses · 27.9k tokens\n   │  ⎿  Done\n   ├─ Score issue 10: missing write timeout · 10 tool uses · 28.3k tokens\n   │  ⎿  Done\n   ├─ Score issue 11: silent .ok() · 6 tool uses · 23.7k tokens\n   │  ⎿  Done\n   ├─ Score issue 12: no unit tests · 16 tool uses · 32.6k tokens\n   │  ⎿  Done\n   ├─ Score issue 13: undoc timeout · 23 tool uses · 30.0k tokens\n   │  ⎿  Bash: git show 8454b60:src/web.rs | grep -B 20 \"kanban.…\n   └─ Score issue 14: input validation · 14 tool uses · 34.5k tokens\n      ⎿  Read\n\n· Scoring and filtering issues… (6m 23s · ↓ 33.2k tokens · thought for 1s)\n  ⎿  ◼ Score and filter issues\n     ◻ Post review comment on PR #644\n     ✔ Check PR #644 eligibility\n     ✔ Find relevant CLAUDE.md files\n     ✔ Get PR #644 summary\n     ✔ Run 5 parallel code review agents\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n\n\n",
+    "york": "   │  ⎿  Done\n   ├─ Agent 4: Previous PR comments · 31 tool uses · 56.7k tokens\n   │  ⎿  Done\n   └─ Agent 5: Code comments compliance · 31 tool uses · 96.0k tokens\n      ⎿  Done\n\n⏺ All 5 agents have completed. Let me compile the issues and move to scoring.\n\n⏺ Here are the consolidated issues to score:\n\n  1. Temp-file pattern violation - system_prompt passed directly as CLI arg instead of temp file (Agent 1)\n  2. Effect-based architecture deviation - headless execution done directly in RPC handler instead of rules.rs → effects.rs pipeline (Agent 1)\n  3. Child process resource leak - process not cleaned up on error paths, wait() can hang (Agent 2)\n  4. Recursive async via Box::pin - unbounded memory with many blank lines/parse errors (Agents 2, 4, 5)\n  5. Blocking I/O in send_raw_with_timeout - WouldBlock branch unreachable with blocking socket (Agent 2)\n  6. Missing spawn_blocking for headless execute - blocks async runtime (Agents 3, 4)\n  7. Process leak on prompt send failure - child process orphaned if send_message fails (Agent 2)\n  8. Race on empty all_repo_paths - cwd defaults to None if no repos loaded (Agent 2)\n  9. CLI handler in mod.rs breaks modular pattern - should be in separate module (Agent 3)\n  10. Inconsistent timeout in send_raw_with_timeout - write timeout hardcoded to 5s while read uses custom (Agent 4)\n  11. No timeout on child process kill - kill().await could hang forever (Agent 2)\n\n  Now launching scoring agents in parallel for each issue.\n\n⏺ Running 11 Task agents… (ctrl+o to expand)\n   ├─ Score issue 1: temp-file · 22 tool uses · 31.9k tokens\n   │  ⎿  Done\n   ├─ Score issue 2: effect pattern · 18 tool uses · 57.7k tokens\n   │  ⎿  Done\n   ├─ Score issue 3: process leak · 9 tool uses · 24.5k tokens\n   │  ⎿  Done\n   ├─ Score issue 4: recursive async · 18 tool uses · 28.7k tokens\n   │  ⎿  Done\n   ├─ Score issue 5: WouldBlock · 2 tool uses · 23.5k tokens\n   │  ⎿  Done\n   ├─ Score issue 6: spawn_blocking · 15 tool uses · 55.7k tokens\n   │  ⎿  Done\n   ├─ Score issue 7: process leak · 17 tool uses · 26.9k tokens\n   │  ⎿  Done\n   ├─ Score issue 8: empty repo paths · 13 tool uses · 32.2k tokens\n   │  ⎿  Done\n   ├─ Score issue 9: CLI modular pattern · 26 tool uses · 31.8k tokens\n   │  ⎿  Done\n   ├─ Score issue 10: timeout inconsistency · 2 tool uses · 27.3k tokens\n   │  ⎿  Done\n   └─ Score issue 11: kill timeout · 17 tool uses · 25.0k tokens\n      ⎿  Bash: cargo doc --document-private-items 2>&1 | head -5\n\n✻ Scoring and filtering issues… (5m 53s · ↓ 34.4k tokens · thought for 1s)\n  ⎿  ◼ Score and filter issues\n     ◻ Post review comment on PR #645\n     ✔ Check PR #645 eligibility\n     ✔ Find relevant CLAUDE.md files\n     ✔ Get PR #645 summary\n     ✔ Run 5 parallel code review agents\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n\n\n\n"
+  },
+  "pending_tasks_with_owners": [],
+  "pending_tasks_without_owners": [
+    {
+      "blocked_by": [],
+      "description": "When the `midtown chat` TUI encounters a ```mermaid fenced code block in a channel message, eagerly render it as an inline image using Selkie and the Kitty terminal graphics protocol.\n\n## Dependencies\n\nAdd `selkie` as a dependency in `Cargo.toml` with the `kitty` and `png` features enabled:\n```toml\nselkie = { path = \"../selkie\", features = [\"kitty\", \"png\"] }\n```\n\nNote: selkie is at `~/projects/selkie`. For now use a path dependency; we can publish to crates.io later.\n\n## Detection: Parse Mermaid Fences\n\nIn the message rendering pipeline (`src/bin/midtown/cli/chat/ui.rs`), detect fenced Mermaid blocks:\n\n````\n```mermaid\nflowchart LR\n    A --> B\n```\n````\n\nThe `render_message()` function (line 778) processes message content into `Vec<Line>`. Before passing content through `parse_markdown()` and `wrap_content()`, split the content by mermaid fences. For each mermaid block, render it as an image placeholder; for non-mermaid text, render normally.\n\n## Rendering Pipeline\n\nFor each detected mermaid fence:\n\n1. **Parse + render to SVG**: `selkie::render_text(mermaid_source)` → SVG string\n2. **SVG to PNG**: Use selkie's resvg integration to rasterize at the proper width. The image width should match the available chat content width in pixels. Calculate: `terminal_columns * cell_width_pixels` (cell width is typically 7-10px depending on font; can query or use a reasonable default). Height is determined by aspect ratio.\n3. **PNG to Kitty protocol**: Use selkie's `kitty::display_png()` or construct the protocol manually for more control over placement.\n\n## TUI Integration\n\nThe key challenge is that ratatui uses a cell-based buffer but Kitty images are pixel-based overlays. Follow the same **post-render pattern** used for hyperlinks (see `render_hyperlinks()` in `mod.rs` lines 192-236):\n\n1. During `render_message()`, when a mermaid fence is detected:\n   - Calculate image height in terminal rows (image_pixel_height / cell_height_pixels)\n   - Insert that many blank `Line` objects as placeholder space\n   - Record the image metadata (PNG bytes, position, dimensions) in a list (similar to `hyperlinks` return value)\n\n2. After `terminal.draw()` completes, iterate over the image list and emit Kitty graphics protocol sequences at the recorded coordinates.\n\n3. For the Kitty protocol with placement control, use:\n   ```\n   \\x1b_Ga=T,f=32,s=WIDTH,v=HEIGHT,t=d,C=1,c=COL,r=ROW;BASE64DATA\\x1b\\\n   ```\n   Where `C=1` enables cursor positioning and `c=COL,r=ROW` specify placement.\n\n## Width Handling\n\n- Get terminal width from ratatui's layout `Rect` (already available as `inner.width`)\n- Subtract the message indent (7 chars for timestamp + space) to get content width\n- Render the SVG at that content width for proper sizing\n- If the terminal is resized, images will need re-rendering on the next draw\n\n## Fallback\n\n- If Kitty protocol is not supported (`selkie::kitty::is_supported()` returns false), fall back to displaying the raw mermaid source as a cyan-colored code block (current behavior for any code fence)\n- If selkie parsing fails (invalid mermaid syntax), show the raw text with an error indicator\n\n## Caching\n\n- Cache rendered PNG bytes keyed by (mermaid_source, width) to avoid re-rendering on every draw cycle\n- A simple HashMap in App state is sufficient; channel messages are immutable\n\n## Key Files\n\n- `src/bin/midtown/cli/chat/ui.rs` — Message rendering, mermaid detection, placeholder insertion\n- `src/bin/midtown/cli/chat/mod.rs` — Post-render image emission (alongside hyperlinks)\n- `src/bin/midtown/cli/chat/app.rs` — Image cache in App state\n- `Cargo.toml` — Add selkie dependency\n\n## Scope Boundaries\n\n- Only render mermaid fences (not other code fences)\n- Only Kitty protocol (no sixel, no iTerm2 inline images)\n- No web UI changes (separate task later)\n- No headless executor integration yet (diagrams come from message content)\n- Theme: use selkie's default theme; dark theme detection via `selkie::kitty::is_terminal_dark()` is a nice-to-have",
+      "id": "749",
+      "owner": null,
+      "status": "pending",
+      "subject": "Render Mermaid fences as inline Kitty images in chat TUI"
+    },
+    {
+      "blocked_by": [],
+      "description": "The daemon's orphan worktree detection is incorrectly flagging worktrees as orphaned when their coworker is on break but has an open PR. Broadway had an active PR (#645) open but was still flagged as orphaned because the coworker process wasn't running.\n\n**Expected behavior:** A worktree should NOT be flagged as orphaned if:\n1. Its branch has an associated open PR, OR\n2. Its branch name matches a known coworker branch pattern with an open PR\n\n**Current behavior:** The orphan detection only checks if the coworker process is running. If the coworker is on break (process not running) but left behind a worktree with unmerged commits, it's flagged as orphaned — even if there's a PR open for that branch.\n\n**Fix:** In the orphan detection logic (likely in `src/rules.rs` or `src/daemon/health.rs`), cross-reference orphan candidates against open PRs. If a worktree's branch has an open PR, skip the orphan warning.\n\n**How to find the bug:** Search for \"orphan\" in the rules/health modules. The detection likely runs on a timer tick and checks for worktrees where the coworker isn't in the active coworker list. Add a check against the PR list in the WorldSnapshot.",
+      "id": "750",
+      "owner": null,
+      "status": "pending",
+      "subject": "Fix orphan detection: don't flag worktrees with open PRs as orphaned"
+    },
+    {
+      "blocked_by": [],
+      "description": "In the kanban Review column, show the time since the PR was opened after the PR number, e.g. `PR #645 (12m)`.\n\n## TUI (`src/bin/midtown/cli/chat/ui.rs`)\n\nThe kanban panel is rendered by `draw_kanban_panel()` (line 336) and `draw_kanban_column()` (line 458). Review column items already show PR numbers. Add `(Xm)` after the PR number showing minutes since the PR was created.\n\n- The PR creation time should be available from the kanban data (fetched via `kanban.data` RPC which does a GraphQL query). If `created_at` isn't currently in the kanban data, add it.\n- Format: `(1m)`, `(15m)`, `(1h)`, `(2h)` — use minutes for < 60m, hours for >= 60m.\n- Check `app.rs` for the kanban data structures to see what fields are available on PR items.\n\n## Web UI (`web-app/src/lib/Kanban.svelte`)\n\nSame change in the Svelte kanban component. Show `(Xm)` or `(Xh)` after the PR number in Review cards. The kanban data comes from `/api/status` which calls the `kanban.data` RPC.\n\n- Ensure `created_at` is included in the PR data sent to the frontend.\n- Format should match the TUI format.\n- Time should update live (re-calculate on each render or use a reactive timer).\n\n## Data\n\nCheck `src/daemon/rpc.rs` `kanban.data` handler (line 1277) — the GraphQL query for PRs. Ensure `createdAt` is included in the query fields and passed through to the kanban response. Also check `src/web.rs` `/api/status` endpoint to ensure it forwards the field.\n\n## Both columns\n\nApply to the Review column specifically, but also to In Progress if PRs appear there (PRs waiting for CI before review).",
+      "id": "751",
+      "owner": null,
+      "status": "pending",
+      "subject": "Show elapsed minutes on PR cards in Review column (TUI + web)"
+    }
+  ],
+  "prs_needing_review": 2,
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {
+    "pleasant": 644,
+    "york": 645
+  },
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "pleasant",
+      "session_id": "14b9cee3-5a2c-4f55-83ca-dfe2e4532813",
+      "started_at": "2026-02-05T03:55:38.998015Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/pleasant"
+    },
+    {
+      "current_task": null,
+      "isolated_tasks": true,
+      "name": "york",
+      "session_id": "3754137f-c1e2-452f-83d8-468bb1640842",
+      "started_at": "2026-02-05T03:56:08.994307Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/york"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false,
+  "usage_limited_coworkers": []
+}

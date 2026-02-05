@@ -64,6 +64,10 @@ struct DispatchSnapshot {
     pending_tasks_without_owners: Vec<Task>,
     /// Reviewer PR assignments: coworker -> PR number.
     reviewer_pr_assignments: HashMap<String, u64>,
+    /// Number of PRs that need review (from PR poll cache).
+    prs_needing_review: usize,
+    /// Whether we're at the overall coworker limit.
+    is_at_coworker_limit: bool,
 }
 
 /// Load a snapshot fixture and parse it into test-friendly data structures.
@@ -199,6 +203,9 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
         })
         .unwrap_or_default();
 
+    let prs_needing_review = v["prs_needing_review"].as_u64().unwrap_or(0) as usize;
+    let is_at_coworker_limit = v["is_at_coworker_limit"].as_bool().unwrap_or(false);
+
     DispatchSnapshot {
         all_tasks,
         active_names,
@@ -212,6 +219,8 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
         pending_tasks_with_owners,
         pending_tasks_without_owners,
         reviewer_pr_assignments,
+        prs_needing_review,
+        is_at_coworker_limit,
     }
 }
 
@@ -1015,4 +1024,70 @@ fn dev_limit_state_captured() {
 
     // When true, new task spawns would be blocked
     // When false, spawns are allowed (up to the configured limit)
+}
+
+/// Compute the number of PRs that need review but don't have an assigned reviewer yet.
+/// This mirrors the logic that should be in dispatch.rs for deciding whether to defer
+/// unowned task pickup in favor of spawning reviewers.
+fn unserved_prs_needing_review(snap: &DispatchSnapshot) -> usize {
+    let prs_with_reviewers: HashSet<&u64> = snap.reviewer_pr_assignments.values().collect();
+    snap.prs_needing_review
+        .saturating_sub(prs_with_reviewers.len())
+}
+
+/// Should task dispatch be deferred to prioritize reviewer spawning?
+/// This mirrors the deferral condition in dispatch.rs spawn_for_pending_tasks().
+const MAX_CONCURRENT_REVIEWS: usize = 4;
+fn should_defer_task_dispatch(snap: &DispatchSnapshot) -> bool {
+    let active_review_count = snap.active_reviewers.len();
+    let unserved = unserved_prs_needing_review(snap);
+    unserved > 0 && active_review_count < MAX_CONCURRENT_REVIEWS && !snap.is_at_coworker_limit
+}
+
+/// Regression test: dispatch deferral should NOT block when all PRs needing review
+/// already have active reviewers assigned.
+///
+/// Captured snapshot shows: prs_needing_review=2, active_reviewers=[pleasant, york],
+/// reviewer_pr_assignments={pleasant: 644, york: 645}. Both PRs are covered, so
+/// task dispatch should proceed. The bug was that the deferral only checked
+/// prs_needing_review > 0 without subtracting PRs already being reviewed.
+#[test]
+fn dispatch_not_deferred_when_all_prs_have_reviewers() {
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-daemon-not-dispatching-tasks-20260205-040201.json"
+    );
+    let snap = load_snapshot(fixture);
+
+    // Verify the snapshot has the conditions that triggered the bug
+    assert_eq!(snap.prs_needing_review, 2, "2 PRs need review");
+    assert_eq!(snap.active_reviewers.len(), 2, "2 active reviewers");
+    assert_eq!(
+        snap.reviewer_pr_assignments.len(),
+        2,
+        "2 reviewer-PR assignments"
+    );
+    assert!(
+        !snap.pending_tasks_without_owners.is_empty(),
+        "there are unowned tasks waiting for dispatch"
+    );
+    assert!(!snap.is_at_coworker_limit, "not at coworker limit");
+
+    // Every PR needing review already has a reviewer assigned
+    let prs_with_reviewers: HashSet<&u64> = snap.reviewer_pr_assignments.values().collect();
+    assert_eq!(
+        prs_with_reviewers.len(),
+        snap.prs_needing_review,
+        "all PRs needing review have assigned reviewers"
+    );
+
+    // The key assertion: dispatch should NOT be deferred because all PRs are covered
+    assert_eq!(
+        unserved_prs_needing_review(&snap),
+        0,
+        "no unserved PRs needing review"
+    );
+    assert!(
+        !should_defer_task_dispatch(&snap),
+        "task dispatch should NOT be deferred when all PRs already have reviewers"
+    );
 }
