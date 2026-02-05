@@ -356,9 +356,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 on_success,
                 on_failure,
             } => {
-                // Spawn the coworker — no disk write needed.
-                // The coworker will claim the task via `midtown task claim` after starting,
-                // which nudges the Lead to set ownership via TaskUpdate.
+                // Spawn the coworker and set ownership + in_progress on disk.
+                // The coworker also claims the task via `midtown task claim` after starting,
+                // which nudges the Lead to confirm ownership via TaskUpdate.
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
@@ -367,6 +367,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         state.clear_task_spawn_in_flight(&task_id);
                         // Record task assignment in-memory for busy tracking
                         state.record_task_assignment(&owner, &task_id);
+                        // Set task owner on disk so status and owner are consistent
+                        if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
+                            warn!(
+                                "Failed to set task #{} owner to {} after spawn: {}",
+                                task_id, owner, e
+                            );
+                        }
                         // Transition task from pending to in_progress now that the coworker is running
                         if let Err(e) =
                             crate::tasks::set_task_in_progress_for_repo(&task_id, &repo_name)

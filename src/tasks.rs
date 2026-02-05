@@ -1663,6 +1663,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_update_task_owner_in_dir_nonexistent_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        let result = update_task_owner_in_dir("nonexistent", "bob", &tasks_dir);
+        assert!(result.is_err(), "Should error for nonexistent task");
+    }
+
     /// Reproduces the reassignment loop bug: a coworker completes its task but
     /// the shared list still shows the task as pending-with-owner. The daemon
     /// reads the shared list, sees the pending task, and reassigns it in a loop.
