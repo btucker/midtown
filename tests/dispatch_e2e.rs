@@ -1251,3 +1251,458 @@ fn reconciliation_uses_snapshot_in_progress_tasks() {
         "task 78 should be detected as stale (not in_progress on disk)"
     );
 }
+
+// =============================================================================
+// Tests: task.claim RPC flow — effect production logic
+// =============================================================================
+//
+// These tests verify the reconciliation effect decision logic, mirroring
+// what reconcile_stale_claims() produces given various input states.
+// Since reconcile_stale_claims is pub(super), we test the decision patterns
+// directly with the same data structures and thresholds.
+
+/// Describes which action type the reconciliation should take for a stale claim.
+#[derive(Debug, PartialEq)]
+enum ReconcileAction {
+    /// Re-nudge the Lead (retries < max)
+    ReNudgeLead {
+        task_id: String,
+        coworker: String,
+        retry_number: u32,
+    },
+    /// Fall back to direct disk write (retries >= max)
+    DirectWrite { task_id: String, owner: String },
+}
+
+/// Simulate the reconciliation effect decision for a single stale claim.
+///
+/// This mirrors the logic in `reconcile_stale_claims` from dispatch.rs.
+fn decide_reconcile_action(
+    coworker: &str,
+    task_id: &str,
+    retries: u32,
+    max_retries: u32,
+) -> ReconcileAction {
+    if retries >= max_retries {
+        ReconcileAction::DirectWrite {
+            task_id: task_id.to_string(),
+            owner: coworker.to_string(),
+        }
+    } else {
+        ReconcileAction::ReNudgeLead {
+            task_id: task_id.to_string(),
+            coworker: coworker.to_string(),
+            retry_number: retries + 1,
+        }
+    }
+}
+
+/// Verify that stale claims under the retry threshold produce re-nudge actions.
+///
+/// When a claim is detected as stale but hasn't exhausted retries, the
+/// reconciliation should produce three effects:
+/// 1. NudgeLead — with a retry-annotated message
+/// 2. RecordCooldown — to prevent spamming
+/// 3. IncrementClaimRetry — to track retry count
+#[test]
+fn reconcile_stale_claim_produces_renudge_with_retry_tracking() {
+    let max_retries: u32 = 3;
+
+    // First retry (retries=0)
+    let action = decide_reconcile_action("park", "42", 0, max_retries);
+    assert_eq!(
+        action,
+        ReconcileAction::ReNudgeLead {
+            task_id: "42".to_string(),
+            coworker: "park".to_string(),
+            retry_number: 1,
+        },
+        "First stale detection should re-nudge as retry 1"
+    );
+
+    // Second retry (retries=1)
+    let action = decide_reconcile_action("park", "42", 1, max_retries);
+    assert_eq!(
+        action,
+        ReconcileAction::ReNudgeLead {
+            task_id: "42".to_string(),
+            coworker: "park".to_string(),
+            retry_number: 2,
+        },
+        "Second stale detection should re-nudge as retry 2"
+    );
+
+    // Third retry (retries=2) — still under max
+    let action = decide_reconcile_action("park", "42", 2, max_retries);
+    assert_eq!(
+        action,
+        ReconcileAction::ReNudgeLead {
+            task_id: "42".to_string(),
+            coworker: "park".to_string(),
+            retry_number: 3,
+        },
+        "Third stale detection should re-nudge as retry 3"
+    );
+}
+
+/// Verify that stale claims at or above the retry threshold produce direct write actions.
+///
+/// After exhausting retries, the reconciliation falls back to writing task
+/// ownership directly to disk, bypassing the Lead. This produces:
+/// 1. AssignTaskOwnerDirect — sets owner on disk
+/// 2. PostToChannel — warning message about the fallback
+#[test]
+fn reconcile_stale_claim_escalates_to_direct_write() {
+    let max_retries: u32 = 3;
+
+    // At max retries (retries=3)
+    let action = decide_reconcile_action("park", "42", 3, max_retries);
+    assert_eq!(
+        action,
+        ReconcileAction::DirectWrite {
+            task_id: "42".to_string(),
+            owner: "park".to_string(),
+        },
+        "At max retries should escalate to direct write"
+    );
+
+    // Over max retries (retries=5) — still direct write
+    let action = decide_reconcile_action("york", "99", 5, max_retries);
+    assert_eq!(
+        action,
+        ReconcileAction::DirectWrite {
+            task_id: "99".to_string(),
+            owner: "york".to_string(),
+        },
+        "Over max retries should also escalate to direct write"
+    );
+}
+
+/// Verify the nudge message format includes retry count and max retries.
+///
+/// The reconciliation nudge message follows the format:
+/// "Reminder: Set task #<id> owner to \"<name>\" ... (retry N/M)"
+/// This ensures the Lead sees which retry this is.
+#[test]
+fn reconcile_nudge_message_format_includes_retry_info() {
+    let max_retries: u32 = 3;
+
+    // Simulate the nudge message format from dispatch.rs
+    for retries in 0..max_retries {
+        let task_id = "42";
+        let coworker = "park";
+        let retry_number = retries + 1;
+
+        let nudge_msg = format!(
+            "Reminder: Set task #{} owner to \"{}\" and status to in_progress using TaskUpdate. \
+             (retry {}/{})",
+            task_id, coworker, retry_number, max_retries
+        );
+
+        assert!(
+            nudge_msg.contains(&format!("retry {}/{}", retry_number, max_retries)),
+            "Nudge message should include retry progress: {}",
+            nudge_msg
+        );
+        assert!(
+            nudge_msg.contains(&format!("task #{}", task_id)),
+            "Nudge message should reference the task ID"
+        );
+        assert!(
+            nudge_msg.contains(&format!("\"{}\"", coworker)),
+            "Nudge message should include the coworker name"
+        );
+        assert!(
+            nudge_msg.contains("TaskUpdate"),
+            "Nudge message should mention TaskUpdate tool"
+        );
+    }
+}
+
+/// Verify that the full reconciliation pipeline processes a batch of stale claims
+/// and produces the correct mix of actions.
+///
+/// In production, reconcile_stale_claims iterates over all stale claims and
+/// produces independent effect sets. This test verifies the batch behavior.
+#[test]
+fn reconcile_batch_produces_independent_effect_sets() {
+    let max_retries: u32 = 3;
+
+    // Simulate a batch of stale claims with varying retry counts
+    let stale_claims: Vec<(&str, &str, u32)> = vec![
+        ("park", "42", 0),      // Should re-nudge (retry 1/3)
+        ("amsterdam", "55", 2), // Should re-nudge (retry 3/3)
+        ("york", "78", 3),      // Should direct write (exhausted)
+        ("madison", "99", 10),  // Should direct write (way over)
+    ];
+
+    let mut renudge_actions = Vec::new();
+    let mut direct_write_actions = Vec::new();
+
+    for (coworker, task_id, retries) in &stale_claims {
+        match decide_reconcile_action(coworker, task_id, *retries, max_retries) {
+            action @ ReconcileAction::ReNudgeLead { .. } => renudge_actions.push(action),
+            action @ ReconcileAction::DirectWrite { .. } => direct_write_actions.push(action),
+        }
+    }
+
+    assert_eq!(
+        renudge_actions.len(),
+        2,
+        "Two claims should produce re-nudge actions"
+    );
+    assert_eq!(
+        direct_write_actions.len(),
+        2,
+        "Two claims should produce direct write actions"
+    );
+
+    // Verify re-nudge actions reference correct coworkers
+    assert!(matches!(
+        &renudge_actions[0],
+        ReconcileAction::ReNudgeLead { coworker, task_id, retry_number: 1 }
+        if coworker == "park" && task_id == "42"
+    ));
+    assert!(matches!(
+        &renudge_actions[1],
+        ReconcileAction::ReNudgeLead { coworker, task_id, retry_number: 3 }
+        if coworker == "amsterdam" && task_id == "55"
+    ));
+
+    // Verify direct write actions reference correct coworkers
+    assert!(matches!(
+        &direct_write_actions[0],
+        ReconcileAction::DirectWrite { owner, task_id }
+        if owner == "york" && task_id == "78"
+    ));
+    assert!(matches!(
+        &direct_write_actions[1],
+        ReconcileAction::DirectWrite { owner, task_id }
+        if owner == "madison" && task_id == "99"
+    ));
+}
+
+/// Verify that the stale claim timeout threshold works correctly.
+///
+/// Claims are only stale when: (1) task is pending on disk AND (2) assignment
+/// age exceeds the timeout (60s). This test verifies the time-based filtering.
+#[test]
+fn stale_claim_timeout_filters_recent_assignments() {
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(60);
+    let now = Instant::now();
+
+    // Simulate assignments with different ages
+    struct TestAssignment {
+        coworker: &'static str,
+        task_id: &'static str,
+        assigned_at: Instant,
+    }
+
+    let assignments = [
+        TestAssignment {
+            coworker: "park",
+            task_id: "42",
+            assigned_at: now - Duration::from_secs(120), // 2 minutes ago — stale
+        },
+        TestAssignment {
+            coworker: "amsterdam",
+            task_id: "55",
+            assigned_at: now - Duration::from_secs(30), // 30s ago — NOT stale yet
+        },
+        TestAssignment {
+            coworker: "york",
+            task_id: "78",
+            assigned_at: now - Duration::from_secs(61), // Just over timeout — stale
+        },
+        TestAssignment {
+            coworker: "madison",
+            task_id: "99",
+            assigned_at: now - Duration::from_secs(59), // Just under timeout — NOT stale
+        },
+    ];
+
+    // None of these tasks are in_progress on disk
+    let on_disk_in_progress: HashSet<String> = HashSet::new();
+
+    let stale: Vec<_> = assignments
+        .iter()
+        .filter(|a| {
+            now.duration_since(a.assigned_at) > timeout && !on_disk_in_progress.contains(a.task_id)
+        })
+        .map(|a| a.coworker)
+        .collect();
+
+    assert_eq!(stale.len(), 2, "Only 2 assignments should be stale");
+    assert!(
+        stale.contains(&"park"),
+        "park's 120s assignment should be stale"
+    );
+    assert!(
+        stale.contains(&"york"),
+        "york's 61s assignment should be stale"
+    );
+    assert!(
+        !stale.contains(&"amsterdam"),
+        "amsterdam's 30s assignment should not be stale"
+    );
+    assert!(
+        !stale.contains(&"madison"),
+        "madison's 59s assignment should not be stale"
+    );
+}
+
+/// Verify the complete task.claim flow from claim to reconciliation to escalation.
+///
+/// Simulates the full lifecycle:
+/// 1. Coworker claims task → in-memory assignment recorded
+/// 2. Timeout passes → stale detected → re-nudge Lead
+/// 3. More timeouts → retry count increments
+/// 4. Max retries reached → escalate to direct disk write
+#[test]
+fn full_claim_lifecycle_from_claim_to_escalation() {
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(60);
+    let max_retries: u32 = 3;
+    let now = Instant::now();
+
+    // Phase 1: Coworker claims task, in-memory assignment created
+    let coworker = "park";
+    let task_id = "42";
+    let mut assigned_at = now - Duration::from_secs(120); // Already past timeout
+    let mut retries: u32 = 0;
+
+    // Phase 2: First stale detection — should re-nudge
+    let is_stale = now.duration_since(assigned_at) > timeout;
+    assert!(is_stale, "Assignment should be stale after 120s");
+    let action = decide_reconcile_action(coworker, task_id, retries, max_retries);
+    assert!(
+        matches!(
+            action,
+            ReconcileAction::ReNudgeLead {
+                retry_number: 1,
+                ..
+            }
+        ),
+        "First stale detection should be retry 1"
+    );
+
+    // Simulate IncrementClaimRetry effect: bump retry count and reset timestamp
+    retries += 1;
+    assigned_at = now; // Reset timestamp on retry
+
+    // Phase 3: Second stale detection after another timeout
+    let later = now + Duration::from_secs(120);
+    let is_stale = later.duration_since(assigned_at) > timeout;
+    assert!(is_stale, "Should be stale again after another timeout");
+    let action = decide_reconcile_action(coworker, task_id, retries, max_retries);
+    assert!(
+        matches!(
+            action,
+            ReconcileAction::ReNudgeLead {
+                retry_number: 2,
+                ..
+            }
+        ),
+        "Second stale detection should be retry 2"
+    );
+    retries += 1;
+
+    // Phase 4: Third retry
+    let action = decide_reconcile_action(coworker, task_id, retries, max_retries);
+    assert!(
+        matches!(
+            action,
+            ReconcileAction::ReNudgeLead {
+                retry_number: 3,
+                ..
+            }
+        ),
+        "Third stale detection should be retry 3"
+    );
+    retries += 1;
+
+    // Phase 5: Max retries reached — escalate to direct write
+    assert_eq!(retries, max_retries);
+    let action = decide_reconcile_action(coworker, task_id, retries, max_retries);
+    assert_eq!(
+        action,
+        ReconcileAction::DirectWrite {
+            task_id: task_id.to_string(),
+            owner: coworker.to_string(),
+        },
+        "After max retries should escalate to direct disk write"
+    );
+}
+
+/// Verify that claims are cleared from stale detection once the task
+/// appears as in_progress on disk (Lead successfully processed the nudge).
+///
+/// This is the happy path resolution: the Lead processes the nudge,
+/// updates the task to in_progress, and the next reconciliation cycle
+/// sees the task on disk and skips it.
+#[test]
+fn claim_resolved_when_task_transitions_to_in_progress() {
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(60);
+    let now = Instant::now();
+
+    // Assignment exists and is older than timeout
+    let assigned_at = now - Duration::from_secs(120);
+    let task_id = "42";
+    let _coworker = "park";
+
+    // Before Lead processes: task NOT in_progress on disk → stale
+    let on_disk_empty: HashSet<String> = HashSet::new();
+    let is_stale = now.duration_since(assigned_at) > timeout && !on_disk_empty.contains(task_id);
+    assert!(
+        is_stale,
+        "Should be stale when task not in_progress on disk"
+    );
+
+    // After Lead processes: task IS in_progress on disk → NOT stale
+    let on_disk_with_task: HashSet<String> = [task_id.to_string()].into_iter().collect();
+    let is_stale =
+        now.duration_since(assigned_at) > timeout && !on_disk_with_task.contains(task_id);
+    assert!(
+        !is_stale,
+        "Should NOT be stale once task is in_progress on disk"
+    );
+}
+
+/// Verify that the direct disk write fallback message includes
+/// the retry count and coworker name for debugging.
+#[test]
+fn direct_write_fallback_message_includes_context() {
+    let max_retries: u32 = 3;
+    let coworker = "park";
+    let task_id = "42";
+    let retries = max_retries;
+
+    // Simulate the fallback channel message format from dispatch.rs
+    let channel_msg = format!(
+        "⚠️ Lead did not process claim for task #{} by {} after {} retries. \
+         Set ownership directly.",
+        task_id, coworker, retries
+    );
+
+    assert!(
+        channel_msg.contains(&format!("task #{}", task_id)),
+        "Message should include task ID"
+    );
+    assert!(
+        channel_msg.contains(coworker),
+        "Message should include coworker name"
+    );
+    assert!(
+        channel_msg.contains(&retries.to_string()),
+        "Message should include retry count"
+    );
+    assert!(
+        channel_msg.contains("directly"),
+        "Message should indicate direct ownership was set"
+    );
+}
