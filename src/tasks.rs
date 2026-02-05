@@ -469,6 +469,54 @@ fn update_task_owner_in_dir(
     Ok(())
 }
 
+/// Update specific fields on a task.
+///
+/// Only fields that are `Some` are updated; `None` fields are left unchanged.
+/// This is the daemon's direct write path — no Lead proxy needed.
+pub fn update_task_fields_for_repo(
+    task_id: &str,
+    repo_name: &str,
+    owner: Option<&str>,
+    status: Option<&str>,
+    description: Option<&str>,
+    blocked_by: Option<&[String]>,
+) -> Result<(), String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+
+    let content =
+        std::fs::read_to_string(&task_file).map_err(|e| format!("Failed to read task: {}", e))?;
+
+    let mut task: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse task: {}", e))?;
+
+    if let Some(o) = owner {
+        task["owner"] = serde_json::json!(o);
+    }
+    if let Some(s) = status {
+        task["status"] = serde_json::json!(s);
+    }
+    if let Some(d) = description {
+        task["description"] = serde_json::json!(d);
+    }
+    if let Some(bb) = blocked_by {
+        task["blockedBy"] = serde_json::json!(bb);
+    }
+
+    let updated_content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+
+    std::fs::write(&task_file, updated_content)
+        .map_err(|e| format!("Failed to write task: {}", e))?;
+
+    Ok(())
+}
+
 /// Reset a task to pending status and clear its owner.
 ///
 /// Used when orphan recovery fails to respawn a coworker - the task is reset

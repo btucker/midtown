@@ -264,6 +264,30 @@ impl DaemonClient {
         )
     }
 
+    pub fn task_update(
+        &self,
+        id: &str,
+        owner: Option<&str>,
+        status: Option<&str>,
+        description: Option<&str>,
+        blocked_by: Option<&[String]>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "id": id });
+        if let Some(o) = owner {
+            params["owner"] = serde_json::json!(o);
+        }
+        if let Some(s) = status {
+            params["status"] = serde_json::json!(s);
+        }
+        if let Some(d) = description {
+            params["description"] = serde_json::json!(d);
+        }
+        if let Some(bb) = blocked_by {
+            params["blocked_by"] = serde_json::json!(bb);
+        }
+        self.send("task.update", Some(params))
+    }
+
     pub fn task_claim(&self, id: &str) -> Result<Response, String> {
         let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
         self.send(
@@ -313,19 +337,6 @@ impl DaemonClient {
 
     pub fn check_pending(&self) -> Result<Response, String> {
         self.send("daemon.check-pending", None)
-    }
-
-    pub fn task_updated(
-        &self,
-        task_id: &str,
-        updater: &str,
-        task_list_id: Option<&str>,
-    ) -> Result<Response, String> {
-        let mut params = serde_json::json!({ "task_id": task_id, "updater": updater });
-        if let Some(list_id) = task_list_id {
-            params["task_list_id"] = serde_json::json!(list_id);
-        }
-        self.send("task.updated", Some(params))
     }
 
     // Auth commands

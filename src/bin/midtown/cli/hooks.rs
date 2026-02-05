@@ -587,7 +587,7 @@ fn handle_task_hook() -> Result<Response, String> {
     // This is a write-through safety net for the /resume case where Claude Code
     // doesn't honor CLAUDE_CODE_TASK_LIST_ID and stores tasks only in-memory.
     // The hook mirrors task data to the shared dir so the daemon can see it.
-    let remapped_task_id = if agent == "lead" {
+    let _remapped_task_id = if agent == "lead" {
         ensure_lead_task_persistence(&repo, tool_name, tool_input, &context)
     } else {
         None
@@ -626,28 +626,8 @@ fn handle_task_hook() -> Result<Response, String> {
             }
         }
 
-        match tool_name {
-            "TaskCreate" => {
-                let _ = client.check_pending();
-            }
-            "TaskUpdate" => {
-                // Use the remapped task ID if the Lead's internal ID was different
-                // from the shared directory ID (happens after /resume).
-                let task_id = remapped_task_id
-                    .as_deref()
-                    .or_else(|| {
-                        tool_input["taskId"]
-                            .as_str()
-                            .or_else(|| tool_input["task_id"].as_str())
-                    })
-                    .unwrap_or("");
-                if !task_id.is_empty() {
-                    // Include task list ID so daemon can check for cross-list collisions
-                    let task_list_id = std::env::var("CLAUDE_CODE_TASK_LIST_ID").ok();
-                    let _ = client.task_updated(task_id, &agent, task_list_id.as_deref());
-                }
-            }
-            _ => {}
+        if tool_name == "TaskCreate" {
+            let _ = client.check_pending();
         }
     }
 

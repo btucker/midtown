@@ -264,6 +264,68 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "ok"}))
         }
 
+        "task.create" => {
+            let params = request.params.as_ref();
+            let subject = params
+                .and_then(|p| p.get("subject"))
+                .and_then(|v| v.as_str());
+            let description = params
+                .and_then(|p| p.get("description"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match subject {
+                Some(subject) => handle_task_create(request.id, subject, description, state).await,
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
+        "task.update" => {
+            let params = request.params.as_ref();
+            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
+
+            match id {
+                Some(id) => {
+                    let owner = params.and_then(|p| p.get("owner")).and_then(|v| v.as_str());
+                    let status = params
+                        .and_then(|p| p.get("status"))
+                        .and_then(|v| v.as_str());
+                    let description = params
+                        .and_then(|p| p.get("description"))
+                        .and_then(|v| v.as_str());
+                    let blocked_by: Option<Vec<String>> = params
+                        .and_then(|p| p.get("blocked_by"))
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        });
+
+                    handle_task_update(
+                        request.id,
+                        id,
+                        owner,
+                        status,
+                        description,
+                        blocked_by.as_deref(),
+                        state,
+                    )
+                }
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
+        "task.done" => {
+            let params = request.params.as_ref();
+            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
+
+            match id {
+                Some(id) => handle_task_done(request.id, id, state),
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "task.request" => {
             let params = request.params.as_ref();
             let message = params
@@ -288,28 +350,8 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             match id {
-                Some(id) => handle_task_claim(request.id, id, from, state).await,
+                Some(id) => handle_task_claim(request.id, id, from, state),
                 None => Response::error(request.id, RpcError::invalid_params()),
-            }
-        }
-
-        "task.updated" => {
-            let params = request.params.as_ref();
-            let task_id = params
-                .and_then(|p| p.get("task_id"))
-                .and_then(|v| v.as_str());
-            let updater = params
-                .and_then(|p| p.get("updater"))
-                .and_then(|v| v.as_str());
-            let task_list_id = params
-                .and_then(|p| p.get("task_list_id"))
-                .and_then(|v| v.as_str());
-
-            match (task_id, updater) {
-                (Some(task_id), Some(updater)) => {
-                    handle_task_updated(request.id, task_id, updater, task_list_id, state)
-                }
-                _ => Response::error(request.id, RpcError::invalid_params()),
             }
         }
 
@@ -1102,22 +1144,132 @@ async fn handle_task_request(
     )
 }
 
-/// Handle task.claim RPC — a coworker claims a task by requesting the Lead to set ownership.
-///
-/// Instead of writing task JSON directly (which races with Claude Code sessions),
-/// this handler nudges the Lead to execute TaskUpdate, setting the owner and status
-/// atomically through the Lead's Claude Code session.
-///
-/// The handler validates the task exists and is pending, then fires a lead nudge
-/// and returns immediately. The in-memory assignment tracking prevents re-assignment
-/// even before the Lead processes the nudge.
-async fn handle_task_claim(
+/// Handle task.create RPC — daemon creates a task directly in shared storage.
+async fn handle_task_create(
     id: RequestId,
-    task_id: &str,
-    from: &str,
+    subject: &str,
+    description: &str,
     state: &DaemonState,
 ) -> Response {
-    // Validate the task exists and is claimable
+    let repo_name = state.repo_name.clone();
+
+    match crate::tasks::create_task_for_repo(subject, description, "", "", &repo_name) {
+        Ok(task_id) => {
+            // Post to channel so team is aware
+            let msg = Message::text("lead", format!("created task: {}", subject));
+            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                warn!("Failed to post task creation to channel: {}", e);
+            }
+
+            // Trigger pending task dispatch
+            let snap = super::snapshot::collect_world_snapshot(state).await;
+            let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+            state.mark_in_flight_spawns_from_effects(&pending_effects);
+            super::effects::execute_effects(pending_effects, state).await;
+
+            info!("Created task #{}: {}", task_id, subject);
+            Response::success(
+                id,
+                serde_json::json!({
+                    "type": "message",
+                    "message": format!("Task #{} created: {}", task_id, subject),
+                }),
+            )
+        }
+        Err(e) => Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to create task: {}", e)),
+        ),
+    }
+}
+
+/// Handle task.update RPC — update specific fields on a task directly.
+fn handle_task_update(
+    id: RequestId,
+    task_id: &str,
+    owner: Option<&str>,
+    status: Option<&str>,
+    description: Option<&str>,
+    blocked_by: Option<&[String]>,
+    state: &DaemonState,
+) -> Response {
+    // Validate status if provided
+    if let Some(s) = status
+        && !["pending", "in_progress", "completed"].contains(&s)
+    {
+        return Response::error(id, RpcError::new(-32602, format!("Invalid status: {}", s)));
+    }
+
+    let repo_name = state.repo_name.clone();
+
+    if let Err(e) = crate::tasks::update_task_fields_for_repo(
+        task_id,
+        &repo_name,
+        owner,
+        status,
+        description,
+        blocked_by,
+    ) {
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to update task: {}", e)),
+        );
+    }
+
+    // Update in-memory assignment tracking if owner changed
+    if let Some(new_owner) = owner {
+        state.record_task_assignment(new_owner, task_id);
+    }
+
+    // Clear blocked-by tracking if task completed
+    if status == Some("completed") {
+        state.clear_task_assignment_by_task(task_id);
+    }
+
+    info!("Updated task #{}", task_id);
+    Response::success(
+        id,
+        serde_json::json!({
+            "type": "message",
+            "message": format!("Task #{} updated", task_id),
+        }),
+    )
+}
+
+/// Handle task.done RPC — mark a task as completed directly.
+fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+    let repo_name = state.repo_name.clone();
+
+    if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &repo_name) {
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to complete task: {}", e)),
+        );
+    }
+
+    // Clear in-memory tracking
+    state.clear_task_assignment_by_task(task_id);
+
+    // Unblock dependent tasks
+    if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &repo_name) {
+        warn!("Failed to clear blockedBy for task #{}: {}", task_id, e);
+    }
+
+    info!("Completed task #{}", task_id);
+    Response::success(
+        id,
+        serde_json::json!({
+            "type": "message",
+            "message": format!("Task #{} completed", task_id),
+        }),
+    )
+}
+
+/// Handle task.claim RPC — a coworker claims a task by writing directly to disk.
+///
+/// Validates the task exists and is pending, then sets owner and status to in_progress
+/// directly. No Lead proxy needed.
+fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonState) -> Response {
     let tasks = crate::tasks::read_tasks();
     let task = tasks.iter().find(|t| t.id == task_id);
 
@@ -1141,171 +1293,35 @@ async fn handle_task_claim(
         );
     }
 
-    // Record in-memory assignment to prevent re-assignment before the Lead acts
+    let repo_name = state.repo_name.clone();
+
+    // Write owner and status directly to disk
+    if let Err(e) = crate::tasks::update_task_fields_for_repo(
+        task_id,
+        &repo_name,
+        Some(from),
+        Some("in_progress"),
+        None,
+        None,
+    ) {
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to claim task: {}", e)),
+        );
+    }
+
+    // Record in-memory assignment for busy tracking
     state.record_task_assignment(from, task_id);
 
-    // Nudge the Lead to set ownership via TaskUpdate
-    let nudge_msg = format!(
-        "Set task #{} owner to \"{}\" and status to in_progress using TaskUpdate.",
-        task_id, from
-    );
-
-    let coworkers = state.coworkers.clone();
-    let nudge_clone = nudge_msg.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = coworkers.nudge_lead(&nudge_clone) {
-            warn!("Failed to nudge Lead for task claim: {}", e);
-        }
-    });
-
-    info!(
-        "Task claim: {} requesting ownership of task #{} via Lead",
-        from, task_id
-    );
+    info!("Task claim: {} claimed task #{} directly", from, task_id);
 
     Response::success(
         id,
         serde_json::json!({
             "success": true,
-            "message": format!("Claim request for task #{} sent to Lead", task_id),
+            "message": format!("Claimed task #{}", task_id),
         }),
     )
-}
-
-/// Handle task.updated RPC — nudge the task owner when someone else updates their task.
-///
-/// Looks up the task by ID, checks the owner, and if the updater differs from
-/// the owner, sends a nudge so the owner sees the change immediately.
-///
-/// The `task_list_id` parameter (from `CLAUDE_CODE_TASK_LIST_ID` env var) is used to
-/// verify the update came from the lead's task list. If it refers to a different
-/// session (e.g., a coworker's isolated task list), we skip the lookup to avoid
-/// cross-list ID collisions causing spurious nudges.
-fn handle_task_updated(
-    id: RequestId,
-    task_id: &str,
-    updater: &str,
-    task_list_id: Option<&str>,
-    state: &DaemonState,
-) -> Response {
-    // Check if this update is for the shared team task list
-    if !should_lookup_task(task_list_id, &state.repo_name) {
-        debug!(
-            "task.updated: task_list_id {:?} doesn't match repo {}, skipping lookup",
-            task_list_id, state.repo_name
-        );
-        return Response::success(
-            id,
-            serde_json::json!({
-                "nudged": false,
-                "reason": "task list mismatch",
-            }),
-        );
-    }
-
-    let tasks = crate::tasks::read_tasks();
-    let task = tasks.iter().find(|t| t.id == task_id);
-
-    let Some(task) = task else {
-        info!("task.updated: task {} not found, skipping nudge", task_id);
-        return Response::success(
-            id,
-            serde_json::json!({
-                "nudged": false,
-                "reason": "task not found",
-            }),
-        );
-    };
-
-    // Use helper function to decide whether to nudge
-    let Some((owner, nudge_message)) = should_nudge_task_owner(task, updater) else {
-        // Log the specific reason for skipping
-        let reason = if task.owner.is_none() {
-            "task has no owner"
-        } else if task.owner.as_ref().is_some_and(|o| o == updater) {
-            "updater is owner"
-        } else if task.status == crate::tasks::TaskStatus::Completed {
-            "task is completed"
-        } else {
-            "unknown"
-        };
-        debug!("task.updated: task {} skipping nudge ({})", task_id, reason);
-        return Response::success(
-            id,
-            serde_json::json!({
-                "nudged": false,
-                "reason": reason,
-            }),
-        );
-    };
-
-    // Nudge the owner (could be a coworker or Lead).
-    // Run in spawn_blocking to avoid blocking the async runtime.
-    let coworkers = state.coworkers.clone();
-    let owner_clone = owner.clone();
-    let nudge_clone = nudge_message.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = coworkers.nudge(&owner_clone, &nudge_clone) {
-            debug!("Failed to nudge {} for task update: {}", owner_clone, e);
-        }
-    });
-
-    info!(
-        "task.updated: nudged {} about task {} (updated by {})",
-        owner, task_id, updater
-    );
-    Response::success(
-        id,
-        serde_json::json!({
-            "nudged": true,
-            "owner": owner,
-        }),
-    )
-}
-
-/// Check whether a task.updated RPC should look up the task in the lead's task list.
-///
-/// Returns true if:
-/// - `task_list_id` is None (backwards compatibility with old clients)
-/// - `task_list_id` matches `midtown-{repo_name}` (the lead's task list)
-///
-/// Returns false if `task_list_id` refers to a different session (e.g., a coworker's
-/// isolated task list), preventing cross-list ID collisions from causing spurious nudges.
-fn should_lookup_task(task_list_id: Option<&str>, repo_name: &str) -> bool {
-    let expected = crate::paths::task_list_id_for_repo(repo_name);
-    match task_list_id {
-        None => true, // Backwards compatibility
-        Some(id) => id == expected,
-    }
-}
-
-/// Determine whether to nudge a task owner about an update.
-///
-/// Returns `Some((owner, message))` if a nudge should be sent, or `None` if not.
-///
-/// Nudges are skipped when:
-/// - Task has no owner
-/// - Updater is the owner (self-update)
-/// - Task is already completed (no need to alert about finished work)
-fn should_nudge_task_owner(task: &crate::tasks::Task, updater: &str) -> Option<(String, String)> {
-    // Skip if no owner
-    let owner = task.owner.as_ref()?;
-
-    // Skip if updater is the owner
-    if owner == updater {
-        return None;
-    }
-
-    // Skip completed tasks — they're done, no need to nudge about updates
-    if task.status == crate::tasks::TaskStatus::Completed {
-        return None;
-    }
-
-    let message = format!(
-        "Your task #{} ({}) was updated by {} — check the latest changes",
-        task.id, task.subject, updater
-    );
-    Some((owner.clone(), message))
 }
 
 /// Remove shell escaping artifacts from channel messages.
@@ -2356,121 +2372,6 @@ mod tests {
             kanban_ci_status(&[serde_json::json!({"status": "IN_PROGRESS"})]),
             "running"
         );
-    }
-
-    #[test]
-    fn test_should_lookup_task_matching_task_list() {
-        // When task_list_id matches the expected midtown-<repo>, should proceed
-        assert!(should_lookup_task(Some("midtown-myrepo"), "myrepo"));
-    }
-
-    #[test]
-    fn test_should_lookup_task_none_backwards_compat() {
-        // When task_list_id is None (old clients), should proceed for backwards compatibility
-        assert!(should_lookup_task(None, "myrepo"));
-    }
-
-    #[test]
-    fn test_should_lookup_task_different_session() {
-        // When task_list_id is a different session (e.g., local coworker subtasks),
-        // should NOT proceed to avoid cross-list ID collisions
-        assert!(!should_lookup_task(
-            Some("some-random-uuid-session"),
-            "myrepo"
-        ));
-    }
-
-    #[test]
-    fn test_should_lookup_task_different_repo() {
-        // When task_list_id is for a different repo, should NOT proceed
-        assert!(!should_lookup_task(Some("midtown-otherrepo"), "myrepo"));
-    }
-
-    #[test]
-    fn test_should_nudge_task_owner_in_progress_task() {
-        // In-progress task with owner, updated by someone else — should nudge
-        let task = crate::tasks::Task {
-            id: "42".to_string(),
-            subject: "Fix the bug".to_string(),
-            status: crate::tasks::TaskStatus::InProgress,
-            owner: Some("york".to_string()),
-            description: None,
-            blocked_by: vec![],
-            created_at: None,
-        };
-        let result = should_nudge_task_owner(&task, "lead");
-        assert!(result.is_some());
-        let (owner, message) = result.unwrap();
-        assert_eq!(owner, "york");
-        assert!(message.contains("task #42"));
-        assert!(message.contains("lead"));
-    }
-
-    #[test]
-    fn test_should_nudge_task_owner_completed_task() {
-        // Completed task — should NOT nudge (this is the bug fix)
-        let task = crate::tasks::Task {
-            id: "42".to_string(),
-            subject: "Fix the bug".to_string(),
-            status: crate::tasks::TaskStatus::Completed,
-            owner: Some("york".to_string()),
-            description: None,
-            blocked_by: vec![],
-            created_at: None,
-        };
-        let result = should_nudge_task_owner(&task, "lead");
-        assert!(result.is_none(), "Should not nudge for completed tasks");
-    }
-
-    #[test]
-    fn test_should_nudge_task_owner_no_owner() {
-        // Task without owner — should NOT nudge
-        let task = crate::tasks::Task {
-            id: "42".to_string(),
-            subject: "Fix the bug".to_string(),
-            status: crate::tasks::TaskStatus::InProgress,
-            owner: None,
-            description: None,
-            blocked_by: vec![],
-            created_at: None,
-        };
-        let result = should_nudge_task_owner(&task, "lead");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_should_nudge_task_owner_self_update() {
-        // Owner updating their own task — should NOT nudge
-        let task = crate::tasks::Task {
-            id: "42".to_string(),
-            subject: "Fix the bug".to_string(),
-            status: crate::tasks::TaskStatus::InProgress,
-            owner: Some("york".to_string()),
-            description: None,
-            blocked_by: vec![],
-            created_at: None,
-        };
-        let result = should_nudge_task_owner(&task, "york");
-        assert!(
-            result.is_none(),
-            "Should not nudge when owner updates their own task"
-        );
-    }
-
-    #[test]
-    fn test_should_nudge_task_owner_pending_task() {
-        // Pending task with owner, updated by someone else — should nudge
-        let task = crate::tasks::Task {
-            id: "42".to_string(),
-            subject: "Fix the bug".to_string(),
-            status: crate::tasks::TaskStatus::Pending,
-            owner: Some("york".to_string()),
-            description: None,
-            blocked_by: vec![],
-            created_at: None,
-        };
-        let result = should_nudge_task_owner(&task, "lead");
-        assert!(result.is_some());
     }
 
     #[test]

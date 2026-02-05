@@ -29,9 +29,8 @@ If you catch yourself:
 1. Create a branch first: `git checkout -b lead/<description>`
 2. Do the work and commit it
 3. Create a task - the daemon will call in a coworker automatically:
-   ```
-   TaskCreate with subject: "Open PR for lead/<description> branch",
-   description: "Lead committed changes on branch lead/<description>. Open a PR, get it reviewed, and merge."
+   ```bash
+   midtown task create "Open PR for lead/<description> branch" --description "Lead committed changes on branch lead/<description>. Open a PR, get it reviewed, and merge."
    ```
 4. Return to main: `git checkout main`
 
@@ -50,7 +49,7 @@ Example workflow:
 ```bash
 # User asks for a feature - DON'T start coding!
 # 1. Create a task - the daemon will automatically assign it to a coworker
-TaskCreate with subject and description
+midtown task create "Feature description" --description "Details..."
 
 # 2. Monitor progress
 midtown status
@@ -110,7 +109,7 @@ The daemon automatically assigns tasks to idle coworkers or calls in new ones as
 
 ```bash
 # Create a task - the daemon assigns it automatically
-TaskCreate with subject and description
+midtown task create "Subject" --description "Details..."
 
 # Manual call-in (rare - only if daemon requests or urgent):
 midtown coworker call-in
@@ -135,8 +134,7 @@ Reviewers may @mention you with `[Review Note]` items that fell below the PR com
 
 ```bash
 # Review note needs follow-up → create a task
-TaskCreate with subject: "Address review feedback: <issue summary>",
-description: "From PR #X review: <details>"
+midtown task create "Address review feedback: <issue summary>" --description "From PR #X review: <details>"
 ```
 
 **Important**: Your context is limited. If a review note identifies a real issue that should be fixed later, you MUST create a task for it. Simply acknowledging "good point, we should fix that" without creating a task means it will be forgotten.
@@ -261,24 +259,47 @@ midtown lead remind cancel <id>
 The daemon checks the condition every 30 seconds. When it fires, you'll see a message
 in the channel. Reminders are one-shot — they fire once and are done.
 
+## Task Management
+
+Use `midtown task` CLI commands to manage tasks. The daemon writes directly — no Lead proxy needed.
+
+```bash
+# Create a task (daemon assigns it automatically)
+midtown task create "Subject" --description "Details..."
+
+# View tasks
+midtown task list
+midtown task view <id>
+
+# Update a task
+midtown task update <id> --owner <coworker-name>
+midtown task update <id> --status in_progress
+midtown task update <id> --description "Updated details..."
+midtown task update <id> --blocked-by 5,6
+
+# Mark a task as done
+midtown task done <id>
+```
+
+**Do NOT use Claude Code's TaskCreate/TaskUpdate/TaskList tools** — those write to a different location and won't be seen by coworkers or the daemon.
+
 ## Assigning Tasks
 **The daemon handles task assignment by default.** Only manually assign tasks in these cases:
 
 1. **Combining into one PR** — A follow-up task should go with work a coworker is already doing (assign to that coworker so they include it in the same PR)
 2. **Recovering from a bad state** — The daemon is stuck or a situation requires manual intervention
 
-To manually assign, use `TaskUpdate` to set the `owner` field:
+To manually assign:
+```bash
+midtown task update <id> --owner <coworker-name>
 ```
-TaskUpdate with taskId, owner: "<coworker-name>"
-```
-
-This ensures `midtown status` shows the assignment before the coworker claims it.
 
 ## Updating Tasks
-When you update a task that a coworker is actively working on, always @mention them in the channel so they see the change. They won't notice a TaskUpdate on their own.
+When you update a task that a coworker is actively working on, always @mention them in the channel so they see the change.
 
 ```bash
 # After updating task description/requirements:
+midtown task update 714 --description "Updated root cause..."
 midtown channel post "@vernon Updated task #714 description — root cause changed, see updated task for details."
 ```
 
@@ -301,4 +322,4 @@ When creating tasks, prefer combining tightly coupled work into a single task ra
 - Always save plans to `~/.claude/plans/`
 - Use descriptive filenames: `YYYY-MM-DD-<topic>.md`
 - Plans persist across sessions and are shared with coworkers
-- **After writing a plan, create tasks from it** — don't offer "subagent execution" or "parallel session" options. In midtown, work is delegated to coworkers via tasks, not executed via subagents in the Lead's session.
+- **After writing a plan, create tasks from it** using `midtown task create` — don't offer "subagent execution" or "parallel session" options. In midtown, work is delegated to coworkers via tasks, not executed via subagents in the Lead's session.
