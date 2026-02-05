@@ -2531,3 +2531,148 @@ fn test_spawn_reviewer_sets_window_name_to_review_format() {
     // Clean up: kill the claude process
     kill_window(&session, "test-reviewer");
 }
+
+// ── Duplicate window prevention ─────────────────────────────────────
+
+/// Spawning a coworker when orphaned same-name windows exist should clean
+/// them up so only one window remains.
+///
+/// Reproduces the bug where shutdown() uses kill_window() (first match only),
+/// leaving orphaned windows that accumulate across break/respawn cycles.
+/// The fix is for spawn_claude() to call kill_all_windows_by_name() before
+/// create_window(), mirroring what spawn_lead() already does.
+#[test]
+#[ignore]
+#[timeout(60_000)]
+fn test_spawn_claude_cleans_up_duplicate_windows() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    // Check if claude is available
+    let claude_available = Command::new("claude")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !claude_available {
+        eprintln!("claude not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    let coworker_name = "testworker";
+
+    // Create 3 orphaned windows with the same name (simulating the bug state
+    // where shutdown only killed 1 of N duplicate windows each cycle)
+    for _ in 0..3 {
+        assert!(
+            create_test_window(&session, coworker_name),
+            "Failed to create orphan window"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Verify we have 3 duplicate windows
+    let (count_before, _) = midtown::tmux::count_windows_by_name(&session, coworker_name)
+        .expect("count_windows_by_name failed");
+    assert_eq!(count_before, 3, "Should have 3 orphan windows before spawn");
+
+    // Now spawn a coworker with the same name — this should clean up
+    // the orphaned windows before creating its own
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_string_lossy().to_string();
+    let config = midtown::tmux::ClaudeLaunchConfig::coworker(
+        coworker_name,
+        "test-repo",
+        midtown::tmux::SessionMode::Fresh,
+        None,
+    );
+    let result = midtown::tmux::spawn_claude(&session, &dir, &config);
+    assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
+
+    // Wait for window stabilization
+    thread::sleep(Duration::from_secs(3));
+
+    // After spawn, there should be exactly 1 window with this name
+    let (count_after, _) = midtown::tmux::count_windows_by_name(&session, coworker_name)
+        .expect("count_windows_by_name failed");
+    assert_eq!(
+        count_after, 1,
+        "spawn_claude should clean up duplicate windows, leaving exactly 1. \
+         Found {} windows named '{}'",
+        count_after, coworker_name
+    );
+
+    // Clean up
+    let _ = midtown::tmux::kill_all_windows_by_name(&session, coworker_name);
+}
+
+/// kill_window fails when duplicate same-name windows exist, because tmux
+/// can't resolve the ambiguous `session:name` target. This test documents
+/// the behavior that makes the spawn_claude cleanup essential.
+#[test]
+#[ignore]
+#[timeout(30_000)]
+fn test_kill_window_fails_with_duplicate_names() {
+    if !tmux_available() {
+        eprintln!("tmux not available, skipping");
+        return;
+    }
+
+    let session = test_session_name();
+    assert!(create_test_session(&session));
+    let _cleanup = SessionCleanup {
+        session: session.clone(),
+    };
+
+    let coworker_name = "dupworker";
+
+    // Create a keeper so we don't empty the session
+    assert!(create_test_window(&session, "keeper"));
+    thread::sleep(Duration::from_millis(100));
+
+    // Create 4 windows with the same name (replicating captured snapshot state)
+    for _ in 0..4 {
+        assert!(create_test_window(&session, coworker_name));
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let (count, _) =
+        midtown::tmux::count_windows_by_name(&session, coworker_name).expect("count failed");
+    assert_eq!(count, 4, "Should start with 4 duplicate windows");
+
+    // kill_window with ambiguous name fails entirely — tmux can't resolve the target
+    let result = midtown::tmux::kill_window(&session, coworker_name);
+    assert!(
+        result.is_err(),
+        "kill_window should fail with ambiguous duplicate window names"
+    );
+
+    // All 4 windows should still exist (kill_window didn't remove any)
+    let (count_after, _) =
+        midtown::tmux::count_windows_by_name(&session, coworker_name).expect("count failed");
+    assert_eq!(
+        count_after, 4,
+        "All 4 windows should remain after kill_window fails"
+    );
+
+    // kill_all_windows_by_name handles duplicates correctly (kills by window ID)
+    let killed =
+        midtown::tmux::kill_all_windows_by_name(&session, coworker_name).expect("kill_all failed");
+    thread::sleep(Duration::from_millis(300));
+
+    assert_eq!(killed, 4, "Should have killed all 4 duplicate windows");
+
+    let (count_final, _) =
+        midtown::tmux::count_windows_by_name(&session, coworker_name).expect("count failed");
+    assert_eq!(count_final, 0, "All windows should be gone");
+}

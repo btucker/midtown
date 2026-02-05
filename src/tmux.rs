@@ -1794,6 +1794,28 @@ pub fn spawn_claude(
         config.to_shell_command(&settings_file, &prompt_file, initial_prompt_file.as_deref());
     let coworker_session_id = launch.session_id.unwrap_or_default();
 
+    // Kill any existing windows with this name to prevent duplicates.
+    // Uses kill_all_windows_by_name (by window ID) instead of kill_window
+    // (by name) because tmux's `session:name` target fails with ambiguous
+    // matches. Mirrors the guard in spawn_lead().
+    match kill_all_windows_by_name(session, &config.name) {
+        Ok(n) if n > 0 => {
+            tracing::warn!(
+                "Killed {} existing '{}' window(s) before spawning",
+                n,
+                config.name
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                "Failed to clean up existing '{}' windows: {}",
+                config.name,
+                e
+            );
+        }
+    }
+
     // Create window with claude command running directly
     create_window(
         session,
