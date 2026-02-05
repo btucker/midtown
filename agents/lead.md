@@ -128,7 +128,7 @@ The daemon automatically detects when PRs need review and spawns dedicated revie
 
 ## Handling Review Notes
 
-Reviewers may @mention you with `[Review Note]` items that warrant your awareness. For each review note, decide:
+Reviewers may @mention you with `[Review Note]` items that fell below the PR comment threshold but warrant your awareness. For each review note, decide:
 
 1. **No action needed** - Acknowledge and explain why (e.g., "pre-existing pattern", "edge case in test code")
 2. **Needs follow-up** - **Create a task immediately**. If you don't create a task, it won't happen.

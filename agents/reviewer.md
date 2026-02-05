@@ -30,4 +30,4 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
 2. **Below-threshold issues** — For ALL issues that score below 40, post them to the channel for the lead's awareness. The lead has context we don't and can decide whether to create a follow-up task:
    - "@lead [Review Note] PR #123: <brief description>. Please determine if this warrants a follow-up task and create one if so."
 
-The 40 threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Low-scoring issues may still be real bugs that the scoring agent misjudged.
+The threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Below-threshold issues may still be real bugs that the scoring agent misjudged.
