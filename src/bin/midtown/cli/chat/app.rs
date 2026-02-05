@@ -11,6 +11,7 @@ use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
 use super::mermaid::MermaidCache;
+use super::usage::{self, UsageData};
 
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
@@ -168,6 +169,12 @@ pub struct App {
     intentionally_at_top: bool,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
+    /// Current usage data (session + weekly utilization)
+    pub usage_data: Option<UsageData>,
+    /// Receiver for async usage data from background thread
+    usage_receiver: Option<Receiver<Option<UsageData>>>,
+    /// Last time usage data was refreshed
+    usage_last_refresh: Instant,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -175,6 +182,9 @@ const KANBAN_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Interval between repo status refreshes (60 seconds)
 const REPO_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Interval between usage data refreshes (120 seconds)
+const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 
 impl App {
     pub fn new() -> Self {
@@ -212,6 +222,9 @@ impl App {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            usage_data: None,
+            usage_receiver: None,
+            usage_last_refresh: Instant::now() - USAGE_REFRESH_INTERVAL, // Force initial refresh
         };
 
         // Initial load
@@ -344,6 +357,33 @@ impl App {
         {
             self.refresh_repo_status();
             self.repo_status_last_refresh = Instant::now();
+        }
+
+        // Check for usage data from background thread (non-blocking)
+        if let Some(ref receiver) = self.usage_receiver {
+            match receiver.try_recv() {
+                Ok(data) => {
+                    if data.is_some() {
+                        self.usage_data = data;
+                    }
+                    // On failure, retain last known data
+                    self.usage_receiver = None;
+                }
+                Err(TryRecvError::Empty) => {
+                    // Still waiting for data
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.usage_receiver = None;
+                }
+            }
+        }
+
+        // Refresh usage data periodically
+        if self.usage_last_refresh.elapsed() >= USAGE_REFRESH_INTERVAL
+            && self.usage_receiver.is_none()
+        {
+            self.usage_receiver = Some(usage::spawn_usage_fetch());
+            self.usage_last_refresh = Instant::now();
         }
 
         // Poll for completed mermaid renders
@@ -1410,6 +1450,9 @@ mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            usage_data: None,
+            usage_receiver: None,
+            usage_last_refresh: Instant::now(),
         };
 
         let (pending, in_progress, completed) = app.tasks_by_status();
@@ -1459,6 +1502,9 @@ mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            usage_data: None,
+            usage_receiver: None,
+            usage_last_refresh: Instant::now(),
         };
 
         let visible = app.visible_messages();
@@ -1606,6 +1652,9 @@ mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            usage_data: None,
+            usage_receiver: None,
+            usage_last_refresh: Instant::now(),
         };
 
         // At bottom (scroll_offset=0): not at max scroll
@@ -1702,6 +1751,9 @@ mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            usage_data: None,
+            usage_receiver: None,
+            usage_last_refresh: Instant::now(),
         };
 
         // Verify initial state: NOT at max scroll
@@ -1776,6 +1828,9 @@ mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            usage_data: None,
+            usage_receiver: None,
+            usage_last_refresh: Instant::now(),
         };
 
         // max_scroll = 20 - 10 = 10

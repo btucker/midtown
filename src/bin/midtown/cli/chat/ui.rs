@@ -155,20 +155,26 @@ pub fn draw(f: &mut Frame, app: &mut App) -> (Vec<Hyperlink>, Vec<InlineImage>) 
     let (_pending, in_progress, _completed) = app.tasks_by_status();
     let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
 
-    // Split into repo status (top), kanban, and chat panels
+    // Split into repo status (top), kanban, chat, and optional usage bar panels
     let status_height = repo_status_height(app);
+    let usage_height = if app.usage_data.is_some() { 2 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(status_height),
             Constraint::Length(kanban_height),
             Constraint::Min(10),
+            Constraint::Length(usage_height),
         ])
         .split(f.area());
 
     draw_repo_status_lines(f, app, chunks[0]);
     let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
     let images = draw_chat_panel(f, app, chunks[2]);
+
+    if app.usage_data.is_some() {
+        draw_usage_bars(f, app, chunks[3]);
+    }
 
     (hyperlinks, images)
 }
@@ -1355,6 +1361,88 @@ fn wrap_line(text: &str, width: usize) -> Vec<&str> {
     result
 }
 
+/// Draw the usage progress bars (session + weekly utilization).
+///
+/// Renders two compact lines showing utilization percentage as progress bars
+/// with color thresholds: green <60%, yellow 60-80%, red >80%.
+fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
+    let usage = match &app.usage_data {
+        Some(data) => data,
+        None => return,
+    };
+
+    if area.height < 2 {
+        return;
+    }
+
+    let session_line =
+        render_usage_line("Session", usage.session_util, &usage.session_resets, true);
+    let week_line = render_usage_line("Week   ", usage.week_util, &usage.week_resets, false);
+
+    let lines = vec![session_line, week_line];
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, area);
+}
+
+/// Render a single usage progress bar line.
+///
+/// Format: `Label ████████░░░░░░░░░░ XX%  ↻ reset_time`
+fn render_usage_line(
+    label: &str,
+    utilization: f64,
+    resets_at: &DateTime<Utc>,
+    is_session: bool,
+) -> Line<'static> {
+    let color = usage_color(utilization);
+    let pct = utilization.round() as u32;
+
+    // Bar width: fill available space after label (8) + pct (5) + reset info (~12)
+    // Use a fixed bar width of 20 characters
+    let bar_width: usize = 20;
+    let filled = ((utilization / 100.0) * bar_width as f64).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+
+    let bar_filled: String = "█".repeat(filled);
+    let bar_empty: String = "░".repeat(empty);
+
+    let reset_text = format_reset_time(resets_at, is_session);
+
+    Line::from(vec![
+        Span::styled(format!(" {label} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(bar_filled, Style::default().fg(color)),
+        Span::styled(bar_empty, Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {:>3}%", pct), Style::default().fg(color)),
+        Span::styled(
+            format!("  ↻ {reset_text}"),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
+/// Choose bar color based on utilization threshold.
+fn usage_color(utilization: f64) -> Color {
+    if utilization >= 80.0 {
+        Color::Red
+    } else if utilization >= 60.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
+}
+
+/// Format reset time for display.
+///
+/// Session: "H:MMam/pm" (e.g., "4:59pm")
+/// Weekly: "Mon DD" (e.g., "Feb 11")
+fn format_reset_time(resets_at: &DateTime<Utc>, is_session: bool) -> String {
+    let local = resets_at.with_timezone(&Local);
+    if is_session {
+        local.format("%-I:%M%P").to_string()
+    } else {
+        local.format("%b %-d").to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2340,5 +2428,62 @@ mod tests {
         let line =
             build_review_card_line1("●", "[other] ", 99, "Fix bug", Some(10), Some("Bug fix"));
         assert_eq!(line, "● [other] #10 Bug fix");
+    }
+
+    #[test]
+    fn test_usage_color_green() {
+        assert_eq!(usage_color(0.0), Color::Green);
+        assert_eq!(usage_color(59.9), Color::Green);
+    }
+
+    #[test]
+    fn test_usage_color_yellow() {
+        assert_eq!(usage_color(60.0), Color::Yellow);
+        assert_eq!(usage_color(79.9), Color::Yellow);
+    }
+
+    #[test]
+    fn test_usage_color_red() {
+        assert_eq!(usage_color(80.0), Color::Red);
+        assert_eq!(usage_color(100.0), Color::Red);
+    }
+
+    #[test]
+    fn test_render_usage_line_produces_spans() {
+        let resets_at = Utc::now() + chrono::Duration::hours(3);
+        let line = render_usage_line("Session", 50.0, &resets_at, true);
+        // Should have 5 spans: label, filled bar, empty bar, pct, reset
+        assert_eq!(line.spans.len(), 5);
+    }
+
+    #[test]
+    fn test_render_usage_line_bar_proportions() {
+        let resets_at = Utc::now();
+        // At 50%, should have 10 filled (out of 20) and 10 empty
+        let line = render_usage_line("Test   ", 50.0, &resets_at, true);
+        let filled_content = &line.spans[1].content;
+        let empty_content = &line.spans[2].content;
+        assert_eq!(filled_content.chars().count(), 10);
+        assert_eq!(empty_content.chars().count(), 10);
+    }
+
+    #[test]
+    fn test_render_usage_line_zero_percent() {
+        let resets_at = Utc::now();
+        let line = render_usage_line("Test   ", 0.0, &resets_at, true);
+        let filled_content = &line.spans[1].content;
+        let empty_content = &line.spans[2].content;
+        assert_eq!(filled_content.chars().count(), 0);
+        assert_eq!(empty_content.chars().count(), 20);
+    }
+
+    #[test]
+    fn test_render_usage_line_full_percent() {
+        let resets_at = Utc::now();
+        let line = render_usage_line("Test   ", 100.0, &resets_at, true);
+        let filled_content = &line.spans[1].content;
+        let empty_content = &line.spans[2].content;
+        assert_eq!(filled_content.chars().count(), 20);
+        assert_eq!(empty_content.chars().count(), 0);
     }
 }
