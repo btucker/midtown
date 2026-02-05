@@ -303,6 +303,15 @@ impl DaemonClient {
         self.send("task.updated", Some(params))
     }
 
+    // Auth commands
+
+    pub fn auth_switch(&self, profile: &str) -> Result<Response, String> {
+        self.send(
+            "auth.switch",
+            Some(serde_json::json!({ "profile": profile })),
+        )
+    }
+
     // Kanban commands
 
     pub fn kanban_data(&self) -> Result<Value, String> {
