@@ -320,6 +320,26 @@ fn ci_status_dot(status: &CiStatus) -> &'static str {
     }
 }
 
+/// Build the first line of a Review card.
+///
+/// Shows task ID when available (with task name or PR title as fallback),
+/// otherwise shows PR number.
+fn build_review_card_line1(
+    ci_dot: &str,
+    repo_badge: &str,
+    pr_number: u64,
+    pr_title: &str,
+    task_id: Option<u64>,
+    task_name: Option<&str>,
+) -> String {
+    if let Some(task_id) = task_id {
+        let display_name = task_name.unwrap_or(pr_title);
+        format!("{} {}#{} {}", ci_dot, repo_badge, task_id, display_name)
+    } else {
+        format!("{} {}PR#{} {}", ci_dot, repo_badge, pr_number, pr_title)
+    }
+}
+
 /// Get the color for CI status dot
 fn ci_status_color(status: &CiStatus) -> Color {
     match status {
@@ -397,12 +417,14 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 .as_ref()
                 .map(|r| format!("[{}] ", r))
                 .unwrap_or_default();
-            // Show task info if available, otherwise fall back to PR title
-            let line1 = if let (Some(task_id), Some(task_name)) = (pr.task_id, &pr.task_name) {
-                format!("{} {}#{} {}", ci_dot, repo_badge, task_id, task_name)
-            } else {
-                format!("{} {}PR#{} {}", ci_dot, repo_badge, pr.number, pr.title)
-            };
+            let line1 = build_review_card_line1(
+                ci_dot,
+                &repo_badge,
+                pr.number,
+                &pr.title,
+                pr.task_id,
+                pr.task_name.as_deref(),
+            );
             let pr_age = format_duration_minutes(pr.created_at);
             let line2 = format!("  └ PR #{} {}", pr.number, pr_age);
             let line3 = match (&pr.reviewer, &pr.reviewed_at) {
@@ -2081,5 +2103,42 @@ mod tests {
         let thirty_min_ago = Utc::now() - chrono::Duration::minutes(30);
         let result = format_duration_minutes(thirty_min_ago);
         assert_eq!(result, "(30m)");
+    }
+
+    #[test]
+    fn test_review_card_line1_with_task_id_and_name() {
+        // When both task_id and task_name are available, show #task_id task_name
+        let line = build_review_card_line1(
+            "●",
+            "",
+            123,
+            "feat: Auth [Midtown #42]",
+            Some(42),
+            Some("Auth endpoint"),
+        );
+        assert_eq!(line, "● #42 Auth endpoint");
+    }
+
+    #[test]
+    fn test_review_card_line1_with_task_id_no_name() {
+        // When task_id is available but task_name is not, show #task_id with PR title fallback
+        let line =
+            build_review_card_line1("●", "", 123, "feat: Auth [Midtown #42]", Some(42), None);
+        assert_eq!(line, "● #42 feat: Auth [Midtown #42]");
+    }
+
+    #[test]
+    fn test_review_card_line1_without_task_id() {
+        // When no task_id, fall back to PR#number
+        let line = build_review_card_line1("●", "", 123, "External PR title", None, None);
+        assert_eq!(line, "● PR#123 External PR title");
+    }
+
+    #[test]
+    fn test_review_card_line1_with_repo_badge() {
+        // Multi-repo: should include repo badge
+        let line =
+            build_review_card_line1("●", "[other] ", 99, "Fix bug", Some(10), Some("Bug fix"));
+        assert_eq!(line, "● [other] #10 Bug fix");
     }
 }
