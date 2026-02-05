@@ -157,7 +157,7 @@ pub fn draw(f: &mut Frame, app: &mut App) -> (Vec<Hyperlink>, Vec<InlineImage>) 
 
     // Split into repo status (top), kanban, chat, and optional usage bar panels
     let status_height = repo_status_height(app);
-    let usage_height = if app.usage_data.is_some() { 2 } else { 0 };
+    let usage_height = if app.usage_data.is_some() { 4 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1371,7 +1371,15 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
-    if area.height < 2 {
+    let block = Block::default()
+        .title(" Usage ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if inner.height < 2 {
         return;
     }
 
@@ -1381,12 +1389,12 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
 
     let lines = vec![session_line, week_line];
     let paragraph = Paragraph::new(lines);
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, inner);
 }
 
 /// Render a single usage progress bar line.
 ///
-/// Format: `Label ████████░░░░░░░░░░ XX%  ↻ reset_time`
+/// Format: `Label ████████░░░░░░░░░░ XX%  ~Xh remaining  ↻ reset_time`
 fn render_usage_line(
     label: &str,
     utilization: f64,
@@ -1405,6 +1413,7 @@ fn render_usage_line(
     let bar_filled: String = "█".repeat(filled);
     let bar_empty: String = "░".repeat(empty);
 
+    let estimate_text = estimate_time_to_full(utilization, resets_at, is_session);
     let reset_text = format_reset_time(resets_at, is_session);
 
     Line::from(vec![
@@ -1412,6 +1421,10 @@ fn render_usage_line(
         Span::styled(bar_filled, Style::default().fg(color)),
         Span::styled(bar_empty, Style::default().fg(Color::DarkGray)),
         Span::styled(format!(" {:>3}%", pct), Style::default().fg(color)),
+        Span::styled(
+            format!("  {estimate_text}"),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::styled(
             format!("  ↻ {reset_text}"),
             Style::default().fg(Color::DarkGray),
@@ -1427,6 +1440,64 @@ fn usage_color(utilization: f64) -> Color {
         Color::Yellow
     } else {
         Color::Green
+    }
+}
+
+/// Estimate time until utilization reaches 100% based on current consumption rate.
+///
+/// Uses the known window duration (5h session, 7d weekly) and current utilization
+/// to extrapolate when usage will hit the limit. Returns "—" if rate is zero
+/// (no consumption) or utilization is already at/above 100%.
+fn estimate_time_to_full(utilization: f64, resets_at: &DateTime<Utc>, is_session: bool) -> String {
+    if utilization <= 0.0 || utilization >= 100.0 {
+        return "—".to_string();
+    }
+
+    let now = Utc::now();
+    let time_until_reset = resets_at.signed_duration_since(now);
+    let secs_until_reset = time_until_reset.num_seconds();
+
+    if secs_until_reset <= 0 {
+        return "—".to_string();
+    }
+
+    // Total window duration in seconds
+    let window_secs: f64 = if is_session {
+        5.0 * 3600.0 // 5 hours
+    } else {
+        7.0 * 24.0 * 3600.0 // 7 days
+    };
+
+    // Elapsed time in this window = total_window - time_remaining
+    let elapsed_secs = window_secs - secs_until_reset as f64;
+    if elapsed_secs <= 0.0 {
+        return "—".to_string();
+    }
+
+    // Rate = utilization percentage per second
+    let rate = utilization / elapsed_secs;
+    // Time to reach 100% from current utilization
+    let remaining_pct = 100.0 - utilization;
+    let secs_to_full = remaining_pct / rate;
+
+    format_duration_estimate(secs_to_full)
+}
+
+/// Format a duration in seconds as a human-readable estimate string.
+fn format_duration_estimate(secs: f64) -> String {
+    let minutes = (secs / 60.0).round() as i64;
+    if minutes < 1 {
+        "~<1m left".to_string()
+    } else if minutes < 60 {
+        format!("~{minutes}m left")
+    } else {
+        let hours = minutes / 60;
+        let remaining_mins = minutes % 60;
+        if remaining_mins == 0 {
+            format!("~{hours}h left")
+        } else {
+            format!("~{hours}h{remaining_mins}m left")
+        }
     }
 }
 
@@ -2456,8 +2527,8 @@ mod tests {
     fn test_render_usage_line_produces_spans() {
         let resets_at = Utc::now() + chrono::Duration::hours(3);
         let line = render_usage_line("Session", 50.0, &resets_at, true);
-        // Should have 5 spans: label, filled bar, empty bar, pct, reset
-        assert_eq!(line.spans.len(), 5);
+        // Should have 6 spans: label, filled bar, empty bar, pct, estimate, reset
+        assert_eq!(line.spans.len(), 6);
     }
 
     #[test]
@@ -2513,5 +2584,63 @@ mod tests {
         let result = format_reset_time(&future, false);
         // Should be a date format like "Feb 11", not "now"
         assert_ne!(result, "now");
+    }
+
+    #[test]
+    fn test_estimate_time_to_full_zero_utilization() {
+        let resets_at = Utc::now() + chrono::Duration::hours(3);
+        assert_eq!(estimate_time_to_full(0.0, &resets_at, true), "—");
+    }
+
+    #[test]
+    fn test_estimate_time_to_full_already_full() {
+        let resets_at = Utc::now() + chrono::Duration::hours(3);
+        assert_eq!(estimate_time_to_full(100.0, &resets_at, true), "—");
+    }
+
+    #[test]
+    fn test_estimate_time_to_full_past_reset() {
+        let resets_at = Utc::now() - chrono::Duration::hours(1);
+        assert_eq!(estimate_time_to_full(50.0, &resets_at, true), "—");
+    }
+
+    #[test]
+    fn test_estimate_time_to_full_session_midpoint() {
+        // 50% used, 2.5h remaining in 5h window → consumed in 2.5h elapsed
+        // Rate = 50/9000 per sec → time to 100% = 50 / (50/9000) = 9000s = 2.5h
+        let resets_at = Utc::now() + chrono::Duration::minutes(150); // 2.5h left
+        let result = estimate_time_to_full(50.0, &resets_at, true);
+        assert!(result.contains("left"), "Expected 'left' in: {result}");
+        assert!(result.starts_with('~'), "Expected '~' prefix in: {result}");
+    }
+
+    #[test]
+    fn test_estimate_time_to_full_high_utilization() {
+        // 90% used in a 5h session, 30min remaining
+        // Elapsed = 4.5h = 16200s, rate = 90/16200
+        // Time to 100% = 10 / (90/16200) = 1800s = 30min
+        let resets_at = Utc::now() + chrono::Duration::minutes(30);
+        let result = estimate_time_to_full(90.0, &resets_at, true);
+        assert!(result.contains("left"), "Expected 'left' in: {result}");
+    }
+
+    #[test]
+    fn test_format_duration_estimate_minutes() {
+        assert_eq!(format_duration_estimate(1800.0), "~30m left");
+    }
+
+    #[test]
+    fn test_format_duration_estimate_hours() {
+        assert_eq!(format_duration_estimate(7200.0), "~2h left");
+    }
+
+    #[test]
+    fn test_format_duration_estimate_hours_and_minutes() {
+        assert_eq!(format_duration_estimate(5400.0), "~1h30m left");
+    }
+
+    #[test]
+    fn test_format_duration_estimate_less_than_one_minute() {
+        assert_eq!(format_duration_estimate(10.0), "~<1m left");
     }
 }
