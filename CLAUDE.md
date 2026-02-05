@@ -191,9 +191,9 @@ midtown channel post "Pulled main, rebuilt release, and restarted midtown."
 
 ### Debugging Unexpected Daemon Behavior (Lead Workflow)
 
-**IMPORTANT: The Lead should do this PROACTIVELY whenever noticing daemon misbehavior — don't wait for the user to ask.**
+**IMPORTANT: The Lead MUST do this PROACTIVELY whenever noticing daemon misbehavior — don't wait for the user to ask.** This includes anomalies spotted during routine channel reads (loops, stale tasks, failed spawns — see the Channel Monitoring section in lead.md).
 
-When the Lead notices the daemon doing something unexpected (wrong decisions, missed task assignments, incorrect stuck detection, false positive warnings, reviewer not spawning, etc.):
+When the Lead notices the daemon doing something unexpected (wrong decisions, missed task assignments, incorrect stuck detection, false positive warnings, reviewer not spawning, reassignment loops, etc.):
 
 1. **Capture the state immediately** before it changes:
    ```bash
