@@ -1595,6 +1595,65 @@ mod tests {
         );
     }
 
+    /// Reproduces the reassignment loop bug: a coworker completes its task but
+    /// the shared list still shows the task as pending-with-owner. The daemon
+    /// reads the shared list, sees the pending task, and reassigns it in a loop.
+    ///
+    /// The root cause: with isolated task lists (PR #656), coworker completions
+    /// write to the isolated list, not the shared list the daemon reads.
+    /// The fix requires the daemon to complete the shared task when a coworker
+    /// reports the "completed" phase via RPC.
+    #[test]
+    fn test_reassignment_loop_pending_task_stays_after_coworker_completes() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Step 1: Daemon creates a pending task
+        create_task_file(&tasks_dir, "778", "pending", None);
+
+        // Step 2: Daemon assigns ownership (task stays pending-with-owner)
+        update_task_owner_in_dir("778", "vernon", &tasks_dir).unwrap();
+
+        // Verify: task is pending with owner — daemon would try to spawn/nudge
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let pending_with_owners: Vec<_> = tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Pending && t.owner.is_some())
+            .collect();
+        assert_eq!(
+            pending_with_owners.len(),
+            1,
+            "Task should be pending with owner"
+        );
+
+        // Step 3: Coworker completes the task. With task isolation, this writes
+        // to the coworker's isolated list — NOT the shared list. The shared list
+        // is unchanged.
+        //
+        // BUG: Without the fix, the shared list still shows 778 as pending-with-owner.
+        // The daemon would see this and try to reassign it.
+        //
+        // FIX: The daemon's RPC handler must call complete_task_in_dir when a
+        // coworker reports "completed" phase with a task_id.
+        complete_task_in_dir("778", &tasks_dir).unwrap();
+
+        // After the fix: task should be completed, not pending
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let pending_with_owners: Vec<_> = tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Pending && t.owner.is_some())
+            .collect();
+        assert_eq!(
+            pending_with_owners.len(),
+            0,
+            "After completion, no tasks should be pending-with-owner"
+        );
+
+        // The completed task should not appear in any pending query
+        let task = tasks.iter().find(|t| t.id == "778").unwrap();
+        assert_eq!(task.status, TaskStatus::Completed);
+    }
+
     #[test]
     fn test_update_task_owner_preserves_other_fields() {
         let temp_dir = TempDir::new().unwrap();

@@ -877,6 +877,9 @@ async fn handle_coworker_report_state(
                         records.remove(name);
                     }
 
+                    // Clear in-memory task assignment tracking (matches Effect::ShutdownCoworker)
+                    state.clear_coworker_assignments(name);
+
                     // Immediately trigger task dispatch so pending tasks get picked up
                     // without waiting for the next TaskDispatchTick (up to 10 seconds).
                     // This is the same pattern as daemon.check-pending RPC.
@@ -911,6 +914,46 @@ async fn handle_coworker_report_state(
                 }
             }
         }
+    }
+
+    // For Completed phase, sync the shared task list so the daemon stops
+    // reassigning the task. With isolated task lists (PR #656), coworker
+    // completions write to their isolated list, not the shared list the daemon
+    // reads. This closes the loop by updating the shared list when a coworker
+    // reports completion via RPC.
+    if phase == crate::coworker_state::WorkflowPhase::Completed {
+        // Determine the task to complete: use the explicitly provided task_id,
+        // or fall back to the task tracked in the daemon's in-memory assignment map.
+        let effective_task_id: Option<String> = task_id.map(|id| id.to_string()).or_else(|| {
+            let assignments = state.coworker_task_assignments.lock().unwrap();
+            assignments.get(&name.to_lowercase()).cloned()
+        });
+
+        if let Some(ref tid) = effective_task_id {
+            // Mark the task as completed on the shared list
+            if let Err(e) = crate::tasks::complete_task_for_repo(tid, &state.repo_name) {
+                warn!(
+                    "Failed to complete task #{} on shared list for {}: {}",
+                    tid, name, e
+                );
+            } else {
+                info!(
+                    "Completed task #{} on shared list (reported by {})",
+                    tid, name
+                );
+            }
+
+            // Clear blocked-by references so dependent tasks become unblocked
+            if let Err(e) = crate::tasks::clear_blocked_by_for_repo(tid, &state.repo_name) {
+                warn!("Failed to clear blockedBy for task #{}: {}", tid, e);
+            }
+
+            // Clear in-memory assignment tracking
+            state.clear_task_assignment_by_task(tid);
+        }
+
+        // Always clear the coworker's assignment (they're done regardless)
+        state.clear_coworker_assignments(name);
     }
 
     // Store in unified coworker record
