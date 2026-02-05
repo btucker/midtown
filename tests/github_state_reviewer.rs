@@ -1,12 +1,12 @@
-//! E2E tests for reviewer lifecycle edge cases.
+//! Integration tests for GitHubState reviewer lifecycle management.
 //!
-//! These tests verify the daemon correctly:
-//! - Spawns reviewers for PRs ready for review (via webhook and polling)
-//! - Prevents duplicate reviewer spawns for already-assigned PRs
-//! - Persists reviewer assignments across daemon restarts
-//! - Handles time bucket cache invalidation for reviewer decisions
+//! These tests verify GitHubState correctly:
+//! - Tracks reviewer assignments for PRs
+//! - Prevents duplicate reviewer assignments
+//! - Persists reviewer state across restarts
+//! - Coordinates webhook and polling-based assignments
 //!
-//! Run with: `cargo test --test reviewer_lifecycle_e2e`
+//! Run with: `cargo test --test github_state_reviewer`
 
 use std::collections::HashSet;
 
