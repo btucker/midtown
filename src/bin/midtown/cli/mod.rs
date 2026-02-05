@@ -34,6 +34,12 @@ pub fn handle_task(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response,
     task::handle(cmd, client)
 }
 
+/// Handle task subcommands that don't require the daemon (list, view).
+/// Returns `Some` if the command was handled locally, `None` if it needs the daemon.
+pub fn handle_task_local(cmd: &TaskCommand) -> Option<Result<Response, String>> {
+    task::handle_local(cmd)
+}
+
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
     client.status()
 }

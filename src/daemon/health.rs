@@ -440,8 +440,8 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         );
 
         let prompt = format!(
-            "You've been assigned task #{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.",
-            restart.task_id, restart.task_subject
+            "You've been assigned task #{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.\n\nRun `midtown task view {}` for full details.",
+            restart.task_id, restart.task_subject, restart.task_id
         );
 
         effects.push(Effect::ShutdownCoworker {

@@ -666,6 +666,14 @@ fn main() {
         }
     }
 
+    // Task list/view commands (no daemon required — reads from disk)
+    if let Commands::Task { command } = &command
+        && let Some(result) = cli::handle_task_local(command)
+    {
+        handle_result(format, result);
+        return;
+    }
+
     // All other commands require daemon connection
     let client = match DaemonClient::connect() {
         Ok(c) => c,
