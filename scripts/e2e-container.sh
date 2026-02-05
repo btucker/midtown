@@ -44,12 +44,19 @@ if [ "${MODE}" = "full" ]; then
     fi
 
     # Mount OAuth credentials directory if available
-    CLAUDE_AUTH_DIR="${CLAUDE_AUTH_DIR:-${HOME}/.midtown/claude-auth}"
+    # Check new location first (~/.midtown/auth/e2e), then legacy (~/.midtown/claude-auth)
+    if [ -z "${CLAUDE_AUTH_DIR:-}" ]; then
+        if [ -d "${HOME}/.midtown/auth/e2e" ]; then
+            CLAUDE_AUTH_DIR="${HOME}/.midtown/auth/e2e"
+        else
+            CLAUDE_AUTH_DIR="${HOME}/.midtown/claude-auth"
+        fi
+    fi
     if [ -d "${CLAUDE_AUTH_DIR}" ]; then
         DOCKER_ARGS+=(-v "${CLAUDE_AUTH_DIR}:/auth:ro" -e CLAUDE_CONFIG_DIR=/auth)
         echo "Mounting auth from: ${CLAUDE_AUTH_DIR}"
     elif [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-        echo "WARNING: Full mode requires auth. Set ANTHROPIC_API_KEY or create ${CLAUDE_AUTH_DIR}"
+        echo "WARNING: Full mode requires auth. Set ANTHROPIC_API_KEY or run 'midtown auth login --profile e2e'"
         echo "Continuing anyway — the entrypoint will validate auth and fail with details."
         echo ""
     fi

@@ -43,17 +43,22 @@ pub fn handle(cmd: &E2eCommand) -> Result<(), String> {
 }
 
 fn handle_auth() -> Result<(), String> {
-    let auth_dir = midtown::paths::midtown_base_dir().join("claude-auth");
+    // Show deprecation warning
+    eprintln!("⚠️  DEPRECATED: 'midtown e2e auth' is deprecated.");
+    eprintln!("   Use 'midtown auth login --profile e2e' instead.");
+    eprintln!();
 
-    std::fs::create_dir_all(&auth_dir).map_err(|e| {
-        format!(
-            "Failed to create auth directory '{}': {}",
-            auth_dir.display(),
-            e
-        )
-    })?;
+    // Run migration if needed
+    if let Ok(true) = midtown::auth::migrate_legacy_auth() {
+        eprintln!("Note: Migrated existing auth to profile 'e2e'");
+        eprintln!();
+    }
 
-    println!("Launching Claude with dedicated auth config...");
+    // Delegate to the new auth system with 'e2e' profile
+    let auth_dir = midtown::auth::ensure_profile_dir("e2e")
+        .map_err(|e| format!("Failed to create auth directory: {}", e))?;
+
+    println!("Launching Claude with profile 'e2e'...");
     println!("Config dir: {}", auth_dir.display());
     println!();
     println!("Run /login inside the Claude session to authenticate.");
@@ -72,6 +77,8 @@ fn handle_auth() -> Result<(), String> {
     if status.success() {
         println!();
         println!("Auth setup complete. You can now run: midtown e2e run");
+        println!();
+        println!("Tip: Use 'midtown auth login --profile e2e' in the future.");
     } else {
         return Err(format!("Claude exited with status: {}", status));
     }
