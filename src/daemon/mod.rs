@@ -1447,6 +1447,39 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     }
                 }
 
+                // Auto-complete task when PR is opened with [Midtown #XX] in title
+                if let Some(ref pr_opened) = webhook_event.pr_opened
+                    && let Some(task_id) =
+                        crate::tasks::extract_task_id_from_pr_title(&pr_opened.title)
+                {
+                    let task_id_str = task_id.to_string();
+                    let repo_name = state.repo_name.clone();
+
+                    // Complete the task and clear blockedBy references
+                    let complete_effects = vec![
+                        effects::Effect::CompleteTask {
+                            task_id: task_id_str.clone(),
+                            repo_name: repo_name.clone(),
+                        },
+                        effects::Effect::ClearBlockedBy {
+                            completed_task_id: task_id_str.clone(),
+                            repo_name: repo_name.clone(),
+                        },
+                        effects::Effect::PostToChannel {
+                            sender: "midtown".to_string(),
+                            message: format!(
+                                "✅ Auto-completed task #{} (PR #{} opened)",
+                                task_id, pr_opened.pr_number
+                            ),
+                        },
+                    ];
+                    effects::execute_effects(complete_effects, &state).await;
+                    info!(
+                        "Auto-completed task #{} from PR #{} title",
+                        task_id, pr_opened.pr_number
+                    );
+                }
+
                 // Nudge lead to pull main when a PR merges
                 if let Some(pr_number) = webhook_event.merged_pr {
                     // Channel message is informational only (no @lead to avoid

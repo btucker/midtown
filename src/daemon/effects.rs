@@ -130,6 +130,17 @@ pub enum Effect {
         branch: String,
         author: String,
     },
+    /// Mark a task as completed (e.g., when its PR is opened).
+    ///
+    /// Called when a PR is opened with `[Midtown #XX]` in the title.
+    CompleteTask { task_id: String, repo_name: String },
+    /// Clear a completed task ID from all dependent tasks' `blockedBy` arrays.
+    ///
+    /// Called after a task is completed to unblock dependent tasks.
+    ClearBlockedBy {
+        completed_task_id: String,
+        repo_name: String,
+    },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -470,6 +481,31 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     info!(
                         "Stored author session for PR #{}: session={}, author={}",
                         pr_number, session_id, author
+                    );
+                }
+            }
+            Effect::CompleteTask { task_id, repo_name } => {
+                if let Err(e) = crate::tasks::complete_task_for_repo(&task_id, &repo_name) {
+                    warn!("Failed to complete task #{}: {}", task_id, e);
+                } else {
+                    info!("Auto-completed task #{}", task_id);
+                }
+            }
+            Effect::ClearBlockedBy {
+                completed_task_id,
+                repo_name,
+            } => {
+                if let Err(e) =
+                    crate::tasks::clear_blocked_by_for_repo(&completed_task_id, &repo_name)
+                {
+                    warn!(
+                        "Failed to clear blockedBy for task #{}: {}",
+                        completed_task_id, e
+                    );
+                } else {
+                    info!(
+                        "Cleared blockedBy references to completed task #{}",
+                        completed_task_id
                     );
                 }
             }
