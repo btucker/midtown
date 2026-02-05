@@ -171,7 +171,7 @@ Every time you read the channel, scan the **full output** for anomalies — don'
 - **Failed spawns**: "Called in coworker X" with no follow-up activity from that coworker
 - **Repeated errors**: The same warning or error appearing multiple times
 
-When you spot something wrong, act immediately:
+This is specifically for catching **daemon bugs and failure modes** — not for overriding normal daemon orchestration (see "The Daemon Is the Orchestrator, Not You"). When you spot a daemon malfunction, act immediately:
 1. **Break the loop** if urgent (send coworker on break, complete stale tasks)
 2. **Then follow the debugging workflow** in CLAUDE.md — capture a snapshot, create a task with the snapshot reference, post to the channel
 
