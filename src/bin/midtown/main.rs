@@ -173,6 +173,31 @@ enum Commands {
         #[command(subcommand)]
         command: WebserverCommand,
     },
+    /// Run a headless Claude Code session via the daemon (JSON streaming)
+    Headless {
+        /// Prompt to send to Claude
+        prompt: String,
+
+        /// Model to use (e.g., sonnet, opus, haiku)
+        #[arg(long, default_value = "sonnet")]
+        model: String,
+
+        /// System prompt for the session
+        #[arg(long, default_value = "")]
+        system_prompt: String,
+
+        /// JSON schema for structured output validation
+        #[arg(long)]
+        json_schema: Option<String>,
+
+        /// Maximum budget in USD
+        #[arg(long)]
+        max_budget_usd: Option<f64>,
+
+        /// Allow tool use (default: no tools)
+        #[arg(long)]
+        allow_tools: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -657,6 +682,22 @@ fn main() {
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
+        Commands::Headless {
+            prompt,
+            model,
+            system_prompt,
+            json_schema,
+            max_budget_usd,
+            allow_tools,
+        } => cli::handle_headless(
+            &client,
+            prompt,
+            model,
+            system_prompt,
+            json_schema.as_deref(),
+            *max_budget_usd,
+            *allow_tools,
+        ),
         // These are handled before daemon connection, so unreachable
         Commands::Daemon { .. }
         | Commands::Start { .. }
