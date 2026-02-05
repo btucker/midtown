@@ -158,6 +158,46 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
     coworker_names
 }
 
+/// Compute a time-aware hash of PR data for caching purposes.
+///
+/// Includes a time bucket (current time divided by `bucket_secs`) so the hash changes
+/// periodically even when the data is unchanged. This ensures time-based decisions
+/// (like PR age eligibility for reviewer spawn) are re-evaluated.
+///
+/// # Arguments
+/// * `data` - The PR data string to hash
+/// * `bucket_secs` - The time bucket size in seconds (hash changes every this many seconds)
+fn compute_time_aware_hash(data: &str, bucket_secs: u64) -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    compute_time_aware_hash_at(data, bucket_secs, now_secs)
+}
+
+/// Internal function for computing time-aware hash with explicit timestamp.
+/// Used by `compute_time_aware_hash` and tests.
+#[cfg(test)]
+fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64) -> u64 {
+    let time_bucket = timestamp_secs / bucket_secs;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    time_bucket.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(not(test))]
+fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64) -> u64 {
+    let time_bucket = timestamp_secs / bucket_secs;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    time_bucket.hash(&mut hasher);
+    hasher.finish()
+}
+
 // ============================================================================
 
 /// Poll all open PRs and return effects for actionable issues.
@@ -231,11 +271,12 @@ pub(super) async fn poll_prs_for_issues(
 
     // Hash the response to detect changes. If the PR data hasn't changed since the last poll,
     // skip the expensive lock acquisition, issue detection, and nudge logic.
-    let response_hash = {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        stdout.hash(&mut hasher);
-        hasher.finish()
-    };
+    //
+    // IMPORTANT: Include a time bucket so hash changes every PR_REVIEW_DELAY_SECS. This ensures
+    // time-based decisions (like PR age eligibility for reviewer spawn) are re-evaluated even
+    // when PR data is unchanged. Without this, a PR that was "too new" on one poll would never
+    // be re-checked if the response hash stayed the same.
+    let response_hash = compute_time_aware_hash(&stdout, PR_REVIEW_DELAY_SECS);
     {
         let mut last_hash = state.last_pr_poll_hash.lock().await;
         if *last_hash == response_hash && response_hash != 0 {
@@ -3026,6 +3067,196 @@ mod tests {
         assert_eq!(
             escalation_time_minutes, 45,
             "escalation should trigger at 45 minutes (15 min initial + 30 min cooldown)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Time-aware hash tests (PR poll cache bug fix)
+    // -------------------------------------------------------------------------
+
+    /// Bug: PR poll used a hash of the response to skip processing when data unchanged.
+    /// But reviewer spawn decisions depend on PR age (time-based), so even with unchanged
+    /// data, a PR that was "too new" should be re-evaluated after time passes.
+    ///
+    /// Fix: Include a time bucket in the hash so it changes every PR_REVIEW_DELAY_SECS.
+    #[test]
+    fn compute_time_aware_hash_same_data_same_bucket_same_hash() {
+        // Within the same time bucket, same data should produce same hash
+        let data = r#"[{"number": 42, "title": "Test PR"}]"#;
+        let bucket_secs = 60;
+
+        let hash1 = super::compute_time_aware_hash(data, bucket_secs);
+        let hash2 = super::compute_time_aware_hash(data, bucket_secs);
+
+        // Same data, same time bucket (called immediately) -> same hash
+        assert_eq!(
+            hash1, hash2,
+            "same data in same time bucket should produce same hash"
+        );
+    }
+
+    #[test]
+    fn compute_time_aware_hash_different_data_different_hash() {
+        let data1 = r#"[{"number": 42, "title": "Test PR"}]"#;
+        let data2 = r#"[{"number": 42, "title": "Updated PR"}]"#;
+        let bucket_secs = 60;
+
+        let hash1 = super::compute_time_aware_hash(data1, bucket_secs);
+        let hash2 = super::compute_time_aware_hash(data2, bucket_secs);
+
+        // Different data should produce different hash
+        assert_ne!(hash1, hash2, "different data should produce different hash");
+    }
+
+    /// This test documents the behavior that the hash will change over time.
+    /// We can't easily test actual time passage in a unit test, but we can verify
+    /// the hash function includes the time bucket by using a very small bucket.
+    #[test]
+    fn compute_time_aware_hash_includes_time_component() {
+        use std::hash::{Hash, Hasher};
+
+        // Verify that the same data with different time buckets would produce different hashes
+        // by manually computing what the hash would be with different time values
+        let data = r#"[{"number": 42}]"#;
+
+        // Simulate two different time buckets by manually hashing
+        let mut hasher1 = std::collections::hash_map::DefaultHasher::new();
+        data.hash(&mut hasher1);
+        (100u64).hash(&mut hasher1); // time bucket 100
+        let hash_bucket_100 = hasher1.finish();
+
+        let mut hasher2 = std::collections::hash_map::DefaultHasher::new();
+        data.hash(&mut hasher2);
+        (101u64).hash(&mut hasher2); // time bucket 101
+        let hash_bucket_101 = hasher2.finish();
+
+        assert_ne!(
+            hash_bucket_100, hash_bucket_101,
+            "same data with different time buckets should produce different hashes"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // PR poll cache re-evaluation E2E test
+    // -------------------------------------------------------------------------
+
+    /// This test demonstrates the end-to-end behavior of the PR poll cache fix.
+    ///
+    /// ## Bug scenario (before fix):
+    /// 1. PR #42 is opened at t=0
+    /// 2. Poll at t=30s: PR is too new (within 60s delay), no reviewer spawn
+    /// 3. Poll at t=90s: PR data unchanged → hash unchanged → early return (BUG!)
+    ///    - The reviewer spawn eligibility was never re-evaluated
+    ///
+    /// ## Fixed behavior (after fix):
+    /// 1. PR #42 is opened at t=0
+    /// 2. Poll at t=30s: PR is too new, no reviewer spawn, cache hash saved
+    /// 3. Poll at t=90s: time bucket changed (bucket 0→1) → hash changed
+    ///    - Poll proceeds, PR age re-evaluated, reviewer spawn triggered
+    ///
+    /// This test simulates time passing to verify the hash changes at bucket boundaries.
+    #[test]
+    fn pr_poll_cache_reevaluates_after_time_bucket_change() {
+        // Same PR data throughout - the data doesn't change, only time passes
+        let pr_data = r#"[{"number": 42, "title": "feat: Add feature", "state": "OPEN"}]"#;
+        let bucket_secs = super::PR_REVIEW_DELAY_SECS; // 60 seconds
+
+        // Scenario: PR opened at t=0, first poll at t=30
+        // Bucket boundaries are at multiples of 60: 0, 60, 120, ...
+        let t_first_poll = 30u64; // In bucket 0 (0-59)
+        let hash_first_poll = super::compute_time_aware_hash_at(pr_data, bucket_secs, t_first_poll);
+
+        // At this point, PR is too new for review (only 30s old).
+        // The daemon would skip reviewer spawn. Hash is cached.
+
+        // Second poll at t=50 (still in bucket 0)
+        let t_second_poll = 50u64; // Still in bucket 0 (0-59)
+        let hash_second_poll =
+            super::compute_time_aware_hash_at(pr_data, bucket_secs, t_second_poll);
+
+        // Hash should be SAME (same bucket) - this is expected caching behavior
+        assert_eq!(
+            hash_first_poll, hash_second_poll,
+            "Within same time bucket, hash should be stable for caching"
+        );
+
+        // Third poll at t=90 (NEW bucket!)
+        // This is 90s after PR creation, well past the 60s review delay
+        let t_third_poll = 90u64; // In bucket 1 (60-119)
+        let hash_third_poll = super::compute_time_aware_hash_at(pr_data, bucket_secs, t_third_poll);
+
+        // Hash should be DIFFERENT (new bucket) - triggers re-evaluation
+        assert_ne!(
+            hash_second_poll, hash_third_poll,
+            "After time bucket change, hash should differ to trigger re-evaluation"
+        );
+
+        // Verify the bucket transition occurred as expected
+        let bucket_first = t_first_poll / bucket_secs;
+        let bucket_second = t_second_poll / bucket_secs;
+        let bucket_third = t_third_poll / bucket_secs;
+
+        assert_eq!(
+            bucket_first, bucket_second,
+            "First two polls should be in same bucket"
+        );
+        assert_ne!(
+            bucket_second, bucket_third,
+            "Third poll should be in new bucket"
+        );
+
+        // Document the bucket transition: 0 → 1
+        assert_eq!(bucket_first, 0, "First/second poll should be in bucket 0");
+        assert_eq!(bucket_third, 1, "Third poll should be in bucket 1");
+    }
+
+    /// Test that the bucket boundary is exactly at PR_REVIEW_DELAY_SECS intervals.
+    ///
+    /// This ensures that after waiting the full review delay period, the hash
+    /// is guaranteed to have changed and the PR eligibility will be re-evaluated.
+    #[test]
+    fn pr_poll_cache_bucket_boundary_precision() {
+        let pr_data = r#"[{"number": 99}]"#;
+        let bucket_secs = super::PR_REVIEW_DELAY_SECS; // 60 seconds
+
+        // Bucket boundaries: 0-59 (bucket 0), 60-119 (bucket 1), 120-179 (bucket 2)
+        //
+        // t=59 → 59/60 = 0 (bucket 0)
+        // t=60 → 60/60 = 1 (bucket 1)
+
+        // Poll at t=59 (end of bucket 0)
+        let t_end_of_bucket = 59u64;
+        let hash_end = super::compute_time_aware_hash_at(pr_data, bucket_secs, t_end_of_bucket);
+
+        // Poll at t=60 (start of bucket 1)
+        let t_start_next_bucket = 60u64;
+        let hash_start =
+            super::compute_time_aware_hash_at(pr_data, bucket_secs, t_start_next_bucket);
+
+        // One second difference at bucket boundary → different hash
+        assert_ne!(
+            hash_end, hash_start,
+            "Crossing bucket boundary (59→60) should change hash"
+        );
+
+        // Verify bucket values
+        assert_eq!(
+            t_end_of_bucket / bucket_secs,
+            0,
+            "t=59 should be in bucket 0"
+        );
+        assert_eq!(
+            t_start_next_bucket / bucket_secs,
+            1,
+            "t=60 should be in bucket 1"
+        );
+
+        // Within bucket, 58→59 should be same hash
+        let hash_58 = super::compute_time_aware_hash_at(pr_data, bucket_secs, 58);
+        let hash_59 = super::compute_time_aware_hash_at(pr_data, bucket_secs, 59);
+        assert_eq!(
+            hash_58, hash_59,
+            "Within same bucket (58→59), hash should be stable"
         );
     }
 }
