@@ -675,6 +675,194 @@ pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Re
     clear_blocked_by_in_dir(completed_task_id, &tasks_dir)
 }
 
+/// Ensure a task with the given subject exists in the shared task directory.
+///
+/// Used by the PostToolUse hook to mirror Lead-created tasks that Claude Code
+/// failed to persist (e.g., after `/resume`). Deduplicates by subject against
+/// non-completed tasks (not subject+owner) since Lead tasks are created without
+/// an owner. Completed tasks with the same subject are ignored, allowing new
+/// tasks for fresh review cycles.
+///
+/// Uses a directory-level lock file to prevent TOCTOU races when multiple
+/// processes create tasks concurrently.
+///
+/// Returns `(shared_id, was_created)` — the ID of the existing or newly created
+/// task, and whether a new file was written.
+pub fn ensure_task_in_shared_dir(
+    tasks_dir: &std::path::Path,
+    subject: &str,
+    description: &str,
+) -> Result<(String, bool), String> {
+    use fs2::FileExt;
+
+    let tasks_dir_buf = tasks_dir.to_path_buf();
+
+    // Ensure directory exists
+    if !tasks_dir.exists() {
+        std::fs::create_dir_all(tasks_dir)
+            .map_err(|e| format!("Failed to create tasks directory: {}", e))?;
+    }
+
+    // Acquire directory-level lock to prevent concurrent ID assignment races
+    let lock_path = tasks_dir.join(".tasks.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("Failed to open lock file: {}", e))?;
+    lock_file
+        .lock_exclusive()
+        .map_err(|e| format!("Failed to acquire task dir lock: {}", e))?;
+
+    let existing = read_tasks_from_dir(&tasks_dir_buf);
+
+    // Check for existing non-completed task with same subject
+    for task in &existing {
+        if task.subject == subject && task.status != TaskStatus::Completed {
+            let _ = lock_file.unlock();
+            return Ok((task.id.clone(), false));
+        }
+    }
+
+    // Create new task with next sequential ID
+    let next_id = existing
+        .iter()
+        .filter_map(|t| t.id.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let task_id = next_id.to_string();
+    let task = serde_json::json!({
+        "id": task_id,
+        "subject": subject,
+        "description": description,
+        "status": "pending",
+        "blockedBy": [],
+        "blocks": [],
+    });
+
+    let path = tasks_dir.join(format!("{}.json", task_id));
+    let content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write task file: {}", e))?;
+
+    let _ = lock_file.unlock();
+    Ok((task_id, true))
+}
+
+/// Update specific fields of a task file in the given directory.
+///
+/// Used by the PostToolUse hook to mirror TaskUpdate operations to the shared
+/// directory when Claude Code's internal task IDs don't match the shared IDs
+/// (e.g., after `/resume`).
+///
+/// Uses file-level locking to prevent lost updates when concurrent processes
+/// (daemon, hooks) modify the same task file simultaneously.
+///
+/// Supports updating: status, owner, subject, description.
+pub fn update_task_fields_in_dir(
+    tasks_dir: &std::path::Path,
+    task_id: &str,
+    updates: &serde_json::Value,
+) -> Result<(), String> {
+    use fs2::FileExt;
+
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+
+    // Open the file for read+write and lock exclusively
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&task_file)
+        .map_err(|e| format!("Failed to open task {}: {}", task_id, e))?;
+    file.lock_exclusive()
+        .map_err(|e| format!("Failed to lock task {}: {}", task_id, e))?;
+
+    let content = std::fs::read_to_string(&task_file)
+        .map_err(|e| format!("Failed to read task {}: {}", task_id, e))?;
+
+    let mut task: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse task {}: {}", task_id, e))?;
+
+    // Apply updates for known fields
+    if let Some(status) = updates.get("status").and_then(|v| v.as_str()) {
+        task["status"] = serde_json::json!(status);
+    }
+    if let Some(owner) = updates.get("owner").and_then(|v| v.as_str()) {
+        task["owner"] = serde_json::json!(owner);
+    }
+    if let Some(subject) = updates.get("subject").and_then(|v| v.as_str()) {
+        task["subject"] = serde_json::json!(subject);
+    }
+    if let Some(description) = updates.get("description").and_then(|v| v.as_str()) {
+        task["description"] = serde_json::json!(description);
+    }
+
+    let updated_content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+
+    std::fs::write(&task_file, updated_content)
+        .map_err(|e| format!("Failed to write task file: {}", e))?;
+
+    let _ = file.unlock();
+    Ok(())
+}
+
+/// Read the Lead task ID mapping file for a given repo.
+///
+/// The mapping file bridges Claude Code's internal task IDs (which may start from 1
+/// after `/resume`) to the shared sequential IDs in `~/.claude/tasks/midtown-<repo>/`.
+///
+/// Format: `{"1": "805", "2": "806", ...}`
+pub fn read_lead_task_id_map(repo: &str) -> std::collections::HashMap<String, String> {
+    let path = crate::paths::projects_dir_for_repo(repo).join("lead-task-id-map.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Store a mapping from an internal task ID to a shared task ID.
+pub fn store_lead_task_id_mapping(repo: &str, internal_id: &str, shared_id: &str) {
+    let dir = crate::paths::projects_dir_for_repo(repo);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("lead-task-id-map.json");
+    let mut map = read_lead_task_id_map(repo);
+    map.insert(internal_id.to_string(), shared_id.to_string());
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&map).unwrap_or_default(),
+    );
+}
+
+/// Look up the shared task ID for an internal task ID.
+pub fn lookup_lead_task_id(repo: &str, internal_id: &str) -> Option<String> {
+    read_lead_task_id_map(repo).get(internal_id).cloned()
+}
+
+/// Clear the Lead task ID mapping file.
+///
+/// Called when a fresh Lead session starts, since fresh sessions use the shared
+/// directory directly and don't need remapping.
+pub fn clear_lead_task_id_map(repo: &str) {
+    let path = crate::paths::projects_dir_for_repo(repo).join("lead-task-id-map.json");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Get the shared tasks directory for a repo.
+///
+/// Returns `~/.claude/tasks/midtown-<repo>/`.
+pub fn shared_tasks_dir_for_repo(repo: &str) -> std::path::PathBuf {
+    let task_list_id = crate::paths::task_list_id_for_repo(repo);
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".claude")
+        .join("tasks")
+        .join(&task_list_id)
+}
+
 /// Create a new task in the shared task storage for a specific repo.
 ///
 /// Assigns the next sequential ID by scanning existing task files.
@@ -1761,5 +1949,237 @@ mod tests {
         assert_eq!(parsed["description"], "A detailed description");
         assert_eq!(parsed["blockedBy"], serde_json::json!(["5"]));
         assert_eq!(parsed["activeForm"], "Working on it");
+    }
+
+    // --- Tests for Lead task persistence mirroring (task #808) ---
+
+    #[test]
+    fn test_ensure_task_in_shared_dir_creates_when_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Pre-populate with existing tasks (simulates shared dir with IDs 800-803)
+        for id in 800..=803 {
+            create_task_file(tasks_dir, &id.to_string(), "completed", Some("alice"));
+        }
+
+        let (shared_id, was_created) =
+            ensure_task_in_shared_dir(tasks_dir, "Fix auth endpoint", "Needs investigation")
+                .unwrap();
+
+        assert!(was_created, "should have created a new task");
+        assert_eq!(shared_id, "804", "should use next sequential ID after 803");
+
+        // Verify the file was written with correct content
+        let content = std::fs::read_to_string(tasks_dir.join("804.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["subject"], "Fix auth endpoint");
+        assert_eq!(parsed["description"], "Needs investigation");
+        assert_eq!(parsed["status"], "pending");
+        assert_eq!(
+            parsed["blocks"],
+            serde_json::json!([]),
+            "should include blocks field"
+        );
+    }
+
+    #[test]
+    fn test_ensure_task_in_shared_dir_returns_existing() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Create a task with the same subject
+        let task = serde_json::json!({
+            "id": "805",
+            "subject": "Fix auth endpoint",
+            "description": "Already exists",
+            "status": "in_progress",
+            "owner": "lexington"
+        });
+        let path = tasks_dir.join("805.json");
+        std::fs::write(&path, serde_json::to_string(&task).unwrap()).unwrap();
+
+        let (shared_id, was_created) =
+            ensure_task_in_shared_dir(tasks_dir, "Fix auth endpoint", "Different description")
+                .unwrap();
+
+        assert!(!was_created, "should NOT have created a new task");
+        assert_eq!(shared_id, "805", "should return existing task ID");
+
+        // Verify no new files were created
+        let tasks = read_tasks_from_dir(&tasks_dir.to_path_buf());
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_ensure_task_in_shared_dir_skips_completed_for_dedup() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Create a completed task with the same subject (previous cycle)
+        let task = serde_json::json!({
+            "id": "805",
+            "subject": "Fix auth endpoint",
+            "description": "Old completed task",
+            "status": "completed",
+            "owner": "lexington"
+        });
+        std::fs::write(
+            tasks_dir.join("805.json"),
+            serde_json::to_string(&task).unwrap(),
+        )
+        .unwrap();
+
+        // Should create a new task, NOT return the completed one
+        let (shared_id, was_created) =
+            ensure_task_in_shared_dir(tasks_dir, "Fix auth endpoint", "New cycle").unwrap();
+
+        assert!(
+            was_created,
+            "should create a new task, not match the completed one"
+        );
+        assert_eq!(shared_id, "806", "should use next sequential ID");
+
+        // Verify both files exist
+        let tasks = read_tasks_from_dir(&tasks_dir.to_path_buf());
+        assert_eq!(tasks.len(), 2);
+    }
+
+    #[test]
+    fn test_ensure_task_in_shared_dir_creates_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().join("nonexistent").join("subdir");
+
+        let (shared_id, was_created) =
+            ensure_task_in_shared_dir(&tasks_dir, "New task", "Description").unwrap();
+
+        assert!(was_created);
+        assert_eq!(shared_id, "1", "first task in empty dir gets ID 1");
+        assert!(tasks_dir.join("1.json").exists());
+    }
+
+    #[test]
+    fn test_update_task_fields_in_dir_status_and_owner() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Create a pending task
+        let task = serde_json::json!({
+            "id": "805",
+            "subject": "Fix auth endpoint",
+            "status": "pending",
+            "owner": null
+        });
+        std::fs::write(
+            tasks_dir.join("805.json"),
+            serde_json::to_string(&task).unwrap(),
+        )
+        .unwrap();
+
+        // Update status and owner
+        let updates = serde_json::json!({
+            "status": "in_progress",
+            "owner": "lexington"
+        });
+        update_task_fields_in_dir(tasks_dir, "805", &updates).unwrap();
+
+        // Verify updates applied
+        let content = std::fs::read_to_string(tasks_dir.join("805.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["status"], "in_progress");
+        assert_eq!(parsed["owner"], "lexington");
+        assert_eq!(parsed["subject"], "Fix auth endpoint", "subject preserved");
+    }
+
+    #[test]
+    fn test_update_task_fields_in_dir_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+        let updates = serde_json::json!({"status": "completed"});
+        let result = update_task_fields_in_dir(temp_dir.path(), "999", &updates);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lead_task_persistence_resume_scenario() {
+        // End-to-end scenario: simulates what happens when the Lead /resumes
+        // and Claude Code doesn't persist tasks to the shared directory.
+        //
+        // 1. Shared dir has existing tasks (IDs 800-803)
+        // 2. Lead creates a task → Claude Code assigns internal ID "1" but doesn't write to shared dir
+        // 3. Hook detects missing task, creates it in shared dir as ID 804
+        // 4. Lead updates task "1" → Hook remaps to shared ID "804" and updates
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+        let map_dir = temp_dir.path().join("map");
+        std::fs::create_dir_all(&map_dir).unwrap();
+        let map_file = map_dir.join("lead-task-id-map.json");
+
+        // Step 1: Existing tasks in shared directory
+        for id in 800..=803 {
+            create_task_file(tasks_dir, &id.to_string(), "completed", Some("alice"));
+        }
+
+        // Step 2: Lead's TaskCreate — task NOT in shared dir yet
+        let (shared_id, was_created) =
+            ensure_task_in_shared_dir(tasks_dir, "Fix auth endpoint", "Needs fixing").unwrap();
+        assert!(was_created);
+        assert_eq!(shared_id, "804");
+
+        // Step 3: Store the ID mapping (internal "1" → shared "804")
+        let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        map.insert("1".to_string(), shared_id.clone());
+        std::fs::write(&map_file, serde_json::to_string(&map).unwrap()).unwrap();
+
+        // Step 4: Lead's TaskUpdate with internal ID "1" → remap to "804"
+        let stored_map: std::collections::HashMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(&map_file).unwrap()).unwrap();
+        let actual_id = stored_map.get("1").unwrap();
+        assert_eq!(actual_id, "804");
+
+        // Apply update to the remapped task
+        let updates = serde_json::json!({
+            "status": "in_progress",
+            "owner": "lexington"
+        });
+        update_task_fields_in_dir(tasks_dir, actual_id, &updates).unwrap();
+
+        // Verify the shared task was updated correctly
+        let content = std::fs::read_to_string(tasks_dir.join("804.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["subject"], "Fix auth endpoint");
+        assert_eq!(parsed["status"], "in_progress");
+        assert_eq!(parsed["owner"], "lexington");
+    }
+
+    #[test]
+    fn test_ensure_task_in_shared_dir_concurrent_no_id_collision() {
+        // Verify that concurrent calls to ensure_task_in_shared_dir with different
+        // subjects produce unique IDs (file locking prevents TOCTOU races).
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let dir = tasks_dir.clone();
+            handles.push(std::thread::spawn(move || {
+                ensure_task_in_shared_dir(
+                    &dir,
+                    &format!("Task number {}", i),
+                    &format!("Description {}", i),
+                )
+                .unwrap()
+            }));
+        }
+
+        let results: Vec<(String, bool)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let ids: std::collections::HashSet<String> =
+            results.iter().map(|(id, _)| id.clone()).collect();
+
+        // All 10 tasks should have unique IDs
+        assert_eq!(ids.len(), 10, "all concurrent tasks should get unique IDs");
+
+        // Verify 10 task files exist on disk
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        assert_eq!(tasks.len(), 10);
     }
 }

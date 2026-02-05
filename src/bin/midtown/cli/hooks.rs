@@ -583,6 +583,16 @@ fn handle_task_hook() -> Result<Response, String> {
         );
     }
 
+    // For the Lead agent: ensure tasks are persisted to the shared directory.
+    // This is a write-through safety net for the /resume case where Claude Code
+    // doesn't honor CLAUDE_CODE_TASK_LIST_ID and stores tasks only in-memory.
+    // The hook mirrors task data to the shared dir so the daemon can see it.
+    let remapped_task_id = if agent == "lead" {
+        ensure_lead_task_persistence(&repo, tool_name, tool_input, &context)
+    } else {
+        None
+    };
+
     // Notify daemon for follow-up actions. Uses a 5s timeout via DaemonClient,
     // so it won't block indefinitely.
     if let Ok(client) = crate::client::DaemonClient::connect() {
@@ -621,10 +631,15 @@ fn handle_task_hook() -> Result<Response, String> {
                 let _ = client.check_pending();
             }
             "TaskUpdate" => {
-                // Nudge the task owner if someone else updated their task
-                let task_id = tool_input["taskId"]
-                    .as_str()
-                    .or_else(|| tool_input["task_id"].as_str())
+                // Use the remapped task ID if the Lead's internal ID was different
+                // from the shared directory ID (happens after /resume).
+                let task_id = remapped_task_id
+                    .as_deref()
+                    .or_else(|| {
+                        tool_input["taskId"]
+                            .as_str()
+                            .or_else(|| tool_input["task_id"].as_str())
+                    })
                     .unwrap_or("");
                 if !task_id.is_empty() {
                     // Include task list ID so daemon can check for cross-list collisions
@@ -639,6 +654,172 @@ fn handle_task_hook() -> Result<Response, String> {
     Ok(Response::Message {
         message: format!("Posted: * {} {}", agent, action_message),
     })
+}
+
+/// Ensure the Lead's task is persisted to the shared directory.
+///
+/// Claude Code may fail to persist tasks to the `CLAUDE_CODE_TASK_LIST_ID` directory
+/// after `/resume`, storing them only in-memory with IDs starting from 1. This function
+/// acts as a write-through layer: it checks whether the task exists in the shared
+/// directory and creates it if missing.
+///
+/// For TaskCreate: creates the task with the next sequential ID and stores an
+/// internal→shared ID mapping for future TaskUpdate remapping.
+///
+/// For TaskUpdate: remaps the internal ID to the shared ID and applies the update.
+///
+/// Returns the remapped shared task ID if remapping occurred (for TaskUpdate),
+/// or None if no remapping was needed.
+fn ensure_lead_task_persistence(
+    repo: &str,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    context: &serde_json::Value,
+) -> Option<String> {
+    let tasks_dir = midtown::tasks::shared_tasks_dir_for_repo(repo);
+
+    match tool_name {
+        "TaskCreate" => {
+            let subject = tool_input["subject"].as_str().unwrap_or("");
+            let description = tool_input["description"].as_str().unwrap_or("");
+
+            if subject.is_empty() {
+                return None;
+            }
+
+            match midtown::tasks::ensure_task_in_shared_dir(&tasks_dir, subject, description) {
+                Ok((shared_id, was_created)) => {
+                    if was_created {
+                        // Task wasn't persisted by Claude Code — we created it.
+                        // Try to extract the internal ID from tool_result for mapping.
+                        let internal_id = extract_internal_task_id(context);
+                        if let Some(ref iid) = internal_id {
+                            midtown::tasks::store_lead_task_id_mapping(repo, iid, &shared_id);
+                        }
+                        hook_log(
+                            repo,
+                            &format!(
+                                "task: mirrored '{}' to shared dir as #{} (internal: {:?})",
+                                subject, shared_id, internal_id
+                            ),
+                        );
+                    }
+                    None // TaskCreate doesn't need to return a remapped ID
+                }
+                Err(e) => {
+                    hook_log(repo, &format!("task: mirror failed: {}", e));
+                    None
+                }
+            }
+        }
+        "TaskUpdate" => {
+            let task_id = tool_input["taskId"]
+                .as_str()
+                .or_else(|| tool_input["task_id"].as_str())
+                .unwrap_or("");
+
+            if task_id.is_empty() {
+                return None;
+            }
+
+            // Check if the task exists directly in the shared directory
+            let task_file = tasks_dir.join(format!("{}.json", task_id));
+            if task_file.exists() {
+                // Task exists with this ID — no remapping needed.
+                // Still apply updates ourselves as a safety net.
+                if let Err(e) =
+                    midtown::tasks::update_task_fields_in_dir(&tasks_dir, task_id, tool_input)
+                {
+                    hook_log(repo, &format!("task: update {} failed: {}", task_id, e));
+                }
+                return None;
+            }
+
+            // Task doesn't exist at this ID — check the mapping for a remap
+            if let Some(shared_id) = midtown::tasks::lookup_lead_task_id(repo, task_id) {
+                hook_log(
+                    repo,
+                    &format!(
+                        "task: remapping internal {} → shared {}",
+                        task_id, shared_id
+                    ),
+                );
+                if let Err(e) =
+                    midtown::tasks::update_task_fields_in_dir(&tasks_dir, &shared_id, tool_input)
+                {
+                    hook_log(
+                        repo,
+                        &format!("task: remapped update {} failed: {}", shared_id, e),
+                    );
+                }
+                Some(shared_id)
+            } else {
+                hook_log(
+                    repo,
+                    &format!(
+                        "task: no mapping found for internal ID {}, cannot remap",
+                        task_id
+                    ),
+                );
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract the internal task ID from the PostToolUse tool_result.
+///
+/// Claude Code's tool_result for TaskCreate may be:
+/// - A JSON object with an "id" field
+/// - A string containing "task N" or "task #N"
+/// - A string containing "id: N" or "id N"
+fn extract_internal_task_id(context: &serde_json::Value) -> Option<String> {
+    let result = &context["tool_result"];
+
+    // Try as JSON object with "id" field
+    if let Some(id) = result.get("id") {
+        return id
+            .as_str()
+            .map(String::from)
+            .or_else(|| id.as_u64().map(|n| n.to_string()));
+    }
+
+    // Try as string containing a task ID pattern
+    if let Some(s) = result.as_str() {
+        // Look for patterns like "task 1", "task #1", "Task #1:", "id: 1"
+        let lower = s.to_lowercase();
+        if let Some(pos) = lower.find("task") {
+            let rest = &s[pos + 4..];
+            return extract_first_number(rest);
+        }
+        if let Some(pos) = lower.find("id") {
+            let rest = &s[pos + 2..];
+            return extract_first_number(rest);
+        }
+        // Try if the whole string is a number
+        let trimmed = s.trim();
+        if trimmed.parse::<u64>().is_ok() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    None
+}
+
+/// Extract the first number from a string, skipping leading punctuation/whitespace.
+fn extract_first_number(s: &str) -> Option<String> {
+    let mut chars = s.chars().peekable();
+    // Skip non-digit characters (spaces, #, :, etc.)
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            break;
+        }
+        chars.next();
+    }
+    // Collect digits
+    let num: String = chars.take_while(|c| c.is_ascii_digit()).collect();
+    if num.is_empty() { None } else { Some(num) }
 }
 
 /// Handle the PostToolUse hook for AskUserQuestion.
@@ -979,5 +1160,67 @@ Second insight
 
         // Clean up test directory
         let _ = std::fs::remove_dir_all(&projects_dir);
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_json_object() {
+        let context = serde_json::json!({
+            "tool_result": {"id": 5, "subject": "Test task"}
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("5".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_json_string_id() {
+        let context = serde_json::json!({
+            "tool_result": {"id": "42"}
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_string_task_hash() {
+        let context = serde_json::json!({
+            "tool_result": "Task #42 created successfully"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_string_task_no_hash() {
+        let context = serde_json::json!({
+            "tool_result": "task 7 is now pending"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("7".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_string_id_colon() {
+        let context = serde_json::json!({
+            "tool_result": "Created with id: 99"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("99".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_plain_number() {
+        let context = serde_json::json!({
+            "tool_result": "3"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("3".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_returns_none() {
+        let context = serde_json::json!({
+            "tool_result": "no number here at all"
+        });
+        assert_eq!(extract_internal_task_id(&context), None);
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_missing_result() {
+        let context = serde_json::json!({});
+        assert_eq!(extract_internal_task_id(&context), None);
     }
 }
