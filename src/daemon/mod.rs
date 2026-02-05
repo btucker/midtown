@@ -1427,23 +1427,36 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     );
                 }
 
-                // Store author session for PR handoff (allows any coworker to resume the PR)
-                if let Some(ref pr_opened) = webhook_event.pr_opened
-                    && let Some(ref author) = pr_opened.author_coworker
-                {
-                    if let Some(session_id) = state.coworkers.get_session_id(author) {
-                        let effect = effects::Effect::StorePrAuthorSession {
-                            pr_number: pr_opened.pr_number,
-                            session_id,
-                            branch: pr_opened.branch.clone(),
-                            author: author.clone(),
-                        };
-                        effects::execute_effects(vec![effect], &state).await;
-                    } else {
-                        debug!(
-                            "PR #{} author {} has no known session ID (discovered coworker?)",
-                            pr_opened.pr_number, author
-                        );
+                // Handle PR-opened events: store author session + auto-complete task
+                if let Some(ref pr_opened) = webhook_event.pr_opened {
+                    let mut pr_effects = Vec::new();
+
+                    // Store author session for PR handoff (allows any coworker to resume the PR)
+                    if let Some(ref author) = pr_opened.author_coworker {
+                        if let Some(session_id) = state.coworkers.get_session_id(author) {
+                            pr_effects.push(effects::Effect::StorePrAuthorSession {
+                                pr_number: pr_opened.pr_number,
+                                session_id,
+                                branch: pr_opened.branch.clone(),
+                                author: author.clone(),
+                            });
+                        } else {
+                            debug!(
+                                "PR #{} author {} has no known session ID (discovered coworker?)",
+                                pr_opened.pr_number, author
+                            );
+                        }
+                    }
+
+                    // Auto-complete task when PR title contains [Midtown #XX]
+                    pr_effects.extend(dispatch::build_task_completion_effects(
+                        &pr_opened.title,
+                        pr_opened.pr_number,
+                        &state.repo_name,
+                    ));
+
+                    if !pr_effects.is_empty() {
+                        effects::execute_effects(pr_effects, &state).await;
                     }
                 }
 

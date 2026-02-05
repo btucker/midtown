@@ -188,6 +188,8 @@ pub struct PrOpenedInfo {
     pub branch: String,
     /// The coworker who opened the PR (from branch prefix or body frontmatter)
     pub author_coworker: Option<String>,
+    /// The PR title (for extracting task ID from "[Midtown #XX]" format)
+    pub title: String,
 }
 
 /// Identifies a GitHub comment for the reactions API.
@@ -716,12 +718,13 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         _ => None,
     };
 
-    // Capture PR author info when a PR is opened (for session handoff)
+    // Capture PR author info when a PR is opened (for session handoff and task completion)
     let pr_opened = match event.action.as_str() {
         "opened" | "ready_for_review" => branch.map(|b| PrOpenedInfo {
             pr_number: event.number,
             branch: b.to_string(),
             author_coworker: coworker.map(String::from),
+            title: event.pull_request.title.clone(),
         }),
         _ => None,
     };
