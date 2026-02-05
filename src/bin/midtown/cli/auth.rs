@@ -71,8 +71,13 @@ fn handle_login(profile: &str) -> Result<Response, String> {
 
     // If this is the first profile, set it as current
     let profiles = midtown::auth::list_profiles().unwrap_or_default();
-    if profiles.len() == 1 {
-        let _ = midtown::auth::set_current_profile(profile);
+    if profiles.len() == 1
+        && let Err(e) = midtown::auth::set_current_profile(profile)
+    {
+        eprintln!(
+            "Warning: Could not set '{}' as current profile: {}",
+            profile, e
+        );
     }
 
     Ok(Response::Message {

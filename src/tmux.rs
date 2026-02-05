@@ -2901,6 +2901,35 @@ Claude is now processing the request
     }
 
     #[test]
+    fn test_launch_config_includes_claude_config_dir() {
+        let config = ClaudeLaunchConfig {
+            name: "park".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            role: CoworkerRole::default(),
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: true,
+            pr_number: None,
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        // CLAUDE_CONFIG_DIR must be set from auth profile for account isolation
+        assert!(
+            result.shell_command.contains("CLAUDE_CONFIG_DIR="),
+            "must set CLAUDE_CONFIG_DIR from auth profile"
+        );
+        // Path should include .midtown/auth/
+        assert!(
+            result.shell_command.contains(".midtown/auth/"),
+            "CLAUDE_CONFIG_DIR should point to auth profile directory"
+        );
+    }
+
+    #[test]
     fn test_launch_config_initial_prompt_is_positional_not_flag() {
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
