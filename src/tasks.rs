@@ -569,6 +569,43 @@ pub fn complete_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), Stri
     complete_task_in_dir(task_id, &tasks_dir)
 }
 
+/// Set a task's status to in_progress in a specific tasks directory.
+///
+/// This is the path-injectable version used by tests.
+fn set_task_in_progress_in_dir(task_id: &str, tasks_dir: &std::path::Path) -> Result<(), String> {
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+
+    let content =
+        std::fs::read_to_string(&task_file).map_err(|e| format!("Failed to read task: {}", e))?;
+
+    let mut task: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse task: {}", e))?;
+
+    task["status"] = serde_json::json!("in_progress");
+
+    let updated_content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+
+    std::fs::write(&task_file, updated_content)
+        .map_err(|e| format!("Failed to write task: {}", e))?;
+
+    Ok(())
+}
+
+/// Set a task's status to in_progress for a specific repo.
+///
+/// Called after a coworker successfully spawns to reflect that work has started.
+pub fn set_task_in_progress_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+
+    set_task_in_progress_in_dir(task_id, &tasks_dir)
+}
+
 /// Clear a completed task ID from all dependent tasks' `blockedBy` arrays in a specific directory.
 ///
 /// This is the path-injectable version used by tests.
@@ -824,6 +861,37 @@ mod tests {
             "whitespace-only owner should be parsed as None, got {:?}",
             task.owner
         );
+    }
+
+    #[test]
+    fn test_set_task_in_progress_in_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        create_task_file(&tasks_dir, "42", "pending", Some("alice"));
+
+        // Verify task starts as pending
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let task = tasks.iter().find(|t| t.id == "42").unwrap();
+        assert_eq!(task.status, TaskStatus::Pending);
+
+        // Set to in_progress
+        set_task_in_progress_in_dir("42", &tasks_dir).unwrap();
+
+        // Verify status changed to in_progress and owner is preserved
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let task = tasks.iter().find(|t| t.id == "42").unwrap();
+        assert_eq!(task.status, TaskStatus::InProgress);
+        assert_eq!(task.owner, Some("alice".to_string()));
+    }
+
+    #[test]
+    fn test_set_task_in_progress_in_dir_nonexistent_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        let result = set_task_in_progress_in_dir("999", &tasks_dir);
+        assert!(result.is_err(), "Should error for nonexistent task");
     }
 
     #[test]
