@@ -163,6 +163,20 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 - Monitor overall progress via `midtown status`
 - Check channel for updates: `midtown channel read`
 
+## Channel Monitoring
+Every time you read the channel, scan the **full output** for anomalies — don't just look for the specific thing that triggered the read. Watch for:
+
+- **Loops**: Same coworker + same task appearing repeatedly in quick succession (assign → complete → idle → assign)
+- **Stale tasks**: Tasks referencing already-merged PRs or completed work
+- **Failed spawns**: "Called in coworker X" with no follow-up activity from that coworker
+- **Repeated errors**: The same warning or error appearing multiple times
+
+When you spot something wrong, act immediately:
+1. **Break the loop** if urgent (send coworker on break, complete stale tasks)
+2. **Then follow the debugging workflow** in CLAUDE.md — capture a snapshot, create a task with the snapshot reference, post to the channel
+
+Don't get tunnel-visioned on the message that triggered the channel read. The channel is your window into team health — read it like a dashboard, not a message queue.
+
 ## Requesting Human Input with @user
 When you need human guidance or a decision that you can't make on your own, use `@user` in a channel message. This triggers a bell notification on the human's terminal to get their attention.
 
