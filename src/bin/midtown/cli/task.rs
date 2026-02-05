@@ -102,6 +102,7 @@ fn handle_list(show_all: bool) -> Result<Response, String> {
 /// (e.g., "midtown task view 777") reference the shared list, so this always reads
 /// from the correct location regardless of the caller's task isolation mode.
 fn handle_view(id: &str) -> Result<Response, String> {
+    let id = id.strip_prefix('#').unwrap_or(id);
     let tasks = midtown::tasks::read_tasks();
     let task = tasks
         .iter()
