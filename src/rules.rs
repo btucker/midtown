@@ -155,7 +155,7 @@ impl CoworkerRecord {
         }
     }
 
-    /// Format for tmux tab display, matching CoworkerStateReport::display_status().
+    /// Format for tmux tab display (e.g. "dev#42", "test#7").
     ///
     /// Note: Task ID 0 is treated as "no task" since it's often used as a
     /// placeholder for taskless work (e.g., PR reviews without a formal task).

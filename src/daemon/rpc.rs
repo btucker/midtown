@@ -564,8 +564,7 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
 
         match shutdown_result {
             Ok(Ok(())) => {
-                // Only clear state and records on successful shutdown
-                crate::coworker_state::clear_state(&state.repo_name, name);
+                // Only clear records on successful shutdown
                 {
                     let mut records = state.coworker_records.write().await;
                     records.remove(name);
@@ -823,8 +822,7 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 /// Handle coworker.report-state RPC method.
 ///
 /// Stores the coworker's workflow phase in daemon memory and updates the
-/// tmux tab display. Replaces the previous file-based state.json approach
-/// so the daemon is the single authority for coworker state.
+/// tmux tab display. The daemon is the single authority for coworker state.
 ///
 /// When a coworker reports `Idle`, they are immediately sent on break.
 /// This eliminates the race between idle detection (daemon tick) and stuck
@@ -880,9 +878,6 @@ async fn handle_coworker_report_state(
 
                     // Broadcast WebSocket update (only after successful shutdown)
                     state.broadcast_coworker_update(name, "stopped", None);
-
-                    // Clear state file
-                    crate::coworker_state::clear_state(&state.repo_name, name);
 
                     // Remove from coworker_records
                     {
@@ -976,14 +971,6 @@ async fn handle_coworker_report_state(
             .and_then(|r| r.display_status())
             .unwrap_or_default()
     };
-
-    // Persist state to file for recovery across daemon restarts.
-    // The daemon is the authority for state, but we write to disk so that
-    // if the daemon restarts, it can recover the last known workflow phase.
-    let report = crate::coworker_state::CoworkerStateReport::new(phase, task_id);
-    if let Err(e) = crate::coworker_state::write_state(&state.repo_name, name, &report) {
-        debug!("Failed to persist state file for {}: {}", name, e);
-    }
 
     // Update tmux tab display
     if let Err(e) = state

@@ -727,11 +727,6 @@ fn post_question_to_channel(agent: &str, question: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Public accessor for `detect_git_repo` (used by `handle_state` in mod.rs).
-pub fn detect_git_repo_public() -> Option<String> {
-    detect_git_repo()
-}
-
 /// Try to detect the current git repository name.
 /// Uses --git-common-dir to handle worktrees correctly (they share the main repo's .git).
 fn detect_git_repo() -> Option<String> {
