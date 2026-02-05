@@ -921,6 +921,11 @@ async fn handle_coworker_report_state(
     // completions write to their isolated list, not the shared list the daemon
     // reads. This closes the loop by updating the shared list when a coworker
     // reports completion via RPC.
+    //
+    // Uses the existing Effect::CompleteTask and Effect::ClearBlockedBy variants
+    // to stay consistent with the effect-based architecture and avoid duplicating
+    // cleanup logic (e.g., clear_task_assignment_by_task is handled by the effect
+    // executor in effects.rs).
     if phase == crate::coworker_state::WorkflowPhase::Completed {
         // Determine the task to complete: use the explicitly provided task_id,
         // or fall back to the task tracked in the daemon's in-memory assignment map.
@@ -930,26 +935,17 @@ async fn handle_coworker_report_state(
         });
 
         if let Some(ref tid) = effective_task_id {
-            // Mark the task as completed on the shared list
-            if let Err(e) = crate::tasks::complete_task_for_repo(tid, &state.repo_name) {
-                warn!(
-                    "Failed to complete task #{} on shared list for {}: {}",
-                    tid, name, e
-                );
-            } else {
-                info!(
-                    "Completed task #{} on shared list (reported by {})",
-                    tid, name
-                );
-            }
-
-            // Clear blocked-by references so dependent tasks become unblocked
-            if let Err(e) = crate::tasks::clear_blocked_by_for_repo(tid, &state.repo_name) {
-                warn!("Failed to clear blockedBy for task #{}: {}", tid, e);
-            }
-
-            // Clear in-memory assignment tracking
-            state.clear_task_assignment_by_task(tid);
+            let completion_effects = vec![
+                effects::Effect::CompleteTask {
+                    task_id: tid.clone(),
+                    repo_name: state.repo_name.clone(),
+                },
+                effects::Effect::ClearBlockedBy {
+                    completed_task_id: tid.clone(),
+                    repo_name: state.repo_name.clone(),
+                },
+            ];
+            effects::execute_effects(completion_effects, state).await;
         }
 
         // Always clear the coworker's assignment (they're done regardless)
