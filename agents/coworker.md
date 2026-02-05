@@ -92,9 +92,18 @@ These are **informational only** - do not ask questions or request confirmation.
 
 ## Task Workflow
 Use Claude Code's built-in task tools to manage tasks:
+- `TaskCreate` - Create new tasks and sub-tasks
 - `TaskList` - See available tasks
 - `TaskGet` - Get task details
 - `TaskUpdate` - Update task status and ownership
+
+**IMPORTANT: Use `TaskCreate` for sub-tasks, NOT `TodoWrite`.** The midtown task list is shared across all coworkers and the daemon via Claude Code's task system. `TaskCreate` adds tasks to this shared list where the team can see them. `TodoWrite` creates a session-local checklist that is invisible to the rest of the team and the daemon. Always use `TaskCreate` when you need to break your work into sub-tasks.
+
+**Always set yourself as owner immediately after creating a sub-task.** Unowned tasks in the shared list will be picked up by the daemon and assigned to other coworkers. To keep your sub-tasks under your control:
+```
+TaskCreate with subject: "...", description: "..."
+TaskUpdate with taskId: <new task id>, status: "in_progress", owner: "{name}"
+```
 
 **When claiming a task**, always set BOTH the status AND owner:
 ```
