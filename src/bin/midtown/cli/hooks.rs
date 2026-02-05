@@ -1161,4 +1161,66 @@ Second insight
         // Clean up test directory
         let _ = std::fs::remove_dir_all(&projects_dir);
     }
+
+    #[test]
+    fn test_extract_internal_task_id_json_object() {
+        let context = serde_json::json!({
+            "tool_result": {"id": 5, "subject": "Test task"}
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("5".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_json_string_id() {
+        let context = serde_json::json!({
+            "tool_result": {"id": "42"}
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_string_task_hash() {
+        let context = serde_json::json!({
+            "tool_result": "Task #42 created successfully"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_string_task_no_hash() {
+        let context = serde_json::json!({
+            "tool_result": "task 7 is now pending"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("7".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_string_id_colon() {
+        let context = serde_json::json!({
+            "tool_result": "Created with id: 99"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("99".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_plain_number() {
+        let context = serde_json::json!({
+            "tool_result": "3"
+        });
+        assert_eq!(extract_internal_task_id(&context), Some("3".to_string()));
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_returns_none() {
+        let context = serde_json::json!({
+            "tool_result": "no number here at all"
+        });
+        assert_eq!(extract_internal_task_id(&context), None);
+    }
+
+    #[test]
+    fn test_extract_internal_task_id_missing_result() {
+        let context = serde_json::json!({});
+        assert_eq!(extract_internal_task_id(&context), None);
+    }
 }
