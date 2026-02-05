@@ -276,15 +276,20 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
 
-    // Clear pending task creation markers when the Lead has created the task.
-    // Match by extracting PR number from subject "Address review feedback on PR #X".
+    // Reconcile pending task creation markers with tasks on disk.
+    // - Non-completed tasks: clear the pending marker (Lead created it successfully)
+    //   AND pre-populate the marker (prevents re-nudges after daemon restart)
+    // - Completed tasks: ignored (new feedback may need a new task)
     for task in &all_tasks {
         if let Some(pr_num_str) = task.subject.strip_prefix("Address review feedback on PR #")
             && let Ok(pr_number) = pr_num_str.parse::<u64>()
             && let Some(ref owner) = task.owner
+            && task.status != crate::tasks::TaskStatus::Completed
         {
             let key = super::DaemonState::task_creation_key(pr_number, owner);
-            state.clear_task_creation_pending(&key);
+            // Clear nudge-pending marker (task exists) and pre-populate
+            // to prevent unnecessary re-nudges after daemon restart.
+            state.mark_task_creation_pending(&key);
         }
     }
 

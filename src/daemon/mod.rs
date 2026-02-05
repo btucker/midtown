@@ -450,10 +450,13 @@ pub(crate) struct DaemonState {
     /// Lead to call TaskCreate instead of writing task files directly. This prevents
     /// TOCTTOU races when concurrent webhook + polling paths try to create the same task.
     ///
-    /// Key format: "review-feedback-PR#<number>-<owner>". Entries are added when a
-    /// nudge is sent and cleared when the corresponding task appears in the shared
-    /// task list (detected in `collect_snapshot`).
-    pending_task_creations: std::sync::Mutex<HashSet<String>>,
+    /// Key format: "review-feedback-PR#<number>-<owner>". Value is the timestamp when
+    /// the marker was set. Entries are:
+    /// - Added when a nudge is sent to the Lead
+    /// - Cleared when a non-completed matching task appears in the shared task list
+    /// - Pre-populated for existing pending/in_progress tasks (prevents re-nudges after restart)
+    /// - Auto-expired after 5 minutes (handles Lead not acting on the nudge)
+    pending_task_creations: std::sync::Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl DaemonState {
@@ -601,7 +604,7 @@ impl DaemonState {
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             github_user,
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
-            pending_task_creations: std::sync::Mutex::new(HashSet::new()),
+            pending_task_creations: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -791,8 +794,24 @@ impl DaemonState {
     }
 
     /// Check if a task creation nudge has already been sent to the Lead.
+    ///
+    /// Returns false if the marker has expired (> 5 minutes), clearing it
+    /// to allow a retry nudge.
     pub(crate) fn is_task_creation_pending(&self, key: &str) -> bool {
-        self.pending_task_creations.lock().unwrap().contains(key)
+        const STALE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
+
+        let mut pending = self.pending_task_creations.lock().unwrap();
+        if let Some(created_at) = pending.get(key) {
+            if std::time::Instant::now().duration_since(*created_at) > STALE_THRESHOLD {
+                // Expired — clear and allow retry
+                pending.remove(key);
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        }
     }
 
     /// Mark a task creation as pending (nudge sent to Lead).
@@ -800,12 +819,12 @@ impl DaemonState {
         self.pending_task_creations
             .lock()
             .unwrap()
-            .insert(key.to_string());
+            .insert(key.to_string(), std::time::Instant::now());
     }
 
     /// Clear a pending task creation marker.
     ///
-    /// Called when the corresponding task appears in the shared task list,
+    /// Called when a non-completed matching task appears in the shared task list,
     /// confirming the Lead created it successfully.
     pub(crate) fn clear_task_creation_pending(&self, key: &str) {
         self.pending_task_creations.lock().unwrap().remove(key);
