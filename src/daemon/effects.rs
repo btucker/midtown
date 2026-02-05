@@ -91,6 +91,15 @@ pub enum Effect {
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
     RecordTaskAssignment { coworker: String, task_id: String },
+    /// Nudge the Lead with a message (via tmux send-keys to the lead pane).
+    NudgeLead { message: String },
+    /// Directly write task ownership to disk as a fallback.
+    ///
+    /// Used when the Lead fails to process a task.claim nudge after max retries.
+    /// Sets the task owner on disk. The in-memory assignment already exists.
+    AssignTaskOwnerDirect { task_id: String, owner: String },
+    /// Increment the nudge retry counter for a stale claim assignment.
+    IncrementClaimRetry { coworker: String },
     /// Clear a saved PR break session after successful resume.
     ClearPrBreakSession { name: String },
     /// Send raw tmux keys to a coworker (e.g., Escape, Enter) without the
@@ -403,6 +412,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 state.record_task_assignment(&coworker, &task_id);
+            }
+            Effect::NudgeLead { message } => {
+                if let Err(e) = state.coworkers.nudge_lead(&message) {
+                    warn!("Failed to nudge Lead: {}", e);
+                }
+            }
+            Effect::AssignTaskOwnerDirect { task_id, owner } => {
+                if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
+                    warn!(
+                        "Failed to directly assign task #{} to {}: {}",
+                        task_id, owner, e
+                    );
+                } else {
+                    info!(
+                        "Directly assigned task #{} to {} (Lead nudge fallback)",
+                        task_id, owner
+                    );
+                }
+            }
+            Effect::IncrementClaimRetry { coworker } => {
+                state.increment_claim_retry(&coworker);
             }
             Effect::ClearPrBreakSession { name } => {
                 let mut sessions = state.pr_break_sessions.write().unwrap();

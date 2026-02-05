@@ -90,6 +90,20 @@ pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
 /// other coworkers can pick it up.
 pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(120);
 
+/// How long to wait for the Lead to process a task.claim nudge before retrying (60 seconds).
+/// If the in-memory assignment is older than this and the task is still pending on disk,
+/// the daemon re-nudges the Lead. After `TASK_CLAIM_MAX_RETRIES` failures, falls back to
+/// a direct disk write.
+pub(super) const TASK_CLAIM_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Maximum number of Lead nudge retries for a task claim before falling back to
+/// a direct disk write. With 60s timeout, 3 retries means ~4 minutes of waiting.
+pub(super) const TASK_CLAIM_MAX_RETRIES: u32 = 3;
+
+/// Cooldown between claim reconciliation nudges for the same task (90 seconds).
+/// Prevents spamming the Lead if claims are slow to process.
+pub(super) const CLAIM_RECONCILIATION_COOLDOWN: Duration = Duration::from_secs(90);
+
 /// Cooldown between zombie respawn attempts for the same coworker (5 minutes).
 /// Prevents respawn loops if the zombie condition keeps recurring.
 pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
