@@ -810,7 +810,8 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
 /// Handle coworker.report-state RPC method.
 ///
 /// Stores the coworker's workflow phase in daemon memory and updates the
-/// tmux tab display. The daemon is the single authority for coworker state.
+/// tmux tab display. Replaces the previous file-based state.json approach
+/// so the daemon is the single authority for coworker state.
 ///
 /// When a coworker reports `Idle`, they are immediately sent on break.
 /// This eliminates the race between idle detection (daemon tick) and stuck
