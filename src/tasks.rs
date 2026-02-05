@@ -415,9 +415,10 @@ fn is_within_grace_period(
     }
 }
 
-/// Update a task's owner and optionally status.
+/// Update a task's owner and set status to in_progress.
 ///
-/// Writes the updated task back to disk.
+/// Writes the updated task back to disk. This is called when the daemon assigns
+/// a task to a coworker, so the status transitions from pending to in_progress.
 pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
@@ -426,12 +427,20 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
     // Use the shared task list ID (midtown-<repo>)
     let task_list_id = crate::paths::task_list_id();
 
-    // Read the task file
-    let task_file = home
-        .join(".claude")
-        .join("tasks")
-        .join(&task_list_id)
-        .join(format!("{}.json", task_id));
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+
+    update_task_owner_in_dir(task_id, owner, &tasks_dir)
+}
+
+/// Update a task's owner and set status to in_progress in a specific directory.
+///
+/// This is the path-injectable version used by tests and by `update_task_owner`.
+fn update_task_owner_in_dir(
+    task_id: &str,
+    owner: &str,
+    tasks_dir: &std::path::Path,
+) -> Result<(), String> {
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
 
     let content =
         std::fs::read_to_string(&task_file).map_err(|e| format!("Failed to read task: {}", e))?;
@@ -441,6 +450,7 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
         serde_json::from_str(&content).map_err(|e| format!("Failed to parse task: {}", e))?;
 
     task["owner"] = serde_json::json!(owner);
+    task["status"] = serde_json::json!("in_progress");
 
     // Write back
     let updated_content = serde_json::to_string_pretty(&task)
@@ -1547,5 +1557,65 @@ mod tests {
         let id2 =
             create_task_in_dir(temp_dir.path(), "New task", "desc", "Working", "bob").unwrap();
         assert_eq!(id2, "4", "should dedup against newly created task");
+    }
+
+    #[test]
+    fn test_update_task_owner_sets_in_progress() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Create a pending task with no owner
+        let task = serde_json::json!({
+            "id": "42",
+            "subject": "Test task",
+            "status": "pending",
+            "owner": null
+        });
+        let task_file = tasks_dir.join("42.json");
+        std::fs::write(&task_file, serde_json::to_string(&task).unwrap()).unwrap();
+
+        // Assign owner
+        update_task_owner_in_dir("42", "vernon", &tasks_dir).unwrap();
+
+        // Verify both owner and status were updated
+        let content = std::fs::read_to_string(&task_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["owner"], "vernon");
+        assert_eq!(
+            parsed["status"], "in_progress",
+            "Assigning a task owner should set status to in_progress"
+        );
+    }
+
+    #[test]
+    fn test_update_task_owner_preserves_other_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Create a task with extra fields
+        let task = serde_json::json!({
+            "id": "7",
+            "subject": "Complex task",
+            "description": "A detailed description",
+            "status": "pending",
+            "owner": null,
+            "blockedBy": ["5"],
+            "activeForm": "Working on it"
+        });
+        let task_file = tasks_dir.join("7.json");
+        std::fs::write(&task_file, serde_json::to_string(&task).unwrap()).unwrap();
+
+        // Assign owner
+        update_task_owner_in_dir("7", "park", &tasks_dir).unwrap();
+
+        // Verify owner and status changed, other fields preserved
+        let content = std::fs::read_to_string(&task_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["owner"], "park");
+        assert_eq!(parsed["status"], "in_progress");
+        assert_eq!(parsed["subject"], "Complex task");
+        assert_eq!(parsed["description"], "A detailed description");
+        assert_eq!(parsed["blockedBy"], serde_json::json!(["5"]));
+        assert_eq!(parsed["activeForm"], "Working on it");
     }
 }
