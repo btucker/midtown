@@ -966,7 +966,7 @@ async fn collect_stuck_condition_effects(
 
     // --- Scenario 4: Silent coworker (claimed task, no channel activity) ---
     {
-        let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+        let busy_coworkers = state.get_all_busy_coworkers();
         let records = state.coworker_records.read().await;
 
         for name in &busy_coworkers {
@@ -1542,8 +1542,7 @@ async fn collect_reviewer_effects_with_source(
                         .iter()
                         .map(|c| c.name.clone())
                         .collect();
-                    let busy_coworkers =
-                        crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+                    let busy_coworkers = state.get_all_busy_coworkers();
                     let idle_coworkers: Vec<String> = active_coworkers
                         .iter()
                         .filter(|c| !busy_coworkers.contains(*c))
@@ -2116,7 +2115,7 @@ pub(super) async fn handle_pr_comment_nudge(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+    let busy_coworkers = state.get_all_busy_coworkers();
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|c| !busy_coworkers.contains(*c))
@@ -2311,7 +2310,7 @@ pub(super) async fn handle_webhook_review_state_change(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+    let busy_coworkers = state.get_all_busy_coworkers();
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|c| !busy_coworkers.contains(*c))
@@ -2496,7 +2495,7 @@ pub(super) async fn handle_webhook_ci_failure(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = crate::tasks::get_busy_coworkers_for_repo(&state.repo_name);
+    let busy_coworkers = state.get_all_busy_coworkers();
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|c| !busy_coworkers.contains(*c))

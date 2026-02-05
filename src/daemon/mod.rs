@@ -652,6 +652,20 @@ impl DaemonState {
         assignments.keys().cloned().collect()
     }
 
+    /// Get busy coworkers from both disk-based task storage and internal tracking.
+    ///
+    /// This is the canonical way to check busy status. Callers should use this
+    /// instead of `crate::tasks::get_busy_coworkers_for_repo()` directly, since
+    /// the disk-based reader cannot see isolated task lists.
+    pub(crate) fn get_all_busy_coworkers(&self) -> Vec<String> {
+        let mut busy: HashSet<String> = crate::tasks::get_busy_coworkers_for_repo(&self.repo_name)
+            .into_iter()
+            .map(|n| n.to_lowercase())
+            .collect();
+        busy.extend(self.get_busy_coworker_names());
+        busy.into_iter().collect()
+    }
+
     /// Record a pending nudge sent to a coworker.
     ///
     /// Called after successfully sending a nudge via `NudgeCoworker` or

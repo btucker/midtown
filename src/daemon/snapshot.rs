@@ -269,16 +269,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
-    let mut busy_coworkers: HashSet<String> =
-        crate::tasks::get_busy_coworkers_for_repo(&state.repo_name)
-            .into_iter()
-            .map(|n| n.to_lowercase())
-            .collect();
-    // Supplement with daemon's internal task assignment tracking.
-    // With isolated task lists (TaskMode::Isolated), coworker tasks are
-    // invisible to the shared disk-based reader. The internal tracker
-    // ensures busy detection works regardless of task storage mode.
-    busy_coworkers.extend(state.get_busy_coworker_names());
+    let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
     let all_tasks = crate::tasks::read_tasks();
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
