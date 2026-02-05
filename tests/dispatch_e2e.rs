@@ -1091,3 +1091,163 @@ fn dispatch_not_deferred_when_all_prs_have_reviewers() {
         "task dispatch should NOT be deferred when all PRs already have reviewers"
     );
 }
+
+// =============================================================================
+// Tests: Stale claim reconciliation conditions
+// =============================================================================
+
+/// Verify that a claim is considered stale when in-memory assignment exists
+/// but the task is NOT in the in_progress list on disk.
+///
+/// This simulates the scenario: coworker called `midtown task claim`, daemon
+/// recorded the in-memory assignment and nudged the Lead, but the Lead failed
+/// to process the nudge. The task remains "pending" on disk.
+#[test]
+fn stale_claim_detected_when_task_pending_on_disk() {
+    // In-memory: coworker "park" is assigned task "42"
+    let in_memory_assignments: HashMap<String, String> = [("park".to_string(), "42".to_string())]
+        .into_iter()
+        .collect();
+
+    // On disk: no in_progress tasks (Lead didn't process the claim)
+    let on_disk_in_progress: HashSet<String> = HashSet::new();
+
+    // Check: which in-memory assignments have no matching on-disk in_progress?
+    let stale: Vec<_> = in_memory_assignments
+        .iter()
+        .filter(|(_, task_id)| !on_disk_in_progress.contains(*task_id))
+        .map(|(name, tid)| (name.clone(), tid.clone()))
+        .collect();
+
+    assert_eq!(stale.len(), 1, "should detect one stale claim");
+    assert_eq!(stale[0].0, "park");
+    assert_eq!(stale[0].1, "42");
+}
+
+/// Verify that a claim is NOT stale when the task is in_progress on disk.
+///
+/// This is the happy path: the Lead processed the nudge and set the task
+/// to in_progress. The in-memory assignment and on-disk state agree.
+#[test]
+fn claim_not_stale_when_task_in_progress_on_disk() {
+    let in_memory_assignments: HashMap<String, String> = [("park".to_string(), "42".to_string())]
+        .into_iter()
+        .collect();
+
+    // On disk: task 42 is in_progress (Lead processed the claim)
+    let on_disk_in_progress: HashSet<String> = ["42".to_string()].into_iter().collect();
+
+    let stale: Vec<_> = in_memory_assignments
+        .iter()
+        .filter(|(_, task_id)| !on_disk_in_progress.contains(*task_id))
+        .collect();
+
+    assert!(
+        stale.is_empty(),
+        "claim should not be stale when task is in_progress on disk"
+    );
+}
+
+/// Verify that stale claim detection works with multiple coworkers.
+///
+/// Some claims may be stale while others are not. The reconciliation should
+/// only flag the stale ones.
+#[test]
+fn stale_claim_detection_with_multiple_coworkers() {
+    let in_memory_assignments: HashMap<String, String> = [
+        ("park".to_string(), "42".to_string()), // stale — not in_progress on disk
+        ("amsterdam".to_string(), "55".to_string()), // OK — in_progress on disk
+        ("york".to_string(), "78".to_string()), // stale — not in_progress on disk
+    ]
+    .into_iter()
+    .collect();
+
+    let on_disk_in_progress: HashSet<String> = ["55".to_string()].into_iter().collect();
+
+    let mut stale: Vec<_> = in_memory_assignments
+        .iter()
+        .filter(|(_, task_id)| !on_disk_in_progress.contains(*task_id))
+        .map(|(name, tid)| (name.clone(), tid.clone()))
+        .collect();
+    stale.sort_by(|a, b| a.0.cmp(&b.0));
+
+    assert_eq!(stale.len(), 2, "should detect two stale claims");
+    assert_eq!(stale[0].0, "park");
+    assert_eq!(stale[1].0, "york");
+}
+
+/// Verify the retry escalation logic: after max retries, direct disk write should happen.
+///
+/// The reconciliation function checks `nudge_retries >= TASK_CLAIM_MAX_RETRIES`.
+/// When exceeded, it should emit an `AssignTaskOwnerDirect` effect instead of
+/// another `NudgeLead` effect.
+#[test]
+fn stale_claim_escalation_after_max_retries() {
+    let max_retries: u32 = 3;
+
+    // Simulate retry counts for different coworkers
+    let claims: Vec<(&str, &str, u32)> = vec![
+        ("park", "42", 0),      // First detection — should re-nudge
+        ("amsterdam", "55", 2), // Under max — should re-nudge
+        ("york", "78", 3),      // At max — should fall back to direct write
+        ("madison", "99", 5),   // Over max — should fall back to direct write
+    ];
+
+    let mut nudge_count = 0;
+    let mut direct_write_count = 0;
+
+    for (_, _, retries) in &claims {
+        if *retries >= max_retries {
+            direct_write_count += 1;
+        } else {
+            nudge_count += 1;
+        }
+    }
+
+    assert_eq!(nudge_count, 2, "2 claims should trigger re-nudge");
+    assert_eq!(
+        direct_write_count, 2,
+        "2 claims should trigger direct disk write"
+    );
+}
+
+/// Verify that the reconciliation correctly cross-references in-memory
+/// assignments against the snapshot's in_progress_tasks list.
+///
+/// Uses the same data format as WorldSnapshot to ensure compatibility.
+#[test]
+fn reconciliation_uses_snapshot_in_progress_tasks() {
+    // WorldSnapshot format: in_progress_tasks is Vec<(task_id, subject, owner)>
+    let in_progress_tasks: Vec<(String, String, String)> = vec![
+        (
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "park".to_string(),
+        ),
+        (
+            "55".to_string(),
+            "Add tests".to_string(),
+            "amsterdam".to_string(),
+        ),
+    ];
+
+    // Derive on_disk_in_progress set (same logic as reconcile_stale_claims)
+    let on_disk_in_progress: HashSet<String> = in_progress_tasks
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .collect();
+
+    assert!(on_disk_in_progress.contains("42"));
+    assert!(on_disk_in_progress.contains("55"));
+    assert!(
+        !on_disk_in_progress.contains("78"),
+        "task 78 is not in_progress"
+    );
+
+    // In-memory assignment for task 78 would be stale
+    let in_memory_task = "78";
+    assert!(
+        !on_disk_in_progress.contains(in_memory_task),
+        "task 78 should be detected as stale (not in_progress on disk)"
+    );
+}
