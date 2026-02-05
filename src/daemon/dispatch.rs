@@ -437,11 +437,12 @@ fn partition_orphans_by_merged_status(
                 unmerged.push(name);
             }
         } else {
-            // Detached HEAD - no branch means no "unmerged commits".
-            // The worktree might have uncommitted changes (flagged by has_uncommitted_changes),
-            // but there's no branch with commits that haven't been merged.
-            // Treat as merged (safe to clean up after handling uncommitted changes separately).
-            merged.push(name);
+            // Detached HEAD - no branch name to check against merged PRs.
+            // Worktrees only reach this function if safe_cleanup() returned false,
+            // which for detached HEAD means has_uncommitted_changes() was true.
+            // Force-deleting would lose that uncommitted work.
+            // Treat as unmerged so the Lead gets a warning and can investigate.
+            unmerged.push(name);
         }
     }
 
@@ -1055,9 +1056,11 @@ mod tests {
 
     #[test]
     fn test_partition_orphans_by_merged_status_detached_head() {
-        // Bug scenario: worktree is in detached HEAD state (e.g., at a commit already in main).
-        // Detached HEAD means there's no branch to have "unmerged commits".
-        // These should NOT be flagged as having unmerged commits.
+        // Scenario: worktree is in detached HEAD state.
+        // Worktrees only reach partition if safe_cleanup() returned false.
+        // For detached HEAD, has_commits_beyond_base() returns false, so the only
+        // reason it's flagged is has_uncommitted_changes() returned true.
+        // We must warn (unmerged) rather than force-delete (merged) to prevent data loss.
         let flagged = vec![
             "columbus".to_string(), // detached HEAD, get_branch returns None
             "york".to_string(),     // has branch with unmerged commits
@@ -1076,10 +1079,10 @@ mod tests {
         let (merged, unmerged) =
             partition_orphans_by_merged_status(flagged, &merged_pr_branches, get_branch);
 
-        // columbus is detached HEAD - should NOT be in unmerged (no branch = no "unmerged commits")
-        // york has a branch not in merged list - should be in unmerged
-        assert_eq!(merged, vec!["columbus"]);
-        assert_eq!(unmerged, vec!["york"]);
+        // columbus is detached HEAD - goes to unmerged to warn Lead about uncommitted changes
+        // york has a branch not in merged list - also goes to unmerged
+        assert!(merged.is_empty());
+        assert_eq!(unmerged, vec!["columbus", "york"]);
     }
 
     #[test]
