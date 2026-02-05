@@ -894,4 +894,95 @@ Second insight
         assert_eq!(insights.len(), 1);
         assert!(insights[0].contains("Second insight"));
     }
+
+    #[test]
+    fn test_hash_insight_for_fallback_deterministic() {
+        let hash1 = hash_insight_for_fallback("Test insight content");
+        let hash2 = hash_insight_for_fallback("Test insight content");
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_insight_for_fallback_normalizes_whitespace() {
+        let hash1 = hash_insight_for_fallback("This is an insight");
+        let hash2 = hash_insight_for_fallback("  This  is   an   insight  ");
+        let hash3 = hash_insight_for_fallback("This\n  is\nan\ninsight");
+        let hash4 = hash_insight_for_fallback("THIS IS AN INSIGHT");
+
+        assert_eq!(hash1, hash2, "extra whitespace should be normalized");
+        assert_eq!(hash1, hash3, "newlines should be normalized");
+        assert_eq!(hash1, hash4, "case should be normalized");
+    }
+
+    #[test]
+    fn test_try_claim_insight_atomic_dedup() {
+        // Use a unique repo name to avoid collisions with other tests/state
+        let repo = format!("test-dedup-{}", std::process::id());
+        let insights_dir = midtown::paths::projects_dir_for_repo(&repo).join("insights");
+
+        // Ensure clean state
+        let _ = std::fs::remove_dir_all(&insights_dir);
+
+        let hash = hash_insight_for_fallback("The daemon follows an event-driven architecture");
+
+        // First claim should succeed
+        assert!(
+            try_claim_insight(&repo, &hash),
+            "first claim should succeed"
+        );
+
+        // Second claim with same hash should fail (file already exists)
+        assert!(
+            !try_claim_insight(&repo, &hash),
+            "second claim should fail — duplicate"
+        );
+
+        // Different insight should succeed
+        let hash2 = hash_insight_for_fallback("A completely different insight");
+        assert!(
+            try_claim_insight(&repo, &hash2),
+            "different insight should succeed"
+        );
+
+        // Clean up test directory
+        let _ = std::fs::remove_dir_all(midtown::paths::projects_dir_for_repo(&repo));
+    }
+
+    #[test]
+    fn test_post_insight_to_channel_deduplicates() {
+        // Simulates two "concurrent" fallback posts with the same insight.
+        // Only the first should succeed; the second should be blocked by
+        // the atomic file claim (the race condition the reviewer flagged).
+        let repo = format!("test-channel-dedup-{}", std::process::id());
+        let projects_dir = midtown::paths::projects_dir_for_repo(&repo);
+
+        // Ensure clean state
+        let _ = std::fs::remove_dir_all(&projects_dir);
+
+        let insight = "The insight pipeline uses headless architect sessions";
+
+        // First post should succeed (claims the insight + posts to channel)
+        let first = post_insight_to_channel(&repo, "coworker-a", insight);
+        assert!(first, "first fallback post should succeed");
+
+        // Second post with same insight should fail (atomic claim blocks it)
+        let second = post_insight_to_channel(&repo, "coworker-b", insight);
+        assert!(!second, "second fallback post should be blocked by dedup");
+
+        // Verify only one message was posted to the channel
+        let channel = midtown::Channel::for_repo(&repo).unwrap();
+        let messages = channel.read_all().unwrap();
+        let insight_messages: Vec<_> = messages
+            .iter()
+            .filter(|m| m.content.contains(insight))
+            .collect();
+        assert_eq!(
+            insight_messages.len(),
+            1,
+            "only one insight message should be in the channel"
+        );
+
+        // Clean up test directory
+        let _ = std::fs::remove_dir_all(&projects_dir);
+    }
 }
