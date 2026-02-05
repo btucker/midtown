@@ -744,6 +744,10 @@ pub(super) fn spawn_for_pending_tasks(
         std::collections::HashMap::new();
     let mut task_coworker_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // Track coworker names assigned within this tick to prevent duplicate assignments.
+    // This handles the case where next_available_name() returns the same name for
+    // two unrelated tasks because the first spawn hasn't executed yet.
+    let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
     for task in pending_unowned.iter() {
         // Check dev coworkers limit before spawning (reserve slots for reviewers)
         if snap.is_at_dev_limit {
@@ -818,6 +822,7 @@ pub(super) fn spawn_for_pending_tasks(
         // We always spawn fresh rather than reusing idle coworkers — idle coworkers
         // get shut down by the idle check loop, keeping the lifecycle simple:
         // spawn → work → PR → idle → shutdown.
+        let was_grouped = grouped_name.is_some();
         let coworker_name = if let Some(name) = grouped_name {
             name
         } else {
@@ -838,10 +843,28 @@ pub(super) fn spawn_for_pending_tasks(
             .active_reviewers
             .contains(&coworker_name.to_lowercase());
 
-        // Skip assigning main task list tasks to active reviewers
-        if already_running && is_coworker_reviewer {
+        // Check if this coworker is already busy with an assigned task.
+        // With isolated task lists, the daemon tracks assignments internally.
+        // Also check within-tick assignments to prevent duplicate fresh-spawns.
+        let is_busy = snap.busy_coworkers.contains(&coworker_name.to_lowercase())
+            || names_assigned_this_tick.contains(&coworker_name.to_lowercase());
+
+        // Skip running coworkers that are busy or reviewing.
+        // Grouped tasks (same PR, blockedBy) are allowed to go to busy coworkers
+        // since they represent intentionally related work.
+        if already_running && (is_coworker_reviewer || (is_busy && !was_grouped)) {
             debug!(
-                "Task #{}: skipping active reviewer {} (has review assignment)",
+                "Task #{}: skipping coworker {} (busy={}, reviewer={}, grouped={})",
+                task.id, coworker_name, is_busy, is_coworker_reviewer, was_grouped
+            );
+            continue;
+        }
+
+        // For fresh-spawn names (not grouped), prevent assigning multiple tasks
+        // to the same not-yet-spawned coworker within the same tick.
+        if !already_running && is_busy && !was_grouped {
+            debug!(
+                "Task #{}: skipping {} (already assigned this tick)",
                 task.id, coworker_name
             );
             continue;
@@ -859,6 +882,7 @@ pub(super) fn spawn_for_pending_tasks(
         if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
             pr_coworker_map.insert(pr_num, coworker_name.clone());
         }
+        names_assigned_this_tick.insert(coworker_name.to_lowercase());
 
         // Build the prompt message
         let prompt = format!(

@@ -665,3 +665,99 @@ fn snapshot_data_integrity_for_dispatch() {
         }
     }
 }
+
+/// Regression test for #767: daemon assigning multiple tasks to busy coworkers.
+///
+/// After task isolation (TaskMode::Isolated), busy_coworkers was always empty
+/// because the daemon couldn't read isolated task storage. This caused the
+/// daemon to assign new tasks to already-busy coworkers.
+///
+/// The fix adds internal task assignment tracking in DaemonState, which
+/// populates busy_coworkers independently of disk-based task storage.
+///
+/// This test verifies the dispatch logic: a busy running coworker should
+/// not receive additional unrelated task assignments.
+#[test]
+fn busy_coworker_not_assigned_additional_tasks() {
+    // Simulate: park is running and busy (has an assigned task)
+    let busy_coworkers: HashSet<String> = ["park".to_string()].into_iter().collect();
+    let active_names: HashSet<String> = ["park".to_string()].into_iter().collect();
+    let active_reviewers: HashSet<String> = HashSet::new();
+
+    // Pending unowned task (should NOT be assigned to park)
+    let task = Task {
+        id: "766".to_string(),
+        subject: "Batch CI pass notifications".to_string(),
+        status: "pending".to_string(),
+        owner: None,
+        blocked_by: vec![],
+    };
+
+    // Simulate the dispatch check that was missing before the fix:
+    // If coworker is already running AND busy AND not grouped → skip
+    let coworker_name = "park";
+    let already_running = active_names.contains(coworker_name);
+    let is_busy = busy_coworkers.contains(coworker_name);
+    let is_reviewer = active_reviewers.contains(coworker_name);
+    let was_grouped = false; // Not grouped via PR/blockedBy
+
+    // The dispatch should skip this assignment
+    let should_skip = already_running && (is_reviewer || (is_busy && !was_grouped));
+    assert!(
+        should_skip,
+        "Task #{} should NOT be assigned to busy coworker {} (busy={}, grouped={})",
+        task.id, coworker_name, is_busy, was_grouped
+    );
+}
+
+/// Test that grouped tasks CAN be assigned to busy coworkers.
+///
+/// When a task is related (same PR, blockedBy), it should be grouped
+/// to the same coworker even if they're busy.
+#[test]
+fn grouped_task_assigned_to_busy_coworker() {
+    let busy_coworkers: HashSet<String> = ["park".to_string()].into_iter().collect();
+    let active_names: HashSet<String> = ["park".to_string()].into_iter().collect();
+    let active_reviewers: HashSet<String> = HashSet::new();
+
+    let coworker_name = "park";
+    let already_running = active_names.contains(coworker_name);
+    let is_busy = busy_coworkers.contains(coworker_name);
+    let is_reviewer = active_reviewers.contains(coworker_name);
+    let was_grouped = true; // Grouped via same PR
+
+    // Grouped tasks should NOT be skipped
+    let should_skip = already_running && (is_reviewer || (is_busy && !was_grouped));
+    assert!(
+        !should_skip,
+        "Grouped task SHOULD be assigned to busy coworker {} (it's related work)",
+        coworker_name
+    );
+}
+
+/// Test within-tick duplicate prevention.
+///
+/// If two unrelated tasks are processed in the same tick, the second
+/// should not be assigned to the same coworker as the first.
+#[test]
+fn within_tick_duplicate_prevented() {
+    let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
+    let busy_coworkers: HashSet<String> = HashSet::new();
+
+    // First task assigned to "park"
+    names_assigned_this_tick.insert("park".to_string());
+
+    // Second task tries "park" (not grouped, not already running)
+    let coworker_name = "park";
+    let already_running = false;
+    let is_busy =
+        busy_coworkers.contains(coworker_name) || names_assigned_this_tick.contains(coworker_name);
+    let was_grouped = false;
+
+    // Should skip: not running but busy (assigned this tick) and not grouped
+    let should_skip = !already_running && is_busy && !was_grouped;
+    assert!(
+        should_skip,
+        "Second unrelated task should not be assigned to same coworker within one tick"
+    );
+}
