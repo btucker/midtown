@@ -486,7 +486,7 @@ fn test_daemon_spawns_lead_with_real_claude() {
 /// which is inherently variable with real AI.
 #[test]
 #[ignore]
-#[timeout(120_000)]
+#[timeout(240_000)] // 4 minutes: first test in suite triggers cargo build --release
 fn test_coworker_spawn_and_tui_renders() {
     if !tmux_available() {
         eprintln!("tmux not available, skipping");
