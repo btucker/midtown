@@ -205,12 +205,26 @@ impl WorktreeManager {
         Ok(())
     }
 
-    /// Force remove a worktree directory and prune git references.
+    /// Force remove a worktree directory, its associated branch, and prune git references.
     ///
     /// This is useful for cleaning up stale worktrees that weren't properly
     /// removed (e.g., after a crash or forced shutdown).
     pub fn force_cleanup(&self, coworker_name: &str) -> WorktreeResult<()> {
         let worktree_path = self.worktree_path(coworker_name);
+
+        // Get the branch name before removing the worktree
+        let branch_name = if worktree_path.exists() {
+            Command::new("git")
+                .current_dir(&worktree_path)
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|b| b != "HEAD")
+        } else {
+            None
+        };
 
         // Try to remove via git first (handles lock files, etc.)
         let _ = self.remove(coworker_name, true);
@@ -222,6 +236,14 @@ impl WorktreeManager {
 
         // Prune any stale git worktree references
         self.prune()?;
+
+        // Delete the branch if it was a named branch (not detached HEAD)
+        if let Some(branch) = branch_name {
+            let _ = Command::new("git")
+                .current_dir(&self.repo_root)
+                .args(["branch", "-D", &branch])
+                .output();
+        }
 
         Ok(())
     }
@@ -417,6 +439,37 @@ impl WorktreeManager {
         }
     }
 
+    /// Check if the worktree's HEAD commit is reachable from the default branch.
+    ///
+    /// Returns `true` if HEAD is an ancestor of (or equal to) the default branch,
+    /// meaning all the worktree's commits are already on main. This handles:
+    /// - Detached HEAD at a commit that's on main
+    /// - Branch whose commits were regular-merged (not squash) into main
+    ///
+    /// Returns `false` if the commit is not on main, the worktree doesn't exist,
+    /// or the check fails.
+    pub fn is_head_reachable_from_default_branch(&self, coworker_name: &str) -> bool {
+        let worktree_path = self.worktree_path(coworker_name);
+        if !worktree_path.exists() {
+            return false;
+        }
+
+        let default_branch =
+            detect_default_branch(&self.repo_root).unwrap_or_else(|| "main".to_string());
+
+        // `git merge-base --is-ancestor HEAD <default>` exits 0 if HEAD is
+        // an ancestor of the default branch.
+        let output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["merge-base", "--is-ancestor", "HEAD", &default_branch])
+            .output();
+
+        match output {
+            Ok(output) => output.status.success(),
+            Err(_) => false,
+        }
+    }
+
     /// Check if a coworker's branch has a merged PR on GitHub.
     ///
     /// Uses `gh pr list` to check if the branch's PR was merged (e.g. via
@@ -465,38 +518,42 @@ impl WorktreeManager {
         }
     }
 
-    /// Safely clean up a coworker's worktree and branch if it has no commits
-    /// and no uncommitted changes, or if the branch's PR has been merged.
+    /// Safely clean up a coworker's worktree and branch when it's safe to do so.
+    ///
+    /// Auto-cleans when:
+    /// - No commits beyond base and no uncommitted changes
+    /// - Commits exist but HEAD is already reachable from the default branch
+    ///   (e.g., detached HEAD on main, or branch regular-merged into main)
+    ///   AND no uncommitted changes
     ///
     /// Returns `Ok(true)` if the worktree was cleaned up.
-    /// Returns `Ok(false)` if the worktree has commits or uncommitted changes
-    /// and was left intact.
-    /// Returns `Err` if the cleanup operation failed.
-    /// Safely clean up a coworker's worktree and branch if it has no commits
-    /// and no uncommitted changes.
-    ///
-    /// Returns `Ok(true)` if the worktree was cleaned up.
-    /// Returns `Ok(false)` if the worktree has commits or uncommitted changes.
+    /// Returns `Ok(false)` if the worktree has genuinely unmerged commits or
+    /// uncommitted changes and was left intact.
     /// Returns `Err` if the cleanup operation failed.
     ///
-    /// NOTE: This does NOT check if the branch's PR was merged (squash-merge case).
-    /// That check is done at the dispatch layer using the cached PR data, to avoid
-    /// expensive gh CLI calls on every tick.
+    /// NOTE: This does NOT check if the branch's PR was squash-merged.
+    /// That check is done at the dispatch layer using cached PR data and
+    /// gh CLI fallback, to avoid expensive API calls on every tick.
     pub fn safe_cleanup(&self, coworker_name: &str) -> WorktreeResult<bool> {
         let worktree_path = self.worktree_path(coworker_name);
         if !worktree_path.exists() {
             return Ok(true); // Already gone
         }
 
-        // If the branch has commits beyond base, don't delete automatically.
-        // The dispatch layer will use cached PR data to determine if this is
-        // actually safe to clean up (e.g., squash-merged PR).
-        if self.has_commits_beyond_base(coworker_name) {
-            return Ok(false);
-        }
+        let has_dirty = self.has_uncommitted_changes(coworker_name);
 
-        if self.has_uncommitted_changes(coworker_name) {
-            return Ok(false); // Has uncommitted work, don't delete
+        if self.has_commits_beyond_base(coworker_name) {
+            // Commits exist beyond base. Check if they're already on main
+            // (regular merge or detached HEAD at a main commit).
+            if self.is_head_reachable_from_default_branch(coworker_name) && !has_dirty {
+                // All commits are on main and no uncommitted changes — safe to clean.
+            } else {
+                // Genuinely unmerged commits or uncommitted changes.
+                // The dispatch layer will check squash-merge via cached PR data.
+                return Ok(false);
+            }
+        } else if has_dirty {
+            return Ok(false); // No commits but has uncommitted work
         }
 
         // Get the branch name before removing the worktree
@@ -539,6 +596,89 @@ impl WorktreeManager {
             .filter_map(|wt| wt.coworker_name)
             .filter(|name| !active_coworkers.contains(name))
             .collect()
+    }
+
+    /// Clean up stale local branches that match coworker naming patterns
+    /// and are already fully merged into the default branch.
+    ///
+    /// This catches branches left behind after worktree cleanup (e.g., from
+    /// `force_cleanup` before it was fixed to delete branches, or branches
+    /// from regular-merge PRs).
+    ///
+    /// Only deletes branches where HEAD is an ancestor of the default branch
+    /// (i.e., all commits are reachable from main). Branches with
+    /// squash-merged PRs are NOT cleaned here — those have different SHAs
+    /// and require a GitHub API check.
+    ///
+    /// Returns the list of deleted branch names.
+    pub fn clean_stale_coworker_branches(&self) -> Vec<String> {
+        let default_branch =
+            detect_default_branch(&self.repo_root).unwrap_or_else(|| "main".to_string());
+
+        // List all local branches
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+            .output();
+
+        let branches: Vec<String> = match output {
+            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.to_string())
+                .collect(),
+            _ => return vec![],
+        };
+
+        // Get branches in use by worktrees to avoid deleting them
+        let worktree_branches: std::collections::HashSet<String> = self
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|wt| wt.branch)
+            .collect();
+
+        let mut cleaned = Vec::new();
+
+        for branch in branches {
+            // Skip the default branch
+            if branch == default_branch {
+                continue;
+            }
+
+            // Check if this looks like a coworker branch (e.g., "york/feature")
+            let prefix = branch.split('/').next().unwrap_or("");
+            if !crate::coworker::is_coworker_name(prefix) {
+                continue;
+            }
+
+            // Skip branches currently checked out in a worktree
+            if worktree_branches.contains(&branch) {
+                continue;
+            }
+
+            // Check if the branch is fully merged (all commits reachable from default)
+            let output = Command::new("git")
+                .current_dir(&self.repo_root)
+                .args(["merge-base", "--is-ancestor", &branch, &default_branch])
+                .output();
+
+            let is_merged = match output {
+                Ok(output) => output.status.success(),
+                Err(_) => false,
+            };
+
+            if is_merged {
+                let result = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args(["branch", "-D", &branch])
+                    .output();
+                if result.is_ok_and(|o| o.status.success()) {
+                    cleaned.push(branch);
+                }
+            }
+        }
+
+        cleaned
     }
 }
 
@@ -1143,6 +1283,279 @@ branch refs/heads/bob/work
         assert_eq!(
             manager.get_branch("testworker"),
             Some("testworker/feature-a".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_head_reachable_detached_on_main() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree (detached HEAD at same commit as main)
+        manager.create("testworker").expect("create worktree");
+
+        // Detached HEAD at the same commit as main should be reachable
+        assert!(manager.is_head_reachable_from_default_branch("testworker"));
+    }
+
+    #[test]
+    fn test_is_head_reachable_branch_with_extra_commits() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree with a branch and add a commit beyond main
+        let wt_path = manager.create("testworker").expect("create worktree");
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Feature work"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("add commit");
+
+        // Branch with commits beyond main should NOT be reachable
+        assert!(!manager.is_head_reachable_from_default_branch("testworker"));
+    }
+
+    #[test]
+    fn test_is_head_reachable_nonexistent_worktree() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        assert!(!manager.is_head_reachable_from_default_branch("nonexistent"));
+    }
+
+    #[test]
+    fn test_safe_cleanup_after_regular_merge() {
+        let (manager, temp_dir) = create_test_repo();
+
+        // Create a worktree with a branch and add a commit
+        let wt_path = manager.create("testworker").expect("create worktree");
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Feature work"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("add commit");
+
+        // Before merge: branch has commits beyond base
+        assert!(manager.has_commits_beyond_base("testworker"));
+
+        // Merge the feature branch into main in the repo root
+        TestCommand::new("git")
+            .args([
+                "merge",
+                "testworker/feature",
+                "--no-ff",
+                "-m",
+                "Merge feature",
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("merge branch");
+
+        // After merge: commits are now reachable from main
+        assert!(!manager.has_commits_beyond_base("testworker"));
+        assert!(manager.is_head_reachable_from_default_branch("testworker"));
+
+        // safe_cleanup should succeed (no commits beyond base after merge)
+        let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
+        assert!(cleaned);
+        assert!(!wt_path.exists());
+    }
+
+    #[test]
+    fn test_safe_cleanup_commits_reachable_but_dirty() {
+        let (manager, temp_dir) = create_test_repo();
+
+        // Create a worktree with a branch
+        let wt_path = manager.create("testworker").expect("create worktree");
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+
+        // Add a commit, then merge it into main
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Feature work"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("add commit");
+        TestCommand::new("git")
+            .args([
+                "merge",
+                "testworker/feature",
+                "--no-ff",
+                "-m",
+                "Merge feature",
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("merge branch");
+
+        // Add uncommitted changes to the worktree
+        std::fs::write(wt_path.join("dirty.txt"), "uncommitted work").expect("write file");
+
+        // Commits are on main but worktree is dirty — should NOT clean
+        assert!(manager.is_head_reachable_from_default_branch("testworker"));
+        assert!(manager.has_uncommitted_changes("testworker"));
+
+        let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
+        assert!(!cleaned);
+        assert!(wt_path.exists());
+    }
+
+    #[test]
+    fn test_force_cleanup_deletes_branch() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree with a named branch
+        let wt_path = manager.create("testworker").expect("create worktree");
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+
+        // Verify branch exists
+        let output = TestCommand::new("git")
+            .args(["branch", "--list", "testworker/feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("list branch");
+        let branches = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            branches.contains("testworker/feature"),
+            "Branch should exist before cleanup"
+        );
+
+        // Force cleanup should remove worktree AND branch
+        manager.force_cleanup("testworker").expect("force cleanup");
+        assert!(!wt_path.exists());
+
+        // Branch should be deleted
+        let output = TestCommand::new("git")
+            .args(["branch", "--list", "testworker/feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("list branch after cleanup");
+        let branches = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !branches.contains("testworker/feature"),
+            "Branch should be deleted after force_cleanup"
+        );
+    }
+
+    #[test]
+    fn test_clean_stale_coworker_branches() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a branch that looks like a coworker branch at the same commit as main
+        // (simulating a branch left behind after worktree cleanup)
+        TestCommand::new("git")
+            .args(["branch", "lexington/old-feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("create stale branch");
+
+        // Verify it exists
+        let output = TestCommand::new("git")
+            .args(["branch", "--list", "lexington/old-feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("list branch");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("lexington/old-feature"),
+            "Stale branch should exist"
+        );
+
+        // Clean stale branches
+        let cleaned = manager.clean_stale_coworker_branches();
+        assert_eq!(cleaned, vec!["lexington/old-feature"]);
+
+        // Branch should be gone
+        let output = TestCommand::new("git")
+            .args(["branch", "--list", "lexington/old-feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("list branch after cleanup");
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("lexington/old-feature"),
+            "Stale branch should be deleted"
+        );
+    }
+
+    #[test]
+    fn test_clean_stale_branches_skips_unmerged() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a branch with a commit beyond main (not merged)
+        TestCommand::new("git")
+            .args(["checkout", "-b", "lexington/unmerged-feature"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("create branch");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Unmerged work"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("add commit");
+        // Go back to main
+        let default_branch =
+            detect_default_branch(manager.repo_root()).unwrap_or_else(|| "main".to_string());
+        TestCommand::new("git")
+            .args(["checkout", &default_branch])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("checkout main");
+
+        // Clean stale branches — should NOT delete unmerged branch
+        let cleaned = manager.clean_stale_coworker_branches();
+        assert!(
+            cleaned.is_empty(),
+            "Should not clean unmerged branches, cleaned: {:?}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn test_clean_stale_branches_skips_non_coworker() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a non-coworker branch at the same commit as main
+        TestCommand::new("git")
+            .args(["branch", "feature/my-thing"])
+            .current_dir(manager.repo_root())
+            .output()
+            .expect("create non-coworker branch");
+
+        // Clean stale branches — should skip non-coworker branch
+        let cleaned = manager.clean_stale_coworker_branches();
+        assert!(cleaned.is_empty());
+    }
+
+    #[test]
+    fn test_clean_stale_branches_skips_worktree_branches() {
+        let (manager, _temp_dir) = create_test_repo();
+
+        // Create a worktree with a branch
+        let wt_path = manager.create("testworker").expect("create worktree");
+        TestCommand::new("git")
+            .args(["checkout", "-b", "lexington/active-feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch in worktree");
+
+        // Clean stale branches — should skip the branch in use by the worktree
+        let cleaned = manager.clean_stale_coworker_branches();
+        assert!(
+            !cleaned.contains(&"lexington/active-feature".to_string()),
+            "Should not clean branches in use by worktrees"
         );
     }
 }

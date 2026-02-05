@@ -175,6 +175,11 @@ pub enum Effect {
         body: String,
         tag: String,
     },
+    /// Clean up stale local branches that match coworker naming patterns
+    /// and are already merged into the default branch.
+    ///
+    /// Catches branches left behind after worktree removal.
+    CleanStaleBranches,
 }
 
 /// Execute a list of effects against the daemon state.
@@ -595,6 +600,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let to_cleanup = names;
                 tokio::task::spawn_blocking(move || {
                     for name in to_cleanup {
+                        // Guard: check tmux windows directly to avoid a race where
+                        // sync_with_tmux hasn't yet registered a running coworker
+                        // in the daemon's internal map.
+                        if coworkers.has_tmux_window(&name) {
+                            warn!(
+                                "Skipping cleanup of worktree for {} — tmux window still exists",
+                                name
+                            );
+                            continue;
+                        }
                         match coworkers.force_cleanup_worktree(&name) {
                             Ok(()) => {
                                 info!("Cleaned up orphaned worktree for {} (PR was merged)", name);
@@ -610,6 +625,20 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::SendPushNotification { title, body, tag } => {
                 state.send_push_notification(&title, &body, &tag);
+            }
+            Effect::CleanStaleBranches => {
+                let coworkers = state.coworkers.clone();
+                let cleaned =
+                    tokio::task::spawn_blocking(move || coworkers.clean_stale_coworker_branches())
+                        .await
+                        .unwrap_or_default();
+                if !cleaned.is_empty() {
+                    info!(
+                        "Cleaned up {} stale coworker branch(es): {}",
+                        cleaned.len(),
+                        cleaned.join(", ")
+                    );
+                }
             }
         }
     }
