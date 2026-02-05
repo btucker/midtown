@@ -1,39 +1,14 @@
-//! Structured coworker state reporting.
+//! Structured coworker workflow phases.
 //!
 //! Coworkers report their workflow phase and current task via daemon RPC
 //! (`coworker.report-state`). The daemon stores state in memory and uses it
-//! to update tmux tab names and web UI status without parsing freeform `/me`
-//! channel messages.
-//!
-//! Legacy file-based state (`~/.midtown/coworkers/<repo>/<name>/state.json`)
-//! is retained as a fallback when the daemon is unreachable and for migration.
-//!
-//! The `/me` messages remain in the channel for human-readable history, but
-//! state decisions and display are driven by structured data from the daemon.
+//! to update tmux tab names and web UI status.
 
-use std::path::PathBuf;
-
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
-/// Structured state report from a coworker.
-///
-/// Written atomically by hooks, read by the daemon to update status displays.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CoworkerStateReport {
-    /// Current workflow phase.
-    pub phase: WorkflowPhase,
-    /// Task number being worked on (if any).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<u32>,
-    /// When this state was last written.
-    pub updated_at: DateTime<Utc>,
-}
 
 /// Workflow phases that map to tmux tab abbreviations.
 ///
-/// These replace the keyword-matching in `parse_status()`. Each variant
-/// has a fixed abbreviation used for the tmux tab display.
+/// Each variant has a fixed abbreviation used for the tmux tab display.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowPhase {
@@ -57,8 +32,6 @@ pub enum WorkflowPhase {
 
 impl WorkflowPhase {
     /// Get the tmux tab abbreviation for this phase.
-    ///
-    /// These match the abbreviations previously produced by `parse_status()`.
     pub fn abbreviation(&self) -> &'static str {
         match self {
             Self::Claiming => "claim",
@@ -73,105 +46,9 @@ impl WorkflowPhase {
     }
 }
 
-impl CoworkerStateReport {
-    /// Create a new state report with a phase and optional task.
-    pub fn new(phase: WorkflowPhase, task_id: Option<u32>) -> Self {
-        Self {
-            phase,
-            task_id,
-            updated_at: Utc::now(),
-        }
-    }
-
-    /// Format for tmux tab display: "phase" or "phase#task_id".
-    ///
-    /// Examples: "dev#42", "idle", "PR#7", "claim#13"
-    ///
-    /// Note: Task ID 0 is treated as "no task" since it's often used as a
-    /// placeholder for taskless work (e.g., PR reviews without a formal task).
-    pub fn display_status(&self) -> String {
-        match self.task_id {
-            Some(id) if id > 0 => format!("{}#{}", self.phase.abbreviation(), id),
-            _ => self.phase.abbreviation().to_string(),
-        }
-    }
-}
-
-/// Get the state file path for a coworker.
-///
-/// Returns `~/.midtown/coworkers/<repo>/<name>/state.json`.
-pub fn state_file_path(repo: &str, coworker_name: &str) -> PathBuf {
-    crate::paths::coworkers_dir_for_repo(repo)
-        .join(coworker_name)
-        .join("state.json")
-}
-
-/// Read a coworker's state report from disk.
-///
-/// Returns `None` if the file doesn't exist or can't be parsed.
-pub fn read_state(repo: &str, coworker_name: &str) -> Option<CoworkerStateReport> {
-    let path = state_file_path(repo, coworker_name);
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
-/// Write a coworker's state report to disk atomically.
-///
-/// Uses write-to-temp + rename to avoid partial reads by the daemon.
-pub fn write_state(
-    repo: &str,
-    coworker_name: &str,
-    report: &CoworkerStateReport,
-) -> Result<(), std::io::Error> {
-    let path = state_file_path(repo, coworker_name);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let json = serde_json::to_string(report).map_err(std::io::Error::other)?;
-
-    // Atomic write: temp file + rename
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &json)?;
-    std::fs::rename(&tmp_path, &path)?;
-
-    Ok(())
-}
-
-/// Read state reports for all coworkers in a repo.
-///
-/// Returns a map of coworker name → state report.
-pub fn read_all_states(
-    repo: &str,
-    coworker_names: &[String],
-) -> std::collections::HashMap<String, CoworkerStateReport> {
-    coworker_names
-        .iter()
-        .filter_map(|name| read_state(repo, name).map(|report| (name.clone(), report)))
-        .collect()
-}
-
-/// Clear a coworker's state file (e.g., on shutdown).
-pub fn clear_state(repo: &str, coworker_name: &str) {
-    let path = state_file_path(repo, coworker_name);
-    let _ = std::fs::remove_file(path);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_display_status_with_task() {
-        let report = CoworkerStateReport::new(WorkflowPhase::Developing, Some(42));
-        assert_eq!(report.display_status(), "dev#42");
-    }
-
-    #[test]
-    fn test_display_status_without_task() {
-        let report = CoworkerStateReport::new(WorkflowPhase::Idle, None);
-        assert_eq!(report.display_status(), "idle");
-    }
 
     #[test]
     fn test_all_phase_abbreviations() {
@@ -187,69 +64,10 @@ mod tests {
 
     #[test]
     fn test_serialize_roundtrip() {
-        let report = CoworkerStateReport::new(WorkflowPhase::PullRequest, Some(7));
-        let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"pull_request\""));
-        assert!(json.contains("\"task_id\":7"));
+        let json = serde_json::to_string(&WorkflowPhase::PullRequest).unwrap();
+        assert_eq!(json, "\"pull_request\"");
 
-        let parsed: CoworkerStateReport = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.phase, WorkflowPhase::PullRequest);
-        assert_eq!(parsed.task_id, Some(7));
-        assert_eq!(parsed.display_status(), "PR#7");
-    }
-
-    #[test]
-    fn test_serialize_idle_no_task() {
-        let report = CoworkerStateReport::new(WorkflowPhase::Idle, None);
-        let json = serde_json::to_string(&report).unwrap();
-        // task_id should be omitted when None (skip_serializing_if)
-        assert!(!json.contains("task_id"));
-
-        let parsed: CoworkerStateReport = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.phase, WorkflowPhase::Idle);
-        assert_eq!(parsed.task_id, None);
-    }
-
-    #[test]
-    fn test_display_status_with_task_zero_omits_number() {
-        // Task ID 0 is used as a placeholder for taskless work (e.g., PR reviews
-        // without a formal task assignment). It should display without the "#0"
-        // suffix to avoid confusing window names like "PR#0".
-        let report = CoworkerStateReport::new(WorkflowPhase::PullRequest, Some(0));
-        // Should show "PR" not "PR#0"
-        assert_eq!(report.display_status(), "PR");
-    }
-
-    #[test]
-    fn test_state_file_roundtrip() {
-        // Test that state can be written to disk and read back correctly.
-        // This is critical for daemon restart recovery.
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().expect("create temp dir");
-        let coworkers_base = temp_dir.path().join("coworkers");
-        std::fs::create_dir_all(&coworkers_base).expect("create coworkers dir");
-
-        // Temporarily override the coworkers_dir_for_repo to use our temp directory
-        // by writing directly to the path we construct
-        let repo = "test-repo";
-        let coworker = "amsterdam";
-        let state_dir = coworkers_base.join(repo).join(coworker);
-        std::fs::create_dir_all(&state_dir).expect("create state dir");
-        let state_path = state_dir.join("state.json");
-
-        // Create a state report with phase and task
-        let original = CoworkerStateReport::new(WorkflowPhase::Developing, Some(42));
-        let json = serde_json::to_string(&original).expect("serialize");
-        std::fs::write(&state_path, &json).expect("write state");
-
-        // Read it back
-        let content = std::fs::read_to_string(&state_path).expect("read state");
-        let recovered: CoworkerStateReport = serde_json::from_str(&content).expect("deserialize");
-
-        // Verify the state was recovered correctly
-        assert_eq!(recovered.phase, WorkflowPhase::Developing);
-        assert_eq!(recovered.task_id, Some(42));
-        assert_eq!(recovered.display_status(), "dev#42");
+        let parsed: WorkflowPhase = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, WorkflowPhase::PullRequest);
     }
 }

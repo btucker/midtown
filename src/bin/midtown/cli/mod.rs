@@ -91,7 +91,6 @@ pub fn handle_chat() -> Result<(), String> {
 ///
 /// Called explicitly by coworkers to report their workflow phase.
 /// Sends state to the daemon which stores it in memory and updates tmux tab display.
-/// Falls back to file-based state if the daemon is unreachable.
 pub fn handle_state(
     phase: midtown::coworker_state::WorkflowPhase,
     task_id: Option<u32>,
@@ -110,21 +109,9 @@ pub fn handle_state(
         midtown::coworker_state::WorkflowPhase::Idle => "idle",
     };
 
-    // Try RPC first (daemon is the authority for state)
-    if let Ok(client) = crate::client::DaemonClient::connect() {
-        return client.coworker_report_state(&agent, phase_str, task_id);
-    }
-
-    // Fallback: write to file if daemon is unreachable (e.g., during startup)
-    let repo =
-        hooks::detect_git_repo_public().ok_or_else(|| "Not in a git repository".to_string())?;
-    let report = midtown::coworker_state::CoworkerStateReport::new(phase, task_id);
-    midtown::coworker_state::write_state(&repo, &agent, &report)
-        .map_err(|e| format!("Failed to write state: {}", e))?;
-
-    Ok(Response::Message {
-        message: format!("{} → {}", agent, report.display_status()),
-    })
+    let client = crate::client::DaemonClient::connect()
+        .map_err(|_| "Daemon is not running. Start with: midtown".to_string())?;
+    client.coworker_report_state(&agent, phase_str, task_id)
 }
 
 /// Handle hook commands (insight, idle, task, ask) - no daemon required

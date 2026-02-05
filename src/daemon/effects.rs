@@ -201,8 +201,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut stop_times = state.coworker_stop_times.write().unwrap();
                     stop_times.insert(name.to_lowercase(), chrono::Utc::now());
                 }
-                // Clear state file so next session doesn't read stale phase
-                crate::coworker_state::clear_state(&state.repo_name, &name);
                 // Clean up unified coworker record (health, workflow phase, etc.)
                 {
                     let mut records = state.coworker_records.write().await;
@@ -271,8 +269,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut stop_times = state.coworker_stop_times.write().unwrap();
                     stop_times.insert(name.to_lowercase(), chrono::Utc::now());
                 }
-                // Clear state file so respawned session doesn't read stale phase
-                crate::coworker_state::clear_state(&state.repo_name, &name);
                 // Clean up unified coworker record
                 {
                     let mut records = state.coworker_records.write().await;
