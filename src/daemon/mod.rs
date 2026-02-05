@@ -403,7 +403,7 @@ pub(crate) struct DaemonState {
     /// coworker tasks on disk. This map tracks which coworker is working on
     /// which task, enabling busy detection for dispatch and idle protection.
     ///
-    /// Updated when: AssignAndSpawn succeeds, AssignTaskOwner executes.
+    /// Updated when: AssignAndSpawn succeeds, task.claim RPC is received.
     /// Cleared when: coworker shuts down, task is completed or reset to pending.
     coworker_task_assignments: std::sync::Mutex<HashMap<String, String>>,
     /// Pending nudges sent to coworkers, awaiting confirmation of submission.
@@ -632,7 +632,7 @@ impl DaemonState {
 
     /// Record that a coworker has been assigned a task.
     ///
-    /// Called when `AssignAndSpawn` or `AssignTaskOwner` effects succeed.
+    /// Called when `AssignAndSpawn` succeeds or `task.claim` RPC is received.
     pub(crate) fn record_task_assignment(&self, coworker: &str, task_id: &str) {
         let mut assignments = self.coworker_task_assignments.lock().unwrap();
         assignments.insert(coworker.to_lowercase(), task_id.to_string());

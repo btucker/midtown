@@ -630,7 +630,10 @@ pub(super) fn spawn_for_pending_tasks(
 
     let mut effects = Vec::new();
 
-    // Case 1: Pending tasks with owners assigned but coworker not running
+    // Case 1: Pending tasks with owners assigned but coworker not running.
+    // With the new task.claim flow, this case is rare (tasks go directly to in_progress
+    // via the Lead). It mainly handles backward compatibility with pre-existing tasks
+    // or tasks where the Lead manually set an owner.
     let pending_with_owners = &snap.pending_tasks_with_owners;
     for (task_id, task_subject, owner) in pending_with_owners.iter() {
         // Check nudge cooldown for this task
@@ -907,17 +910,17 @@ pub(super) fn spawn_for_pending_tasks(
         );
 
         if already_running {
-            // Step 2a: Coworker is already running (grouped task) — assign ownership, then nudge
+            // Step 2a: Coworker is already running (grouped task) — nudge to claim the task.
+            // The coworker runs `midtown task claim`, which nudges the Lead to set ownership
+            // via TaskUpdate. No direct disk write needed.
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
                 &task.id.to_string(),
                 &task.subject,
                 config::get_personality(),
             );
-            effects.push(Effect::AssignTaskOwner {
-                task_id: task.id.clone(),
-                owner: coworker_name.clone(),
-            });
+            // Record in-memory assignment for busy tracking
+            state.record_task_assignment(&coworker_name, &task.id);
             effects.push(Effect::NudgeCoworkerWithCallbacks {
                 name: coworker_name.clone(),
                 message: prompt,

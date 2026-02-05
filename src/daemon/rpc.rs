@@ -280,6 +280,19 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "task.claim" => {
+            let params = request.params.as_ref();
+            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
+            let from = params
+                .and_then(|p| p.get("from"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            match id {
+                Some(id) => handle_task_claim(request.id, id, from, state).await,
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "task.updated" => {
             let params = request.params.as_ref();
             let task_id = params
@@ -1096,6 +1109,76 @@ async fn handle_task_request(
         serde_json::json!({
             "posted": true,
             "from": from,
+        }),
+    )
+}
+
+/// Handle task.claim RPC — a coworker claims a task by requesting the Lead to set ownership.
+///
+/// Instead of writing task JSON directly (which races with Claude Code sessions),
+/// this handler nudges the Lead to execute TaskUpdate, setting the owner and status
+/// atomically through the Lead's Claude Code session.
+///
+/// The handler validates the task exists and is pending, then fires a lead nudge
+/// and returns immediately. The in-memory assignment tracking prevents re-assignment
+/// even before the Lead processes the nudge.
+async fn handle_task_claim(
+    id: RequestId,
+    task_id: &str,
+    from: &str,
+    state: &DaemonState,
+) -> Response {
+    // Validate the task exists and is claimable
+    let tasks = crate::tasks::read_tasks();
+    let task = tasks.iter().find(|t| t.id == task_id);
+
+    let Some(task) = task else {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Task #{} not found", task_id)),
+        );
+    };
+
+    if task.status != crate::tasks::TaskStatus::Pending {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "Task #{} is not pending (status: {:?})",
+                    task_id, task.status
+                ),
+            ),
+        );
+    }
+
+    // Record in-memory assignment to prevent re-assignment before the Lead acts
+    state.record_task_assignment(from, task_id);
+
+    // Nudge the Lead to set ownership via TaskUpdate
+    let nudge_msg = format!(
+        "Set task #{} owner to \"{}\" and status to in_progress using TaskUpdate.",
+        task_id, from
+    );
+
+    let coworkers = state.coworkers.clone();
+    let nudge_clone = nudge_msg.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = coworkers.nudge_lead(&nudge_clone) {
+            warn!("Failed to nudge Lead for task claim: {}", e);
+        }
+    });
+
+    info!(
+        "Task claim: {} requesting ownership of task #{} via Lead",
+        from, task_id
+    );
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Claim request for task #{} sent to Lead", task_id),
         }),
     )
 }

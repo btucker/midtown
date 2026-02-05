@@ -265,7 +265,11 @@ impl DaemonClient {
     }
 
     pub fn task_claim(&self, id: &str) -> Result<Response, String> {
-        self.send("task.claim", Some(serde_json::json!({ "id": id })))
+        let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+        self.send(
+            "task.claim",
+            Some(serde_json::json!({ "id": id, "from": from })),
+        )
     }
 
     pub fn task_done(&self, id: &str) -> Result<Response, String> {

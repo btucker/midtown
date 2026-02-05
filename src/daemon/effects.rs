@@ -58,24 +58,21 @@ pub enum Effect {
         message: String,
         on_success: Vec<Effect>,
     },
-    /// Assign task ownership on disk, then spawn a coworker atomically.
+    /// Spawn a coworker for a pending task.
     ///
-    /// If ownership assignment fails, neither spawn nor callbacks run.
-    /// If spawn fails after ownership is assigned, ownership is rolled back
-    /// (task reset to pending) and `on_failure` effects run.
+    /// Records an in-memory task assignment for busy tracking but does NOT
+    /// write ownership to disk. The coworker claims the task after starting
+    /// via `midtown task claim`, which nudges the Lead to set ownership
+    /// through TaskUpdate.
     AssignAndSpawn {
         task_id: String,
         owner: String,
+        #[allow(dead_code)]
         repo_name: String,
         config: crate::tmux::ClaudeLaunchConfig,
         on_success: Vec<Effect>,
         on_failure: Vec<Effect>,
     },
-    /// Assign task ownership on disk (no spawn).
-    ///
-    /// Used for tasks assigned to already-running coworkers. The ownership
-    /// write is unconditional — if it fails, the error is logged.
-    AssignTaskOwner { task_id: String, owner: String },
     /// Mark reminders as fired and persist to disk.
     ///
     /// Defers the mutation from the decision phase to the effect executor,
@@ -340,32 +337,21 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::AssignAndSpawn {
                 task_id,
                 owner,
-                repo_name,
+                repo_name: _,
                 config,
                 on_success,
                 on_failure,
             } => {
-                // Step 1: Assign ownership on disk
-                if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
-                    warn!(
-                        "Failed to assign task #{} to {} — skipping spawn: {}",
-                        task_id, owner, e
-                    );
-                    // Clear in-flight marker even on ownership failure
-                    state.clear_task_spawn_in_flight(&task_id);
-                    // Don't spawn or run callbacks — ownership write failed
-                    continue;
-                }
-                info!("Assigned task #{} to {} on disk", task_id, owner);
-
-                // Step 2: Spawn the coworker
+                // Spawn the coworker — no disk write needed.
+                // The coworker will claim the task via `midtown task claim` after starting,
+                // which nudges the Lead to set ownership via TaskUpdate.
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
                         info!("Spawned coworker {} successfully", name);
-                        // Clear in-flight marker on success (task is now owned)
+                        // Clear in-flight marker on success
                         state.clear_task_spawn_in_flight(&task_id);
-                        // Record task assignment for busy tracking
+                        // Record task assignment in-memory for busy tracking
                         state.record_task_assignment(&owner, &task_id);
                         // Transition task from pending to in_progress now that the coworker is running
                         if let Err(e) =
@@ -380,32 +366,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     Err(e) => {
                         warn!("Failed to spawn coworker {}: {}", name, e);
-                        // Roll back ownership — reset task to pending
-                        if let Err(re) =
-                            crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name)
-                        {
-                            warn!(
-                                "Failed to roll back task #{} ownership after spawn failure: {}",
-                                task_id, re
-                            );
-                        } else {
-                            info!(
-                                "Rolled back task #{} to pending after spawn failure",
-                                task_id
-                            );
-                        }
-                        // Clear in-flight marker on failure (task was rolled back)
+                        // Clear in-flight marker on failure (no disk rollback needed)
                         state.clear_task_spawn_in_flight(&task_id);
                         Box::pin(execute_effects(on_failure, state)).await;
                     }
-                }
-            }
-            Effect::AssignTaskOwner { task_id, owner } => {
-                if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
-                    warn!("Failed to assign task #{} to {}: {}", task_id, owner, e);
-                } else {
-                    // Record task assignment for busy tracking
-                    state.record_task_assignment(&owner, &task_id);
                 }
             }
             Effect::MarkRemindersFired {
