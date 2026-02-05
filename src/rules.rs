@@ -4687,6 +4687,92 @@ mod tests {
         );
     }
 
+    /// Snapshot from bug #756: madison was in a break/respawn loop for 4+ hours
+    /// with 4 duplicate tmux windows accumulating. The snapshot captures the state
+    /// where madison has an open PR (#649) with CI passed AND review feedback,
+    /// but was being repeatedly shut down.
+    ///
+    /// The review_feedback_pr_coworkers field didn't exist in the snapshot (captured
+    /// before PR #650), so we reconstruct it from the channel messages which show
+    /// review feedback was present.
+    #[test]
+    fn snapshot_20260205_madison_break_loop_protected_by_review_feedback() {
+        let fixture = include_str!(
+            "../tests/fixtures/snapshot/snapshot-madison-break-loop-pr-not-merging-20260205-130328.json"
+        );
+        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
+
+        // Extract coworker list from snapshot
+        let active = &snapshot["active_coworkers"];
+        assert!(
+            active
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["name"] == "madison"),
+            "madison should be in active_coworkers"
+        );
+
+        let coworkers = vec![cw("madison", 10)];
+
+        let mut phases = lifecycle_with(
+            "madison",
+            SessionHealth::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // From snapshot: madison has open PR with CI passed
+        let coworkers_with_open_prs: HashSet<String> = snapshot["coworkers_with_open_prs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let ci_passed: HashSet<String> = snapshot["ci_passed_pr_coworkers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+
+        assert!(coworkers_with_open_prs.contains("madison"));
+        assert!(ci_passed.contains("madison"));
+
+        // Channel messages confirm review feedback exists — reconstruct the field
+        // that was added in PR #650 to fix the original break loop (#753)
+        let review_feedback = set(&["madison"]);
+
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]), // not busy
+            &coworkers_with_open_prs,
+            &set(&[]), // not reviewing
+            &set(&[]), // no unblocked deps
+            &set(&[]), // no running subagents
+            &ci_passed,
+            &set(&[]),        // not usage limited
+            &set(&[]),        // no api errors
+            &set(&[]),        // no pending tasks
+            &review_feedback, // HAS review feedback
+            &phases,
+            Utc::now(),
+            Duration::from_secs(300),
+        );
+        apply_health_transitions(&mut phases, _transitions);
+
+        // With the review_feedback protection (PR #650), madison should NOT be
+        // shut down — she has an open PR with CI passed but also review feedback
+        // to address. Without this protection, the break/respawn loop occurs.
+        assert!(
+            decisions.is_empty(),
+            "madison should NOT be sent on break when she has review feedback on her PR. \
+             This caused the break/respawn loop in bug #756 (4 duplicate tmux windows). \
+             Decisions: {:?}",
+            decisions
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Usage limit detection tests
     // -----------------------------------------------------------------------

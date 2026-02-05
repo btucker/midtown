@@ -431,9 +431,14 @@ impl CoworkerManager {
             }
         }
 
-        // Kill the tmux window — if this fails, we still clean up tracking
-        // to avoid leaving the coworker permanently stuck in Stopping state.
-        let kill_result = tmux::kill_window(&self.session_name, name);
+        // Kill ALL tmux windows with this name — uses window IDs to handle
+        // duplicates that accumulate when kill_window (name-based) fails with
+        // ambiguous targets. This prevents orphaned windows across break/respawn cycles.
+        let kill_result = tmux::kill_all_windows_by_name(&self.session_name, name).map(|n| {
+            if n > 1 {
+                tracing::warn!("Killed {} duplicate '{}' windows during shutdown", n, name);
+            }
+        });
 
         // Clean up additional repo worktrees (multi-repo projects)
         self.cleanup_additional_worktrees(name);
@@ -993,8 +998,8 @@ impl CoworkerManager {
                     "Spawn race detected for {}: name was taken during slow work, killing orphaned window",
                     name
                 );
-                if let Err(e) = tmux::kill_window(&self.session_name, name) {
-                    tracing::error!("Failed to kill orphaned window for {}: {}", name, e);
+                if let Err(e) = tmux::kill_all_windows_by_name(&self.session_name, name) {
+                    tracing::error!("Failed to kill orphaned window(s) for {}: {}", name, e);
                 }
                 return Err(crate::Error::Rpc {
                     code: -32603,
