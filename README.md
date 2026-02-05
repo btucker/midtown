@@ -203,6 +203,58 @@ docker build -t midtown .
 docker run -it --rm -v /path/to/repo:/repo -w /repo midtown start
 ```
 
+## Authentication Profiles
+
+Midtown supports multiple Claude authentication profiles, allowing you to switch between different Claude accounts (e.g., personal and work accounts) without re-authenticating each time.
+
+### Profile Storage
+
+Profiles are stored in `~/.midtown/auth/`:
+
+```
+~/.midtown/auth/
+├── current              # Text file containing the active profile name
+└── <profile>/           # Per-profile directory
+    └── .claude.json     # Claude config with auth tokens
+```
+
+When midtown spawns Claude sessions (Lead or Coworkers), it sets `CLAUDE_CONFIG_DIR` to the active profile's directory, isolating authentication between profiles.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `midtown auth login <profile>` | Create a new profile or re-authenticate an existing one. Launches Claude's OAuth flow. |
+| `midtown auth list` | List all available profiles, marking the currently active one. |
+| `midtown auth switch <profile>` | Switch to a different profile. The new profile becomes active for all future Claude sessions. |
+| `midtown auth status` | Show the current profile and its authentication status. |
+| `midtown auth remove <profile>` | Remove a profile and its stored credentials. |
+
+### Example Workflow
+
+```bash
+# Set up a work profile
+midtown auth login work
+# Claude opens for OAuth...
+
+# Set up a personal profile
+midtown auth login personal
+# Claude opens for OAuth...
+
+# List profiles
+midtown auth list
+#   work
+# * personal (current)
+
+# Switch to work account
+midtown auth switch work
+
+# Check current status
+midtown auth status
+# Current profile: work
+# Status: authenticated
+```
+
 ## How It Works
 
 ### Coworkers
