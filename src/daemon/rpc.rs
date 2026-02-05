@@ -297,6 +297,44 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             }
         }
 
+        "headless.execute" => {
+            let params = request.params.as_ref();
+            let prompt = params
+                .and_then(|p| p.get("prompt"))
+                .and_then(|v| v.as_str());
+
+            match prompt {
+                Some(prompt) => {
+                    let config = crate::headless::HeadlessConfig {
+                        model: params
+                            .and_then(|p| p.get("model"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("sonnet")
+                            .to_string(),
+                        system_prompt: params
+                            .and_then(|p| p.get("system_prompt"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        json_schema: params.and_then(|p| p.get("json_schema")).cloned(),
+                        max_budget_usd: params
+                            .and_then(|p| p.get("max_budget_usd"))
+                            .and_then(|v| v.as_f64()),
+                        allow_tools: params
+                            .and_then(|p| p.get("allow_tools"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        cwd: state
+                            .all_repo_paths
+                            .first()
+                            .map(|p| p.to_string_lossy().to_string()),
+                    };
+                    handle_headless_execute(request.id, prompt, &config).await
+                }
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "snapshot" => {
             // Collect and return the full WorldSnapshot for debugging/testing.
             // Debug context (channel messages, daemon logs) is only populated here,
@@ -564,6 +602,52 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
             "lead_relaunched": lead_relaunched,
         }),
     )
+}
+
+/// Handle headless.execute RPC method.
+///
+/// Spawns a headless Claude Code session and runs a one-shot prompt. Returns
+/// the final result with cost and duration. The session uses JSON streaming
+/// internally but this RPC endpoint blocks until the result is available.
+async fn handle_headless_execute(
+    id: RequestId,
+    prompt: &str,
+    config: &crate::headless::HeadlessConfig,
+) -> Response {
+    info!(
+        "Headless execute: model={}, prompt_len={}, has_schema={}",
+        config.model,
+        prompt.len(),
+        config.json_schema.is_some()
+    );
+
+    match crate::headless::execute(config, prompt).await {
+        Ok(result) => {
+            info!(
+                "Headless execute complete: cost=${:.4}, duration={}ms, error={}",
+                result.cost_usd.unwrap_or(0.0),
+                result.duration_ms.unwrap_or(0),
+                result.is_error,
+            );
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": !result.is_error,
+                    "result": result.result,
+                    "cost_usd": result.cost_usd,
+                    "duration_ms": result.duration_ms,
+                    "session_id": result.session_id,
+                }),
+            )
+        }
+        Err(e) => {
+            warn!("Headless execute failed: {}", e);
+            Response::error(
+                id,
+                RpcError::new(-32603, format!("Headless execution failed: {}", e)),
+            )
+        }
+    }
 }
 
 /// Handle coworker.list RPC method.

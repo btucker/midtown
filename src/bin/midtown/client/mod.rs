@@ -317,4 +317,90 @@ impl DaemonClient {
     pub fn kanban_data(&self) -> Result<Value, String> {
         self.send_raw("kanban.data", None)
     }
+
+    // Headless execution
+
+    /// Execute a headless Claude Code session via the daemon.
+    ///
+    /// Uses a longer timeout (120s) since headless execution waits for the
+    /// Claude API response, which can take significant time.
+    pub fn headless_execute(
+        &self,
+        prompt: &str,
+        model: &str,
+        system_prompt: &str,
+        json_schema: Option<Value>,
+        max_budget_usd: Option<f64>,
+        allow_tools: bool,
+    ) -> Result<Value, String> {
+        let mut params = serde_json::json!({
+            "prompt": prompt,
+            "model": model,
+            "system_prompt": system_prompt,
+            "allow_tools": allow_tools,
+        });
+        if let Some(schema) = json_schema {
+            params["json_schema"] = schema;
+        }
+        if let Some(budget) = max_budget_usd {
+            params["max_budget_usd"] = serde_json::json!(budget);
+        }
+        self.send_raw_with_timeout("headless.execute", Some(params), 120)
+    }
+
+    /// Send a JSON-RPC request with a custom timeout in seconds.
+    fn send_raw_with_timeout(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout_secs: u64,
+    ) -> Result<Value, String> {
+        let mut stream = UnixStream::connect(&self.socket_path)
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        let timeout = Some(std::time::Duration::from_secs(timeout_secs));
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| format!("Failed to set write timeout: {}", e))?;
+        stream
+            .set_read_timeout(timeout)
+            .map_err(|e| format!("Failed to set read timeout: {}", e))?;
+
+        let request = JsonRpcRequest::new(method, params);
+        let request_json =
+            serde_json::to_string(&request).map_err(|e| format!("Serialization error: {}", e))?;
+
+        writeln!(stream, "{}", request_json).map_err(|e| format!("Write error: {}", e))?;
+        stream.flush().map_err(|e| format!("Flush error: {}", e))?;
+
+        let mut reader = BufReader::new(stream);
+        let mut response_line = String::new();
+        let start = std::time::Instant::now();
+        let max_duration = std::time::Duration::from_secs(timeout_secs);
+
+        loop {
+            match reader.read_line(&mut response_line) {
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed() >= max_duration {
+                        return Err("Read timeout".to_string());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                }
+                Err(e) => return Err(format!("Read error: {}", e)),
+            }
+        }
+
+        let rpc_response: JsonRpcResponse = serde_json::from_str(&response_line)
+            .map_err(|e| format!("Parse error: {} (response: {})", e, response_line.trim()))?;
+
+        if let Some(error) = rpc_response.error {
+            return Err(error.message);
+        }
+
+        rpc_response
+            .result
+            .ok_or("No result in response".to_string())
+    }
 }

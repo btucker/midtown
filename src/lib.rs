@@ -104,6 +104,9 @@ pub mod push;
 // Randomized daemon event messages
 pub mod daemon_messages;
 
+// Headless Claude Code executor (JSON streaming, no tmux)
+pub mod headless;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;

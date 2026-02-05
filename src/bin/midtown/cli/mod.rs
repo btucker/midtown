@@ -153,3 +153,50 @@ pub fn handle_webserver_stop() -> Result<Response, String> {
 pub fn handle_webserver_restart() -> Result<Response, String> {
     daemon::handle_webserver_restart()
 }
+
+/// Handle `midtown headless` command — execute a headless Claude Code session via the daemon.
+pub fn handle_headless(
+    client: &DaemonClient,
+    prompt: &str,
+    model: &str,
+    system_prompt: &str,
+    json_schema: Option<&str>,
+    max_budget_usd: Option<f64>,
+    allow_tools: bool,
+) -> Result<Response, String> {
+    let schema = json_schema
+        .map(|s| serde_json::from_str(s).map_err(|e| format!("Invalid JSON schema: {}", e)))
+        .transpose()?;
+
+    let result = client.headless_execute(
+        prompt,
+        model,
+        system_prompt,
+        schema,
+        max_budget_usd,
+        allow_tools,
+    )?;
+
+    // Extract the result text for display
+    let success = result
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let result_text = result.get("result").and_then(|v| v.as_str()).unwrap_or("");
+    let cost = result.get("cost_usd").and_then(|v| v.as_f64());
+    let duration = result.get("duration_ms").and_then(|v| v.as_u64());
+
+    if success {
+        let mut message = result_text.to_string();
+        if let Some(c) = cost {
+            message.push_str(&format!("\n\n(cost: ${:.4}", c));
+            if let Some(d) = duration {
+                message.push_str(&format!(", duration: {}ms", d));
+            }
+            message.push(')');
+        }
+        Ok(Response::Message { message })
+    } else {
+        Err(format!("Headless execution failed: {}", result_text))
+    }
+}
