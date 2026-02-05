@@ -265,6 +265,12 @@ impl CommentTracker {
 // OrphanTracker
 // ---------------------------------------------------------------------------
 
+/// Grace period before first orphan warning. Allows PR poll (30s interval)
+/// to update open_pr_owners cache before we flag a worktree as orphaned.
+/// Without this, orphan checks (10s interval) can fire before the cache
+/// is updated, causing false positive warnings for worktrees with open PRs.
+pub(super) const ORPHAN_INITIAL_GRACE_PERIOD: Duration = Duration::from_secs(60);
+
 /// How long before re-warning about the same orphaned worktree (1 hour).
 const ORPHAN_WARN_COOLDOWN: Duration = Duration::from_secs(3600);
 
@@ -279,7 +285,6 @@ pub struct OrphanTracker {
 
 #[derive(Debug)]
 struct OrphanEntry {
-    #[allow(dead_code)]
     first_detected: Instant,
     warned_at: Option<Instant>,
 }
@@ -297,13 +302,23 @@ impl OrphanTracker {
         });
     }
 
-    /// Check if we should warn about this orphan (never warned, or cooldown expired).
+    /// Check if we should warn about this orphan.
+    ///
+    /// Returns false during the initial grace period after first detection,
+    /// giving the PR poll time to update the open_pr_owners cache. After the
+    /// grace period, allows the first warning and then rate-limits re-warnings.
     pub fn should_warn(&self, name: &str) -> bool {
         match self.entries.get(name) {
-            Some(entry) => match entry.warned_at {
-                None => true,
-                Some(warned) => warned.elapsed() >= ORPHAN_WARN_COOLDOWN,
-            },
+            Some(entry) => {
+                // Don't warn during grace period — PR poll may not have run yet
+                if entry.first_detected.elapsed() < ORPHAN_INITIAL_GRACE_PERIOD {
+                    return false;
+                }
+                match entry.warned_at {
+                    None => true,
+                    Some(warned) => warned.elapsed() >= ORPHAN_WARN_COOLDOWN,
+                }
+            }
             None => false,
         }
     }
@@ -636,14 +651,39 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn orphan_tracker_allows_first_warn() {
+    fn orphan_tracker_blocks_warn_during_grace_period() {
+        // Bug: orphan detection runs every 10s, PR poll every 30s.
+        // If a coworker opens a PR and goes idle, the orphan check can fire
+        // before the PR poll updates open_pr_owners, causing a false positive.
+        // Fix: don't warn until grace period has elapsed since first detection.
         let mut tracker = OrphanTracker::new();
 
         tracker.track("lexington".to_string());
 
         assert!(
+            !tracker.should_warn("lexington"),
+            "should NOT warn during grace period after first detection"
+        );
+    }
+
+    #[test]
+    fn orphan_tracker_allows_warn_after_grace_period() {
+        let mut tracker = OrphanTracker::new();
+
+        // Simulate detection that happened long ago (beyond grace period)
+        tracker.entries.insert(
+            "lexington".to_string(),
+            OrphanEntry {
+                first_detected: Instant::now()
+                    - ORPHAN_INITIAL_GRACE_PERIOD
+                    - Duration::from_secs(1),
+                warned_at: None,
+            },
+        );
+
+        assert!(
             tracker.should_warn("lexington"),
-            "should allow first warning for orphan"
+            "should allow warning after grace period"
         );
     }
 
