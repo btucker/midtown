@@ -78,7 +78,6 @@ pub struct KanbanPr {
     pub title: String,
     #[allow(dead_code)] // Populated but not yet rendered in TUI
     pub author: String,
-    #[allow(dead_code)] // Populated but not yet rendered in TUI
     pub created_at: DateTime<Utc>,
     pub ci_status: CiStatus,
     /// Reviewer name (extracted from review comment frontmatter)

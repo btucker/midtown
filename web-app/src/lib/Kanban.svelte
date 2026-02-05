@@ -211,7 +211,7 @@
                 target="_blank"
                 rel="noopener"
                 onclick={(e) => e.stopPropagation()}
-              >PR #{pr.number}</a>
+              >PR #{pr.number}</a>{#if pr.created_at} <span class="pr-age">({formatRelativeTime(pr.created_at)})</span>{/if}
             </div>
             {#if pr.reviewer}
               <div class="card-detail">
@@ -549,6 +549,11 @@
 
   .pr-link:hover {
     text-decoration: underline;
+  }
+
+  .pr-age {
+    color: #888;
+    font-size: 0.7rem;
   }
 
   .empty {
