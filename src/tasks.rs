@@ -513,21 +513,11 @@ pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
     None
 }
 
-/// Mark a task as completed for a specific repo.
+/// Mark a task as completed in a specific tasks directory.
 ///
-/// This is called when a PR is opened with `[Midtown #XX]` in the title.
-/// Opening a PR means the implementation work is done; the task is complete.
-pub fn complete_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
-    let Some(home) = dirs::home_dir() else {
-        return Err("Could not determine home directory".to_string());
-    };
-
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
-    let task_file = home
-        .join(".claude")
-        .join("tasks")
-        .join(&task_list_id)
-        .join(format!("{}.json", task_id));
+/// This is the path-injectable version used by tests.
+fn complete_task_in_dir(task_id: &str, tasks_dir: &std::path::Path) -> Result<(), String> {
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
 
     let content =
         std::fs::read_to_string(&task_file).map_err(|e| format!("Failed to read task: {}", e))?;
@@ -547,12 +537,11 @@ pub fn complete_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Clear a completed task ID from all dependent tasks' `blockedBy` arrays.
+/// Mark a task as completed for a specific repo.
 ///
-/// When a task is completed, any tasks that were blocked by it should have
-/// that ID removed from their `blockedBy` list. This allows dependent tasks
-/// to become unblocked and be assigned.
-pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Result<(), String> {
+/// This is called when a PR is opened with `[Midtown #XX]` in the title.
+/// Opening a PR means the implementation work is done; the task is complete.
+pub fn complete_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
     };
@@ -560,7 +549,17 @@ pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Re
     let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
 
-    let entries = std::fs::read_dir(&tasks_dir)
+    complete_task_in_dir(task_id, &tasks_dir)
+}
+
+/// Clear a completed task ID from all dependent tasks' `blockedBy` arrays in a specific directory.
+///
+/// This is the path-injectable version used by tests.
+fn clear_blocked_by_in_dir(
+    completed_task_id: &str,
+    tasks_dir: &std::path::Path,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(tasks_dir)
         .map_err(|e| format!("Failed to read tasks directory: {}", e))?;
 
     for entry in entries.filter_map(|e| e.ok()) {
@@ -604,6 +603,22 @@ pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Re
     }
 
     Ok(())
+}
+
+/// Clear a completed task ID from all dependent tasks' `blockedBy` arrays.
+///
+/// When a task is completed, any tasks that were blocked by it should have
+/// that ID removed from their `blockedBy` list. This allows dependent tasks
+/// to become unblocked and be assigned.
+pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Result<(), String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+
+    clear_blocked_by_in_dir(completed_task_id, &tasks_dir)
 }
 
 #[cfg(test)]
@@ -1191,15 +1206,9 @@ mod tests {
     }
 
     #[test]
-    fn test_complete_task_for_repo() {
-        // Create a temp directory to simulate the tasks directory
+    fn test_complete_task_in_dir() {
         let temp_dir = TempDir::new().unwrap();
-        let home_claude = temp_dir
-            .path()
-            .join(".claude")
-            .join("tasks")
-            .join("midtown-testrepo");
-        std::fs::create_dir_all(&home_claude).unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
 
         // Create an in_progress task
         let task = serde_json::json!({
@@ -1208,34 +1217,45 @@ mod tests {
             "status": "in_progress",
             "owner": "vernon"
         });
-        let task_file = home_claude.join("42.json");
+        let task_file = tasks_dir.join("42.json");
         std::fs::write(&task_file, serde_json::to_string(&task).unwrap()).unwrap();
 
-        // Read the task and verify it's in_progress
+        // Verify initial state
         let content = std::fs::read_to_string(&task_file).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["status"], "in_progress");
+
+        // Call the function under test
+        complete_task_in_dir("42", &tasks_dir).unwrap();
+
+        // Verify the task is now completed
+        let content = std::fs::read_to_string(&task_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["status"], "completed");
+    }
+
+    #[test]
+    fn test_complete_task_in_dir_nonexistent_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        let result = complete_task_in_dir("999", &tasks_dir);
+        assert!(result.is_err(), "Should error for nonexistent task");
     }
 
     #[test]
     fn test_clear_blocked_by_removes_completed_task() {
-        // Create a temp directory to simulate the tasks directory
         let temp_dir = TempDir::new().unwrap();
-        let home_claude = temp_dir
-            .path()
-            .join(".claude")
-            .join("tasks")
-            .join("midtown-testrepo");
-        std::fs::create_dir_all(&home_claude).unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
 
-        // Create a task that is blocked by task "1"
+        // Create a task that is blocked by task "1" and "3"
         let blocked_task = serde_json::json!({
             "id": "2",
             "subject": "Blocked task",
             "status": "pending",
             "blockedBy": ["1", "3"]
         });
-        let blocked_file = home_claude.join("2.json");
+        let blocked_file = tasks_dir.join("2.json");
         std::fs::write(&blocked_file, serde_json::to_string(&blocked_task).unwrap()).unwrap();
 
         // Create another task blocked only by "1"
@@ -1245,7 +1265,7 @@ mod tests {
             "status": "pending",
             "blockedBy": ["1"]
         });
-        let blocked_file2 = home_claude.join("4.json");
+        let blocked_file2 = tasks_dir.join("4.json");
         std::fs::write(
             &blocked_file2,
             serde_json::to_string(&blocked_task2).unwrap(),
@@ -1257,9 +1277,44 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["blockedBy"].as_array().unwrap().len(), 2);
 
+        // Call the function under test — clear task "1" from all blockedBy arrays
+        clear_blocked_by_in_dir("1", &tasks_dir).unwrap();
+
+        // Task 2: should have only "3" remaining in blockedBy
+        let content = std::fs::read_to_string(&blocked_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let blocked_by = parsed["blockedBy"].as_array().unwrap();
+        assert_eq!(blocked_by.len(), 1);
+        assert_eq!(blocked_by[0], "3");
+
+        // Task 4: should have empty blockedBy
         let content2 = std::fs::read_to_string(&blocked_file2).unwrap();
         let parsed2: serde_json::Value = serde_json::from_str(&content2).unwrap();
-        assert_eq!(parsed2["blockedBy"].as_array().unwrap().len(), 1);
+        let blocked_by2 = parsed2["blockedBy"].as_array().unwrap();
+        assert_eq!(blocked_by2.len(), 0);
+    }
+
+    #[test]
+    fn test_clear_blocked_by_no_match() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Create a task blocked by "5"
+        let task = serde_json::json!({
+            "id": "2",
+            "subject": "Blocked task",
+            "status": "pending",
+            "blockedBy": ["5"]
+        });
+        let task_file = tasks_dir.join("2.json");
+        std::fs::write(&task_file, serde_json::to_string(&task).unwrap()).unwrap();
+
+        // Clear task "99" — no match, file should remain unchanged
+        clear_blocked_by_in_dir("99", &tasks_dir).unwrap();
+
+        let content = std::fs::read_to_string(&task_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["blockedBy"].as_array().unwrap().len(), 1);
     }
 
     #[test]

@@ -1427,57 +1427,37 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     );
                 }
 
-                // Store author session for PR handoff (allows any coworker to resume the PR)
-                if let Some(ref pr_opened) = webhook_event.pr_opened
-                    && let Some(ref author) = pr_opened.author_coworker
-                {
-                    if let Some(session_id) = state.coworkers.get_session_id(author) {
-                        let effect = effects::Effect::StorePrAuthorSession {
-                            pr_number: pr_opened.pr_number,
-                            session_id,
-                            branch: pr_opened.branch.clone(),
-                            author: author.clone(),
-                        };
-                        effects::execute_effects(vec![effect], &state).await;
-                    } else {
-                        debug!(
-                            "PR #{} author {} has no known session ID (discovered coworker?)",
-                            pr_opened.pr_number, author
-                        );
+                // Handle PR-opened events: store author session + auto-complete task
+                if let Some(ref pr_opened) = webhook_event.pr_opened {
+                    let mut pr_effects = Vec::new();
+
+                    // Store author session for PR handoff (allows any coworker to resume the PR)
+                    if let Some(ref author) = pr_opened.author_coworker {
+                        if let Some(session_id) = state.coworkers.get_session_id(author) {
+                            pr_effects.push(effects::Effect::StorePrAuthorSession {
+                                pr_number: pr_opened.pr_number,
+                                session_id,
+                                branch: pr_opened.branch.clone(),
+                                author: author.clone(),
+                            });
+                        } else {
+                            debug!(
+                                "PR #{} author {} has no known session ID (discovered coworker?)",
+                                pr_opened.pr_number, author
+                            );
+                        }
                     }
-                }
 
-                // Auto-complete task when PR is opened with [Midtown #XX] in title
-                if let Some(ref pr_opened) = webhook_event.pr_opened
-                    && let Some(task_id) =
-                        crate::tasks::extract_task_id_from_pr_title(&pr_opened.title)
-                {
-                    let task_id_str = task_id.to_string();
-                    let repo_name = state.repo_name.clone();
+                    // Auto-complete task when PR title contains [Midtown #XX]
+                    pr_effects.extend(dispatch::build_task_completion_effects(
+                        &pr_opened.title,
+                        pr_opened.pr_number,
+                        &state.repo_name,
+                    ));
 
-                    // Complete the task and clear blockedBy references
-                    let complete_effects = vec![
-                        effects::Effect::CompleteTask {
-                            task_id: task_id_str.clone(),
-                            repo_name: repo_name.clone(),
-                        },
-                        effects::Effect::ClearBlockedBy {
-                            completed_task_id: task_id_str.clone(),
-                            repo_name: repo_name.clone(),
-                        },
-                        effects::Effect::PostToChannel {
-                            sender: "midtown".to_string(),
-                            message: format!(
-                                "✅ Auto-completed task #{} (PR #{} opened)",
-                                task_id, pr_opened.pr_number
-                            ),
-                        },
-                    ];
-                    effects::execute_effects(complete_effects, &state).await;
-                    info!(
-                        "Auto-completed task #{} from PR #{} title",
-                        task_id, pr_opened.pr_number
-                    );
+                    if !pr_effects.is_empty() {
+                        effects::execute_effects(pr_effects, &state).await;
+                    }
                 }
 
                 // Nudge lead to pull main when a PR merges
