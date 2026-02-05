@@ -437,8 +437,11 @@ fn partition_orphans_by_merged_status(
                 unmerged.push(name);
             }
         } else {
-            // Can't determine branch - treat as unmerged (conservative)
-            unmerged.push(name);
+            // Detached HEAD - no branch means no "unmerged commits".
+            // The worktree might have uncommitted changes (flagged by has_uncommitted_changes),
+            // but there's no branch with commits that haven't been merged.
+            // Treat as merged (safe to clean up after handling uncommitted changes separately).
+            merged.push(name);
         }
     }
 
@@ -1047,6 +1050,35 @@ mod tests {
 
         // york has a different branch - should be in unmerged partition
         assert!(merged.is_empty());
+        assert_eq!(unmerged, vec!["york"]);
+    }
+
+    #[test]
+    fn test_partition_orphans_by_merged_status_detached_head() {
+        // Bug scenario: worktree is in detached HEAD state (e.g., at a commit already in main).
+        // Detached HEAD means there's no branch to have "unmerged commits".
+        // These should NOT be flagged as having unmerged commits.
+        let flagged = vec![
+            "columbus".to_string(), // detached HEAD, get_branch returns None
+            "york".to_string(),     // has branch with unmerged commits
+        ];
+        let merged_pr_branches: HashSet<String> = HashSet::new();
+
+        // columbus is in detached HEAD (None), york has a branch
+        let get_branch = |name: &str| -> Option<String> {
+            match name {
+                "columbus" => None, // Detached HEAD
+                "york" => Some("york/feature-a".to_string()),
+                _ => None,
+            }
+        };
+
+        let (merged, unmerged) =
+            partition_orphans_by_merged_status(flagged, &merged_pr_branches, get_branch);
+
+        // columbus is detached HEAD - should NOT be in unmerged (no branch = no "unmerged commits")
+        // york has a branch not in merged list - should be in unmerged
+        assert_eq!(merged, vec!["columbus"]);
         assert_eq!(unmerged, vec!["york"]);
     }
 
