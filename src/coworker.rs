@@ -544,6 +544,15 @@ impl CoworkerManager {
         self.worktree_manager.force_cleanup(coworker_name)
     }
 
+    /// Check if a coworker has an active tmux window.
+    ///
+    /// This directly queries tmux, bypassing the in-memory coworker map.
+    /// Used to prevent race conditions where a coworker exists in tmux but
+    /// hasn't been synced to the daemon's internal state yet.
+    pub fn has_tmux_window(&self, coworker_name: &str) -> bool {
+        crate::tmux::window_exists(&self.session_name, coworker_name).unwrap_or(false)
+    }
+
     /// List all coworkers.
     pub fn list(&self) -> Vec<Coworker> {
         let coworkers = self.coworkers.read().unwrap();

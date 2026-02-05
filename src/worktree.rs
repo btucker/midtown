@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use tracing::warn;
+
 use crate::Error;
 
 /// Result of worktree operations
@@ -238,11 +240,27 @@ impl WorktreeManager {
         self.prune()?;
 
         // Delete the branch if it was a named branch (not detached HEAD)
-        if let Some(branch) = branch_name {
-            let _ = Command::new("git")
+        if let Some(branch) = &branch_name {
+            match Command::new("git")
                 .current_dir(&self.repo_root)
-                .args(["branch", "-D", &branch])
-                .output();
+                .args(["branch", "-D", branch])
+                .output()
+            {
+                Ok(output) if !output.status.success() => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    warn!(
+                        "Failed to delete branch {} for {}: {}",
+                        branch, coworker_name, stderr
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to run git branch -D {} for {}: {}",
+                        branch, coworker_name, e
+                    );
+                }
+                _ => {}
+            }
         }
 
         Ok(())
@@ -554,28 +572,15 @@ impl WorktreeManager {
             }
         } else if has_dirty {
             return Ok(false); // No commits but has uncommitted work
+        } else if !self.is_head_reachable_from_default_branch(coworker_name) {
+            // No branch-based commits detected (e.g. detached HEAD), but HEAD is
+            // at a commit NOT on the default branch. Don't auto-clean — this could
+            // be work-in-progress at a specific commit.
+            return Ok(false);
         }
 
-        // Get the branch name before removing the worktree
-        let branch_name = Command::new("git")
-            .current_dir(&worktree_path)
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|b| b != "HEAD");
-
-        // Remove the worktree
+        // force_cleanup handles worktree removal and branch deletion
         self.force_cleanup(coworker_name)?;
-
-        // Delete the branch if it was a named branch (not detached HEAD)
-        if let Some(branch) = branch_name {
-            let _ = Command::new("git")
-                .current_dir(&self.repo_root)
-                .args(["branch", "-D", &branch])
-                .output();
-        }
 
         Ok(true)
     }
@@ -1557,5 +1562,56 @@ branch refs/heads/bob/work
             !cleaned.contains(&"lexington/active-feature".to_string()),
             "Should not clean branches in use by worktrees"
         );
+    }
+
+    #[test]
+    fn test_safe_cleanup_detached_head_not_on_main() {
+        let (manager, temp_dir) = create_test_repo();
+
+        // Create a worktree
+        let wt_path = manager.create("testworker").expect("create worktree");
+
+        // Create a commit on a branch, then detach HEAD at that commit.
+        // This commit is NOT on main, so cleanup should NOT proceed.
+        TestCommand::new("git")
+            .args(["checkout", "-b", "testworker/temp-feature"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("create branch");
+        TestCommand::new("git")
+            .args(["commit", "--allow-empty", "-m", "Off-main work"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("add commit");
+
+        // Get the commit hash
+        let hash_output = TestCommand::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&wt_path)
+            .output()
+            .expect("get hash");
+        let commit_hash = String::from_utf8_lossy(&hash_output.stdout)
+            .trim()
+            .to_string();
+
+        // Detach HEAD at this commit (not on main)
+        TestCommand::new("git")
+            .args(["checkout", "--detach", &commit_hash])
+            .current_dir(&wt_path)
+            .output()
+            .expect("detach HEAD");
+
+        // Delete the branch so has_commits_beyond_base sees detached HEAD
+        TestCommand::new("git")
+            .args(["branch", "-D", "testworker/temp-feature"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("delete temp branch");
+
+        // Detached HEAD at a commit NOT on main — should NOT be cleaned up
+        assert!(!manager.is_head_reachable_from_default_branch("testworker"));
+        let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
+        assert!(!cleaned, "Should not auto-clean detached HEAD not on main");
+        assert!(wt_path.exists(), "Worktree should still exist");
     }
 }

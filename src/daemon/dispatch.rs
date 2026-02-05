@@ -542,6 +542,16 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
         debug!("Orphan worktree flagged (no open or merged PR): {}", name);
     }
 
+    // Collect worktrees due for warning using the tracker (scoped to drop before awaits)
+    let due_for_warning = {
+        let mut tracker = state.orphan_tracker.write().unwrap();
+        tracker.prune(&unmerged);
+        unmerged
+            .into_iter()
+            .filter(|name| {
+                tracker.track(name.clone());
+                tracker.should_warn(name)
+            })
             .collect::<Vec<_>>()
     };
 
@@ -1606,6 +1616,40 @@ mod tests {
         assert!(matches!(&effects[2], Effect::PostSystemMessage { .. }));
         assert!(matches!(&effects[3], Effect::NudgeLead { .. }));
         assert!(matches!(&effects[4], Effect::SendPushNotification { .. }));
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_gh_cleaned_posts_to_channel() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec![],
+            merged_worktrees_to_cleanup: vec![],
+            pr_poll_initialized: true,
+            open_pr_owners: HashSet::new(),
+            gh_cleaned: vec!["york".to_string(), "park".to_string()],
+            due_for_warning: vec![],
+            stale_branch_cleanup_due: false,
+        };
+        let effects = decide_orphan_cleanup(&data);
+        assert_eq!(effects.len(), 2);
+        for effect in &effects {
+            assert!(matches!(effect, Effect::PostToChannel { sender, .. } if sender == "midtown"));
+        }
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_stale_branch_cleanup() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec![],
+            merged_worktrees_to_cleanup: vec![],
+            pr_poll_initialized: true,
+            open_pr_owners: HashSet::new(),
+            gh_cleaned: vec![],
+            due_for_warning: vec![],
+            stale_branch_cleanup_due: true,
+        };
+        let effects = decide_orphan_cleanup(&data);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(&effects[0], Effect::CleanStaleBranches));
     }
 
     // ======================================================================
