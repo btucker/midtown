@@ -1,0 +1,551 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "lexington",
+      "session_id": "",
+      "started_at": "2026-02-05T13:10:26.545418Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/lexington"
+    }
+  ],
+  "active_names": [
+    "lexington"
+  ],
+  "active_reviewers": [],
+  "all_tasks": [
+    {
+      "blocked_by": [],
+      "description": "Two related bugs observed with madison and PR #649:\n\n**Bug 1: Break loop** — Madison (PR author) gets spawned, reports idle (no tasks), gets sent on break, gets re-spawned, reports idle, gets sent on break — every ~5 minutes indefinitely. This happens because task #749 was auto-completed when the PR opened, leaving the coworker with no task. The daemon keeps cycling the coworker.\n\n**Bug 2: PR review feedback not driving work** — PR #649 has review feedback (vernon found 2 issues) and CI is green, but no one is addressing the feedback. The daemon should detect that a PR has unaddressed review comments and either:\n- Create a task for the author to address feedback, OR\n- Nudge the author with the review feedback when spawning them\n\n**Expected behavior:** When a PR has review feedback:\n1. The PR author should get a task like \"Address review feedback on PR #649\"\n2. The daemon should NOT send the author on break while their PR has unaddressed feedback\n3. The break loop should not happen regardless\n\n**Captured snapshot:** `tests/fixtures/snapshot/snapshot-madison-break-loop-pr-not-merging-20260205-130328.json`\n\nWrite a failing E2E test using the snapshot, then fix both bugs.\n\n**Key context:** PR #649 has:\n- CI: 14/14 checks passed\n- Review comment: \"Found 2 issues\" from vernon\n- User comment: \"We're supposed to be using selkie-rs, not mmdc\"\n- State: OPEN, no formal GitHub review (comments only, not a review)\n- Author's task (#749) was auto-completed on PR open",
+      "id": "753",
+      "owner": "lexington",
+      "status": "pending",
+      "subject": "Fix break loop and unaddressed PR review feedback for PR authors"
+    }
+  ],
+  "api_error_coworkers": [],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [],
+  "channel_messages": [
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "f8c757ab-26c8-46c6-bfa5-47dbe02d15a6",
+      "timestamp": "2026-02-05T09:47:51.719888Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "72969cac-c7f9-4b96-8e38-9b68c43ad327",
+      "timestamp": "2026-02-05T09:53:22.498134Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "71ad49a6-fd47-4e8f-9dd7-6a00be34968d",
+      "timestamp": "2026-02-05T09:58:52.403050Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "05e23657-0bfb-4778-aa74-f39847f44cd6",
+      "timestamp": "2026-02-05T10:04:21.721791Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "a13d3e93-3293-45a8-a24e-8036f20fa91d",
+      "timestamp": "2026-02-05T10:10:21.772470Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "d63a2cd7-abd9-40ee-a8da-cf0894b19bfd",
+      "timestamp": "2026-02-05T10:15:52.407462Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "8a20266b-2c99-4cca-8646-24debb9b324e",
+      "timestamp": "2026-02-05T10:21:22.532502Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "d2f58f79-9130-438f-aaa2-bfcd26ff4f31",
+      "timestamp": "2026-02-05T10:26:52.556018Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "6ad6b1be-e017-4675-b1df-c0d2389ad995",
+      "timestamp": "2026-02-05T10:32:21.719507Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "3b7ff15b-8f16-44dc-8611-543ef5d0ea5e",
+      "timestamp": "2026-02-05T10:37:52.347523Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "512c7e45-fe3a-4332-864d-060de3b7a245",
+      "timestamp": "2026-02-05T10:43:51.721425Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "3eb4121a-2e0e-4143-9a81-0962801fbec8",
+      "timestamp": "2026-02-05T10:49:52.407778Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "92ef4075-ff9e-4385-986f-439f7f03d380",
+      "timestamp": "2026-02-05T10:55:21.716629Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "5a689202-d41c-4d67-a4b3-6ff830d0094e",
+      "timestamp": "2026-02-05T11:00:52.537039Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "0df3c238-47d8-424b-9ce8-4e1d8f83051f",
+      "timestamp": "2026-02-05T11:06:21.720780Z",
+      "type": "text"
+    },
+    {
+      "content": "PR #649 (feat: Render mermaid fences as inline...) owned by madison - review complete: review is complete — please address feedback and merge if appropriate (call-in failed)",
+      "from": "midtown",
+      "id": "3e061016-a62c-45cb-86dc-9e87cc950901",
+      "timestamp": "2026-02-05T11:06:22.525765Z",
+      "type": "text"
+    },
+    {
+      "content": "PR #649 (feat: Render mermaid fences as inline...) owned by madison - CI green with feedback: CI is green — please address review feedback and merge (call-in failed)",
+      "from": "midtown",
+      "id": "b687fab9-a4a5-4376-b9e4-da1d0d63aa06",
+      "timestamp": "2026-02-05T11:06:22.533977Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "b61f8de6-a5d9-4adf-b5d0-6524db931651",
+      "timestamp": "2026-02-05T11:12:22.459290Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "fb60e2cf-0a24-419b-9512-e516b46b6586",
+      "timestamp": "2026-02-05T11:18:21.719122Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "f4d9c96b-e997-4be3-9490-0a9c58882a18",
+      "timestamp": "2026-02-05T11:23:51.717038Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "2bf8d08a-9387-417f-a8d6-bd78dea9070b",
+      "timestamp": "2026-02-05T11:29:22.533995Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "0d72544c-516f-4d4a-938f-e0c54433e16c",
+      "timestamp": "2026-02-05T11:34:51.721144Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "14b13e86-2505-4200-88c3-d67901c78147",
+      "timestamp": "2026-02-05T11:40:21.720201Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "ef967a77-3752-4c23-8c80-7cdabc86c1f2",
+      "timestamp": "2026-02-05T11:45:52.317501Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "a180a2bf-afed-4b41-9c50-c5d6d4216fae",
+      "timestamp": "2026-02-05T11:51:51.720416Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "0ba500f6-67df-475a-8bf0-e19d5cea4931",
+      "timestamp": "2026-02-05T11:57:52.134158Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "e50354df-a5bb-4670-bf59-0947ac045ed5",
+      "timestamp": "2026-02-05T12:03:22.437771Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "088213cb-3dae-4685-bcec-d68d19658c4d",
+      "timestamp": "2026-02-05T12:08:51.720517Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "cc8bf690-3b65-4dca-a10c-aa09c58d269c",
+      "timestamp": "2026-02-05T12:14:22.455813Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "8cea75ad-af0a-4c91-9aea-d024df4fa07e",
+      "timestamp": "2026-02-05T12:20:22.477565Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "dc97e976-2638-420b-8561-db9678223d59",
+      "timestamp": "2026-02-05T12:26:21.714320Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "cf199dfb-a385-465f-845d-fc014503e9b7",
+      "timestamp": "2026-02-05T12:31:52.619203Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "cb582035-c904-4c8f-a628-975170b4b73d",
+      "timestamp": "2026-02-05T12:37:22.446706Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "b4971333-6f1d-46fa-84de-9418e0b46ad1",
+      "timestamp": "2026-02-05T12:42:52.400672Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "265e7c33-14c8-4e6e-8477-d802845d8091",
+      "timestamp": "2026-02-05T12:48:51.715223Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "1f541893-5ec1-409f-b9b6-29a936fe2924",
+      "timestamp": "2026-02-05T12:54:22.132104Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "a643e1ff-c21c-4f08-84d1-d2ef959bbb0d",
+      "timestamp": "2026-02-05T12:59:51.720560Z",
+      "type": "text"
+    },
+    {
+      "content": "Why was Madison repeatedly sent on break? Why is there a PR sitting open with a review? Take a snapshot to use this as a failing test case",
+      "from": "user",
+      "id": "dc072ed4-d5e5-45d7-8532-af7a598e6598",
+      "timestamp": "2026-02-05T13:03:17.008656Z",
+      "type": "text"
+    },
+    {
+      "content": "created task: Fix break loop and unaddressed PR review feedback for PR authors",
+      "from": "lead",
+      "id": "49e87242-d6fe-4a61-b5ea-51345aeeab81",
+      "timestamp": "2026-02-05T13:04:03.733508Z",
+      "type": "action"
+    },
+    {
+      "content": "@user Got it — captured snapshot and created task #753 for the break loop + unaddressed review feedback bugs. Two issues: (1) madison cycles spawn→idle→break every 5min because task #749 was auto-completed on PR open, (2) daemon doesn't create follow-up tasks when PRs get review feedback.",
+      "from": "lead",
+      "id": "6296faad-b2c4-4436-aeab-807a5f221d2c",
+      "timestamp": "2026-02-05T13:04:09.722328Z",
+      "type": "text"
+    },
+    {
+      "content": "🚀 Called in coworker lexington for assigned task #753: Fix break loop and unaddressed PR review feedback for PR authors",
+      "from": "midtown",
+      "id": "5e3679e6-1b06-499c-8011-b92fbe74e2b2",
+      "timestamp": "2026-02-05T13:04:57.247256Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "35740463-aca5-4f47-b935-abf040406018",
+      "timestamp": "2026-02-05T13:05:21.768793Z",
+      "type": "text"
+    },
+    {
+      "content": "claimed task 753",
+      "from": "lexington",
+      "id": "20bb7c6f-9811-4fd9-a5ea-6787c672e5aa",
+      "timestamp": "2026-02-05T13:05:24.805457Z",
+      "type": "action"
+    },
+    {
+      "content": "claimed task 753 - fix break loop and PR review feedback handling",
+      "from": "lexington",
+      "id": "77453f7d-0971-438e-b4a5-bd9f45f88a0c",
+      "timestamp": "2026-02-05T13:05:29.101550Z",
+      "type": "action"
+    },
+    {
+      "content": "investigating the break loop and PR review feedback bugs",
+      "from": "lexington",
+      "id": "840c8f38-da47-41fb-9aac-8753a5b3c370",
+      "timestamp": "2026-02-05T13:05:50.544447Z",
+      "type": "action"
+    },
+    {
+      "content": "💡 The snapshot reveals the core problem clearly: `all_tasks` is empty, madison's `current_task` is null, and madison is in `ci_passed_pr_coworkers` and `coworkers_with_open_prs`. The daemon sees an idle coworker with no task, sends them on break, then PR polling detects the unattended PR and respawns madison — creating the loop.",
+      "from": "lexington",
+      "id": "8e067417-89d5-466b-add2-ea8935c82c7d",
+      "timestamp": "2026-02-05T13:08:42.950092Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting lexington take a break (work's all merged)",
+      "from": "system",
+      "id": "db66d5a3-61ce-48ab-8208-9b528a2560e4",
+      "timestamp": "2026-02-05T13:10:22.627955Z",
+      "type": "text"
+    },
+    {
+      "content": "🚀 Called in coworker lexington for pending task #753",
+      "from": "midtown",
+      "id": "046bc6e1-1f63-4cbe-9630-859062968d15",
+      "timestamp": "2026-02-05T13:10:26.545469Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "e059d78e-0c07-4dc3-a8b9-ae4336b9c8c0",
+      "timestamp": "2026-02-05T13:11:21.716104Z",
+      "type": "text"
+    },
+    {
+      "content": "Why did the daemon just send Lexington on a break? That also looks like a bug",
+      "from": "user",
+      "id": "361fde1f-0282-47de-8f38-b919cee0b6b9",
+      "timestamp": "2026-02-05T13:11:22.657115Z",
+      "type": "text"
+    }
+  ],
+  "ci_passed_pr_coworkers": [
+    "madison"
+  ],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": false,
+      "name": "lexington",
+      "started_at": "2026-02-05T13:10:26.545418Z"
+    }
+  ],
+  "coworker_start_times": {
+    "lexington": "2026-02-05T13:10:26.545418Z"
+  },
+  "coworker_stop_times": {
+    "lexington": "2026-02-05T13:10:22.860386Z",
+    "madison": "2026-02-05T13:11:21.736428Z"
+  },
+  "coworkers_with_merged_prs": [
+    "broadway",
+    "vernon",
+    "riverside",
+    "columbus",
+    "amsterdam",
+    "pleasant",
+    "park",
+    "lexington",
+    "york"
+  ],
+  "coworkers_with_open_prs": [
+    "madison"
+  ],
+  "coworkers_with_running_subagents": [],
+  "coworkers_with_unblocked_deps": [],
+  "daemon_logs": [
+    "2026-02-05T13:10:22.924779Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:10:22.924803Z  INFO Pending task #753 is assigned to lexington but coworker not running - spawning",
+    "2026-02-05T13:10:22.938894Z  INFO Reusing existing valid worktree for lexington",
+    "2026-02-05T13:10:25.834626Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:10:26.545422Z  INFO Spawned coworker lexington (isolated=false, session_mode=Resume)",
+    "2026-02-05T13:10:26.545457Z  INFO Spawned coworker lexington successfully",
+    "2026-02-05T13:10:26.558948Z DEBUG New connection",
+    "2026-02-05T13:10:26.559003Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:10:27.085550Z DEBUG Client disconnected",
+    "2026-02-05T13:10:31.671665Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\", \"lexington\"] window_count=5",
+    "2026-02-05T13:10:31.671698Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:10:31.679010Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:10:31.717203Z DEBUG Task assignment state: active=2",
+    "2026-02-05T13:10:31.717222Z DEBUG task #753 nudge on cooldown for lexington",
+    "2026-02-05T13:10:34.110105Z DEBUG conn 7 viewing window lead at 80 cols",
+    "2026-02-05T13:10:35.646800Z DEBUG conn 7 viewing window lexington at 80 cols",
+    "2026-02-05T13:10:35.646869Z DEBUG conn 7 viewing window lexington at 80 cols",
+    "2026-02-05T13:10:35.830842Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:10:35.830923Z DEBUG New connection",
+    "2026-02-05T13:10:35.830950Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:10:36.417045Z DEBUG Client disconnected",
+    "2026-02-05T13:10:41.669455Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\", \"lexington\"] window_count=5",
+    "2026-02-05T13:10:41.669487Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:10:41.675819Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:10:41.713055Z DEBUG Task assignment state: active=2",
+    "2026-02-05T13:10:41.713080Z DEBUG task #753 nudge on cooldown for lexington",
+    "2026-02-05T13:10:43.544507Z DEBUG New connection",
+    "2026-02-05T13:10:43.544790Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:10:44.028818Z DEBUG Client disconnected",
+    "2026-02-05T13:10:46.015399Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:10:46.015494Z DEBUG New connection",
+    "2026-02-05T13:10:46.015535Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:10:46.542494Z DEBUG Client disconnected",
+    "2026-02-05T13:10:50.153554Z DEBUG conn 7 left window view",
+    "2026-02-05T13:10:51.669663Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:10:51.705915Z DEBUG Idle shutdown check: active=2, busy=[], open_prs=[madison], reviewers=[], unblocked_deps=[]",
+    "2026-02-05T13:10:51.712319Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:10:51.744856Z DEBUG Polling PRs for actionable issues...",
+    "2026-02-05T13:10:52.586411Z DEBUG PR poll: data unchanged, skipping processing",
+    "2026-02-05T13:10:52.599040Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\", \"lexington\"] window_count=5",
+    "2026-02-05T13:10:52.599061Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:10:52.604962Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:10:52.638936Z DEBUG Task assignment state: active=2",
+    "2026-02-05T13:10:52.638958Z DEBUG task #753 nudge on cooldown for lexington",
+    "2026-02-05T13:10:55.927431Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:10:55.927518Z DEBUG New connection",
+    "2026-02-05T13:10:55.927555Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:10:56.436793Z DEBUG Client disconnected",
+    "2026-02-05T13:11:01.669839Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\", \"lexington\"] window_count=5",
+    "2026-02-05T13:11:01.669883Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:11:01.676742Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:11:01.715961Z DEBUG Task assignment state: active=2",
+    "2026-02-05T13:11:01.715989Z DEBUG task #753 nudge on cooldown for lexington",
+    "2026-02-05T13:11:05.897645Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:11:05.897757Z DEBUG New connection",
+    "2026-02-05T13:11:05.897803Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:11:06.405340Z DEBUG Client disconnected",
+    "2026-02-05T13:11:11.669236Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\", \"lexington\"] window_count=5",
+    "2026-02-05T13:11:11.669262Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:11:11.675148Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:11:11.709681Z DEBUG Task assignment state: active=2",
+    "2026-02-05T13:11:11.709857Z DEBUG task #753 nudge on cooldown for lexington",
+    "2026-02-05T13:11:14.542388Z DEBUG New connection",
+    "2026-02-05T13:11:14.542446Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:11:15.036663Z DEBUG Client disconnected",
+    "2026-02-05T13:11:15.855275Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:11:15.855365Z DEBUG New connection",
+    "2026-02-05T13:11:15.855405Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:11:16.367487Z DEBUG Client disconnected",
+    "2026-02-05T13:11:21.670700Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:11:21.709085Z DEBUG Idle shutdown check: active=2, busy=[], open_prs=[madison], reviewers=[], unblocked_deps=[]",
+    "2026-02-05T13:11:21.709111Z  WARN IDLE_SHUTDOWN: 1 coworkers flagged for shutdown: [(\"madison\", false)]",
+    "2026-02-05T13:11:21.709118Z  WARN IDLE_SHUTDOWN: madison - is_busy=false, has_open_pr=true, is_reviewing=false, has_subagent=false, ci_passed=true, is_isolated=false",
+    "2026-02-05T13:11:21.709122Z  INFO Sending idle coworker madison on a break (idle for 30+ seconds)",
+    "2026-02-05T13:11:21.724146Z  INFO SHUTDOWN_COWORKER: executing shutdown effect coworker=madison session=midtown-midtown window_count=5 windows=[\"madison\", \"madison\", \"madison\", \"madison\", \"lexington\"] message_preview=",
+    "2026-02-05T13:11:21.724166Z DEBUG Coworker madison status: Running -> Stopping",
+    "2026-02-05T13:11:21.736407Z  WARN Failed to shut down coworker madison: RPC error: Failed to kill tmux window: midtown-midtown:madison (code: -32603)",
+    "2026-02-05T13:11:21.739323Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:11:21.774548Z DEBUG Polling PRs for actionable issues...",
+    "2026-02-05T13:11:22.472149Z DEBUG Saved daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:11:22.472177Z DEBUG PR #649 has cached Claude review (skipping API call)",
+    "2026-02-05T13:11:22.472183Z DEBUG PR #649 already has a Claude review",
+    "2026-02-05T13:11:22.472188Z DEBUG PR #649 has cached Claude review (skipping API call)",
+    "2026-02-05T13:11:22.487880Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\", \"lexington\"] window_count=5",
+    "2026-02-05T13:11:22.487905Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:11:22.491644Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false",
+    "2026-02-05T13:11:22.531213Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:11:22.531236Z DEBUG task #753 nudge on cooldown for lexington",
+    "2026-02-05T13:11:22.552805Z DEBUG Orphaned worktree for madison has unmerged commits - will check filters",
+    "2026-02-05T13:11:22.588020Z DEBUG Skipping tmux process in orphan cleanup pid=47137",
+    "2026-02-05T13:11:22.657098Z  INFO User sent: Why did the daemon just send Lexington on a break? That also looks like a bug",
+    "2026-02-05T13:11:22.662340Z  INFO Channel post from user: Why did the daemon just send Lexington on a break? That also looks like a bug",
+    "2026-02-05T13:11:22.662375Z  INFO Nudging Lead about user message",
+    "2026-02-05T13:11:25.840673Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:11:25.840808Z DEBUG New connection",
+    "2026-02-05T13:11:25.840847Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:11:26.365238Z DEBUG Client disconnected",
+    "2026-02-05T13:11:29.926970Z DEBUG New connection",
+    "2026-02-05T13:11:29.927009Z DEBUG Received request: method=snapshot",
+    "2026-02-05T13:11:29.930472Z DEBUG captured pane content coworker=lexington lines=63 has_output=true has_input_text=false"
+  ],
+  "in_progress_tasks": [],
+  "is_at_coworker_limit": false,
+  "is_at_dev_limit": false,
+  "isolated_coworkers": [],
+  "now_utc": "2026-02-05T13:11:29.964127Z",
+  "pane_contents": {
+    "lexington": "  ⎿  Successfully loaded skill\n\n⏺ Good, I'm following TDD. Let me first understand the full picture, then write failing tests before any production code.\n\n  Let me continue reading the key parts of the PR polling code and the evaluate_tick function to understand how the idle shutdown decision integrates with the PR polling.\n\n⏺ Searched for 2 patterns, read 2 files (ctrl+o to expand)\n\n⏺ Bug 1 (Break loop):\n  - Madison has an open PR with CI passed and review feedback\n  - decide_idle_shutdowns allows CI-passed coworkers to break\n  - PR polling detects unattended review feedback → spawns madison\n  - Madison has no task → idle → break → loop\n\n  Fix: Add review_feedback_pr_coworkers to WorldSnapshot and decide_idle_shutdowns. When a coworker's PR has CI passed AND has review feedback (is in reviewed_prs), they should be protected from idle shutdown. This prevents the loop.\n\n  The reviewed_prs set in the PR poll tracks PRs that have been reviewed (have a Claude review comment). We need to track which coworker owners have reviewed PRs with CI green that haven't been approved yet (meaning feedback needs\n  addressing).\n\n  Bug 2 (PR review feedback not driving work):\n  - When a PR has review feedback, the daemon nudges/spawns the author but doesn't create a task\n  - The author gets spawned, has nothing to do, goes idle\n\n  Fix: When the daemon detects a PR with review feedback (in collect_green_with_feedback_effects), it should also emit an effect to create a task for the author if they don't already have one.\n\n  Actually, let me think about this differently. The collect_green_with_feedback_effects function already handles spawning/nudging the coworker. The issue is:\n  1. The coworker is spawned but has no task\n  2. The idle shutdown doesn't protect them\n\n  For fix 1, we need to protect them in decide_idle_shutdowns. For fix 2, we need to either:\n  a. Create a task via an Effect, or\n  b. Include the work description in the spawn nudge (which already happens, but the coworker ignores it because they report idle)\n\n  The most robust fix is to:\n  1. Track review_feedback_pr_coworkers in PrCoworkerCache and WorldSnapshot\n  2. Use it in decide_idle_shutdowns to protect coworkers with review feedback from idle shutdown\n\n  For the task creation part, that's a separate concern. Looking at the Effects, I see there's no CreateTask effect type. Let me check if there is one.\n\n  Actually, looking at the task description again:\n  Expected behavior: When a PR has review feedback:\n  1. The PR author should get a task like \"Address review feedback on PR #649\"\n  2. The daemon should NOT send the author on break while their PR has unaddressed feedback\n  3. The break loop should not happen regardless\n\n  So we need task creation too. Let me check what Effect variants exist.\n\n  Actually, let me focus on what I can do:\n\n  1. Fix the break loop by adding review_feedback_pr_coworkers to idle shutdown protection - this is a pure logic change in rules.rs and data flow change in snapshot.rs/pr.rs\n  2. Create task for review feedback by adding an Effect to create tasks\n\n  Let me look at existing Effect variants.\n\n⏺ Searching for 1 pattern, reading 1 file… (ctrl+o to expand)\n\n✶ Spinning… (1m 4s · ↓ 2.8k tokens · thought for 21s)\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n\n"
+  },
+  "pending_tasks_with_owners": [
+    [
+      "753",
+      "Fix break loop and unaddressed PR review feedback for PR authors",
+      "lexington"
+    ]
+  ],
+  "pending_tasks_without_owners": [],
+  "prs_needing_review": 0,
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {},
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "lexington",
+      "session_id": "",
+      "started_at": "2026-02-05T13:10:26.545418Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/lexington"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false,
+  "usage_limited_coworkers": []
+}

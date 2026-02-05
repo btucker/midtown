@@ -289,6 +289,9 @@ struct PrCoworkerCache {
     /// Coworker names whose open PR has all CI checks passing.
     /// Used by snapshot to determine PR break eligibility.
     ci_passed_pr_owners: HashSet<String>,
+    /// Coworker names whose open PR has CI passed AND has review feedback to address.
+    /// Used by snapshot for idle shutdown protection (prevents spawn→idle→break loop).
+    review_feedback_pr_owners: HashSet<String>,
     /// Count of open PRs that need review (not draft, no Claude review, no formal review).
     /// Updated every PR poll tick. Used to prioritize PR reviews over new task pickup.
     prs_needing_review: usize,
@@ -305,6 +308,7 @@ impl PrCoworkerCache {
             merged_pr_owners: HashSet::new(),
             merged_pr_branches: HashSet::new(),
             ci_passed_pr_owners: HashSet::new(),
+            review_feedback_pr_owners: HashSet::new(),
             prs_needing_review: 0,
             pr_poll_initialized: false,
         }

@@ -280,13 +280,16 @@ pub(crate) struct ShutdownDecision {
 ///
 /// A coworker is protected from break if:
 /// - They have in-progress tasks (busy)
+/// - They have a pending task assigned to them
 /// - They have open unmerged PRs with CI not yet passed (waiting for CI)
+/// - They have open PRs with CI passed AND review feedback to address
 /// - They are actively reviewing a PR
 /// - They have unblocked dependent tasks
 /// - They have a subagent (Task tool) currently running
 ///
-/// Coworkers with open PRs where CI has passed CAN go on break - they're just
-/// waiting for human review, and the daemon will respawn them when feedback arrives.
+/// Coworkers with open PRs where CI has passed and NO review feedback CAN go on
+/// break - they're just waiting for human review, and the daemon will respawn
+/// them when feedback arrives.
 ///
 /// Note: Pane content changes are NOT used as a protection signal. Idle coworkers
 /// may have pane activity from daemon nudges, Claude Code UI updates, etc. The
@@ -303,6 +306,8 @@ pub(crate) fn decide_idle_shutdowns(
     ci_passed_pr_coworkers: &HashSet<String>,
     usage_limited_coworkers: &HashSet<String>,
     api_error_coworkers: &HashSet<String>,
+    pending_task_owners: &HashSet<String>,
+    review_feedback_pr_coworkers: &HashSet<String>,
     records: &HashMap<String, CoworkerRecord>,
     now_utc: DateTime<Utc>,
     minimum_lifetime: Duration,
@@ -347,20 +352,27 @@ pub(crate) fn decide_idle_shutdowns(
             .any(|c| c.eq_ignore_ascii_case(coworker));
         let is_usage_limited = usage_limited_coworkers.contains(&coworker.to_lowercase());
         let has_api_error = api_error_coworkers.contains(&coworker.to_lowercase());
+        let has_pending_task = pending_task_owners
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(coworker));
+        let has_review_feedback = review_feedback_pr_coworkers
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(coworker));
 
-        // Coworkers with active tasks, review assignments, unblocked deps,
+        // Coworkers with active/pending tasks, review assignments, unblocked deps,
         // running subagents, usage limits, or API errors are never sent on break.
         //
         // Coworkers with open PRs CAN go on break if their CI has passed
-        // (they're waiting for review feedback, and the daemon will respawn
-        // them when feedback arrives).
+        // AND they have no review feedback to address. If they DO have review
+        // feedback, they're protected (prevents spawn→idle→break loop from #753).
         //
         // Note: pane content changes are NOT checked here. Idle coworkers may
         // have pane activity from daemon nudges and UI updates, which previously
         // blocked idle breaks (bug #62). The other flags already cover all
         // legitimate work scenarios.
-        let protected_by_open_pr = has_open_pr && !ci_passed;
+        let protected_by_open_pr = has_open_pr && (!ci_passed || has_review_feedback);
         if is_busy
+            || has_pending_task
             || protected_by_open_pr
             || is_reviewing
             || has_unblocked_deps
@@ -2030,6 +2042,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2062,6 +2076,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2093,6 +2109,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2121,6 +2139,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2149,6 +2169,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2180,6 +2202,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2206,6 +2230,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2232,6 +2258,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2263,6 +2291,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2306,6 +2336,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2350,6 +2382,8 @@ mod tests {
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
+            &set(&[]), // pending_task_owners
+            &set(&[]), // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2381,6 +2415,8 @@ mod tests {
             &set(&[]),          // ci_passed
             &set(&[]),          // usage_limited
             &set(&[]),          // api_error
+            &set(&[]),          // pending_task_owners
+            &set(&[]),          // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2419,6 +2455,8 @@ mod tests {
             &set(&["york"]), // CI PASSED
             &set(&[]),       // usage_limited
             &set(&[]),       // api_error
+            &set(&[]),       // pending_task_owners
+            &set(&[]),       // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2456,6 +2494,8 @@ mod tests {
             &set(&[]),       // no ci_passed
             &set(&["york"]), // usage_limited
             &set(&[]),       // api_error
+            &set(&[]),       // pending_task_owners
+            &set(&[]),       // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2490,6 +2530,8 @@ mod tests {
             &set(&[]),       // no ci_passed
             &set(&[]),       // not usage_limited
             &set(&["york"]), // HAS API ERROR
+            &set(&[]),       // pending_task_owners
+            &set(&[]),       // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),
@@ -2498,6 +2540,117 @@ mod tests {
         assert!(
             decisions.is_empty(),
             "API error coworker should be protected from idle shutdown"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_skips_coworker_with_pending_assigned_task() {
+        // Bug #753 (Bug 2): Lexington was sent on break despite having a pending
+        // task (#753) assigned to them. The daemon should protect coworkers who
+        // have pending tasks assigned, not just in-progress ones.
+        let coworkers = vec![cw("lexington", 10)];
+        let phases = lifecycle_with(
+            "lexington",
+            SessionHealth::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // lexington has a pending task assigned — should NOT be sent on break
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),            // not busy (task is pending, not in-progress)
+            &set(&[]),            // no open PR
+            &set(&[]),            // not reviewing
+            &set(&[]),            // no unblocked deps
+            &set(&[]),            // no running subagent
+            &set(&[]),            // no ci_passed
+            &set(&[]),            // not usage_limited
+            &set(&[]),            // no api_error
+            &set(&["lexington"]), // HAS PENDING TASK ASSIGNED
+            &set(&[]),            // no review_feedback
+            &phases,
+            Utc::now(),
+            Duration::from_secs(300),
+        );
+
+        assert!(
+            decisions.is_empty(),
+            "coworker with pending task assigned should be protected from idle shutdown"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_skips_coworker_with_review_feedback_pr() {
+        // Bug #753 (Bug 1): Madison's PR had CI passed + review feedback but she
+        // was still sent on break, causing a spawn→idle→break loop. Coworkers whose
+        // PRs have review feedback needing action should be protected.
+        let coworkers = vec![cw("madison", 10)];
+        let phases = lifecycle_with(
+            "madison",
+            SessionHealth::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        // madison has an open PR with CI passed AND review feedback — should NOT break
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),          // not busy
+            &set(&["madison"]), // has open PR
+            &set(&[]),          // not reviewing
+            &set(&[]),          // no unblocked deps
+            &set(&[]),          // no running subagent
+            &set(&["madison"]), // CI PASSED
+            &set(&[]),          // not usage_limited
+            &set(&[]),          // no api_error
+            &set(&[]),          // no pending_task_owners
+            &set(&["madison"]), // HAS REVIEW FEEDBACK
+            &phases,
+            Utc::now(),
+            Duration::from_secs(300),
+        );
+
+        assert!(
+            decisions.is_empty(),
+            "coworker with CI-passed PR and review feedback should be protected from \
+             idle shutdown (prevents spawn→idle→break loop)"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_still_allows_break_for_ci_passed_pr_without_feedback() {
+        // Regression guard: coworkers with CI-passed PRs but NO review feedback
+        // should still be allowed to go on break (original behavior).
+        let coworkers = vec![cw("york", 10)];
+        let phases = lifecycle_with(
+            "york",
+            SessionHealth::Idle {
+                since: Instant::now() - Duration::from_secs(60),
+            },
+        );
+
+        let (decisions, _transitions) = decide_idle_shutdowns(
+            &coworkers,
+            &set(&[]),       // not busy
+            &set(&["york"]), // has open PR
+            &set(&[]),       // not reviewing
+            &set(&[]),       // no unblocked deps
+            &set(&[]),       // no running subagent
+            &set(&["york"]), // CI PASSED
+            &set(&[]),       // not usage_limited
+            &set(&[]),       // no api_error
+            &set(&[]),       // no pending_task_owners
+            &set(&[]),       // NO review feedback
+            &phases,
+            Utc::now(),
+            Duration::from_secs(300),
+        );
+
+        assert_eq!(
+            decisions.len(),
+            1,
+            "coworker with CI-passed PR but no review feedback should still go on break"
         );
     }
 
@@ -4344,6 +4497,8 @@ mod tests {
             &set(&[]),                         // ci_passed
             &set(&[]),                         // usage_limited
             &set(&[]),                         // api_error
+            &set(&[]),                         // pending_task_owners
+            &set(&[]),                         // review_feedback_pr_coworkers
             &phases,
             Utc::now(),
             Duration::from_secs(300),

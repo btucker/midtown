@@ -621,6 +621,82 @@ pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Re
     clear_blocked_by_in_dir(completed_task_id, &tasks_dir)
 }
 
+/// Create a new task in the shared task storage for a specific repo.
+///
+/// Assigns the next sequential ID by scanning existing task files.
+/// Returns the assigned task ID on success.
+pub fn create_task_for_repo(
+    subject: &str,
+    description: &str,
+    active_form: &str,
+    owner: &str,
+    repo_name: &str,
+) -> Result<String, String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+
+    // Ensure directory exists
+    if !tasks_dir.exists() {
+        std::fs::create_dir_all(&tasks_dir)
+            .map_err(|e| format!("Failed to create tasks directory: {}", e))?;
+    }
+
+    create_task_in_dir(&tasks_dir, subject, description, active_form, owner)
+}
+
+/// Inner implementation: create a task in the given directory.
+///
+/// Reads existing tasks once to both determine the next ID and check for duplicates.
+/// A task with the same subject and owner (regardless of status) is considered a duplicate.
+fn create_task_in_dir(
+    tasks_dir: &std::path::Path,
+    subject: &str,
+    description: &str,
+    active_form: &str,
+    owner: &str,
+) -> Result<String, String> {
+    let tasks_dir_buf = tasks_dir.to_path_buf();
+    let existing = read_tasks_from_dir(&tasks_dir_buf);
+
+    // Check for duplicate: same subject + owner in any status
+    for task in &existing {
+        if task.subject == subject && task.owner.as_deref() == Some(owner) {
+            return Ok(task.id.clone());
+        }
+    }
+
+    // Determine next ID from existing tasks
+    let next_id = existing
+        .iter()
+        .filter_map(|t| t.id.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let task_id = next_id.to_string();
+    let task = serde_json::json!({
+        "id": task_id,
+        "subject": subject,
+        "description": description,
+        "status": "pending",
+        "owner": owner,
+        "blockedBy": [],
+        "blocks": [],
+        "activeForm": active_form,
+    });
+
+    let path = tasks_dir.join(format!("{}.json", task_id));
+    let content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write task file: {}", e))?;
+
+    Ok(task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1323,5 +1399,153 @@ mod tests {
         let json = r#"{"id": "5", "subject": "Test", "status": "pending", "blockedBy": [1, 2]}"#;
         let task = parse_task_json(json).unwrap();
         assert_eq!(task.blocked_by, vec!["1".to_string(), "2".to_string()]);
+    }
+
+    #[test]
+    fn test_create_task_in_dir_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = create_task_in_dir(
+            temp_dir.path(),
+            "Address review feedback on PR #42",
+            "PR #42 has feedback",
+            "Addressing review feedback on PR #42",
+            "madison",
+        );
+        assert!(result.is_ok());
+        let task_id = result.unwrap();
+        assert_eq!(task_id, "1");
+
+        let tasks = read_tasks_from_dir(&temp_dir.path().to_path_buf());
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].subject, "Address review feedback on PR #42");
+        assert_eq!(tasks[0].owner, Some("madison".to_string()));
+    }
+
+    #[test]
+    fn test_create_task_in_dir_dedup_pending() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create first task
+        let id1 = create_task_in_dir(
+            temp_dir.path(),
+            "Address review feedback on PR #42",
+            "desc",
+            "Addressing review feedback on PR #42",
+            "madison",
+        )
+        .unwrap();
+
+        // Same subject+owner should return existing ID, not create a new task
+        let id2 = create_task_in_dir(
+            temp_dir.path(),
+            "Address review feedback on PR #42",
+            "desc",
+            "Addressing review feedback on PR #42",
+            "madison",
+        )
+        .unwrap();
+
+        assert_eq!(id1, id2);
+        assert_eq!(read_tasks_from_dir(&temp_dir.path().to_path_buf()).len(), 1);
+    }
+
+    #[test]
+    fn test_create_task_in_dir_dedup_completed() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a completed task with the same subject+owner
+        let task = serde_json::json!({
+            "id": "10",
+            "subject": "Address review feedback on PR #42",
+            "status": "completed",
+            "owner": "madison",
+        });
+        let path = temp_dir.path().join("10.json");
+        std::fs::write(&path, serde_json::to_string(&task).unwrap()).unwrap();
+
+        // Calling again with same subject+owner should return the existing ID,
+        // NOT create a new task (prevents re-creation on every poll cycle)
+        let result = create_task_in_dir(
+            temp_dir.path(),
+            "Address review feedback on PR #42",
+            "desc",
+            "Addressing review feedback on PR #42",
+            "madison",
+        )
+        .unwrap();
+
+        assert_eq!(result, "10", "should return existing completed task ID");
+        assert_eq!(
+            read_tasks_from_dir(&temp_dir.path().to_path_buf()).len(),
+            1,
+            "should not create a duplicate task"
+        );
+    }
+
+    #[test]
+    fn test_create_task_in_dir_different_owner_allowed() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let id1 = create_task_in_dir(
+            temp_dir.path(),
+            "Address review feedback on PR #42",
+            "desc",
+            "Addressing feedback",
+            "madison",
+        )
+        .unwrap();
+
+        // Different owner should create a separate task
+        let id2 = create_task_in_dir(
+            temp_dir.path(),
+            "Address review feedback on PR #42",
+            "desc",
+            "Addressing feedback",
+            "lexington",
+        )
+        .unwrap();
+
+        assert_ne!(id1, id2);
+        assert_eq!(read_tasks_from_dir(&temp_dir.path().to_path_buf()).len(), 2);
+    }
+
+    #[test]
+    fn test_create_task_in_dir_sequential_ids() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Pre-populate with existing tasks
+        create_task_file(temp_dir.path(), "5", "completed", Some("alice"));
+        create_task_file(temp_dir.path(), "10", "pending", Some("bob"));
+
+        let id = create_task_in_dir(
+            temp_dir.path(),
+            "New task",
+            "desc",
+            "Working on new task",
+            "carol",
+        )
+        .unwrap();
+
+        assert_eq!(id, "11", "should use max existing ID + 1");
+    }
+
+    #[test]
+    fn test_create_task_in_dir_single_read() {
+        // Verify that create_task_in_dir reads the directory once, not twice.
+        // The previous implementation had two separate read_tasks_from_dir calls.
+        // We verify correctness by ensuring ID assignment and dedup are consistent
+        // even when pre-existing tasks are present.
+        let temp_dir = TempDir::new().unwrap();
+
+        create_task_file(temp_dir.path(), "3", "pending", Some("alice"));
+
+        // This should read once, find max_id=3, and assign id=4
+        let id = create_task_in_dir(temp_dir.path(), "New task", "desc", "Working", "bob").unwrap();
+        assert_eq!(id, "4");
+
+        // Dedup should work for the newly created task
+        let id2 =
+            create_task_in_dir(temp_dir.path(), "New task", "desc", "Working", "bob").unwrap();
+        assert_eq!(id2, "4", "should dedup against newly created task");
     }
 }

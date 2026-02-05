@@ -141,6 +141,17 @@ pub enum Effect {
         completed_task_id: String,
         repo_name: String,
     },
+    /// Create a new task for a PR author to address review feedback.
+    ///
+    /// Emitted when a PR has CI green + review feedback but no existing task
+    /// for the author. Prevents the spawn→idle→break loop by giving the author
+    /// concrete work to do.
+    CreateReviewFeedbackTask {
+        pr_number: u64,
+        pr_title: String,
+        owner: String,
+        repo_name: String,
+    },
 }
 
 /// Execute a list of effects against the daemon state.
@@ -507,6 +518,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Cleared blockedBy references to completed task #{}",
                         completed_task_id
                     );
+                }
+            }
+            Effect::CreateReviewFeedbackTask {
+                pr_number,
+                pr_title,
+                owner,
+                repo_name,
+            } => {
+                let subject = format!("Address review feedback on PR #{}", pr_number);
+                let description = format!(
+                    "PR #{} ({}) has review feedback that needs to be addressed.\n\n\
+                     Please review the comments, make the requested changes, and push updates.\n\
+                     Once feedback is addressed, the reviewer will re-check and approve.",
+                    pr_number, pr_title
+                );
+                let active_form = format!("Addressing review feedback on PR #{}", pr_number);
+                match crate::tasks::create_task_for_repo(
+                    &subject,
+                    &description,
+                    &active_form,
+                    &owner,
+                    &repo_name,
+                ) {
+                    Ok(task_id) => {
+                        info!(
+                            "Created review feedback task #{} for {} (PR #{})",
+                            task_id, owner, pr_number
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to create review feedback task for {} (PR #{}): {}",
+                            owner, pr_number, e
+                        );
+                    }
                 }
             }
         }

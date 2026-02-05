@@ -497,9 +497,30 @@ pub(super) async fn poll_prs_for_issues(
                 && !reviewed_prs.contains(&pr_number)
         })
         .count();
+    // Cache coworker names whose PRs have CI passed + review feedback (for idle shutdown protection).
+    // This mirrors the criteria in collect_green_with_feedback_effects: CI green, reviewed, not approved.
     {
+        let review_feedback: HashSet<String> = prs
+            .iter()
+            .filter(|pr| {
+                let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+                let review_decision = pr
+                    .get("reviewDecision")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                all_ci_checks_passed(pr)
+                    && reviewed_prs.contains(&pr_number)
+                    && review_decision != "APPROVED"
+            })
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(coworker_from_branch)
+            })
+            .collect();
         let mut cache = state.pr_coworker_cache.write().unwrap();
         cache.prs_needing_review = prs_needing_review;
+        cache.review_feedback_pr_owners = review_feedback;
     }
 
     // Nudge PR owners when CI turns green and they have review feedback to address.
@@ -611,6 +632,15 @@ async fn collect_green_with_feedback_effects(
             PrIssueType::GreenWithFeedback,
             state,
         ));
+
+        // Create a task for the author to address review feedback if they don't have one.
+        // This prevents the spawn→idle→break loop by giving the author concrete work.
+        effects.push(Effect::CreateReviewFeedbackTask {
+            pr_number,
+            pr_title: title.to_string(),
+            owner: owner.clone(),
+            repo_name: state.repo_name.clone(),
+        });
     }
 
     effects
