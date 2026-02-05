@@ -709,16 +709,27 @@ pub(super) fn spawn_for_pending_tasks(
     let pending_unowned = &snap.pending_tasks_without_owners;
 
     // Prioritize PR reviews over new task pickup: if there are PRs waiting for review
-    // and we have capacity to spawn reviewers, defer new task assignment. This ensures
-    // PRs don't wait while coworkers pick up new work.
+    // that don't already have an assigned reviewer, and we have capacity to spawn
+    // reviewers, defer new task assignment. This ensures PRs don't wait while coworkers
+    // pick up new work — but doesn't block task dispatch when all PRs are already covered.
     let active_review_count = snap.active_reviewers.len();
-    if snap.prs_needing_review > 0
+    let prs_with_reviewers = snap
+        .reviewer_pr_assignments
+        .values()
+        .collect::<HashSet<_>>()
+        .len();
+    let unserved_prs = snap.prs_needing_review.saturating_sub(prs_with_reviewers);
+    if unserved_prs > 0
         && active_review_count < MAX_CONCURRENT_REVIEWS
         && !snap.is_at_coworker_limit
     {
         debug!(
-            "Deferring unowned task pickup: {} PR(s) need review, {}/{} active reviewers, capacity available",
-            snap.prs_needing_review, active_review_count, MAX_CONCURRENT_REVIEWS
+            "Deferring unowned task pickup: {} unserved PR(s) need review ({} total, {} already have reviewers), {}/{} active reviewers",
+            unserved_prs,
+            snap.prs_needing_review,
+            prs_with_reviewers,
+            active_review_count,
+            MAX_CONCURRENT_REVIEWS
         );
         return effects;
     }
