@@ -168,43 +168,45 @@ impl HeadlessSession {
     /// Read the next streaming event from the session.
     ///
     /// Returns `None` when the process exits (stdout closes).
+    /// Skips blank lines and unparseable lines in a loop (zero-cost,
+    /// no heap allocation per skipped line).
     pub async fn next_event(&mut self) -> Option<StreamEvent> {
-        let mut line = String::new();
-        match self.stdout_reader.read_line(&mut line).await {
-            Ok(0) => {
-                debug!("Headless session stdout closed");
-                None
-            }
-            Ok(_) => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    // Skip blank lines, try next
-                    return Box::pin(self.next_event()).await;
+        loop {
+            let mut line = String::new();
+            match self.stdout_reader.read_line(&mut line).await {
+                Ok(0) => {
+                    debug!("Headless session stdout closed");
+                    return None;
                 }
-                match serde_json::from_str::<StreamEvent>(trimmed) {
-                    Ok(event) => {
-                        // Track session_id from init event
-                        if let StreamEvent::System {
-                            ref subtype,
-                            ref session_id,
-                            ..
-                        } = event
-                            && subtype == "init"
-                        {
-                            self.session_id = session_id.clone();
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<StreamEvent>(trimmed) {
+                        Ok(event) => {
+                            // Track session_id from init event
+                            if let StreamEvent::System {
+                                ref subtype,
+                                ref session_id,
+                                ..
+                            } = event
+                                && subtype == "init"
+                            {
+                                self.session_id = session_id.clone();
+                            }
+                            return Some(event);
                         }
-                        Some(event)
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse headless event: {} (line: {})", e, trimmed);
-                        // Try next line
-                        Box::pin(self.next_event()).await
+                        Err(e) => {
+                            warn!("Failed to parse headless event: {} (line: {})", e, trimmed);
+                            continue;
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                warn!("Error reading headless session stdout: {}", e);
-                None
+                Err(e) => {
+                    warn!("Error reading headless session stdout: {}", e);
+                    return None;
+                }
             }
         }
     }
@@ -247,6 +249,15 @@ impl HeadlessSession {
     /// Kill the child process.
     pub async fn kill(&mut self) -> std::io::Result<()> {
         self.child.kill().await
+    }
+}
+
+impl Drop for HeadlessSession {
+    fn drop(&mut self) {
+        // Ensure the child process is killed when the session is dropped.
+        // tokio::process::Child does NOT kill on drop (it detaches), so we
+        // must explicitly start_kill() to prevent orphaned claude processes.
+        let _ = self.child.start_kill();
     }
 }
 
