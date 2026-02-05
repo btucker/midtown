@@ -258,6 +258,8 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &snap.ci_passed_pr_coworkers,
             &snap.usage_limited_coworkers,
             &snap.api_error_coworkers,
+            &snap.pending_task_owners,
+            &snap.review_feedback_pr_coworkers,
             &records,
             snap.now_utc,
             MINIMUM_COWORKER_LIFETIME,

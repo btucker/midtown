@@ -621,6 +621,71 @@ pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Re
     clear_blocked_by_in_dir(completed_task_id, &tasks_dir)
 }
 
+/// Create a new task in the shared task storage for a specific repo.
+///
+/// Assigns the next sequential ID by scanning existing task files.
+/// Returns the assigned task ID on success.
+pub fn create_task_for_repo(
+    subject: &str,
+    description: &str,
+    owner: &str,
+    repo_name: &str,
+) -> Result<String, String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+
+    // Ensure directory exists
+    if !tasks_dir.exists() {
+        std::fs::create_dir_all(&tasks_dir)
+            .map_err(|e| format!("Failed to create tasks directory: {}", e))?;
+    }
+
+    // Determine next ID by scanning existing files
+    let next_id = {
+        let existing = read_tasks_from_dir(&tasks_dir);
+        let max_id = existing
+            .iter()
+            .filter_map(|t| t.id.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        max_id + 1
+    };
+
+    // Check for duplicate: don't create if a task with same subject already exists for this owner
+    let existing = read_tasks_from_dir(&tasks_dir);
+    for task in &existing {
+        if task.subject == subject
+            && task.owner.as_deref() == Some(owner)
+            && task.status != TaskStatus::Completed
+        {
+            return Ok(task.id.clone()); // Already exists, return existing ID
+        }
+    }
+
+    let task_id = next_id.to_string();
+    let task = serde_json::json!({
+        "id": task_id,
+        "subject": subject,
+        "description": description,
+        "status": "pending",
+        "owner": owner,
+        "blockedBy": [],
+        "blocks": [],
+        "activeForm": format!("Addressing review feedback"),
+    });
+
+    let path = tasks_dir.join(format!("{}.json", task_id));
+    let content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write task file: {}", e))?;
+
+    Ok(task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

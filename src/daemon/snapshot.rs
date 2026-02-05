@@ -82,6 +82,12 @@ pub struct WorldSnapshot {
     pub coworkers_with_merged_prs: HashSet<String>,
     /// Coworkers whose open PR has all CI checks passing (eligible for PR break).
     pub ci_passed_pr_coworkers: HashSet<String>,
+    /// Coworkers whose open PR has CI passed AND has review feedback to address.
+    /// These coworkers are protected from idle shutdown (prevents spawn→idle→break loop).
+    pub review_feedback_pr_coworkers: HashSet<String>,
+    /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
+    /// These coworkers are protected from idle shutdown even though their task isn't in-progress.
+    pub pending_task_owners: HashSet<String>,
 
     // ── Reviewer state ──────────────────────────────────────────────────
     /// Currently active reviewers (from both in-memory tracker and persistent state).
@@ -283,10 +289,21 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .collect();
     let coworkers_with_merged_prs: HashSet<String> =
         super::pr::get_coworkers_with_merged_prs(state);
-    let (ci_passed_pr_coworkers, prs_needing_review) = {
+    let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review) = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        (cache.ci_passed_pr_owners.clone(), cache.prs_needing_review)
+        (
+            cache.ci_passed_pr_owners.clone(),
+            cache.review_feedback_pr_owners.clone(),
+            cache.prs_needing_review,
+        )
     };
+
+    // Pending task owners: coworkers who have claimed a task (owner set) but haven't
+    // started it yet (status=pending). These should be protected from idle shutdown.
+    let pending_task_owners: HashSet<String> = pending_tasks_with_owners
+        .iter()
+        .map(|(_, _, owner)| owner.to_lowercase())
+        .collect();
 
     // ── Reviewer state ──────────────────────────────────────────────────
     let (active_reviewers, reviewer_pr_assignments) = {
@@ -385,6 +402,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         coworkers_with_open_prs,
         coworkers_with_merged_prs,
         ci_passed_pr_coworkers,
+        review_feedback_pr_coworkers,
+        pending_task_owners,
         active_reviewers,
         reviewer_pr_assignments,
         reviewed_prs,
@@ -508,6 +527,8 @@ mod tests {
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -588,6 +609,8 @@ mod tests {
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),

@@ -1,0 +1,533 @@
+{
+  "active_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": null,
+      "started_at": "2026-02-05T13:00:21.669333Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    }
+  ],
+  "active_names": [
+    "madison"
+  ],
+  "active_reviewers": [],
+  "all_tasks": [],
+  "api_error_coworkers": [],
+  "blank_pane_coworkers": [],
+  "busy_coworkers": [],
+  "channel_messages": [
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "46a7ea3e-fb72-4917-859f-171c7890c6a4",
+      "timestamp": "2026-02-05T08:50:21.721373Z",
+      "type": "text"
+    },
+    {
+      "content": "PR #649 (feat: Render mermaid fences as inline...) owned by madison - review complete: review is complete — please address feedback and merge if appropriate (call-in failed)",
+      "from": "midtown",
+      "id": "643ce7e4-f65e-4ca8-8882-3fe9e8b43cf3",
+      "timestamp": "2026-02-05T08:50:22.456090Z",
+      "type": "text"
+    },
+    {
+      "content": "PR #649 (feat: Render mermaid fences as inline...) owned by madison - CI green with feedback: CI is green — please address review feedback and merge (call-in failed)",
+      "from": "midtown",
+      "id": "e7376c95-def8-433a-b01d-d285debb6235",
+      "timestamp": "2026-02-05T08:50:22.464309Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "909501bd-424f-4dcc-b3e4-f0484ac37e23",
+      "timestamp": "2026-02-05T08:56:22.495898Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "70885805-9d6c-4656-9db6-27680bce11aa",
+      "timestamp": "2026-02-05T09:01:52.356833Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "5e607dfd-b1c3-4703-bc01-34afacae284f",
+      "timestamp": "2026-02-05T09:07:21.718803Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "c90a23aa-06f6-460d-91aa-4bfe6535e71c",
+      "timestamp": "2026-02-05T09:12:52.312813Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "e4dfc3aa-26bb-472d-8e4c-bcb266a684ad",
+      "timestamp": "2026-02-05T09:18:51.717599Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "ccdeb359-33ab-4593-8e94-4b50e3cb971a",
+      "timestamp": "2026-02-05T09:24:22.320552Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "707e568c-210f-406d-bcf6-58d480ce335f",
+      "timestamp": "2026-02-05T09:29:51.718852Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "3f7e9719-e870-4227-a5ee-e3fee8346209",
+      "timestamp": "2026-02-05T09:35:51.718405Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "dafd35bd-d4dd-4e75-90bd-d33dc84e17eb",
+      "timestamp": "2026-02-05T09:41:51.770088Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "f8c757ab-26c8-46c6-bfa5-47dbe02d15a6",
+      "timestamp": "2026-02-05T09:47:51.719888Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "72969cac-c7f9-4b96-8e38-9b68c43ad327",
+      "timestamp": "2026-02-05T09:53:22.498134Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "71ad49a6-fd47-4e8f-9dd7-6a00be34968d",
+      "timestamp": "2026-02-05T09:58:52.403050Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "05e23657-0bfb-4778-aa74-f39847f44cd6",
+      "timestamp": "2026-02-05T10:04:21.721791Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "a13d3e93-3293-45a8-a24e-8036f20fa91d",
+      "timestamp": "2026-02-05T10:10:21.772470Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "d63a2cd7-abd9-40ee-a8da-cf0894b19bfd",
+      "timestamp": "2026-02-05T10:15:52.407462Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "8a20266b-2c99-4cca-8646-24debb9b324e",
+      "timestamp": "2026-02-05T10:21:22.532502Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "d2f58f79-9130-438f-aaa2-bfcd26ff4f31",
+      "timestamp": "2026-02-05T10:26:52.556018Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "6ad6b1be-e017-4675-b1df-c0d2389ad995",
+      "timestamp": "2026-02-05T10:32:21.719507Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "3b7ff15b-8f16-44dc-8611-543ef5d0ea5e",
+      "timestamp": "2026-02-05T10:37:52.347523Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "512c7e45-fe3a-4332-864d-060de3b7a245",
+      "timestamp": "2026-02-05T10:43:51.721425Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "3eb4121a-2e0e-4143-9a81-0962801fbec8",
+      "timestamp": "2026-02-05T10:49:52.407778Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "92ef4075-ff9e-4385-986f-439f7f03d380",
+      "timestamp": "2026-02-05T10:55:21.716629Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "5a689202-d41c-4d67-a4b3-6ff830d0094e",
+      "timestamp": "2026-02-05T11:00:52.537039Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "0df3c238-47d8-424b-9ce8-4e1d8f83051f",
+      "timestamp": "2026-02-05T11:06:21.720780Z",
+      "type": "text"
+    },
+    {
+      "content": "PR #649 (feat: Render mermaid fences as inline...) owned by madison - review complete: review is complete — please address feedback and merge if appropriate (call-in failed)",
+      "from": "midtown",
+      "id": "3e061016-a62c-45cb-86dc-9e87cc950901",
+      "timestamp": "2026-02-05T11:06:22.525765Z",
+      "type": "text"
+    },
+    {
+      "content": "PR #649 (feat: Render mermaid fences as inline...) owned by madison - CI green with feedback: CI is green — please address review feedback and merge (call-in failed)",
+      "from": "midtown",
+      "id": "b687fab9-a4a5-4376-b9e4-da1d0d63aa06",
+      "timestamp": "2026-02-05T11:06:22.533977Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "b61f8de6-a5d9-4adf-b5d0-6524db931651",
+      "timestamp": "2026-02-05T11:12:22.459290Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "fb60e2cf-0a24-419b-9512-e516b46b6586",
+      "timestamp": "2026-02-05T11:18:21.719122Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "f4d9c96b-e997-4be3-9490-0a9c58882a18",
+      "timestamp": "2026-02-05T11:23:51.717038Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "2bf8d08a-9387-417f-a8d6-bd78dea9070b",
+      "timestamp": "2026-02-05T11:29:22.533995Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "0d72544c-516f-4d4a-938f-e0c54433e16c",
+      "timestamp": "2026-02-05T11:34:51.721144Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "14b13e86-2505-4200-88c3-d67901c78147",
+      "timestamp": "2026-02-05T11:40:21.720201Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "ef967a77-3752-4c23-8c80-7cdabc86c1f2",
+      "timestamp": "2026-02-05T11:45:52.317501Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "a180a2bf-afed-4b41-9c50-c5d6d4216fae",
+      "timestamp": "2026-02-05T11:51:51.720416Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "0ba500f6-67df-475a-8bf0-e19d5cea4931",
+      "timestamp": "2026-02-05T11:57:52.134158Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "e50354df-a5bb-4670-bf59-0947ac045ed5",
+      "timestamp": "2026-02-05T12:03:22.437771Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "088213cb-3dae-4685-bcec-d68d19658c4d",
+      "timestamp": "2026-02-05T12:08:51.720517Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "cc8bf690-3b65-4dca-a10c-aa09c58d269c",
+      "timestamp": "2026-02-05T12:14:22.455813Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "8cea75ad-af0a-4c91-9aea-d024df4fa07e",
+      "timestamp": "2026-02-05T12:20:22.477565Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "dc97e976-2638-420b-8561-db9678223d59",
+      "timestamp": "2026-02-05T12:26:21.714320Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "cf199dfb-a385-465f-845d-fc014503e9b7",
+      "timestamp": "2026-02-05T12:31:52.619203Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "cb582035-c904-4c8f-a628-975170b4b73d",
+      "timestamp": "2026-02-05T12:37:22.446706Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "b4971333-6f1d-46fa-84de-9418e0b46ad1",
+      "timestamp": "2026-02-05T12:42:52.400672Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "265e7c33-14c8-4e6e-8477-d802845d8091",
+      "timestamp": "2026-02-05T12:48:51.715223Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "1f541893-5ec1-409f-b9b6-29a936fe2924",
+      "timestamp": "2026-02-05T12:54:22.132104Z",
+      "type": "text"
+    },
+    {
+      "content": "☕ Letting madison take a break",
+      "from": "system",
+      "id": "a643e1ff-c21c-4f08-84d1-d2ef959bbb0d",
+      "timestamp": "2026-02-05T12:59:51.720560Z",
+      "type": "text"
+    },
+    {
+      "content": "Why was Madison repeatedly sent on break? Why is there a PR sitting open with a review? Take a snapshot to use this as a failing test case",
+      "from": "user",
+      "id": "dc072ed4-d5e5-45d7-8532-af7a598e6598",
+      "timestamp": "2026-02-05T13:03:17.008656Z",
+      "type": "text"
+    }
+  ],
+  "ci_passed_pr_coworkers": [
+    "madison"
+  ],
+  "coworker_snapshots": [
+    {
+      "isolated_tasks": false,
+      "name": "madison",
+      "started_at": "2026-02-05T13:00:21.669333Z"
+    }
+  ],
+  "coworker_start_times": {
+    "madison": "2026-02-05T13:00:21.669333Z"
+  },
+  "coworker_stop_times": {
+    "madison": "2026-02-05T12:59:51.739279Z"
+  },
+  "coworkers_with_merged_prs": [
+    "amsterdam",
+    "pleasant",
+    "york",
+    "vernon",
+    "columbus",
+    "lexington",
+    "park",
+    "broadway",
+    "riverside"
+  ],
+  "coworkers_with_open_prs": [
+    "madison"
+  ],
+  "coworkers_with_running_subagents": [],
+  "coworkers_with_unblocked_deps": [],
+  "daemon_logs": [
+    "2026-02-05T13:02:01.674327Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:02:01.674351Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:02:01.719858Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:02:04.930216Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:02:04.930289Z DEBUG New connection",
+    "2026-02-05T13:02:04.930321Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:05.433225Z DEBUG Client disconnected",
+    "2026-02-05T13:02:11.673405Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:02:11.673433Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:02:11.718391Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:02:14.968562Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:02:14.968671Z DEBUG New connection",
+    "2026-02-05T13:02:14.968716Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:15.468168Z DEBUG Client disconnected",
+    "2026-02-05T13:02:21.709440Z DEBUG Polling PRs for actionable issues...",
+    "2026-02-05T13:02:22.534037Z DEBUG Saved daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:02:22.534059Z DEBUG PR #649 has cached Claude review (skipping API call)",
+    "2026-02-05T13:02:22.534063Z DEBUG PR #649 already has a Claude review",
+    "2026-02-05T13:02:22.534070Z DEBUG PR #649 has cached Claude review (skipping API call)",
+    "2026-02-05T13:02:22.534125Z  INFO Nudged coworker madison successfully",
+    "2026-02-05T13:02:22.534133Z  INFO Nudged coworker madison successfully",
+    "2026-02-05T13:02:22.544645Z ERROR Failed to deliver coworker nudge to madison: RPC error: Failed to send keys to tmux window: midtown-midtown:madison (code: -32603)",
+    "2026-02-05T13:02:22.554355Z ERROR Failed to deliver coworker nudge to madison: RPC error: Failed to send keys to tmux window: midtown-midtown:madison (code: -32603)",
+    "2026-02-05T13:02:22.587791Z DEBUG Idle shutdown check: active=1, busy=[], open_prs=[madison], reviewers=[], unblocked_deps=[]",
+    "2026-02-05T13:02:22.602575Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:02:22.602602Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:02:22.644868Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:02:24.894827Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:02:24.894925Z DEBUG New connection",
+    "2026-02-05T13:02:24.894964Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:25.442696Z DEBUG Client disconnected",
+    "2026-02-05T13:02:27.549262Z DEBUG New connection",
+    "2026-02-05T13:02:27.549339Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:28.050994Z DEBUG Client disconnected",
+    "2026-02-05T13:02:31.672385Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:02:31.672417Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:02:31.715407Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:02:34.903803Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:02:34.903920Z DEBUG New connection",
+    "2026-02-05T13:02:34.903968Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:35.339691Z DEBUG Client disconnected",
+    "2026-02-05T13:02:41.711623Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:02:41.729097Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:02:41.729121Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:02:45.336828Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:02:45.336945Z DEBUG New connection",
+    "2026-02-05T13:02:45.336995Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:46.004644Z DEBUG Client disconnected",
+    "2026-02-05T13:02:51.712420Z DEBUG Polling PRs for actionable issues...",
+    "2026-02-05T13:02:52.365975Z DEBUG PR poll: data unchanged, skipping processing",
+    "2026-02-05T13:02:52.417954Z DEBUG Idle shutdown check: active=1, busy=[], open_prs=[madison], reviewers=[], unblocked_deps=[]",
+    "2026-02-05T13:02:52.457577Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:02:52.477666Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:02:52.477695Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:02:55.330427Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:02:55.330564Z DEBUG New connection",
+    "2026-02-05T13:02:55.330620Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:55.814453Z DEBUG Client disconnected",
+    "2026-02-05T13:02:58.540444Z DEBUG New connection",
+    "2026-02-05T13:02:58.540515Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:02:59.044275Z DEBUG Client disconnected",
+    "2026-02-05T13:03:01.673436Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:03:01.673460Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:03:01.720241Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:03:05.325104Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:03:05.325191Z DEBUG New connection",
+    "2026-02-05T13:03:05.325224Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:03:05.781018Z DEBUG Client disconnected",
+    "2026-02-05T13:03:11.673384Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:03:11.673416Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:03:11.717320Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:03:15.329724Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:03:15.329841Z DEBUG New connection",
+    "2026-02-05T13:03:15.329882Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:03:15.933845Z DEBUG Client disconnected",
+    "2026-02-05T13:03:17.008615Z  INFO User sent: Why was Madison repeatedly sent on break? Why is there a PR sitting open with a review? Take a snapshot to use this as a failing test case",
+    "2026-02-05T13:03:17.014198Z  INFO Channel post from user: Why was Madison repeatedly sent on break? Why is there a PR sitting open with a review? Take a snapshot to use this as a failing test case",
+    "2026-02-05T13:03:17.014255Z  INFO Nudging Lead about user message",
+    "2026-02-05T13:03:21.710458Z DEBUG Polling PRs for actionable issues...",
+    "2026-02-05T13:03:22.410694Z DEBUG Saved daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:03:22.410715Z DEBUG PR #649 has cached Claude review (skipping API call)",
+    "2026-02-05T13:03:22.410720Z DEBUG PR #649 already has a Claude review",
+    "2026-02-05T13:03:22.410724Z DEBUG PR #649 has cached Claude review (skipping API call)",
+    "2026-02-05T13:03:22.459712Z DEBUG Idle shutdown check: active=1, busy=[], open_prs=[madison], reviewers=[], unblocked_deps=[]",
+    "2026-02-05T13:03:22.471219Z DEBUG LEAD_HEALTH: checking lead window status session=midtown-midtown lead_check=Ok((1, [\"@806\"])) all_windows=[\"madison\", \"madison\", \"madison\", \"madison\"] window_count=4",
+    "2026-02-05T13:03:22.471242Z DEBUG LEAD_HEALTH: exactly one lead window, all good session=midtown-midtown lead_id=Some(\"@806\")",
+    "2026-02-05T13:03:22.510461Z DEBUG Task assignment state: active=1",
+    "2026-02-05T13:03:23.348935Z DEBUG conn 4 viewing window lead at 80 cols",
+    "2026-02-05T13:03:25.321281Z DEBUG Loaded daemon state: 0 PR reviewers, 9 reminders, CI stats: 15 checks tracked, 282 total samples",
+    "2026-02-05T13:03:25.321346Z DEBUG New connection",
+    "2026-02-05T13:03:25.321370Z DEBUG Received request: method=kanban.data",
+    "2026-02-05T13:03:25.389021Z DEBUG New connection",
+    "2026-02-05T13:03:25.389065Z DEBUG Received request: method=status",
+    "2026-02-05T13:03:25.807343Z DEBUG Client disconnected",
+    "2026-02-05T13:03:26.299895Z DEBUG Client disconnected",
+    "2026-02-05T13:03:26.741474Z DEBUG New connection",
+    "2026-02-05T13:03:26.741532Z DEBUG Received request: method=channel.read",
+    "2026-02-05T13:03:26.741658Z DEBUG Client disconnected",
+    "2026-02-05T13:03:28.883006Z DEBUG New connection",
+    "2026-02-05T13:03:28.883060Z DEBUG Received request: method=snapshot"
+  ],
+  "in_progress_tasks": [],
+  "is_at_coworker_limit": false,
+  "is_at_dev_limit": false,
+  "isolated_coworkers": [],
+  "now_utc": "2026-02-05T13:03:28.918230Z",
+  "pane_contents": {},
+  "pending_tasks_with_owners": [],
+  "pending_tasks_without_owners": [],
+  "prs_needing_review": 0,
+  "repo_name": "midtown",
+  "reviewed_prs": [],
+  "reviewer_pr_assignments": {},
+  "running_coworkers": [
+    {
+      "current_task": null,
+      "isolated_tasks": false,
+      "name": "madison",
+      "session_id": null,
+      "started_at": "2026-02-05T13:00:21.669333Z",
+      "status": "running",
+      "working_dir": "/Users/btucker/.midtown/coworkers/midtown/madison"
+    }
+  ],
+  "session_name": "midtown-midtown",
+  "usage_limit_nudge_scheduled": false,
+  "usage_limited_coworkers": []
+}
