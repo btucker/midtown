@@ -1,0 +1,65 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g clip-path="url(#clip)">
+    <!-- Rounded tile background -->
+    <rect width="512" height="512" rx="128" fill="url(#bgRad)"/>
+    <rect width="512" height="512" rx="128" fill="url(#bgLin)" opacity="0.55"/>
+    <rect width="512" height="512" rx="128" filter="url(#innerShadow)" opacity="0.55"/>
+
+    <!-- Stack (8px gaps between blocks, bottom block sits at edge) -->
+    <g filter="url(#stackShadow)">
+      <!-- GREEN -->
+      <rect x="160" y="384" width="96" height="122" fill="#B4BD68"/>
+      <rect x="256" y="384" width="96" height="122" fill="#B4BD68" opacity="0.92"/>
+
+      <!-- PURPLE -->
+      <rect x="160" y="276" width="96" height="100" fill="#B294BB"/>
+      <rect x="256" y="276" width="96" height="100" fill="#B294BB" opacity="0.92"/>
+
+      <!-- ORANGE -->
+      <rect x="180" y="186" width="76" height="82" fill="#F0C674"/>
+      <rect x="256" y="186" width="76" height="82" fill="#F0C674" opacity="0.92"/>
+
+      <!-- BLUE "T" -->
+      <!-- bar -->
+      <rect x="196" y="124" width="60" height="54" fill="#81A2BE"/>
+      <rect x="256" y="124" width="60" height="54" fill="#81A2BE" opacity="0.92"/>
+      <!-- stem -->
+      <rect x="241" y="44" width="15" height="80" fill="#81A2BE"/>
+      <rect x="256" y="44" width="15" height="80" fill="#81A2BE" opacity="0.92"/>
+    </g>
+  </g>
+
+  <defs>
+    <clipPath id="clip">
+      <rect width="512" height="512" rx="128" fill="white"/>
+    </clipPath>
+
+    <radialGradient id="bgRad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(256 170) rotate(90) scale(430)">
+      <stop offset="0" stop-color="#2B3340"/>
+      <stop offset="1" stop-color="#1B2028"/>
+    </radialGradient>
+
+    <linearGradient id="bgLin" x1="90" y1="60" x2="420" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3A4555"/>
+      <stop offset="0.55" stop-color="#242A38"/>
+      <stop offset="1" stop-color="#141822"/>
+    </linearGradient>
+
+    <filter id="innerShadow" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+      <feOffset dx="0" dy="10"/>
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feComposite in="blur" in2="SourceAlpha" operator="out" result="inner"/>
+      <feColorMatrix in="inner" type="matrix"
+        values="0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 0.55 0"/>
+      <feComposite in="SourceGraphic" operator="over"/>
+    </filter>
+
+    <filter id="stackShadow" x="-20%" y="-20%" width="140%" height="160%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+</svg>

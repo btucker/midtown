@@ -2,6 +2,7 @@
   import { messages, coworkers, leadTyping } from './store.js'
   import { sendMessage } from './api.js'
   import { tick } from 'svelte'
+  import MermaidDiagram from './MermaidDiagram.svelte'
 
   let inputText = $state('')
   let messagesContainer = $state(null)
@@ -85,6 +86,34 @@
     return senderChanged(msgs, index)
   }
 
+  // Split text into segments of plain text and mermaid code blocks.
+  // Returns array of {type: 'text'|'mermaid', content: string}.
+  function parseSegments(text) {
+    const segments = []
+    const regex = /```mermaid\s*\n([\s\S]*?)```/g
+    let lastIndex = 0
+    let match
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        segments.push({ type: 'text', content: text.slice(lastIndex, match.index) })
+      }
+      segments.push({ type: 'mermaid', content: match[1].trim() })
+      lastIndex = regex.lastIndex
+    }
+
+    if (lastIndex < text.length) {
+      segments.push({ type: 'text', content: text.slice(lastIndex) })
+    }
+
+    return segments
+  }
+
+  // Check if message text contains any mermaid code blocks
+  function hasMermaid(text) {
+    return /```mermaid\s*\n/.test(text)
+  }
+
   // Render markdown-like formatting (bold, links)
   function renderContent(text) {
     // Escape HTML first
@@ -162,13 +191,51 @@
           </div>
         {/if}
 
-        {#if isAction(msg)}
+        {#if isAction(msg) && !hasMermaid(msg.content)}
           <!-- Action message: HH:MM * content -->
           <div class="message-line">
             <span class="time-gutter">{formatTime(msg.timestamp)}</span>
             <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
             <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
           </div>
+        {:else if isAction(msg) && hasMermaid(msg.content)}
+          <!-- Action message with mermaid diagram(s) -->
+          {#each parseSegments(getActionContent(msg)) as segment, si}
+            {#if segment.type === 'mermaid'}
+              <div class="mermaid-block">
+                <MermaidDiagram code={segment.content} />
+              </div>
+            {:else}
+              <div class="message-line">
+                {#if si === 0}
+                  <span class="time-gutter">{formatTime(msg.timestamp)}</span>
+                  <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
+                {:else}
+                  <span class="time-gutter"></span>
+                  <span class="action-star" style="visibility: hidden">*</span>
+                {/if}
+                <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
+              </div>
+            {/if}
+          {/each}
+        {:else if hasMermaid(msg.content)}
+          <!-- Message with mermaid diagram(s) -->
+          {#each parseSegments(msg.content) as segment, si}
+            {#if segment.type === 'mermaid'}
+              <div class="mermaid-block">
+                <MermaidDiagram code={segment.content} />
+              </div>
+            {:else}
+              <div class="message-line">
+                {#if si === 0}
+                  <span class="time-gutter">{formatTime(msg.timestamp)}</span>
+                {:else}
+                  <span class="time-gutter"></span>
+                {/if}
+                <span class="message-text" class:dim-text={isDimSender(msg.from)}>{@html renderContent(segment.content)}</span>
+              </div>
+            {/if}
+          {/each}
         {:else}
           <!-- Regular message: HH:MM content -->
           <div class="message-line">
@@ -255,6 +322,11 @@
 
   .sender-task {
     color: #585858;
+  }
+
+  /* Mermaid diagram block (indented to match message gutter) */
+  .mermaid-block {
+    margin-left: 4em;
   }
 
   /* Message line with timestamp gutter */
