@@ -1118,6 +1118,48 @@ fn usage_limited_reviewers_detected_from_pane_contents() {
         !usage_limited.contains("amsterdam"),
         "amsterdam should not be usage-limited"
     );
+
+    // Verify the fix: running_coworker_names excludes usage-limited coworkers.
+    // This is the logic from pr.rs that feeds into cleanup_expired_preserving().
+    // Without this exclusion, expired reviewer assignments for usage-limited
+    // coworkers would be preserved indefinitely, blocking PR review reassignment.
+    let running_coworkers: Vec<String> = v["running_coworkers"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    c.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let running_minus_usage_limited: HashSet<String> = running_coworkers
+        .iter()
+        .filter(|name| !usage_limited.contains(&name.to_lowercase()))
+        .cloned()
+        .collect();
+
+    // york and vernon are running but usage-limited — they should be excluded
+    assert!(
+        !running_minus_usage_limited.contains("york"),
+        "york should be excluded from running set (usage-limited)"
+    );
+    assert!(
+        !running_minus_usage_limited.contains("vernon"),
+        "vernon should be excluded from running set (usage-limited)"
+    );
+    // park and amsterdam are running and NOT usage-limited — they stay
+    assert!(
+        running_minus_usage_limited.contains("park"),
+        "park should remain in running set (not usage-limited)"
+    );
+    assert!(
+        running_minus_usage_limited.contains("amsterdam"),
+        "amsterdam should remain in running set (not usage-limited)"
+    );
 }
 
 /// Captured snapshot shows: prs_needing_review=2, active_reviewers=[pleasant, york],
