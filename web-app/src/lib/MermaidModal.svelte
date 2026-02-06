@@ -54,10 +54,14 @@
     scale = newScale
   }
 
+  // Track whether mouse moved during a press to distinguish click from drag
+  let mouseMovedDuringPress = false
+
   function handleMouseDown(e) {
     if (e.button !== 0) return
     e.preventDefault()
     dragging = true
+    mouseMovedDuringPress = false
     dragStartX = e.clientX
     dragStartY = e.clientY
     dragStartTranslateX = translateX
@@ -67,12 +71,18 @@
   function handleMouseMove(e) {
     if (!dragging) return
     e.preventDefault()
+    mouseMovedDuringPress = true
     translateX = dragStartTranslateX + (e.clientX - dragStartX)
     translateY = dragStartTranslateY + (e.clientY - dragStartY)
   }
 
-  function handleMouseUp() {
+  function handleMouseUp(e) {
+    const wasDragging = dragging
     dragging = false
+    // Close on click (no drag) in the empty area outside the diagram
+    if (wasDragging && !mouseMovedDuringPress && e.target === containerEl) {
+      onclose()
+    }
   }
 
   function getTouchDist(t1, t2) {
@@ -92,6 +102,7 @@
       lastPinchMidY = (t0.clientY + t1.clientY) / 2
     } else if (e.touches.length === 1) {
       dragging = true
+      mouseMovedDuringPress = false
       dragStartX = e.touches[0].clientX
       dragStartY = e.touches[0].clientY
       dragStartTranslateX = translateX
@@ -126,6 +137,7 @@
       lastPinchMidY = midY
     } else if (e.touches.length === 1 && dragging) {
       e.preventDefault()
+      mouseMovedDuringPress = true
       translateX = dragStartTranslateX + (e.touches[0].clientX - dragStartX)
       translateY = dragStartTranslateY + (e.touches[0].clientY - dragStartY)
     }
@@ -138,12 +150,18 @@
     if (e.touches.length === 1) {
       // Re-anchor drag state when transitioning from pinch back to single touch
       dragging = true
+      mouseMovedDuringPress = false
       dragStartX = e.touches[0].clientX
       dragStartY = e.touches[0].clientY
       dragStartTranslateX = translateX
       dragStartTranslateY = translateY
     } else if (e.touches.length === 0) {
+      const wasDragging = dragging
       dragging = false
+      // Close on tap (no drag) in the empty area outside the diagram
+      if (wasDragging && !mouseMovedDuringPress && e.target === containerEl) {
+        onclose()
+      }
     }
   }
 
@@ -172,10 +190,10 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div class="modal-backdrop" onclick={handleBackdropClick}>
+  <button class="close-btn" onclick={onclose} title="Close (Esc)" aria-label="Close">×</button>
   <div class="modal-toolbar">
     <span class="zoom-level">{Math.round(scale * 100)}%</span>
     <button class="toolbar-btn" onclick={resetZoom} title="Reset zoom">Reset</button>
-    <button class="toolbar-btn close-btn" onclick={onclose} title="Close (Esc)">Close</button>
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
@@ -219,8 +237,8 @@
 
   .modal-toolbar {
     position: absolute;
-    top: 12px;
-    right: 12px;
+    top: 16px;
+    right: 56px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -251,9 +269,30 @@
     color: #5fafaf;
   }
 
+  .close-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 36px;
+    height: 36px;
+    border: 1px solid #4a4a4a;
+    border-radius: 50%;
+    background: #2a2a2a;
+    color: #d0d0d0;
+    font-size: 1.25rem;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 1001;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+
   .close-btn:hover {
     border-color: #ff5f5f;
     color: #ff5f5f;
+    background: #3a2020;
   }
 
   .zoom-container {
