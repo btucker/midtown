@@ -2704,11 +2704,15 @@ pub(super) async fn handle_webhook_ci_failure(
     }
 }
 
-/// Detect CI checks that are stuck (running > 4x typical duration) and collect re-run effects.
+/// Detect stale CI checks and collect re-run effects.
 ///
-/// This function examines `statusCheckRollup` for each PR to find checks that have been
-/// running for an unusually long time. When detected, it returns effects to re-run the
-/// workflow. Uses historical check durations to determine "typical" time.
+/// Examines `statusCheckRollup` for each PR to find stuck checks in two passes:
+/// - **Pass 1**: IN_PROGRESS checks running > 4x typical duration.
+/// - **Pass 2**: QUEUED/PENDING/WAITING checks that never started when all sibling checks
+///   have completed (2x typical duration with a 30-minute minimum floor).
+///
+/// Returns effects to re-run the affected workflows. Uses historical check durations
+/// from `CiCheckStats` to determine "typical" time.
 async fn collect_stale_check_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -2748,6 +2752,7 @@ fn collect_stale_check_effects_with_time(
             None => continue,
         };
 
+        // --- Pass 1: Detect IN_PROGRESS checks running too long (4x typical) ---
         for check in checks {
             let status = check.get("status").and_then(|s| s.as_str()).unwrap_or("");
 
@@ -2809,6 +2814,110 @@ fn collect_stale_check_effects_with_time(
                 running_duration,
                 typical_duration,
                 (typical_duration as f64 * crate::ci_stats::STALE_THRESHOLD_MULTIPLIER) as u64
+            );
+
+            effects.push(Effect::RerunWorkflow {
+                run_id,
+                check_name: check_name.to_string(),
+                pr_number,
+            });
+        }
+
+        // --- Pass 2: Detect PENDING/QUEUED checks that never started ---
+        // A check stuck in pending while all siblings completed indicates a
+        // GitHub Actions scheduling failure. Use the earliest sibling startedAt
+        // as a time reference (since pending checks lack their own startedAt).
+
+        // Classify checks into pending vs non-pending
+        let pending_checks: Vec<&serde_json::Value> = checks
+            .iter()
+            .filter(|c| {
+                let status = c.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                matches!(status, "QUEUED" | "PENDING" | "WAITING")
+            })
+            .collect();
+
+        if pending_checks.is_empty() {
+            continue;
+        }
+
+        // All non-pending checks must be completed
+        let non_pending: Vec<&serde_json::Value> = checks
+            .iter()
+            .filter(|c| {
+                let status = c.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                !matches!(status, "QUEUED" | "PENDING" | "WAITING")
+            })
+            .collect();
+
+        if non_pending.is_empty() {
+            continue; // No sibling checks to compare against
+        }
+
+        let all_siblings_completed = non_pending.iter().all(|c| {
+            let status = c.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            status == "COMPLETED"
+        });
+
+        if !all_siblings_completed {
+            continue; // Some siblings still running — not yet a clear signal
+        }
+
+        // Find earliest sibling startedAt as time reference
+        let earliest_sibling_start: Option<DateTime<chrono::Utc>> = non_pending
+            .iter()
+            .filter_map(|c| {
+                c.get("startedAt")
+                    .and_then(|s| s.as_str())
+                    .and_then(|s| s.parse::<DateTime<chrono::Utc>>().ok())
+            })
+            .min();
+
+        let earliest_start = match earliest_sibling_start {
+            Some(t) => t,
+            None => continue, // Can't determine timing without sibling timestamps
+        };
+
+        let time_since_start = now
+            .signed_duration_since(earliest_start)
+            .num_seconds()
+            .max(0) as u64;
+
+        for check in &pending_checks {
+            let check_name = match check.get("name").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            if !ci_stats.is_pending_stale(check_name, time_since_start) {
+                continue;
+            }
+
+            let details_url = match check.get("detailsUrl").and_then(|u| u.as_str()) {
+                Some(u) => u,
+                None => continue,
+            };
+
+            let run_id = match extract_run_id_from_url(details_url) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            if !ci_stats.can_rerun(run_id) {
+                debug!(
+                    "Skipping re-run of workflow {} for pending '{}' on PR #{} (on cooldown)",
+                    run_id, check_name, pr_number
+                );
+                continue;
+            }
+
+            let typical_duration = ci_stats.typical_duration_or_default(check_name);
+            let threshold =
+                (typical_duration as f64 * crate::ci_stats::PENDING_STALE_MULTIPLIER) as u64;
+            let effective_threshold = threshold.max(crate::ci_stats::MIN_PENDING_STALE_SECS);
+            info!(
+                "Detected stale PENDING check '{}' on PR #{}: pending {}s since siblings started (threshold: {}s)",
+                check_name, pr_number, time_since_start, effective_threshold
             );
 
             effects.push(Effect::RerunWorkflow {
@@ -3127,6 +3236,260 @@ mod tests {
         for effect in &effects {
             assert!(matches!(effect, Effect::RerunWorkflow { .. }));
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Stale PENDING check detection tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn collect_stale_check_effects_detects_pending_when_siblings_completed() {
+        use chrono::{DateTime, Utc};
+
+        // Set up CI stats with a typical duration of 120 seconds for "task_sharing"
+        let ci_stats = test_ci_stats_with_duration("task_sharing", 120);
+
+        // Siblings started 60 minutes ago — well beyond any threshold
+        let now: DateTime<Utc> = "2026-02-04T13:00:00Z".parse().unwrap();
+        let prs = vec![json!({
+            "number": 679,
+            "statusCheckRollup": [
+                {
+                    "name": "Test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-02-04T12:00:00Z",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                },
+                {
+                    "name": "Clippy",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-02-04T12:00:00Z",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/2"
+                },
+                {
+                    "name": "task_sharing",
+                    "status": "QUEUED",
+                    "startedAt": "",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/3"
+                }
+            ]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+
+        assert_eq!(
+            effects.len(),
+            1,
+            "should detect pending check when siblings completed"
+        );
+        match &effects[0] {
+            Effect::RerunWorkflow {
+                run_id,
+                check_name,
+                pr_number,
+            } => {
+                assert_eq!(*run_id, 222);
+                assert_eq!(check_name, "task_sharing");
+                assert_eq!(*pr_number, 679);
+            }
+            _ => panic!("expected RerunWorkflow effect"),
+        }
+    }
+
+    #[test]
+    fn collect_stale_check_effects_ignores_pending_when_siblings_still_running() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("task_sharing", 120);
+        // now is 5 minutes after start — Clippy IN_PROGRESS is within default threshold
+        let now: DateTime<Utc> = "2026-02-04T12:05:00Z".parse().unwrap();
+
+        // One sibling is still IN_PROGRESS — not all siblings completed
+        let prs = vec![json!({
+            "number": 679,
+            "statusCheckRollup": [
+                {
+                    "name": "Test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-02-04T12:00:00Z",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                },
+                {
+                    "name": "Clippy",
+                    "status": "IN_PROGRESS",
+                    "startedAt": "2026-02-04T12:00:00Z",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/2"
+                },
+                {
+                    "name": "task_sharing",
+                    "status": "QUEUED",
+                    "startedAt": "",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/3"
+                }
+            ]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should not detect pending check when siblings still running"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_ignores_pending_within_threshold() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("task_sharing", 120);
+
+        // Siblings started only 3 minutes ago — within 2x typical (240s) threshold
+        let now: DateTime<Utc> = "2026-02-04T12:03:00Z".parse().unwrap();
+        let prs = vec![json!({
+            "number": 679,
+            "statusCheckRollup": [
+                {
+                    "name": "Test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-02-04T12:00:00Z",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                },
+                {
+                    "name": "task_sharing",
+                    "status": "QUEUED",
+                    "startedAt": "",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/3"
+                }
+            ]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should not detect pending check within time threshold"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_pending_uses_min_threshold() {
+        use chrono::{DateTime, Utc};
+
+        // No stats for this check — should use MIN_PENDING_STALE_SECS (1800s = 30 min)
+        let ci_stats = crate::ci_stats::CiCheckStats::default();
+
+        // 20 minutes since siblings started — under 30 min minimum threshold
+        let now: DateTime<Utc> = "2026-02-04T12:20:00Z".parse().unwrap();
+        let prs = vec![json!({
+            "number": 679,
+            "statusCheckRollup": [
+                {
+                    "name": "Test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-02-04T12:00:00Z",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                },
+                {
+                    "name": "unknown_check",
+                    "status": "QUEUED",
+                    "startedAt": "",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/3"
+                }
+            ]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should not detect pending check before minimum threshold (30 min)"
+        );
+
+        // 35 minutes since siblings started — past 30 min minimum threshold
+        let now_later: DateTime<Utc> = "2026-02-04T12:35:00Z".parse().unwrap();
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now_later);
+        assert_eq!(
+            effects.len(),
+            1,
+            "should detect pending check after minimum threshold"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_pending_respects_rerun_cooldown() {
+        use chrono::{DateTime, Utc};
+
+        let mut ci_stats = test_ci_stats_with_duration("task_sharing", 120);
+        // Record a recent re-run for this workflow
+        ci_stats.record_rerun(222);
+
+        let now: DateTime<Utc> = "2026-02-04T13:00:00Z".parse().unwrap();
+        let prs = vec![json!({
+            "number": 679,
+            "statusCheckRollup": [
+                {
+                    "name": "Test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-02-04T12:00:00Z",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                },
+                {
+                    "name": "task_sharing",
+                    "status": "QUEUED",
+                    "startedAt": "",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/3"
+                }
+            ]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should skip pending check re-run when on cooldown"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_pending_skips_malformed_sibling_timestamps() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("task_sharing", 120);
+        let now: DateTime<Utc> = "2026-02-04T13:00:00Z".parse().unwrap();
+
+        // All siblings COMPLETED but with missing/malformed startedAt
+        let prs = vec![json!({
+            "number": 679,
+            "statusCheckRollup": [
+                {
+                    "name": "Test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "not-a-date",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                },
+                {
+                    "name": "Clippy",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/2"
+                },
+                {
+                    "name": "task_sharing",
+                    "status": "QUEUED",
+                    "startedAt": "",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/3"
+                }
+            ]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should skip pending check when sibling timestamps are unparseable"
+        );
     }
 
     // -------------------------------------------------------------------------
