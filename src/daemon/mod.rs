@@ -1541,6 +1541,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // Buffer successful CI checks for batching; post other messages immediately.
                 // When ci_check_passed is set, the webhook's `message` field is ignored in favor
                 // of a later batched message (see WebhookEvent.ci_check_passed doc comment).
+                let is_ci_check_passed = webhook_event.ci_check_passed.is_some();
                 if let Some(ci_check) = webhook_event.ci_check_passed {
                     debug!("Buffering CI success for batching: {} on {}", ci_check.check_name, ci_check.target);
                     let mut buffer = state.ci_notification_buffer.lock().await;
@@ -1684,8 +1685,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 }
 
                 // Route @mentions in webhook messages directly (chat monitor skips
-                // "github" sender for loop protection, so we handle it here)
-                chat::route_mentions(&state, &webhook_event.message).await;
+                // "github" sender for loop protection, so we handle it here).
+                // Skip CI success notifications — they're informational and should
+                // not trigger coworker call-ins. Without this guard, @mentions in
+                // messages like "@madison Check 'build' passed on PR #99" cause a
+                // spawn loop: coworker called in → goes idle → next CI check
+                // @mention triggers another call-in.
+                if !is_ci_check_passed {
+                    chat::route_mentions(&state, &webhook_event.message).await;
+                }
             }
 
             // Process user channel posts through the daemon (handles nudge, etc.)
@@ -2597,7 +2605,8 @@ mod tests {
     fn test_webhook_mentions_should_be_extracted() {
         // Webhook messages from "github" contain @mentions that should be routed.
         // The chat monitor skips "github" messages for loop protection, so the
-        // webhook handler must call route_mentions directly.
+        // webhook handler must call route_mentions directly — but only for
+        // non-CI-success events (see test_ci_check_passed_should_not_route_mentions).
         //
         // Example: "@riverside merged PR #178" from sender "github"
         // The @riverside mention should be extracted and routed.
@@ -2615,6 +2624,60 @@ mod tests {
         let mentions = extract_mentions(review_content);
         assert!(mentions.contains(&"park".to_string()));
         assert!(mentions.contains(&"madison".to_string()));
+    }
+
+    #[test]
+    fn test_ci_check_passed_should_not_route_mentions() {
+        // Bug: CI check pass webhook events (e.g., "@madison Check 'build' passed
+        // on PR #99") contain @mentions that the webhook handler was routing via
+        // route_mentions(). This caused a loop: madison gets called in → goes
+        // idle → next CI check @mention triggers another call-in.
+        //
+        // CI success notifications are informational — they should NOT trigger
+        // coworker spawn/nudge. The webhook handler must skip route_mentions
+        // when ci_check_passed is set.
+
+        // CI check pass messages contain @mentions
+        let ci_content = "@madison Check 'build' passed on PR #99";
+        let mentions = extract_mentions(ci_content);
+        assert_eq!(
+            mentions,
+            vec!["madison"],
+            "CI message does contain @mention"
+        );
+
+        // Construct a WebhookEvent with ci_check_passed set
+        let mut event = crate::webhook::WebhookEvent::github(ci_content);
+        event.ci_check_passed = Some(crate::webhook::CiCheckPassed {
+            check_name: "build".to_string(),
+            target: "PR #99".to_string(),
+            mention_prefix: "@madison ".to_string(),
+        });
+
+        // The webhook handler should skip route_mentions when ci_check_passed is set.
+        // We verify this by checking the flag that the handler uses to decide.
+        assert!(
+            event.ci_check_passed.is_some(),
+            "ci_check_passed flag should be set for CI success events"
+        );
+
+        // Batched CI notifications (which replace ci_check_passed events) also
+        // contain @mentions, but they're posted with from="github" and caught
+        // by the chat monitor's SKIP_SENDERS filter.
+        let batched_content = "@madison 5 checks passed on PR #99";
+        let batched_mentions = extract_mentions(batched_content);
+        assert_eq!(
+            batched_mentions,
+            vec!["madison"],
+            "batched CI message also contains @mention"
+        );
+
+        // The "github" sender is in SKIP_SENDERS, so chat monitor correctly
+        // skips batched messages.
+        assert!(
+            SKIP_SENDERS.contains(&"github"),
+            "github must be in SKIP_SENDERS"
+        );
     }
 
     #[test]

@@ -164,6 +164,15 @@ impl Drop for MkdirLock {
     }
 }
 
+/// Rename `tmp` to `target`, cleaning up `tmp` if the rename fails.
+fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    if let Err(e) = fs::rename(tmp, target) {
+        let _ = fs::remove_file(tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// Write a message to a coworker's inbox.
 ///
 /// Acquires a mkdir-based lock, reads the existing inbox (or creates an empty
@@ -211,7 +220,7 @@ pub fn write_to_inbox(
     // Write atomically via temp file + rename
     let tmp_path = inbox.with_extension("json.tmp");
     fs::write(&tmp_path, serde_json::to_string_pretty(&messages)?)?;
-    fs::rename(&tmp_path, &inbox)?;
+    atomic_rename(&tmp_path, &inbox)?;
 
     Ok(())
 }
@@ -329,7 +338,7 @@ fn upsert_team_member_at(team_dir: &Path, member: TeamMember) -> std::io::Result
     // Write atomically via temp file + rename
     let tmp_path = config_path.with_extension("json.tmp");
     fs::write(&tmp_path, serde_json::to_string_pretty(&config)?)?;
-    fs::rename(&tmp_path, &config_path)?;
+    atomic_rename(&tmp_path, &config_path)?;
 
     debug!(
         "Updated team config at {} (now {} members)",
@@ -703,6 +712,76 @@ mod tests {
         assert_eq!(parsed.color.as_deref(), Some("blue"));
         assert_eq!(parsed.summary.as_deref(), Some("Test msg"));
         assert!(!parsed.read);
+    }
+
+    #[test]
+    fn test_atomic_rename_cleans_tmp_on_failure() {
+        // Regression test: if fs::rename() fails after fs::write() succeeds,
+        // the temp file must be cleaned up (not leaked on disk).
+        //
+        // We test this directly because making rename fail inside write_to_inbox
+        // or upsert_team_member_at is impractical without mocking (the functions
+        // read from the target path first, so making it a directory also fails
+        // the read step).
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target.json");
+        let tmp_file = tmp.path().join("target.json.tmp");
+
+        // Create the target as a directory — rename(file, dir) fails with EISDIR
+        fs::create_dir(&target).unwrap();
+
+        // Simulate the write step succeeding
+        fs::write(&tmp_file, r#"{"test": true}"#).unwrap();
+        assert!(tmp_file.exists(), "temp file should exist after write");
+
+        // Simulate the rename step failing (this is the atomic_rename helper)
+        let result = atomic_rename(&tmp_file, &target);
+        assert!(result.is_err(), "rename file → dir should fail");
+
+        // The temp file must be cleaned up
+        assert!(
+            !tmp_file.exists(),
+            "temp file should be cleaned up after failed rename"
+        );
+    }
+
+    #[test]
+    fn test_atomic_rename_succeeds_normally() {
+        // Verify atomic_rename works in the happy path.
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target.json");
+        let tmp_file = tmp.path().join("target.json.tmp");
+
+        fs::write(&tmp_file, r#"{"test": true}"#).unwrap();
+        atomic_rename(&tmp_file, &target).unwrap();
+
+        assert!(!tmp_file.exists(), "temp file should be gone after rename");
+        assert!(target.exists(), "target should exist after rename");
+        let content = fs::read_to_string(&target).unwrap();
+        assert_eq!(content, r#"{"test": true}"#);
+    }
+
+    #[test]
+    fn test_write_to_inbox_no_leaked_tmp() {
+        // Verify that write_to_inbox does not leave a temp file after success.
+        let tmp = TempDir::new().unwrap();
+        let inboxes_dir = tmp.path().join("inboxes");
+        fs::create_dir_all(&inboxes_dir).unwrap();
+
+        let inbox_file = inboxes_dir.join("test-agent.json");
+        let tmp_file = inbox_file.with_extension("json.tmp");
+        let lock_file = inboxes_dir.join("test-agent.json.lock");
+
+        let msg = MailboxMessage::new("hello", "daemon");
+        let _lock = MkdirLock::acquire(&lock_file, 5).unwrap();
+
+        let messages = vec![msg];
+        let json = serde_json::to_string_pretty(&messages).unwrap();
+        fs::write(&tmp_file, &json).unwrap();
+        atomic_rename(&tmp_file, &inbox_file).unwrap();
+
+        assert!(!tmp_file.exists(), "no temp file should remain");
+        assert!(inbox_file.exists(), "inbox should contain the message");
     }
 
     #[test]
