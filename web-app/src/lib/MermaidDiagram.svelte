@@ -8,6 +8,27 @@
 
   let counter = 0
 
+  // Strip dangerous elements and attributes from SVG output
+  function sanitizeSvg(svg) {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svg, 'image/svg+xml')
+    // Remove script tags and foreignObject
+    for (const tag of ['script', 'foreignObject']) {
+      for (const el of doc.querySelectorAll(tag)) {
+        el.remove()
+      }
+    }
+    // Remove event handler attributes from all elements
+    for (const el of doc.querySelectorAll('*')) {
+      for (const attr of [...el.attributes]) {
+        if (attr.name.startsWith('on')) {
+          el.removeAttribute(attr.name)
+        }
+      }
+    }
+    return new XMLSerializer().serializeToString(doc.documentElement)
+  }
+
   $effect(() => {
     const currentCode = code
     loading = true
@@ -18,7 +39,7 @@
       try {
         const id = `mermaid-${counter++}`
         const result = selkie.render(id, currentCode)
-        svgHtml = result.svg
+        svgHtml = sanitizeSvg(result.svg)
         error = ''
       } catch (e) {
         error = e.message || String(e)
