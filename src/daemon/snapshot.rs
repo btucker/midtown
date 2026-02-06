@@ -609,7 +609,7 @@ mod tests {
         use crate::coworker::{Coworker, CoworkerStatus};
 
         // Simulate a mix of coworker statuses
-        let all_coworkers = vec![
+        let all_coworkers = [
             Coworker {
                 name: "lexington".to_string(),
                 status: CoworkerStatus::Running,
