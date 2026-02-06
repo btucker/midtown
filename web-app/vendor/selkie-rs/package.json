@@ -1,0 +1,28 @@
+{
+  "name": "selkie-rs",
+  "type": "module",
+  "description": "A Rust implementation of the mermaid diagramming parser and renderer",
+  "version": "0.2.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/btucker/selkie"
+  },
+  "files": [
+    "selkie_bg.wasm",
+    "selkie.js",
+    "selkie.d.ts"
+  ],
+  "main": "selkie.js",
+  "types": "selkie.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "keywords": [
+    "diagram",
+    "chart",
+    "flowchart",
+    "sequence",
+    "mermaid"
+  ]
+}

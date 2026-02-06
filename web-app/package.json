@@ -18,6 +18,7 @@
     "vite-plugin-pwa": "^1.2.0"
   },
   "dependencies": {
+    "selkie-rs": "file:./vendor/selkie-rs",
     "snarkdown": "^2.0.0"
   }
 }
