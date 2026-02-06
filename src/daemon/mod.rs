@@ -814,7 +814,7 @@ fn check_nudge_text_match(pending_msg: &str, queued_text: &str) -> bool {
 
     // Use first N chars for matching (handles truncation)
     let check_text = if pending_msg.len() > MIN_MATCH_LEN {
-        &pending_msg[..MIN_MATCH_LEN]
+        &pending_msg[..pending_msg.floor_char_boundary(MIN_MATCH_LEN)]
     } else {
         pending_msg
     };
@@ -3081,6 +3081,23 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         let daemon_nudge = "github said: @columbus CI passed on PR #529";
         let user_input = "I want to add a new feature";
         assert!(!check_nudge_text_match(daemon_nudge, user_input));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_multibyte_no_panic() {
+        // 3-byte CJK chars: boundaries at 0,3,6,...,18,21 — byte 20 is mid-char
+        let pending = "あいうえおかきくけこさしすせそたちつてと extra text here";
+        let queued = "あいうえおかきくけこさしすせそたちつてと extra text here and more";
+        // Must not panic, and should match since queued contains the prefix
+        assert!(check_nudge_text_match(pending, queued));
+    }
+
+    #[test]
+    fn test_check_nudge_text_match_multibyte_no_match() {
+        // 3-byte CJK chars that exceed MIN_MATCH_LEN of 20 bytes
+        let pending = "日本語のテストメッセージです長い文章";
+        let queued = "completely different text";
+        assert!(!check_nudge_text_match(pending, queued));
     }
 
     // -------------------------------------------------------------------------

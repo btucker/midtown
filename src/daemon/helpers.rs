@@ -14,21 +14,25 @@ pub use super::trackers::PrIssueType;
 // ---------------------------------------------------------------------------
 
 /// Truncate a string to max length with ellipsis.
+/// Uses `floor_char_boundary` to avoid panicking on multi-byte UTF-8 characters.
 pub fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+        let end = s.floor_char_boundary(max_len.saturating_sub(3));
+        format!("{}...", &s[..end])
     }
 }
 
 /// Truncate a message for summary display.
+/// Uses `floor_char_boundary` to avoid panicking on multi-byte UTF-8 characters.
 pub fn truncate_message(msg: &str, max_len: usize) -> String {
     let first_line = msg.lines().next().unwrap_or(msg);
     if first_line.len() <= max_len {
         first_line.to_string()
     } else {
-        format!("{}...", &first_line[..max_len])
+        let end = first_line.floor_char_boundary(max_len.saturating_sub(3));
+        format!("{}...", &first_line[..end])
     }
 }
 
@@ -416,6 +420,65 @@ pub fn format_task_prompt(task_id: &str, context_message: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // -------------------------------------------------------------------------
+    // truncate_str / truncate_message — UTF-8 safety
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn truncate_str_ascii_within_limit() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_ascii_over_limit() {
+        let long = "a".repeat(120);
+        let result = truncate_str(&long, 100);
+        assert!(result.len() <= 100);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_str_multibyte_boundary() {
+        // 25 x 4-byte emoji = 100 bytes. Slicing at byte 97 lands mid-char.
+        let emoji_str = "😀".repeat(25);
+        assert_eq!(emoji_str.len(), 100);
+        // Must not panic
+        let result = truncate_str(&emoji_str, 50);
+        assert!(result.ends_with("..."));
+        // Result must be valid UTF-8 (implicit — it's a String)
+        assert!(result.len() <= 50);
+    }
+
+    #[test]
+    fn truncate_str_multibyte_exactly_over() {
+        // 26 x 4-byte emoji = 104 bytes, triggers truncation at max_len=100
+        let emoji_str = "😀".repeat(26);
+        let result = truncate_str(&emoji_str, 100);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 100);
+    }
+
+    #[test]
+    fn truncate_message_multibyte() {
+        // Multi-byte characters in a single line
+        let msg = "日本語のテスト".repeat(20); // 7 chars * 3 bytes * 20 = 420 bytes
+        let result = truncate_message(&msg, 50);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 50);
+    }
+
+    #[test]
+    fn truncate_message_ascii_respects_max_len() {
+        let msg = "a".repeat(120);
+        let result = truncate_message(&msg, 60);
+        assert!(result.ends_with("..."));
+        assert!(
+            result.len() <= 60,
+            "truncate_message exceeded max_len: {} > 60",
+            result.len()
+        );
+    }
 
     // =========================================================================
     // Graceful degradation tests: polling path detects issues without webhooks

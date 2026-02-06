@@ -1528,11 +1528,7 @@ pub(super) async fn handle_channel_post(
             }
 
             // Truncate message for nudge (max 100 chars)
-            let summary = if content.len() > 100 {
-                format!("{}...", &content[..97])
-            } else {
-                content.clone()
-            };
+            let summary = truncate_str(&content, 100);
 
             let nudge_msg = format!("{} mentioned @lead: {}", from, summary);
             info!("Nudging Lead about @lead mention from {}", from);
@@ -1567,11 +1563,7 @@ pub(super) async fn handle_channel_post(
             }
         });
         let display = state.user_display_name.as_deref().unwrap_or("user");
-        let summary = if content.len() > 100 {
-            format!("{}...", &content[..97])
-        } else {
-            content.clone()
-        };
+        let summary = truncate_str(&content, 100);
         state.send_push_notification(&format!("@{} from {}", display, from), &summary, "mention");
     }
 
