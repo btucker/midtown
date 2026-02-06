@@ -472,6 +472,7 @@ fn handle_coworker_spawn(
 
     // Pass prompt to spawn() - it handles waiting and nudging internally
     // Coworkers use isolated task lists (don't share the lead's task list)
+    let team = crate::mailbox::team_name_for_repo(&state.repo_name);
     let config = crate::tmux::ClaudeLaunchConfig {
         name: String::new(), // spawn() picks a name
         session_mode: if resume {
@@ -485,6 +486,7 @@ fn handle_coworker_spawn(
         additional_dirs: vec![],
         restrict_setting_sources: true,
         pr_number: None,
+        team_name: Some(team),
     };
     match state.coworkers.spawn(&config) {
         Ok(name) => {

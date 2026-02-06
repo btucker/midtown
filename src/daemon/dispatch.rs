@@ -783,6 +783,13 @@ pub(super) fn spawn_for_pending_tasks(
                     tid,
                     &format!("You have pending task #{}: {}. Get started!", tid, subj),
                 );
+                // Deliver via mailbox (non-urgent task assignment to idle coworker).
+                // Also send via tmux as fallback in case mailbox isn't polled.
+                effects.push(Effect::DeliverMailboxMessage {
+                    name: o.clone(),
+                    message: nudge_msg.clone(),
+                    summary: Some(format!("Task #{} assignment", tid)),
+                });
                 effects.push(Effect::NudgeCoworkerWithCallbacks {
                     name: o.clone(),
                     message: nudge_msg,

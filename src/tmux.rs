@@ -1542,6 +1542,10 @@ pub struct ClaudeLaunchConfig {
     /// PR number for reviewer coworkers. Used to set the initial tmux window
     /// name to "review#PR" so reviewers are visually distinct from developers.
     pub pr_number: Option<u64>,
+    /// Agent teams team name. When set, adds `--agent-id`, `--agent-name`,
+    /// and `--team-name` CLI flags to enable the Claude Code agent teams
+    /// mailbox system for message delivery.
+    pub team_name: Option<String>,
 }
 
 /// Spawn Claude Code in a tmux window within the project session.
@@ -1572,10 +1576,12 @@ impl ClaudeLaunchConfig {
     /// used for task list sharing.
     pub fn coworker(
         name: impl Into<String>,
-        _repo_name: impl Into<String>,
+        repo_name: impl Into<String>,
         session_mode: SessionMode,
         initial_prompt: Option<String>,
     ) -> Self {
+        let repo = repo_name.into();
+        let team = crate::mailbox::team_name_for_repo(&repo);
         ClaudeLaunchConfig {
             name: name.into(),
             session_mode,
@@ -1585,6 +1591,7 @@ impl ClaudeLaunchConfig {
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: Some(team),
         }
     }
 
@@ -1603,6 +1610,7 @@ impl ClaudeLaunchConfig {
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: Some(pr_number),
+            team_name: None, // Reviewers don't need mailbox (short-lived)
         }
     }
 
@@ -1619,12 +1627,14 @@ impl ClaudeLaunchConfig {
     /// 4. Push changes to the branch
     pub fn pr_handoff(
         name: impl Into<String>,
-        _repo_name: impl Into<String>,
+        repo_name: impl Into<String>,
         session_id: String,
         pr_number: u64,
         branch: &str,
         original_author: &str,
     ) -> Self {
+        let repo = repo_name.into();
+        let team = crate::mailbox::team_name_for_repo(&repo);
         let initial_prompt = format!(
             "You're taking over PR #{} from {}.\n\n\
             First, checkout the branch:\n\
@@ -1648,6 +1658,7 @@ impl ClaudeLaunchConfig {
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: Some(team),
         }
     }
 
@@ -1717,6 +1728,18 @@ impl ClaudeLaunchConfig {
             args.push("--setting-sources".to_string());
             args.push("project,local".to_string());
         }
+
+        // Agent teams flags (enables mailbox-based message delivery)
+        if let Some(ref team) = self.team_name {
+            let agent_id = crate::mailbox::agent_id(&self.name, team);
+            args.push("--agent-id".to_string());
+            args.push(agent_id);
+            args.push("--agent-name".to_string());
+            args.push(self.name.clone());
+            args.push("--team-name".to_string());
+            args.push(team.clone());
+        }
+
         args.push("--settings".to_string());
         args.push(settings_file.display().to_string());
 
@@ -1767,6 +1790,25 @@ pub fn spawn_claude(
         CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(&config.name),
         CoworkerRole::Coworker => crate::agents::coworker_system_prompt(&config.name),
     };
+
+    // Ensure agent-teams infrastructure exists before launch.
+    // Upserts this coworker into the team config and creates the inboxes
+    // directory so Claude Code can discover its team membership and
+    // receive mailbox messages.
+    if let Some(ref team_name) = config.team_name {
+        let member = crate::mailbox::TeamMember {
+            name: config.name.clone(),
+            agent_id: crate::mailbox::agent_id(&config.name, team_name),
+            agent_type: match config.role {
+                CoworkerRole::Reviewer => "reviewer".to_string(),
+                CoworkerRole::Coworker => "coworker".to_string(),
+            },
+        };
+        if let Err(e) = crate::mailbox::upsert_team_member(team_name, member) {
+            tracing::warn!("Failed to set up team config for {}: {}", config.name, e);
+            // Non-fatal: coworker can still run without mailbox
+        }
+    }
 
     // Write system prompt and settings to files (avoids quoting issues)
     let prompt_file = write_coworker_prompt_file(&config.name, &system_prompt)?;
@@ -2024,6 +2066,7 @@ pub fn spawn_lead(
         additional_dirs: additional_dirs.to_vec(),
         restrict_setting_sources: false,
         pr_number: None,
+        team_name: None, // Lead is human-facing, not an agent-teams member
     };
 
     // Allow tests/CI to override the lead command (claude isn't available in CI)
@@ -2739,6 +2782,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: false,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2770,6 +2814,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2805,6 +2850,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2836,6 +2882,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2863,6 +2910,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2892,6 +2940,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2915,6 +2964,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2944,6 +2994,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2979,6 +3030,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3004,6 +3056,7 @@ Claude is now processing the request
             additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3031,6 +3084,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3054,6 +3108,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3079,6 +3134,7 @@ Claude is now processing the request
             additional_dirs: vec![],
             restrict_setting_sources: true,
             pr_number: None,
+            team_name: None,
         };
         let retry = config.as_fresh_retry();
         assert_eq!(retry.session_mode, SessionMode::Fresh);
@@ -3115,6 +3171,100 @@ Claude is now processing the request
             "original-author",
         );
         assert_eq!(handoff.pr_number, None);
+    }
+
+    #[test]
+    fn test_coworker_config_includes_agent_teams_flags() {
+        let config = ClaudeLaunchConfig::coworker(
+            "lexington".to_string(),
+            "myrepo".to_string(),
+            SessionMode::Fresh,
+            None,
+        );
+        assert_eq!(
+            config.team_name,
+            Some("midtown-myrepo".to_string()),
+            "coworker must have team name set"
+        );
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            result
+                .shell_command
+                .contains("--agent-id lexington@midtown-myrepo"),
+            "must include --agent-id flag"
+        );
+        assert!(
+            result.shell_command.contains("--agent-name lexington"),
+            "must include --agent-name flag"
+        );
+        assert!(
+            result.shell_command.contains("--team-name midtown-myrepo"),
+            "must include --team-name flag"
+        );
+    }
+
+    #[test]
+    fn test_lead_config_omits_agent_teams_flags() {
+        let config = ClaudeLaunchConfig {
+            name: "lead".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Shared {
+                repo_name: "myrepo".to_string(),
+            },
+            role: CoworkerRole::default(),
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: false,
+            pr_number: None,
+            team_name: None,
+        };
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+        );
+        assert!(
+            !result.shell_command.contains("--agent-id"),
+            "lead must not have --agent-id flag"
+        );
+        assert!(
+            !result.shell_command.contains("--agent-name"),
+            "lead must not have --agent-name flag"
+        );
+        assert!(
+            !result.shell_command.contains("--team-name"),
+            "lead must not have --team-name flag"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_config_omits_agent_teams_flags() {
+        let config = ClaudeLaunchConfig::reviewer("york".to_string(), 42);
+        assert_eq!(
+            config.team_name, None,
+            "reviewer must not have team name (short-lived)"
+        );
+    }
+
+    #[test]
+    fn test_pr_handoff_config_includes_agent_teams_flags() {
+        let config = ClaudeLaunchConfig::pr_handoff(
+            "york".to_string(),
+            "myrepo",
+            "session-123".to_string(),
+            42,
+            "feature/branch",
+            "original-author",
+        );
+        assert_eq!(
+            config.team_name,
+            Some("midtown-myrepo".to_string()),
+            "pr_handoff must have team name set"
+        );
     }
 
     /// Regression test: orphan cleanup must not kill tmux processes.

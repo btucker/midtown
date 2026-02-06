@@ -107,6 +107,9 @@ pub mod daemon_messages;
 // Headless Claude Code executor (JSON streaming, no tmux)
 pub mod headless;
 
+// Agent teams mailbox writer (filesystem-based message delivery)
+pub mod mailbox;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
