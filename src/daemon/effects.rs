@@ -186,11 +186,107 @@ pub enum Effect {
     CleanStaleBranches,
 }
 
+/// Deduplicate nudge effects targeting the same coworker within a single batch.
+///
+/// When multiple PR issue types (CI green, review complete, merge conflict)
+/// each generate a nudge for the same coworker in one tick, only the first
+/// nudge is kept. For `NudgeCoworkerWithCallbacks`, subsequent nudges' `on_success`
+/// callbacks are merged into the first nudge's callbacks so state recording
+/// (e.g., `RecordPrNudge`, `RecordTaskAssignment`) still happens.
+///
+/// Plain `NudgeCoworker` effects for already-nudged coworkers are dropped entirely.
+fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
+    use std::collections::HashSet;
+
+    let mut nudged_coworkers: HashSet<String> = HashSet::new();
+    let mut result: Vec<Effect> = Vec::with_capacity(effects.len());
+
+    for effect in effects {
+        match effect {
+            Effect::NudgeCoworker { ref name, .. } => {
+                let key = name.to_lowercase();
+                if nudged_coworkers.contains(&key) {
+                    debug!(
+                        "Deduplicating NudgeCoworker for {} (already nudged in this batch)",
+                        name
+                    );
+                    continue;
+                }
+                nudged_coworkers.insert(key);
+                result.push(effect);
+            }
+            Effect::NudgeCoworkerWithCallbacks {
+                ref name,
+                message,
+                on_success,
+            } => {
+                let key = name.to_lowercase();
+                if nudged_coworkers.contains(&key) {
+                    debug!(
+                        "Deduplicating NudgeCoworkerWithCallbacks for {} — \
+                         executing on_success callbacks without re-nudging",
+                        name
+                    );
+                    // Merge on_success into the existing nudge's callbacks.
+                    // Find the first NudgeCoworkerWithCallbacks for this coworker
+                    // and append the callbacks there.
+                    let remaining = merge_callbacks_into_existing(&mut result, &key, on_success);
+                    if let Some(unmerged) = remaining {
+                        // First nudge was a plain NudgeCoworker — promote the
+                        // callbacks to standalone effects. These include state-tracking
+                        // effects like RecordPrNudge that must fire to prevent the
+                        // same nudge from triggering again on the next tick.
+                        result.extend(unmerged);
+                    }
+                    continue;
+                }
+                nudged_coworkers.insert(key);
+                result.push(Effect::NudgeCoworkerWithCallbacks {
+                    name: name.clone(),
+                    message,
+                    on_success,
+                });
+            }
+            _ => {
+                result.push(effect);
+            }
+        }
+    }
+
+    result
+}
+
+/// Merge `on_success` callbacks into an existing `NudgeCoworkerWithCallbacks` effect
+/// for the same coworker. Returns `None` if merged successfully, or `Some(callbacks)`
+/// if no matching effect was found (e.g., first nudge was a plain `NudgeCoworker`).
+fn merge_callbacks_into_existing(
+    effects: &mut [Effect],
+    target_key: &str,
+    additional_callbacks: Vec<Effect>,
+) -> Option<Vec<Effect>> {
+    for effect in effects.iter_mut() {
+        if let Effect::NudgeCoworkerWithCallbacks {
+            name, on_success, ..
+        } = effect
+            && name.to_lowercase() == target_key
+        {
+            on_success.extend(additional_callbacks);
+            return None;
+        }
+    }
+    Some(additional_callbacks)
+}
+
 /// Execute a list of effects against the daemon state.
 ///
 /// This is the imperative shell — the only place where side effects happen.
 /// Each effect variant maps to a call on `DaemonState` or its subsystems.
+///
+/// Before execution, nudge effects targeting the same coworker are deduplicated
+/// to prevent rapid-fire nudges within a single tick (e.g., when CI green,
+/// review complete, and merge conflict each independently nudge the same coworker).
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
+    let effects = dedup_nudge_effects(effects);
     for effect in effects {
         match effect {
             Effect::SpawnCoworker(config) => {
@@ -852,5 +948,286 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
         if let Err(e) = state.send_and_broadcast(&msg) {
             warn!("Failed to post auto-merge failure message: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::trackers::PrIssueType;
+
+    /// Helper to count effects of a specific type.
+    fn count_nudge_coworker(effects: &[Effect], name: &str) -> usize {
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworker { name: n, .. } if n == name))
+            .count()
+    }
+
+    fn count_nudge_with_callbacks(effects: &[Effect], name: &str) -> usize {
+        effects
+            .iter()
+            .filter(
+                |e| matches!(e, Effect::NudgeCoworkerWithCallbacks { name: n, .. } if n == name),
+            )
+            .count()
+    }
+
+    #[test]
+    fn test_dedup_removes_duplicate_nudge_coworker() {
+        let effects = vec![
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "first nudge".into(),
+            },
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "second nudge".into(),
+            },
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "third nudge".into(),
+            },
+        ];
+
+        let deduped = dedup_nudge_effects(effects);
+        assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+        // First message wins
+        if let Effect::NudgeCoworker { message, .. } = &deduped[0] {
+            assert_eq!(message, "first nudge");
+        } else {
+            panic!("Expected NudgeCoworker");
+        }
+    }
+
+    #[test]
+    fn test_dedup_removes_duplicate_nudge_with_callbacks() {
+        let effects = vec![
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "CI green".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 42,
+                    issue_type: PrIssueType::Approved,
+                }],
+            },
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "review complete".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 42,
+                    issue_type: PrIssueType::ReviewComplete,
+                }],
+            },
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "merge conflict".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 42,
+                    issue_type: PrIssueType::MergeConflict,
+                }],
+            },
+        ];
+
+        let deduped = dedup_nudge_effects(effects);
+        assert_eq!(
+            count_nudge_with_callbacks(&deduped, "riverside"),
+            1,
+            "Should collapse 3 nudges into 1"
+        );
+        // First message wins, but all callbacks are merged
+        if let Effect::NudgeCoworkerWithCallbacks {
+            message,
+            on_success,
+            ..
+        } = &deduped[0]
+        {
+            assert_eq!(message, "CI green");
+            assert_eq!(
+                on_success.len(),
+                3,
+                "All three on_success callbacks should be merged"
+            );
+        } else {
+            panic!("Expected NudgeCoworkerWithCallbacks");
+        }
+    }
+
+    #[test]
+    fn test_dedup_preserves_different_coworkers() {
+        let effects = vec![
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "nudge riverside".into(),
+            },
+            Effect::NudgeCoworker {
+                name: "broadway".into(),
+                message: "nudge broadway".into(),
+            },
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "duplicate riverside".into(),
+            },
+        ];
+
+        let deduped = dedup_nudge_effects(effects);
+        assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+        assert_eq!(count_nudge_coworker(&deduped, "broadway"), 1);
+        assert_eq!(deduped.len(), 2);
+    }
+
+    #[test]
+    fn test_dedup_mixed_nudge_types_promotes_callbacks() {
+        // Plain NudgeCoworker first, then NudgeCoworkerWithCallbacks — the nudge
+        // is deduped but on_success callbacks are promoted to standalone effects
+        // so state tracking (RecordPrNudge) still fires.
+        let effects = vec![
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "plain nudge".into(),
+            },
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "callback nudge".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 42,
+                    issue_type: PrIssueType::Approved,
+                }],
+            },
+        ];
+
+        let deduped = dedup_nudge_effects(effects);
+        // 1 NudgeCoworker + 1 promoted RecordPrNudge callback
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+        // Verify the RecordPrNudge callback was promoted as a standalone effect
+        assert!(
+            deduped
+                .iter()
+                .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 42, .. })),
+            "RecordPrNudge callback should be promoted to standalone effect"
+        );
+    }
+
+    #[test]
+    fn test_dedup_preserves_non_nudge_effects() {
+        let effects = vec![
+            Effect::PostToChannel {
+                sender: "midtown".into(),
+                message: "hello".into(),
+            },
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "nudge 1".into(),
+            },
+            Effect::RecordCooldown {
+                category: "test".into(),
+                key: "key".into(),
+            },
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "nudge 2".into(),
+            },
+            Effect::PostToChannel {
+                sender: "midtown".into(),
+                message: "world".into(),
+            },
+        ];
+
+        let deduped = dedup_nudge_effects(effects);
+        // 1 nudge + 2 PostToChannel + 1 RecordCooldown = 4
+        assert_eq!(deduped.len(), 4);
+        assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+    }
+
+    #[test]
+    fn test_dedup_case_insensitive() {
+        let effects = vec![
+            Effect::NudgeCoworker {
+                name: "Riverside".into(),
+                message: "nudge 1".into(),
+            },
+            Effect::NudgeCoworker {
+                name: "riverside".into(),
+                message: "nudge 2".into(),
+            },
+        ];
+
+        let deduped = dedup_nudge_effects(effects);
+        assert_eq!(deduped.len(), 1);
+    }
+
+    #[test]
+    fn test_dedup_quadruple_nudge_scenario() {
+        // Reproduces the exact bug: 4 nudges to same coworker in 1 second
+        // from different PR issue sources + a duplicate CreateReviewFeedbackTask.
+        let effects = vec![
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "PR #181 - CI checks passed".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 181,
+                    issue_type: PrIssueType::Approved,
+                }],
+            },
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "PR #181 - Review complete".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 181,
+                    issue_type: PrIssueType::ReviewComplete,
+                }],
+            },
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "PR #181 - Merge conflict".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 181,
+                    issue_type: PrIssueType::MergeConflict,
+                }],
+            },
+            Effect::NudgeCoworkerWithCallbacks {
+                name: "riverside".into(),
+                message: "PR #181 - Green with feedback".into(),
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number: 181,
+                    issue_type: PrIssueType::GreenWithFeedback,
+                }],
+            },
+            Effect::CreateReviewFeedbackTask {
+                pr_number: 181,
+                pr_title: "feat: Add auth endpoint".into(),
+                owner: "riverside".into(),
+            },
+        ];
+
+        let deduped = dedup_nudge_effects(effects);
+
+        // Should have: 1 nudge (with merged callbacks) + 1 CreateReviewFeedbackTask
+        assert_eq!(
+            count_nudge_with_callbacks(&deduped, "riverside"),
+            1,
+            "4 nudges should collapse into 1"
+        );
+
+        // The merged nudge should have all 4 on_success callbacks
+        if let Effect::NudgeCoworkerWithCallbacks {
+            on_success,
+            message,
+            ..
+        } = &deduped[0]
+        {
+            assert_eq!(message, "PR #181 - CI checks passed", "First message wins");
+            assert_eq!(on_success.len(), 4, "All 4 callbacks should be merged");
+        } else {
+            panic!("Expected NudgeCoworkerWithCallbacks");
+        }
+
+        // CreateReviewFeedbackTask should still be present
+        let task_effects: Vec<_> = deduped
+            .iter()
+            .filter(|e| matches!(e, Effect::CreateReviewFeedbackTask { .. }))
+            .collect();
+        assert_eq!(task_effects.len(), 1);
     }
 }
