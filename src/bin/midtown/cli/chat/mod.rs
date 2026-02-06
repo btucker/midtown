@@ -317,7 +317,11 @@ enum EventResult {
     CloseDiagram,
 }
 
-/// Handle a terminal event, returns the result
+/// Handle a terminal event, returns the result.
+///
+/// Behavior depends on the current `ViewMode`:
+/// - `Chat`: normal keybindings (scroll, quit, number keys for diagrams)
+/// - `DiagramViewer`: any keypress returns to chat
 fn handle_event(app: &mut App, event: Event, view_mode: &ViewMode) -> EventResult {
     match view_mode {
         ViewMode::DiagramViewer(_) => {
@@ -384,5 +388,130 @@ fn handle_event(app: &mut App, event: Event, view_mode: &ViewMode) -> EventResul
             },
             _ => EventResult::Continue,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app::tests::test_app;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    /// Helper to create a key press event for a given KeyCode
+    fn key_press(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn test_number_key_opens_diagram_when_source_exists() {
+        let mut app = test_app();
+        app.diagram_sources = vec!["graph TD\n  A-->B".into()];
+
+        let result = handle_event(&mut app, key_press(KeyCode::Char('1')), &ViewMode::Chat);
+        assert!(
+            matches!(result, EventResult::OpenDiagram(0)),
+            "Pressing '1' should open diagram at index 0"
+        );
+    }
+
+    #[test]
+    fn test_number_key_ignored_when_no_diagram_at_index() {
+        let mut app = test_app();
+        app.diagram_sources = vec!["graph TD\n  A-->B".into()]; // Only 1 diagram
+
+        let result = handle_event(&mut app, key_press(KeyCode::Char('2')), &ViewMode::Chat);
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Pressing '2' with only 1 diagram should be Continue"
+        );
+    }
+
+    #[test]
+    fn test_number_keys_beyond_9_cannot_open_diagrams() {
+        let mut app = test_app();
+        // Populate 12 diagram sources
+        app.diagram_sources = (0..12).map(|i| format!("graph TD\n  A{}-->B", i)).collect();
+
+        // Keys 1-9 should work
+        let result = handle_event(&mut app, key_press(KeyCode::Char('9')), &ViewMode::Chat);
+        assert!(
+            matches!(result, EventResult::OpenDiagram(8)),
+            "Pressing '9' should open diagram at index 8"
+        );
+
+        // There is no single key for index 9+ (diagrams 10, 11, 12)
+        // Key '0' is not in the 1-9 range
+        let result = handle_event(&mut app, key_press(KeyCode::Char('0')), &ViewMode::Chat);
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Pressing '0' should not open any diagram"
+        );
+    }
+
+    #[test]
+    fn test_enter_does_not_open_diagram() {
+        let mut app = test_app();
+        app.diagram_sources = vec!["graph TD\n  A-->B".into()];
+
+        let result = handle_event(&mut app, key_press(KeyCode::Enter), &ViewMode::Chat);
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Enter should not open a diagram"
+        );
+    }
+
+    #[test]
+    fn test_any_key_closes_diagram_viewer() {
+        let mut app = test_app();
+        let viewer = ViewMode::DiagramViewer(0);
+
+        // Any key (including Enter, Esc, letters) should close the viewer
+        let result = handle_event(&mut app, key_press(KeyCode::Enter), &viewer);
+        assert!(
+            matches!(result, EventResult::CloseDiagram),
+            "Enter in viewer should close it"
+        );
+
+        let result = handle_event(&mut app, key_press(KeyCode::Esc), &viewer);
+        assert!(
+            matches!(result, EventResult::CloseDiagram),
+            "Esc in viewer should close it"
+        );
+
+        let result = handle_event(&mut app, key_press(KeyCode::Char('q')), &viewer);
+        assert!(
+            matches!(result, EventResult::CloseDiagram),
+            "'q' in viewer should close it"
+        );
+
+        let result = handle_event(&mut app, key_press(KeyCode::Char('x')), &viewer);
+        assert!(
+            matches!(result, EventResult::CloseDiagram),
+            "Any key in viewer should close it"
+        );
+    }
+
+    #[test]
+    fn test_quit_keys_exit_from_chat_mode() {
+        let mut app = test_app();
+
+        let result = handle_event(&mut app, key_press(KeyCode::Char('q')), &ViewMode::Chat);
+        assert!(matches!(result, EventResult::Exit), "'q' should exit");
+
+        let result = handle_event(&mut app, key_press(KeyCode::Esc), &ViewMode::Chat);
+        assert!(matches!(result, EventResult::Exit), "Esc should exit");
+    }
+
+    #[test]
+    fn test_number_key_with_empty_diagram_sources() {
+        let mut app = test_app();
+        // No diagrams visible
+        assert!(app.diagram_sources.is_empty());
+
+        let result = handle_event(&mut app, key_press(KeyCode::Char('1')), &ViewMode::Chat);
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Number key with no diagrams should be Continue"
+        );
     }
 }

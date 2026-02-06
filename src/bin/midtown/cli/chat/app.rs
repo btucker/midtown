@@ -1371,13 +1371,13 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use midtown::Message;
 
     /// Create a default App for testing. Tests can override specific fields
     /// using struct update syntax: `App { messages, ..test_app() }`
-    fn test_app() -> App {
+    pub(crate) fn test_app() -> App {
         App {
             messages: VecDeque::new(),
             scroll_offset: 0,
