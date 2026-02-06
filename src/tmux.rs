@@ -979,7 +979,10 @@ fn is_nudge_stuck(pane_content: &str, nudge_text: &str) -> bool {
             // Check if our nudge text (or a significant portion) is in the input
             // Use first 20 chars to avoid issues with line wrapping
             let check_text = if nudge_text.len() > 20 {
-                &nudge_text[..20]
+                match nudge_text.char_indices().nth(20) {
+                    Some((byte_pos, _)) => &nudge_text[..byte_pos],
+                    None => nudge_text,
+                }
             } else {
                 nudge_text
             };
@@ -2705,6 +2708,24 @@ Claude is now processing the request
         // Tests that we match on first 20 chars of long messages
         let pane_content = "❯ You've been assigned";
         let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
+        assert!(is_nudge_stuck(pane_content, nudge_text));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_multibyte_nudge_text() {
+        // 25 emojis (each 4 bytes = 100 bytes total, but only 25 chars).
+        // The function truncates to 20 chars, so the first 20 emojis are checked.
+        let emojis = "🎉🎊🎈🎁🎂🎃🎄🎅🎆🎇🎋🎌🎍🎎🎏🎐🎑🎒🎓🎠🎡🎢🎣🎤🎥";
+        let pane_content = &format!("❯ {}", emojis);
+        assert!(is_nudge_stuck(pane_content, emojis));
+    }
+
+    #[test]
+    fn test_is_nudge_stuck_multibyte_boundary_split() {
+        // This specifically triggers the bug: 19 ASCII bytes + a 4-byte emoji
+        // means byte position 20 lands inside the emoji
+        let nudge_text = "1234567890123456789é extra text after the boundary";
+        let pane_content = "❯ 1234567890123456789é extra text";
         assert!(is_nudge_stuck(pane_content, nudge_text));
     }
 
