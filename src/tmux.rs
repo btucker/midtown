@@ -995,16 +995,10 @@ fn is_nudge_stuck(pane_content: &str, nudge_text: &str) -> bool {
 /// Send keys (input) to a tmux window.
 ///
 /// This is used to "nudge" a coworker by sending keyboard input.
-/// Follows gastown's NudgeSession pattern exactly for reliability:
 /// 1. Send text literally (with -l flag)
 /// 2. Wait 500ms for paste to complete
-/// 3. Send Escape (exits vim INSERT mode if enabled - safe since text is already pasted)
-/// 4. Wait 100ms
-/// 5. Send Enter with retry and verification (up to 3 attempts, 200ms between)
-///
-/// The Escape is safe AFTER the text is pasted because the text is already
-/// in the input buffer. This handles vim mode users while not affecting
-/// normal mode users.
+/// 3. Wait 100ms, then send Enter with retry and verification
+///    (up to 3 attempts, 200ms between)
 ///
 /// After sending Enter, verifies the nudge was submitted by checking if the
 /// text is still on the input line. If stuck, retries Enter.
@@ -1027,13 +1021,11 @@ pub fn send_keys(session: &str, name: &str, keys: &str) -> crate::Result<()> {
         });
     }
 
-    // 2. Wait 500ms for paste to complete (critical - tested in gastown)
+    // 2. Wait 500ms for paste to complete
     thread::sleep(Duration::from_millis(500));
 
-    // 3. Wait 100ms before sending Enter
+    // 3. Wait 100ms, then send Enter with retry and verification (up to 3 attempts, 200ms between)
     thread::sleep(Duration::from_millis(100));
-
-    // 4. Send Enter with retry and verification (up to 3 attempts, 200ms between)
     for attempt in 0..3 {
         if attempt > 0 {
             tracing::debug!(
