@@ -1342,22 +1342,45 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
 
     let repo_name = state.repo_name.clone();
 
-    // Write owner and status directly to disk
-    if let Err(e) = crate::tasks::update_task_fields_for_repo(
-        task_id,
-        &repo_name,
-        Some(from),
-        Some("in_progress"),
-        None,
-        None,
-    ) {
+    // Write owner and status directly to disk (with retry on transient failures).
+    // Disk write happens BEFORE in-memory recording so that a failure leaves
+    // no stale in-memory state. Without reconcile_stale_claims, consistency
+    // depends on this ordering.
+    let mut last_err = None;
+    for attempt in 0..3 {
+        match crate::tasks::update_task_fields_for_repo(
+            task_id,
+            &repo_name,
+            Some(from),
+            Some("in_progress"),
+            None,
+            None,
+        ) {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) => {
+                warn!(
+                    "Task claim disk write attempt {} failed for task #{}: {}",
+                    attempt + 1,
+                    task_id,
+                    e
+                );
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+
+    if let Some(e) = last_err {
         return Response::error(
             id,
-            RpcError::new(-32603, format!("Failed to claim task: {}", e)),
+            RpcError::new(-32603, format!("Failed to claim task after retries: {}", e)),
         );
     }
 
-    // Record in-memory assignment for busy tracking
+    // Record in-memory assignment for busy tracking (only after disk write succeeds)
     state.record_task_assignment(from, task_id);
 
     info!("Task claim: {} claimed task #{} directly", from, task_id);
