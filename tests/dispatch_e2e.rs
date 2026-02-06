@@ -1401,3 +1401,109 @@ fn no_cross_tick_duplicate_spawn_for_in_flight_task() {
         );
     }
 }
+
+// =============================================================================
+// PR decision function tests with captured snapshots
+// =============================================================================
+
+/// Regression test: When a coworker is active (has a tmux window) but not idle,
+/// the daemon should nudge them rather than trying to spawn a new window.
+///
+/// Bug: The daemon logged "call-in failed" for PR #708 notifications targeting
+/// pleasant because `decide_pr_issue_action_with_handoff` and
+/// `decide_pr_comment_action_with_handoff` returned `SpawnOwner` for active-but-busy
+/// coworkers. Spawning fails when the coworker already has a tmux window.
+///
+/// Snapshot: captured while pleasant was active and working, but the daemon was
+/// trying to spawn (not nudge) for review-complete and CI-green notifications.
+#[test]
+fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
+    use midtown::rules::{
+        PrAction, decide_pr_comment_action_with_handoff, decide_pr_issue_action_with_handoff,
+        decide_review_complete_action,
+    };
+
+    let fixture = include_str!(
+        "fixtures/snapshot/snapshot-call-in-failed-and-false-recovery-20260206-053201.json"
+    );
+    let v: Value = serde_json::from_str(fixture).expect("valid JSON");
+
+    // Extract the state that feeds into PR decision functions
+    let active_coworkers: Vec<String> = v["active_coworkers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str().map(|s| s.to_string()))
+        .collect();
+
+    let idle_coworkers: Vec<String> = v["idle_coworkers"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let is_at_dev_limit = v["is_at_dev_limit"].as_bool().unwrap_or(false);
+
+    // Verify preconditions from the snapshot
+    assert!(
+        active_coworkers
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case("pleasant")),
+        "pleasant should be active in the snapshot"
+    );
+    assert!(
+        !idle_coworkers
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case("pleasant")),
+        "pleasant should NOT be idle in the snapshot"
+    );
+    assert!(!is_at_dev_limit);
+
+    // Test 1: PR issue action (CI green / review feedback) — should nudge, not spawn
+    let action = decide_pr_issue_action_with_handoff(
+        "pleasant",
+        &active_coworkers,
+        &idle_coworkers,
+        is_at_dev_limit,
+        None, // pleasant had empty session_id in snapshot
+        "CI is green — please address review feedback and merge",
+    );
+    assert!(
+        matches!(action, PrAction::NudgeOwner { .. }),
+        "active-but-busy coworker should be nudged, not spawned. Got: {:?}",
+        action
+    );
+
+    // Test 2: PR comment action (review complete) — should nudge, not spawn
+    let action = decide_pr_comment_action_with_handoff(
+        "pleasant",
+        "reviewer",
+        &active_coworkers,
+        &idle_coworkers,
+        is_at_dev_limit,
+        None,
+        "review is complete — please address feedback",
+    );
+    assert!(
+        matches!(action, PrAction::NudgeOwner { .. }),
+        "active-but-busy coworker should be nudged for comments, not spawned. Got: {:?}",
+        action
+    );
+
+    // Test 3: Review complete action — should nudge, not spawn
+    let action = decide_review_complete_action(
+        "pleasant",
+        &active_coworkers,
+        &idle_coworkers,
+        is_at_dev_limit,
+        "review complete — please address feedback and merge",
+    );
+    assert!(
+        matches!(action, PrAction::NudgeOwner { .. }),
+        "active-but-busy coworker should be nudged for review complete, not spawned. Got: {:?}",
+        action
+    );
+}

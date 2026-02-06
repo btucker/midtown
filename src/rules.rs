@@ -1489,8 +1489,10 @@ pub fn decide_pr_issue_action_with_handoff(
             message: message.to_string(),
         }
     } else if (is_active && !is_idle) || !owner.is_empty() {
-        // Owner is either active-but-busy (working on a different task) or inactive.
-        // In both cases, don't interrupt their current session — use handoff/spawn.
+        // Owner is either active-but-busy or inactive. Try handoff first;
+        // fallback depends on whether the owner is active:
+        // - Active but busy → nudge (spawning an active coworker fails)
+        // - Inactive → spawn (they need a new tmux window)
         if !is_active && at_dev_limit {
             PrAction::Skip {
                 reason: format!("dev limit reached, cannot spawn {} for PR issue", owner),
@@ -1512,15 +1514,25 @@ pub fn decide_pr_issue_action_with_handoff(
                     session_id: ctx.session_id.clone(),
                     message: message.to_string(),
                 }
+            } else if is_active {
+                // No idle coworkers — nudge the busy owner (already has a window)
+                PrAction::NudgeOwner {
+                    owner: owner.to_string(),
+                    message: message.to_string(),
+                }
             } else {
-                // No idle coworkers available — fall back to spawning the original owner
                 PrAction::SpawnOwner {
                     owner: owner.to_string(),
                     message: message.to_string(),
                 }
             }
+        } else if is_active {
+            // No session context, owner is active — nudge them
+            PrAction::NudgeOwner {
+                owner: owner.to_string(),
+                message: message.to_string(),
+            }
         } else {
-            // No session context — spawn the original owner
             PrAction::SpawnOwner {
                 owner: owner.to_string(),
                 message: message.to_string(),
@@ -1605,14 +1617,16 @@ pub fn decide_pr_comment_action_with_handoff(
             owner: owner.to_string(),
             message: message.to_string(),
         }
-    } else if is_active || !owner.is_empty() {
-        // Owner is either active-but-busy or inactive — use handoff/spawn
+    } else if (is_active && !is_idle) || !owner.is_empty() {
+        // Owner is either active-but-busy or inactive. Try handoff first;
+        // fallback depends on whether the owner is active:
+        // - Active but busy → nudge (spawning an active coworker fails)
+        // - Inactive → spawn (they need a new tmux window)
         if !is_active && at_dev_limit {
             PrAction::Skip {
                 reason: format!("dev limit reached, cannot spawn {} for PR comment", owner),
             }
         } else if let Some(ctx) = session_context {
-            // We have session context — try to hand off to an idle coworker
             let assignee = idle_coworkers
                 .iter()
                 .find(|c| !c.eq_ignore_ascii_case(owner))
@@ -1627,12 +1641,21 @@ pub fn decide_pr_comment_action_with_handoff(
                     session_id: ctx.session_id.clone(),
                     message: message.to_string(),
                 }
+            } else if is_active {
+                PrAction::NudgeOwner {
+                    owner: owner.to_string(),
+                    message: message.to_string(),
+                }
             } else {
-                // No idle coworkers available — fall back to spawning the original owner
                 PrAction::SpawnOwner {
                     owner: owner.to_string(),
                     message: message.to_string(),
                 }
+            }
+        } else if is_active {
+            PrAction::NudgeOwner {
+                owner: owner.to_string(),
+                message: message.to_string(),
             }
         } else {
             PrAction::SpawnOwner {
@@ -1651,9 +1674,10 @@ pub fn decide_pr_comment_action_with_handoff(
 /// Decide what action to take when a PR has a completed review and the
 /// author needs to address feedback.
 ///
-/// Nudge if active and idle, spawn if inactive or busy on another task,
-/// skip if at dev limit.
-pub(crate) fn decide_review_complete_action(
+/// Nudge if active (idle or busy), spawn if inactive,
+/// skip if inactive and at dev limit.
+/// Accessible as `pub` for integration tests that verify snapshot-driven PR decisions.
+pub fn decide_review_complete_action(
     owner: &str,
     active_coworkers: &[String],
     idle_coworkers: &[String],
@@ -1676,6 +1700,12 @@ pub(crate) fn decide_review_complete_action(
                 "dev limit reached, cannot spawn {} for review complete",
                 owner
             ),
+        }
+    } else if is_active {
+        // Owner is active but busy — nudge (spawning an active coworker fails)
+        PrAction::NudgeOwner {
+            owner: owner.to_string(),
+            message: message.to_string(),
         }
     } else {
         PrAction::SpawnOwner {
@@ -2984,8 +3014,10 @@ mod tests {
     }
 
     #[test]
-    fn review_complete_spawns_when_owner_active_but_busy() {
-        // york is active but not idle — should spawn, not nudge
+    fn review_complete_nudges_when_owner_active_but_busy() {
+        // york is active but not idle — should nudge, not spawn.
+        // Spawning an already-active coworker fails ("call-in failed")
+        // because they already have a tmux window.
         let action = decide_review_complete_action(
             "york",
             &active(&["york", "amsterdam"]),
@@ -2993,7 +3025,7 @@ mod tests {
             false,
             "review complete",
         );
-        assert!(matches!(action, PrAction::SpawnOwner { .. }));
+        assert!(matches!(action, PrAction::NudgeOwner { .. }));
     }
 
     // -----------------------------------------------------------------------
@@ -3192,8 +3224,10 @@ mod tests {
     }
 
     #[test]
-    fn pr_handoff_spawns_owner_when_active_busy_no_idle() {
-        // york is active but busy, no idle coworkers — should spawn, not nudge
+    fn pr_handoff_nudges_owner_when_active_busy_no_idle() {
+        // york is active but busy, no idle coworkers — should nudge, not spawn.
+        // Spawning an already-active coworker fails ("call-in failed") because
+        // they already have a tmux window.
         let session = make_session_context("york", 42);
         let action = decide_pr_issue_action_with_handoff(
             "york",
@@ -3205,7 +3239,7 @@ mod tests {
         );
         assert_eq!(
             action,
-            PrAction::SpawnOwner {
+            PrAction::NudgeOwner {
                 owner: "york".to_string(),
                 message: "fix checks".to_string(),
             }
@@ -3277,6 +3311,49 @@ mod tests {
             PrAction::NudgeOwner {
                 owner: "york".to_string(),
                 message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn pr_comment_handoff_nudges_active_busy_no_idle() {
+        // york is active but busy, no idle coworkers — should nudge, not spawn.
+        // Spawning an already-active coworker fails ("call-in failed").
+        let session = make_session_context("york", 42);
+        let action = decide_pr_comment_action_with_handoff(
+            "york",
+            "amsterdam",
+            &active(&["york", "amsterdam"]), // york is active
+            &active(&[]),                    // no idle coworkers
+            false,
+            Some(&session),
+            "review feedback",
+        );
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "review feedback".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn review_complete_nudges_active_busy_owner() {
+        // Owner is active but busy — should nudge, not spawn.
+        // Spawning an already-active coworker fails ("call-in failed").
+        let action = decide_review_complete_action(
+            "york",
+            &active(&["york", "amsterdam"]), // york is active
+            &active(&[]),                    // york is NOT idle
+            false,
+            "review done, please address",
+        );
+        assert_eq!(
+            action,
+            PrAction::NudgeOwner {
+                owner: "york".to_string(),
+                message: "review done, please address".to_string(),
             }
         );
     }
