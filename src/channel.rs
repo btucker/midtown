@@ -544,7 +544,7 @@ impl Channel {
 
         // Atomic replace: rename temp over the channel file
         // Note: on Unix, rename is atomic within the same filesystem.
-        fs::rename(&temp_path, &self.channel_file)?;
+        crate::paths::atomic_rename(&temp_path, &self.channel_file)?;
 
         // Reset all cursor files since byte positions have changed
         let cursors_dir = self.base_dir.join("cursors");

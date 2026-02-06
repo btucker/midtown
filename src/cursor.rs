@@ -104,7 +104,7 @@ impl Cursor {
         let json = serde_json::to_string_pretty(self)?;
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
-        fs::rename(&temp_path, &path)?;
+        crate::paths::atomic_rename(&temp_path, &path)?;
 
         Ok(())
     }
