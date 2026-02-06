@@ -2995,4 +2995,97 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_action_message_mermaid_placeholder_extra_indent() {
+        // Action messages have a "* " prefix (2 extra chars) which increases
+        // the indent_width from TIMESTAMP_GUTTER_WIDTH (7) to 9.
+        // Mermaid placeholders should use this wider indent.
+        let source = "graph TD\n  A-->B";
+        let mut cache = MermaidCache::new();
+        cache.insert_cached(source, dummy_rendered_image());
+
+        let msg = Message {
+            id: "1".to_string(),
+            from: "park".to_string(),
+            content: "ignored".to_string(),
+            timestamp: chrono::Utc::now(),
+            message_type: MessageType::Action,
+        };
+        let segments = vec![ContentSegment::Mermaid(source.to_string())];
+        let current_tasks = HashMap::new();
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        // Find the placeholder line (last line after sender header)
+        let placeholder_line = lines.last().unwrap();
+        let placeholder_text: String = placeholder_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        // Action messages: indent_width = TIMESTAMP_GUTTER_WIDTH + 2 = 9
+        let expected_indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + 2);
+        assert!(
+            placeholder_text.starts_with(&expected_indent),
+            "Action message placeholder should have {} chars indent, got: {:?}",
+            TIMESTAMP_GUTTER_WIDTH + 2,
+            placeholder_text
+        );
+        assert!(placeholder_text.contains("[1] Diagram: graph (press 1 to view)"));
+
+        // Compare with normal text message indent
+        let normal_msg = test_message("ignored");
+        let mut normal_lines = Vec::new();
+        let mut normal_diagram_sources = Vec::new();
+        let mut normal_mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &normal_msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut normal_lines,
+            &mut normal_diagram_sources,
+            &mut normal_mermaid_to_render,
+        );
+
+        let normal_placeholder: String = normal_lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        // Normal message indent should be 2 chars shorter than action message indent
+        let normal_indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
+        assert!(
+            normal_placeholder.starts_with(&normal_indent),
+            "Normal message should have {} chars indent",
+            TIMESTAMP_GUTTER_WIDTH
+        );
+        assert!(
+            placeholder_text.len() > normal_placeholder.len(),
+            "Action message placeholder should be wider than normal due to extra indent"
+        );
+    }
 }
