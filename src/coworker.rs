@@ -544,6 +544,15 @@ impl CoworkerManager {
         self.worktree_manager.force_cleanup(coworker_name)
     }
 
+    /// Check if a coworker has an active tmux window.
+    ///
+    /// This directly queries tmux, bypassing the in-memory coworker map.
+    /// Used to prevent race conditions where a coworker exists in tmux but
+    /// hasn't been synced to the daemon's internal state yet.
+    pub fn has_tmux_window(&self, coworker_name: &str) -> bool {
+        crate::tmux::window_exists(&self.session_name, coworker_name).unwrap_or(false)
+    }
+
     /// List all coworkers.
     pub fn list(&self) -> Vec<Coworker> {
         let coworkers = self.coworkers.read().unwrap();
@@ -586,6 +595,23 @@ impl CoworkerManager {
     /// Returns None if the worktree doesn't exist or is in detached HEAD state.
     pub fn get_worktree_branch(&self, name: &str) -> Option<String> {
         self.worktree_manager.get_branch(name)
+    }
+
+    /// Check if a coworker's branch has a merged PR on GitHub.
+    ///
+    /// Uses `gh pr list` to check if the branch's PR was merged. This is
+    /// an expensive operation (calls gh CLI), so should only be used as a
+    /// fallback when cached data doesn't cover the branch.
+    pub fn is_branch_pr_merged(&self, name: &str) -> bool {
+        self.worktree_manager.is_branch_pr_merged(name)
+    }
+
+    /// Clean up stale local branches that match coworker naming patterns
+    /// and are already fully merged into the default branch.
+    ///
+    /// Returns the list of deleted branch names.
+    pub fn clean_stale_coworker_branches(&self) -> Vec<String> {
+        self.worktree_manager.clean_stale_coworker_branches()
     }
 
     /// Update a coworker's status display in their tmux tab.

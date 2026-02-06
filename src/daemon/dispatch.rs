@@ -474,8 +474,12 @@ pub(super) struct OrphanCleanupData {
     pub pr_poll_initialized: bool,
     /// Coworkers who have open PRs (excluded from cleanup/clearing).
     pub open_pr_owners: HashSet<String>,
+    /// Worktrees auto-cleaned via gh CLI fallback (squash-merged PRs not in cache).
+    pub gh_cleaned: Vec<String>,
     /// Worktrees due for a warning (orphan tracker determined they need alerting).
     pub due_for_warning: Vec<String>,
+    /// Whether the stale branch cleanup cooldown has expired.
+    pub stale_branch_cleanup_due: bool,
 }
 
 /// Gather data needed for orphan worktree cleanup decisions.
@@ -537,27 +541,98 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
         debug!("Orphan worktree flagged (no open or merged PR): {}", name);
     }
 
-    // Consult the orphan tracker to determine which worktrees need warnings.
-    // The tracker is in-memory state management (not I/O) — similar to how
-    // cooldowns are accessed in other decision functions.
+    // Collect worktrees due for warning using the tracker (scoped to drop before awaits)
     let due_for_warning = {
         let mut tracker = state.orphan_tracker.write().unwrap();
         tracker.prune(&unmerged);
-        let due: Vec<_> = unmerged
+        unmerged
             .into_iter()
             .filter(|name| {
                 tracker.track(name.clone());
                 tracker.should_warn(name)
             })
-            .collect();
-        for name in &due {
+            .collect::<Vec<_>>()
+    };
+
+    // Before warning the Lead, do a final gh CLI check for worktrees that might
+    // have squash-merged PRs not in the cache. This only runs when we're about
+    // to warn (after the 60s grace period), not every tick.
+    let (gh_cleaned, due_for_warning) = if due_for_warning.is_empty() {
+        (vec![], due_for_warning)
+    } else {
+        let coworkers = state.coworkers.clone();
+        let to_check = due_for_warning.clone();
+        let (cleaned, remaining) = tokio::task::spawn_blocking(move || {
+            let mut cleaned = Vec::new();
+            let mut remaining = Vec::new();
+            for name in to_check {
+                // Guard against tmux race: coworker may exist in tmux but
+                // not yet be in the daemon's internal map.
+                if coworkers.has_tmux_window(&name) {
+                    remaining.push(name);
+                    continue;
+                }
+                if coworkers.is_branch_pr_merged(&name) {
+                    match coworkers.force_cleanup_worktree(&name) {
+                        Ok(()) => {
+                            info!(
+                                "Auto-cleaned orphaned worktree for {} (gh confirmed PR merged)",
+                                name
+                            );
+                            cleaned.push(name);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to cleanup gh-confirmed merged worktree for {}: {}",
+                                name, e
+                            );
+                            remaining.push(name);
+                        }
+                    }
+                } else {
+                    remaining.push(name);
+                }
+            }
+            (cleaned, remaining)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            warn!("gh PR merged check panicked: {}", e);
+            (vec![], due_for_warning.clone())
+        });
+
+        // Prune cleaned entries from tracker
+        if !cleaned.is_empty() {
+            let mut tracker = state.orphan_tracker.write().unwrap();
+            tracker.prune(&remaining);
+        }
+
+        (cleaned, remaining)
+    };
+
+    // Record warnings for worktrees that are genuinely due
+    if !due_for_warning.is_empty() {
+        let mut tracker = state.orphan_tracker.write().unwrap();
+        for name in &due_for_warning {
             warn!(
-                "Orphaned worktree for {} has unmerged commits - flagging to lead",
+                "Orphaned worktree for {} has unmerged commits not on any PR - flagging to lead",
                 name
             );
             tracker.record_warn(name);
         }
-        due
+    }
+
+    // Check stale branch cleanup cooldown (in-memory state, not I/O)
+    let stale_branch_cleanup_due = {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        if cooldowns.check("stale_branch_cleanup", "global", Duration::from_secs(300)) {
+            // Record immediately to prevent TOCTTOU races where concurrent ticks
+            // pass the check before any records the cooldown.
+            cooldowns.record("stale_branch_cleanup", "global");
+            true
+        } else {
+            false
+        }
     };
 
     Some(OrphanCleanupData {
@@ -565,7 +640,9 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
         merged_worktrees_to_cleanup: merged_pr_worktrees,
         pr_poll_initialized,
         open_pr_owners,
+        gh_cleaned,
         due_for_warning,
+        stale_branch_cleanup_due,
     })
 }
 
@@ -594,11 +671,22 @@ pub(super) fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
         });
     }
 
-    // Warn about orphaned worktrees with unmerged commits.
+    // Post channel messages for worktrees auto-cleaned via gh CLI fallback.
+    for name in &data.gh_cleaned {
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🧹 Auto-cleaned orphaned worktree for {} (PR was merged)",
+                name
+            ),
+        });
+    }
+
+    // Warn about orphaned worktrees with genuinely unmerged commits.
     if !data.due_for_warning.is_empty() {
         let names_list = data.due_for_warning.join(", ");
         let nudge_text = format!(
-            "⚠️ @lead Orphaned worktrees with unmerged commits: {}. \
+            "⚠️ @lead Orphaned worktrees with unmerged commits (not on any PR): {}. \
              Please investigate and decide whether to merge or delete these branches.",
             names_list
         );
@@ -614,6 +702,11 @@ pub(super) fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
             body: nudge_text,
             tag: "orphan_warning".to_string(),
         });
+    }
+
+    // Clean stale branches if cooldown expired.
+    if data.stale_branch_cleanup_due {
+        effects.push(Effect::CleanStaleBranches);
     }
 
     effects
@@ -1422,7 +1515,9 @@ mod tests {
             merged_worktrees_to_cleanup: vec![],
             pr_poll_initialized: true,
             open_pr_owners: HashSet::new(),
+            gh_cleaned: vec![],
             due_for_warning: vec![],
+            stale_branch_cleanup_due: false,
         };
         let effects = decide_orphan_cleanup(&data);
         assert!(effects.is_empty());
@@ -1435,7 +1530,9 @@ mod tests {
             merged_worktrees_to_cleanup: vec![],
             pr_poll_initialized: true,
             open_pr_owners: ["amsterdam".to_string()].into_iter().collect(),
+            gh_cleaned: vec![],
             due_for_warning: vec![],
+            stale_branch_cleanup_due: false,
         };
         let effects = decide_orphan_cleanup(&data);
         assert_eq!(effects.len(), 1);
@@ -1454,7 +1551,9 @@ mod tests {
             merged_worktrees_to_cleanup: vec!["york".to_string(), "park".to_string()],
             pr_poll_initialized: true,
             open_pr_owners: HashSet::new(),
+            gh_cleaned: vec![],
             due_for_warning: vec![],
+            stale_branch_cleanup_due: false,
         };
         let effects = decide_orphan_cleanup(&data);
         assert_eq!(effects.len(), 1);
@@ -1473,7 +1572,9 @@ mod tests {
             merged_worktrees_to_cleanup: vec![],
             pr_poll_initialized: true,
             open_pr_owners: HashSet::new(),
+            gh_cleaned: vec![],
             due_for_warning: vec!["amsterdam".to_string()],
+            stale_branch_cleanup_due: false,
         };
         let effects = decide_orphan_cleanup(&data);
         // Should produce: PostSystemMessage, NudgeLead, SendPushNotification
@@ -1498,7 +1599,9 @@ mod tests {
             merged_worktrees_to_cleanup: vec!["york".to_string()],
             pr_poll_initialized: true,
             open_pr_owners: ["amsterdam".to_string()].into_iter().collect(),
+            gh_cleaned: vec![],
             due_for_warning: vec!["park".to_string()],
+            stale_branch_cleanup_due: false,
         };
         let effects = decide_orphan_cleanup(&data);
         // ClearOrphanedReviewerAssignments(york, park) + ForceCleanupWorktrees(york) +
@@ -1512,6 +1615,40 @@ mod tests {
         assert!(matches!(&effects[2], Effect::PostSystemMessage { .. }));
         assert!(matches!(&effects[3], Effect::NudgeLead { .. }));
         assert!(matches!(&effects[4], Effect::SendPushNotification { .. }));
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_gh_cleaned_posts_to_channel() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec![],
+            merged_worktrees_to_cleanup: vec![],
+            pr_poll_initialized: true,
+            open_pr_owners: HashSet::new(),
+            gh_cleaned: vec!["york".to_string(), "park".to_string()],
+            due_for_warning: vec![],
+            stale_branch_cleanup_due: false,
+        };
+        let effects = decide_orphan_cleanup(&data);
+        assert_eq!(effects.len(), 2);
+        for effect in &effects {
+            assert!(matches!(effect, Effect::PostToChannel { sender, .. } if sender == "midtown"));
+        }
+    }
+
+    #[test]
+    fn test_decide_orphan_cleanup_stale_branch_cleanup() {
+        let data = OrphanCleanupData {
+            all_orphaned: vec![],
+            merged_worktrees_to_cleanup: vec![],
+            pr_poll_initialized: true,
+            open_pr_owners: HashSet::new(),
+            gh_cleaned: vec![],
+            due_for_warning: vec![],
+            stale_branch_cleanup_due: true,
+        };
+        let effects = decide_orphan_cleanup(&data);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(&effects[0], Effect::CleanStaleBranches));
     }
 
     // ======================================================================
