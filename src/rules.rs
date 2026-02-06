@@ -3696,6 +3696,70 @@ mod tests {
         assert_eq!(result.unwrap().task_id, "832");
     }
 
+    /// Regression test for #874: RPC idle handler false orphan recovery.
+    ///
+    /// Bug: when a coworker reports idle via RPC, the handler shuts them down
+    /// directly (bypassing the Effect system) and does NOT record the stop time
+    /// in coworker_stop_times. On the next TaskDispatchTick (~10s later),
+    /// check_and_recover_orphans computes recently_stopped from coworker_stop_times.
+    /// Since the stop time was never recorded, recently_stopped is empty, and
+    /// the coworker's in_progress task appears orphaned → false recovery.
+    ///
+    /// Fix: record stop time in coworker_stop_times in the RPC idle handler
+    /// (and handle_coworker_break), matching what Effect::ShutdownCoworker does.
+    ///
+    /// This test verifies the decision function: when a coworker reports idle
+    /// and the stop time IS recorded (recently_stopped contains them), orphan
+    /// recovery should NOT trigger.
+    #[test]
+    fn orphan_recovery_skips_coworker_that_just_reported_idle() {
+        // Scenario: madison reports idle via RPC. She still has in_progress
+        // task #861 (task completion is async). The RPC handler shuts her down
+        // and records her stop time. On the next TaskDispatchTick, orphan
+        // recovery must skip her because she's in recently_stopped.
+        let tasks = vec![(
+            "861".to_string(),
+            "Review PR #705".to_string(),
+            "madison".to_string(),
+        )];
+        let active = set(&[]); // madison shut down (not in active_names)
+        let empty = HashSet::new();
+        let recently_stopped = set(&["madison"]); // stop time was recorded by RPC handler
+
+        let result =
+            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        assert!(
+            result.is_none(),
+            "Should NOT recover coworker that just reported idle (recently stopped)"
+        );
+    }
+
+    /// Regression test for #874: verify false recovery WOULD occur without stop time.
+    ///
+    /// This is the buggy scenario: the RPC idle handler does NOT record the stop
+    /// time, so recently_stopped is empty. Orphan recovery falsely triggers.
+    #[test]
+    fn orphan_recovery_false_positive_without_stop_time() {
+        // Same scenario as above, but recently_stopped is empty (the bug)
+        let tasks = vec![(
+            "861".to_string(),
+            "Review PR #705".to_string(),
+            "madison".to_string(),
+        )];
+        let active = set(&[]); // madison shut down
+        let empty = HashSet::new();
+        // BUG: recently_stopped is empty because RPC handler didn't record stop time
+        let recently_stopped = set(&[]);
+
+        let result =
+            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        assert!(
+            result.is_some(),
+            "Without stop time recording, orphan recovery falsely triggers (the bug)"
+        );
+        assert_eq!(result.unwrap().owner, "madison");
+    }
+
     // -----------------------------------------------------------------------
     // CooldownTracker spawn failure tests
     // -----------------------------------------------------------------------

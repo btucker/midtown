@@ -531,6 +531,13 @@ fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Resp
     state.broadcast_coworker_update(name, "stopped", None);
     match state.coworkers.shutdown(name) {
         Ok(()) => {
+            // Record stop time for orphan recovery grace period (#874).
+            // Without this, the next TaskDispatchTick falsely recovers the coworker
+            // for their in_progress task (which may just need time to be marked done).
+            {
+                let mut stop_times = state.coworker_stop_times.write().unwrap();
+                stop_times.insert(name.to_lowercase(), chrono::Utc::now());
+            }
             info!("Sent coworker on a break: {}", name);
             Response::success(
                 id,
@@ -925,6 +932,15 @@ async fn handle_coworker_report_state(
 
                     // Broadcast WebSocket update (only after successful shutdown)
                     state.broadcast_coworker_update(name, "stopped", None);
+
+                    // Record stop time for orphan recovery grace period (#874).
+                    // Without this, the next TaskDispatchTick sees the coworker's
+                    // in_progress task as orphaned (coworker not active, not in
+                    // recently_stopped) and falsely respawns them.
+                    {
+                        let mut stop_times = state.coworker_stop_times.write().unwrap();
+                        stop_times.insert(name.to_lowercase(), chrono::Utc::now());
+                    }
 
                     // Remove from coworker_records
                     {
