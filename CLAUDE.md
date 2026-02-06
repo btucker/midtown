@@ -255,6 +255,19 @@ fn test_stuck_detection_with_usage_limit() {
 }
 ```
 
+## Keeping README.md Up-to-Date
+
+When your changes affect anything documented in README.md, update the README as part of the same PR. This includes:
+
+- **New CLI commands or subcommands** — add usage examples to the relevant section
+- **Changed CLI interfaces** — update command syntax, flags, or options
+- **New features** — add a section or update an existing one (e.g., new daemon capabilities, web UI features)
+- **Architecture changes** — update the "How It Works" section if the system design changes
+- **Configuration changes** — update config examples if new settings are added or existing ones change
+- **Removed or renamed functionality** — remove or update stale references
+
+The README is the first thing new users and contributors see. If your PR changes user-facing behavior, the README should reflect it.
+
 ## Pull Requests
 
 - When a PR includes visual changes to the web UI (`web-app/` or `web/`), include before/after screenshots in the PR description.
