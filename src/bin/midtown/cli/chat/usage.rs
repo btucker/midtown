@@ -17,6 +17,8 @@ pub struct UsageData {
     pub week_util: f64,
     /// When the weekly window resets
     pub week_resets: DateTime<Utc>,
+    /// Account email from OAuth credentials (if available)
+    pub account_email: Option<String>,
 }
 
 /// Raw API response shape.
@@ -32,12 +34,20 @@ struct UsageWindow {
     resets_at: String,
 }
 
-/// Fetch the OAuth access token from macOS Keychain for the current midtown auth profile.
+/// OAuth credentials extracted from macOS Keychain.
+pub struct OAuthCredentials {
+    /// The OAuth access token
+    pub token: String,
+    /// The account email (if present in the credential)
+    pub email: Option<String>,
+}
+
+/// Fetch OAuth credentials from macOS Keychain for the current midtown auth profile.
 ///
 /// The keychain entry name is `Claude Code-credentials-{hash}` where `{hash}` is the
 /// first 8 hex characters of SHA256(CLAUDE_CONFIG_DIR path).
 #[cfg(target_os = "macos")]
-pub fn get_oauth_token() -> Option<String> {
+pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
     use sha2::{Digest, Sha256};
 
     let config_dir = midtown::auth::current_profile_dir();
@@ -67,19 +77,28 @@ pub fn get_oauth_token() -> Option<String> {
     let cred_json = String::from_utf8(output.stdout).ok()?;
     let cred: serde_json::Value = serde_json::from_str(cred_json.trim()).ok()?;
 
-    cred.get("claudeAiOauth")
-        .and_then(|oauth| oauth.get("accessToken"))
+    let oauth = cred.get("claudeAiOauth")?;
+
+    let token = oauth
+        .get("accessToken")
         .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
+        .map(|s| s.to_string())?;
+
+    let email = oauth
+        .get("email")
+        .and_then(|e| e.as_str())
+        .map(|s| s.to_string());
+
+    Some(OAuthCredentials { token, email })
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn get_oauth_token() -> Option<String> {
+pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
     None
 }
 
 /// Fetch usage data from the Anthropic API.
-pub fn fetch_usage(token: &str) -> Option<UsageData> {
+pub fn fetch_usage(token: &str, account_email: Option<String>) -> Option<UsageData> {
     // Use blocking reqwest since we run this on a background thread
     let client = reqwest::blocking::Client::new();
     let resp = client
@@ -113,6 +132,7 @@ pub fn fetch_usage(token: &str) -> Option<UsageData> {
         session_resets,
         week_util: seven_day.utilization,
         week_resets,
+        account_email,
     })
 }
 

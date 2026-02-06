@@ -393,7 +393,8 @@ impl App {
             let (tx, rx) = mpsc::channel();
             self.usage_receiver = Some(rx);
             thread::spawn(move || {
-                let result = usage::get_oauth_token().and_then(|token| usage::fetch_usage(&token));
+                let result = usage::get_oauth_credentials()
+                    .and_then(|creds| usage::fetch_usage(&creds.token, creds.email));
                 let _ = tx.send(result);
             });
         }
