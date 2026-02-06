@@ -69,6 +69,7 @@ struct DispatchSnapshot {
     /// Whether we're at the overall coworker limit.
     is_at_coworker_limit: bool,
     /// PR numbers of recently merged PRs. Used to skip tasks referencing merged PRs.
+    #[allow(dead_code)]
     merged_pr_numbers: HashSet<u64>,
 }
 
@@ -1556,13 +1557,12 @@ fn tasks_referencing_merged_pr_are_skipped() {
     let mut dispatched_tasks = Vec::new();
 
     for (task_id, subject, _owner) in &pending_with_owners {
-        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject) {
-            if let Ok(pr_num) = pr_num_str.parse::<u64>() {
-                if merged_pr_numbers.contains(&pr_num) {
-                    skipped_tasks.push((task_id.as_str(), pr_num));
-                    continue;
-                }
-            }
+        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject)
+            && let Ok(pr_num) = pr_num_str.parse::<u64>()
+            && merged_pr_numbers.contains(&pr_num)
+        {
+            skipped_tasks.push((task_id.as_str(), pr_num));
+            continue;
         }
         dispatched_tasks.push(task_id.as_str());
     }
@@ -1617,13 +1617,12 @@ fn unowned_tasks_referencing_merged_pr_are_skipped() {
     let mut passed = Vec::new();
 
     for (task_id, subject) in &subjects {
-        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject) {
-            if let Ok(pr_num) = pr_num_str.parse::<u64>() {
-                if merged_pr_numbers.contains(&pr_num) {
-                    skipped.push(*task_id);
-                    continue;
-                }
-            }
+        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject)
+            && let Ok(pr_num) = pr_num_str.parse::<u64>()
+            && merged_pr_numbers.contains(&pr_num)
+        {
+            skipped.push(*task_id);
+            continue;
         }
         passed.push(*task_id);
     }

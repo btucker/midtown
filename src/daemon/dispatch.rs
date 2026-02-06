@@ -759,6 +759,10 @@ pub(super) fn spawn_for_pending_tasks(
                 task_id: task_id.clone(),
                 repo_name: snap.repo_name.clone(),
             });
+            effects.push(Effect::ClearBlockedBy {
+                completed_task_id: task_id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
             continue;
         }
 
@@ -935,6 +939,10 @@ pub(super) fn spawn_for_pending_tasks(
             );
             effects.push(Effect::CompleteTask {
                 task_id: task.id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            effects.push(Effect::ClearBlockedBy {
+                completed_task_id: task.id.clone(),
                 repo_name: snap.repo_name.clone(),
             });
             continue;
