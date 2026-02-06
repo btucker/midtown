@@ -138,7 +138,8 @@ fn truncate_status(status: &str, max_len: usize) -> String {
     if status.len() <= max_len {
         status.to_string()
     } else {
-        format!("{}...", &status[..max_len.saturating_sub(3)])
+        let end = status.floor_char_boundary(max_len.saturating_sub(3));
+        format!("{}...", &status[..end])
     }
 }
 
@@ -2654,6 +2655,15 @@ mod tests {
             truncate_status("this is way too long for the tab", 20),
             "this is way too l..."
         );
+    }
+
+    #[test]
+    fn test_truncate_status_multibyte() {
+        // 4-byte emoji repeated — slicing at arbitrary byte offsets panics
+        let emoji_status = "😀".repeat(10); // 40 bytes
+        let result = truncate_status(&emoji_status, 20);
+        assert!(result.len() <= 20);
+        assert!(result.ends_with("..."));
     }
 
     // Integration tests for window_exists require actual tmux

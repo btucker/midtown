@@ -31,7 +31,7 @@ pub fn truncate_message(msg: &str, max_len: usize) -> String {
     if first_line.len() <= max_len {
         first_line.to_string()
     } else {
-        let end = first_line.floor_char_boundary(max_len);
+        let end = first_line.floor_char_boundary(max_len.saturating_sub(3));
         format!("{}...", &first_line[..end])
     }
 }
@@ -465,7 +465,19 @@ mod tests {
         let msg = "日本語のテスト".repeat(20); // 7 chars * 3 bytes * 20 = 420 bytes
         let result = truncate_message(&msg, 50);
         assert!(result.ends_with("..."));
-        assert!(result.len() <= 53); // max_len + "..."
+        assert!(result.len() <= 50);
+    }
+
+    #[test]
+    fn truncate_message_ascii_respects_max_len() {
+        let msg = "a".repeat(120);
+        let result = truncate_message(&msg, 60);
+        assert!(result.ends_with("..."));
+        assert!(
+            result.len() <= 60,
+            "truncate_message exceeded max_len: {} > 60",
+            result.len()
+        );
     }
 
     // =========================================================================
