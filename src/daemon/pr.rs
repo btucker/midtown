@@ -2692,11 +2692,15 @@ pub(super) async fn handle_webhook_ci_failure(
     }
 }
 
-/// Detect CI checks that are stuck (running > 4x typical duration) and collect re-run effects.
+/// Detect stale CI checks and collect re-run effects.
 ///
-/// This function examines `statusCheckRollup` for each PR to find checks that have been
-/// running for an unusually long time. When detected, it returns effects to re-run the
-/// workflow. Uses historical check durations to determine "typical" time.
+/// Examines `statusCheckRollup` for each PR to find stuck checks in two passes:
+/// - **Pass 1**: IN_PROGRESS checks running > 4x typical duration.
+/// - **Pass 2**: QUEUED/PENDING/WAITING checks that never started when all sibling checks
+///   have completed (2x typical duration with a 30-minute minimum floor).
+///
+/// Returns effects to re-run the affected workflows. Uses historical check durations
+/// from `CiCheckStats` to determine "typical" time.
 async fn collect_stale_check_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -3433,6 +3437,46 @@ mod tests {
         assert!(
             effects.is_empty(),
             "should skip pending check re-run when on cooldown"
+        );
+    }
+
+    #[test]
+    fn collect_stale_check_effects_pending_skips_malformed_sibling_timestamps() {
+        use chrono::{DateTime, Utc};
+
+        let ci_stats = test_ci_stats_with_duration("task_sharing", 120);
+        let now: DateTime<Utc> = "2026-02-04T13:00:00Z".parse().unwrap();
+
+        // All siblings COMPLETED but with missing/malformed startedAt
+        let prs = vec![json!({
+            "number": 679,
+            "statusCheckRollup": [
+                {
+                    "name": "Test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "not-a-date",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/1"
+                },
+                {
+                    "name": "Clippy",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/111/job/2"
+                },
+                {
+                    "name": "task_sharing",
+                    "status": "QUEUED",
+                    "startedAt": "",
+                    "detailsUrl": "https://github.com/owner/repo/actions/runs/222/job/3"
+                }
+            ]
+        })];
+
+        let effects = collect_stale_check_effects_with_time(&ci_stats, &prs, now);
+        assert!(
+            effects.is_empty(),
+            "should skip pending check when sibling timestamps are unparseable"
         );
     }
 

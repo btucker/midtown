@@ -1,8 +1,11 @@
 //! CI check duration statistics for auto-retry of stale checks.
 //!
-//! Tracks historical completion times for CI checks to detect when checks
-//! are running significantly longer than typical (4x threshold). When a check
-//! exceeds this threshold, the daemon can trigger a re-run.
+//! Tracks historical completion times for CI checks to detect two failure modes:
+//! - **Pass 1 (in-progress)**: Checks running significantly longer than typical (4x threshold).
+//! - **Pass 2 (pending)**: Checks stuck in QUEUED/PENDING/WAITING when all siblings completed
+//!   (2x typical duration with a 30-minute minimum floor).
+//!
+//! When a stale check is detected, the daemon can trigger a workflow re-run.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -292,6 +295,44 @@ mod tests {
 
         let invalid = "https://github.com/owner/repo/pull/42";
         assert_eq!(extract_run_id_from_url(invalid), None);
+    }
+
+    #[test]
+    fn test_is_pending_stale() {
+        let mut stats = CiCheckStats::default();
+        // Typical duration: 1200 seconds (20 min) → 2x = 2400s > MIN (1800s)
+        for _ in 0..5 {
+            stats.record_duration("SlowCheck", 1200);
+        }
+
+        // 2x threshold = 2400 seconds (multiplier wins over 1800s floor)
+        assert!(!stats.is_pending_stale("SlowCheck", 2000)); // Below threshold
+        assert!(!stats.is_pending_stale("SlowCheck", 2400)); // At threshold (not stale)
+        assert!(stats.is_pending_stale("SlowCheck", 2401)); // Above threshold
+    }
+
+    #[test]
+    fn test_is_pending_stale_floor_applies() {
+        let mut stats = CiCheckStats::default();
+        // Typical duration: 120 seconds (2 min) → 2x = 240s < MIN (1800s)
+        for _ in 0..5 {
+            stats.record_duration("FastCheck", 120);
+        }
+
+        // Floor of 1800s should apply since 2x (240s) < MIN_PENDING_STALE_SECS
+        assert!(!stats.is_pending_stale("FastCheck", 1000)); // Well below floor
+        assert!(!stats.is_pending_stale("FastCheck", 1800)); // At floor (not stale)
+        assert!(stats.is_pending_stale("FastCheck", 1801)); // Above floor
+    }
+
+    #[test]
+    fn test_is_pending_stale_default_threshold() {
+        let stats = CiCheckStats::default();
+
+        // No samples → default 600s, 2x = 1200s < MIN (1800s), floor applies
+        assert!(!stats.is_pending_stale("Unknown", 1500));
+        assert!(!stats.is_pending_stale("Unknown", 1800)); // At floor
+        assert!(stats.is_pending_stale("Unknown", 1801)); // Above floor
     }
 
     #[test]
