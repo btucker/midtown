@@ -442,11 +442,15 @@ pub(crate) struct DaemonState {
     insight_hashes: std::sync::Mutex<HashSet<u64>>,
     /// In-memory deduplication for reviewer `[Review Note]` channel messages.
     ///
-    /// Tracks (reviewer, PR number) pairs. When a reviewer posts a `[Review Note]`
-    /// for a PR they've already posted one for, subsequent notes are suppressed and
-    /// logged. This prevents near-duplicate notes about the same code area from
-    /// flooding the channel. Resets on daemon restart.
-    review_note_tracker: std::sync::Mutex<HashSet<(String, u64)>>,
+    /// Tracks (reviewer, PR number) → timestamp of first note. When a reviewer
+    /// posts a `[Review Note]` for a PR they've already posted one for within the
+    /// cooldown window (60s), subsequent notes are suppressed. After the cooldown,
+    /// follow-up notes (e.g., corrections) are allowed through.
+    ///
+    /// Resets on daemon restart, which is acceptable because reviewers are spawned
+    /// fresh for each review session — a restart mid-review would re-spawn the
+    /// reviewer, who would post new notes from scratch.
+    review_note_tracker: std::sync::Mutex<HashMap<(String, u64), std::time::Instant>>,
     /// In-memory deduplication for task creation nudges sent to the Lead.
     ///
     /// When the daemon needs to create a task (e.g., review feedback), it nudges the
@@ -607,7 +611,7 @@ impl DaemonState {
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             github_user,
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
-            review_note_tracker: std::sync::Mutex::new(HashSet::new()),
+            review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             pending_task_creations: std::sync::Mutex::new(HashMap::new()),
         })
     }

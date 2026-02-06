@@ -1449,16 +1449,23 @@ pub(super) async fn handle_channel_post(
         (message.to_string(), MessageType::Text)
     };
 
-    // Deduplicate [Review Note] messages: only allow one per (reviewer, PR) pair.
-    // Reviewers sometimes post multiple similar notes about the same code area;
-    // consolidating into a single note keeps the channel clean for the Lead.
+    // Deduplicate [Review Note] messages: suppress rapid-fire notes from the same
+    // reviewer for the same PR (within 60s cooldown). Notes after the cooldown
+    // (e.g., corrections or follow-ups) are allowed through.
     if let Some(pr_num) = extract_review_note_pr(&content) {
         let key = (from.to_lowercase(), pr_num);
+        let now = std::time::Instant::now();
+        let cooldown = std::time::Duration::from_secs(60);
         let mut tracker = state.review_note_tracker.lock().unwrap();
-        if !tracker.insert(key) {
+        if tracker
+            .get(&key)
+            .is_some_and(|first_seen| now.duration_since(*first_seen) < cooldown)
+        {
             debug!(
-                "channel.post: suppressing duplicate [Review Note] from {} for PR #{}",
-                from, pr_num
+                "channel.post: suppressing duplicate [Review Note] from {} for PR #{} (within {}s cooldown)",
+                from,
+                pr_num,
+                cooldown.as_secs()
             );
             return Response::success(
                 id,
@@ -1468,6 +1475,8 @@ pub(super) async fn handle_channel_post(
                 }),
             );
         }
+        // Record or refresh the timestamp
+        tracker.insert(key, now);
     }
 
     let msg = Message::new(from, content.clone(), msg_type.clone());
