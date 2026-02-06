@@ -277,14 +277,23 @@ pub fn ensure_team_config(team_name: &str, members: &[TeamMember]) -> std::io::R
 /// Reads the existing config (if any), upserts the member by name, and writes
 /// back. Creates the team directory and inboxes/ if they don't exist.
 ///
-/// This is safe to call concurrently for different members — each call reads,
-/// merges, and writes atomically. For the same member name, the last write wins.
+/// Uses a mkdir-based lock on `config.json.lock` to prevent concurrent spawns
+/// from clobbering each other's member entries.
 pub fn upsert_team_member(team_name: &str, member: TeamMember) -> std::io::Result<()> {
     let team_dir = teams_dir(team_name);
+    upsert_team_member_at(&team_dir, member)
+}
+
+/// Internal implementation that accepts a team directory path (testable).
+fn upsert_team_member_at(team_dir: &Path, member: TeamMember) -> std::io::Result<()> {
     let inboxes_dir = team_dir.join("inboxes");
     fs::create_dir_all(&inboxes_dir)?;
 
     let config_path = team_dir.join("config.json");
+    let lock_path = team_dir.join("config.json.lock");
+
+    // Acquire mkdir lock to protect the read-modify-write cycle
+    let _lock = MkdirLock::acquire(&lock_path, 20)?;
 
     // Read existing config or start fresh
     let mut config: TeamConfig = if config_path.exists() {
@@ -301,7 +310,10 @@ pub fn upsert_team_member(team_name: &str, member: TeamMember) -> std::io::Resul
         config.members.push(member);
     }
 
-    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    // Write atomically via temp file + rename
+    let tmp_path = config_path.with_extension("json.tmp");
+    fs::write(&tmp_path, serde_json::to_string_pretty(&config)?)?;
+    fs::rename(&tmp_path, &config_path)?;
 
     debug!(
         "Updated team config at {} (now {} members)",
@@ -519,35 +531,24 @@ mod tests {
     fn test_upsert_team_member_creates_config() {
         let tmp = TempDir::new().unwrap();
         let team_dir = tmp.path().join("test-team");
-        let config_path = team_dir.join("config.json");
 
-        // Simulate upsert by creating dirs and writing config
-        let inboxes_dir = team_dir.join("inboxes");
-        fs::create_dir_all(&inboxes_dir).unwrap();
-
-        // First member
-        let member1 = TeamMember {
+        let member = TeamMember {
             name: "lexington".to_string(),
             agent_id: "lexington@midtown-repo".to_string(),
             agent_type: "coworker".to_string(),
         };
-        let config = TeamConfig {
-            members: vec![member1],
-        };
-        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        upsert_team_member_at(&team_dir, member).unwrap();
 
         // Add second member
-        let content = fs::read_to_string(&config_path).unwrap();
-        let mut config: TeamConfig = serde_json::from_str(&content).unwrap();
         let member2 = TeamMember {
             name: "park".to_string(),
             agent_id: "park@midtown-repo".to_string(),
             agent_type: "coworker".to_string(),
         };
-        config.members.push(member2);
-        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        upsert_team_member_at(&team_dir, member2).unwrap();
 
         // Verify both members exist
+        let config_path = team_dir.join("config.json");
         let content = fs::read_to_string(&config_path).unwrap();
         let parsed: TeamConfig = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed.members.len(), 2);
@@ -559,35 +560,86 @@ mod tests {
     fn test_upsert_team_member_updates_existing() {
         let tmp = TempDir::new().unwrap();
         let team_dir = tmp.path().join("test-team");
-        let config_path = team_dir.join("config.json");
-
-        // Create initial config with one member
-        let inboxes_dir = team_dir.join("inboxes");
-        fs::create_dir_all(&inboxes_dir).unwrap();
 
         let member = TeamMember {
             name: "lexington".to_string(),
             agent_id: "lexington@midtown-repo".to_string(),
             agent_type: "coworker".to_string(),
         };
-        let config = TeamConfig {
-            members: vec![member],
-        };
-        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        upsert_team_member_at(&team_dir, member).unwrap();
 
         // Upsert same member with different type (simulating role change)
-        let content = fs::read_to_string(&config_path).unwrap();
-        let mut config: TeamConfig = serde_json::from_str(&content).unwrap();
-        if let Some(existing) = config.members.iter_mut().find(|m| m.name == "lexington") {
-            existing.agent_type = "reviewer".to_string();
-        }
-        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        let updated = TeamMember {
+            name: "lexington".to_string(),
+            agent_id: "lexington@midtown-repo".to_string(),
+            agent_type: "reviewer".to_string(),
+        };
+        upsert_team_member_at(&team_dir, updated).unwrap();
 
         // Verify member was updated (not duplicated)
+        let config_path = team_dir.join("config.json");
         let content = fs::read_to_string(&config_path).unwrap();
         let parsed: TeamConfig = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed.members.len(), 1);
         assert_eq!(parsed.members[0].agent_type, "reviewer");
+    }
+
+    #[test]
+    fn test_upsert_team_member_concurrent_no_lost_members() {
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let team_dir = Arc::new(tmp.path().join("test-team"));
+        let names = [
+            "lexington",
+            "park",
+            "madison",
+            "broadway",
+            "amsterdam",
+            "columbus",
+            "riverside",
+            "york",
+            "pleasant",
+            "vernon",
+        ];
+
+        let handles: Vec<_> = names
+            .iter()
+            .map(|name| {
+                let dir = Arc::clone(&team_dir);
+                let name = name.to_string();
+                std::thread::spawn(move || {
+                    let member = TeamMember {
+                        name: name.clone(),
+                        agent_id: format!("{}@midtown-repo", name),
+                        agent_type: "coworker".to_string(),
+                    };
+                    upsert_team_member_at(&dir, member).unwrap();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All 10 members must be present — no lost entries
+        let config_path = team_dir.join("config.json");
+        let content = fs::read_to_string(&config_path).unwrap();
+        let parsed: TeamConfig = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            parsed.members.len(),
+            10,
+            "Expected 10 members, got {}. Lost members due to concurrent write race.",
+            parsed.members.len()
+        );
+
+        // Verify all names are present
+        let mut found_names: Vec<String> = parsed.members.iter().map(|m| m.name.clone()).collect();
+        found_names.sort();
+        let mut expected_names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        expected_names.sort();
+        assert_eq!(found_names, expected_names);
     }
 
     #[test]
