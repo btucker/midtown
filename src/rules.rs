@@ -1617,7 +1617,7 @@ pub fn decide_pr_comment_action_with_handoff(
             owner: owner.to_string(),
             message: message.to_string(),
         }
-    } else if is_active || !owner.is_empty() {
+    } else if (is_active && !is_idle) || !owner.is_empty() {
         // Owner is either active-but-busy or inactive. Try handoff first;
         // fallback depends on whether the owner is active:
         // - Active but busy → nudge (spawning an active coworker fails)
