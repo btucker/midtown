@@ -1,10 +1,12 @@
 <script>
   import { getSelkie } from './selkie.js'
+  import MermaidModal from './MermaidModal.svelte'
 
   let { code } = $props()
   let svgHtml = $state('')
   let error = $state('')
   let loading = $state(true)
+  let expanded = $state(false)
 
   let counter = 0
 
@@ -53,6 +55,10 @@
       loading = false
     })
   })
+
+  function handleExpand() {
+    expanded = true
+  }
 </script>
 
 {#if loading}
@@ -63,9 +69,15 @@
     <pre class="mermaid-error-text">{error}</pre>
   </div>
 {:else}
-  <div class="mermaid-diagram">
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="mermaid-diagram" onclick={handleExpand} title="Click to expand">
     {@html svgHtml}
+    <div class="expand-hint">Click to expand</div>
   </div>
+
+  {#if expanded}
+    <MermaidModal {svgHtml} onclose={() => expanded = false} />
+  {/if}
 {/if}
 
 <style>
@@ -76,6 +88,28 @@
     margin: 6px 0;
     overflow-x: auto;
     line-height: 1;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .mermaid-diagram:hover {
+    outline: 1px solid #3a3a5e;
+  }
+
+  .expand-hint {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    font-size: 0.7rem;
+    color: #585858;
+    opacity: 0;
+    transition: opacity 0.15s;
+    pointer-events: none;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  }
+
+  .mermaid-diagram:hover .expand-hint {
+    opacity: 1;
   }
 
   .mermaid-diagram :global(svg) {
