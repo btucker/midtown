@@ -2630,4 +2630,369 @@ mod tests {
     fn test_format_duration_estimate_less_than_one_minute() {
         assert_eq!(format_duration_estimate(10.0), "~<1m left");
     }
+
+    // --- Mermaid placeholder rendering tests ---
+
+    /// Helper to create a dummy RenderedImage for cache injection
+    fn dummy_rendered_image() -> mermaid::RenderedImage {
+        mermaid::RenderedImage {
+            png_data: vec![0x89, b'P', b'N', b'G'],
+            width: 800,
+            height: 600,
+        }
+    }
+
+    /// Helper to create a test Message
+    fn test_message(content: &str) -> Message {
+        Message {
+            id: "1".to_string(),
+            from: "park".to_string(),
+            content: content.to_string(),
+            timestamp: chrono::Utc::now(),
+            message_type: MessageType::Text,
+        }
+    }
+
+    #[test]
+    fn test_cached_diagram_shows_numbered_placeholder() {
+        let source = "graph TD\n  A-->B";
+        let mut cache = MermaidCache::new();
+        cache.insert_cached(source, dummy_rendered_image());
+
+        let msg = test_message("ignored"); // content unused; segments drive rendering
+        let segments = vec![ContentSegment::Mermaid(source.to_string())];
+        let current_tasks = HashMap::new();
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        // Find the placeholder line (skip sender header)
+        let placeholder_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            placeholder_text.contains("[1] Diagram: graph (press 1 to view)"),
+            "Expected numbered placeholder, got: {}",
+            placeholder_text
+        );
+
+        // Placeholder should be styled Cyan + Bold
+        let placeholder_line = lines.last().unwrap();
+        assert_eq!(placeholder_line.spans[0].style.fg, Some(Color::Cyan));
+        assert!(
+            placeholder_line.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn test_pending_diagram_shows_rendering_placeholder() {
+        let source = "sequenceDiagram\n  A->>B: hello";
+        let mut cache = MermaidCache::new();
+        cache.insert_pending(source);
+
+        let msg = test_message("ignored");
+        let segments = vec![ContentSegment::Mermaid(source.to_string())];
+        let current_tasks = HashMap::new();
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        let placeholder_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            placeholder_text.contains("[rendering sequenceDiagram...]"),
+            "Expected rendering placeholder, got: {}",
+            placeholder_text
+        );
+
+        // Placeholder should be styled DarkGray + Italic
+        let placeholder_line = lines.last().unwrap();
+        assert_eq!(placeholder_line.spans[0].style.fg, Some(Color::DarkGray));
+        assert!(
+            placeholder_line.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::ITALIC)
+        );
+
+        // Pending diagrams should NOT be tracked in diagram_sources
+        assert!(diagram_sources.is_empty());
+    }
+
+    #[test]
+    fn test_unqueued_diagram_shows_plain_placeholder_and_queues() {
+        let source = "flowchart LR\n  A-->B";
+        let cache = MermaidCache::new(); // empty cache, nothing pending
+
+        let msg = test_message("ignored");
+        let segments = vec![ContentSegment::Mermaid(source.to_string())];
+        let current_tasks = HashMap::new();
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        let placeholder_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            placeholder_text.contains("[flowchart diagram]"),
+            "Expected plain placeholder, got: {}",
+            placeholder_text
+        );
+
+        // Should queue the source for rendering
+        assert_eq!(mermaid_to_render.len(), 1);
+        assert_eq!(mermaid_to_render[0], source);
+
+        // Unqueued diagrams should NOT be tracked in diagram_sources
+        assert!(diagram_sources.is_empty());
+    }
+
+    #[test]
+    fn test_diagram_numbering_sequential() {
+        let sources: Vec<String> = (0..3)
+            .map(|i| format!("graph TD\n  A{}-->B{}", i, i))
+            .collect();
+        let mut cache = MermaidCache::new();
+        for s in &sources {
+            cache.insert_cached(s, dummy_rendered_image());
+        }
+
+        let msg = test_message("ignored");
+        let segments: Vec<ContentSegment> = sources
+            .iter()
+            .map(|s| ContentSegment::Mermaid(s.clone()))
+            .collect();
+        let current_tasks = HashMap::new();
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        // Should have 3 diagram sources tracked
+        assert_eq!(diagram_sources.len(), 3);
+
+        // Check sequential numbering in placeholder text
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all_text.contains("[1] Diagram: graph (press 1 to view)"));
+        assert!(all_text.contains("[2] Diagram: graph (press 2 to view)"));
+        assert!(all_text.contains("[3] Diagram: graph (press 3 to view)"));
+    }
+
+    #[test]
+    fn test_diagram_cap_at_9_shortcuts() {
+        let sources: Vec<String> = (0..11)
+            .map(|i| format!("graph TD\n  X{}-->Y{}", i, i))
+            .collect();
+        let mut cache = MermaidCache::new();
+        for s in &sources {
+            cache.insert_cached(s, dummy_rendered_image());
+        }
+
+        let msg = test_message("ignored");
+        let segments: Vec<ContentSegment> = sources
+            .iter()
+            .map(|s| ContentSegment::Mermaid(s.clone()))
+            .collect();
+        let current_tasks = HashMap::new();
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        // All 11 diagrams should be tracked in diagram_sources
+        assert_eq!(diagram_sources.len(), 11);
+
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Diagrams 1-9 should have numbered shortcuts
+        for i in 1..=9 {
+            assert!(
+                all_text.contains(&format!("[{}] Diagram: graph (press {} to view)", i, i)),
+                "Diagram {} should have a numbered shortcut",
+                i
+            );
+        }
+
+        // Diagrams 10-11 should have unnumbered placeholders
+        // Count lines with numbered "[N] Diagram:" pattern vs total "Diagram:" occurrences
+        let numbered_count = all_text.matches("] Diagram: graph (press").count();
+        assert_eq!(numbered_count, 9, "Only 9 diagrams should be numbered");
+    }
+
+    #[test]
+    fn test_mixed_text_and_mermaid_segments() {
+        let source = "graph TD\n  A-->B";
+        let mut cache = MermaidCache::new();
+        cache.insert_cached(source, dummy_rendered_image());
+
+        let msg = test_message("ignored");
+        let segments = vec![
+            ContentSegment::Text("Before the diagram".to_string()),
+            ContentSegment::Mermaid(source.to_string()),
+            ContentSegment::Text("After the diagram".to_string()),
+        ];
+        let current_tasks = HashMap::new();
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            80,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(all_text.contains("Before the diagram"));
+        assert!(all_text.contains("[1] Diagram: graph (press 1 to view)"));
+        assert!(all_text.contains("After the diagram"));
+    }
+
+    #[test]
+    fn test_diagram_type_extracted_from_first_line() {
+        // Different diagram types should show their type in the placeholder
+        let test_cases = vec![
+            ("sequenceDiagram\n  A->>B: hello", "sequenceDiagram"),
+            ("classDiagram\n  class Animal", "classDiagram"),
+            ("flowchart LR\n  A-->B", "flowchart"),
+            ("pie title Pets\n  \"Dogs\": 60", "pie"),
+        ];
+
+        for (source, expected_type) in test_cases {
+            let mut cache = MermaidCache::new();
+            cache.insert_cached(source, dummy_rendered_image());
+
+            let msg = test_message("ignored");
+            let segments = vec![ContentSegment::Mermaid(source.to_string())];
+            let current_tasks = HashMap::new();
+            let mut lines = Vec::new();
+            let mut diagram_sources = Vec::new();
+            let mut mermaid_to_render = Vec::new();
+
+            render_message_with_mermaid(
+                &msg,
+                &segments,
+                80,
+                None,
+                &current_tasks,
+                None,
+                &cache,
+                &mut lines,
+                &mut diagram_sources,
+                &mut mermaid_to_render,
+            );
+
+            let all_text: String = lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("");
+            assert!(
+                all_text.contains(&format!("Diagram: {}", expected_type)),
+                "Expected diagram type '{}' in placeholder, got: {}",
+                expected_type,
+                all_text
+            );
+        }
+    }
 }

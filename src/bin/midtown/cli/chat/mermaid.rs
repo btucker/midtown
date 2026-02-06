@@ -222,6 +222,20 @@ impl MermaidCache {
         let hash = content_hash(mermaid_source);
         self.pending.contains_key(&hash)
     }
+
+    /// Insert a pre-rendered image into the cache (for testing)
+    #[cfg(test)]
+    pub fn insert_cached(&mut self, mermaid_source: &str, image: RenderedImage) {
+        let hash = content_hash(mermaid_source);
+        self.images.insert(hash, image);
+    }
+
+    /// Mark a source as pending (for testing)
+    #[cfg(test)]
+    pub fn insert_pending(&mut self, mermaid_source: &str) {
+        let hash = content_hash(mermaid_source);
+        self.pending.insert(hash, ());
+    }
 }
 
 /// Render mermaid source to PNG using selkie-rs (pure Rust, no external process)

@@ -237,4 +237,68 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_render_fullscreen_image_public_api() {
+        // Test the public render_fullscreen_image() entry point which delegates
+        // to render_fullscreen_image_inner() with is_inside_tmux() auto-detection.
+        //
+        // SAFETY: env var mutation is not thread-safe; run with --test-threads=1
+        // Combined into one test to avoid races with test_is_inside_tmux_detection.
+        let original = std::env::var("TMUX").ok();
+
+        // --- Without TMUX ---
+        unsafe {
+            std::env::remove_var("TMUX");
+        }
+
+        let mut buf = Vec::new();
+        let png_data = vec![0x89, b'P', b'N', b'G'];
+        render_fullscreen_image(&mut buf, &png_data).unwrap();
+
+        let output = String::from_utf8_lossy(&buf);
+        assert!(
+            output.contains("\x1b_G"),
+            "Public API should produce Kitty APC sequence"
+        );
+        assert!(
+            !output.contains("\x1bPtmux;"),
+            "Without TMUX env, should NOT wrap in DCS passthrough"
+        );
+
+        // --- With TMUX ---
+        unsafe {
+            std::env::set_var("TMUX", "/tmp/tmux-1000/default,12345,0");
+        }
+
+        let mut buf = Vec::new();
+        render_fullscreen_image(&mut buf, &png_data).unwrap();
+
+        let output = String::from_utf8_lossy(&buf);
+        assert!(
+            output.contains("\x1bPtmux;"),
+            "With TMUX env, should wrap in DCS passthrough"
+        );
+        assert!(
+            output.contains("\x1b\x1b_G"),
+            "With TMUX env, should have doubled ESC before APC"
+        );
+
+        // --- Empty data via public API ---
+        let mut buf = Vec::new();
+        render_fullscreen_image(&mut buf, &[]).unwrap();
+        assert!(
+            buf.is_empty(),
+            "Empty data should produce no output via public API"
+        );
+
+        // Restore original
+        unsafe {
+            if let Some(val) = original {
+                std::env::set_var("TMUX", val);
+            } else {
+                std::env::remove_var("TMUX");
+            }
+        }
+    }
 }
