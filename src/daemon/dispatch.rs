@@ -745,6 +745,27 @@ pub(super) fn spawn_for_pending_tasks(
     // with pre-existing tasks or tasks where the Lead manually set an owner.
     let pending_with_owners = &snap.pending_tasks_with_owners;
     for (task_id, task_subject, owner) in pending_with_owners.iter() {
+        // Skip tasks whose referenced PR is already merged. These are stale —
+        // the work is done (PR merged) but the task wasn't auto-completed.
+        if let Some(pr_num_str) = crate::tasks::extract_pr_number(task_subject)
+            && let Ok(pr_num) = pr_num_str.parse::<u64>()
+            && snap.merged_pr_numbers.contains(&pr_num)
+        {
+            info!(
+                "Auto-completing stale task #{}: PR #{} has been merged",
+                task_id, pr_num
+            );
+            effects.push(Effect::CompleteTask {
+                task_id: task_id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            effects.push(Effect::ClearBlockedBy {
+                completed_task_id: task_id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            continue;
+        }
+
         // Check nudge cooldown for this task
         let task_key = format!("pending-{}", task_id);
         let on_nudge_cooldown = {
@@ -904,6 +925,26 @@ pub(super) fn spawn_for_pending_tasks(
                 "Task #{} already has in-flight spawn, skipping duplicate",
                 task.id
             );
+            continue;
+        }
+
+        // Skip tasks whose referenced PR is already merged.
+        if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(task)
+            && let Ok(pr_num) = pr_num_str.parse::<u64>()
+            && snap.merged_pr_numbers.contains(&pr_num)
+        {
+            info!(
+                "Auto-completing stale task #{}: PR #{} has been merged",
+                task.id, pr_num
+            );
+            effects.push(Effect::CompleteTask {
+                task_id: task.id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            effects.push(Effect::ClearBlockedBy {
+                completed_task_id: task.id.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
             continue;
         }
 

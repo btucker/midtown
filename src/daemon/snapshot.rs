@@ -80,6 +80,9 @@ pub struct WorldSnapshot {
     pub coworkers_with_open_prs: HashSet<String>,
     /// Coworkers whose PR was recently merged.
     pub coworkers_with_merged_prs: HashSet<String>,
+    /// PR numbers of recently merged PRs. Used by task dispatch to skip
+    /// tasks that reference a merged PR (e.g., "Address review feedback on PR #709").
+    pub merged_pr_numbers: HashSet<u64>,
     /// Coworkers whose open PR has all CI checks passing (eligible for PR break).
     pub ci_passed_pr_coworkers: HashSet<String>,
     /// Coworkers whose open PR has CI passed AND has review feedback to address.
@@ -299,6 +302,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .collect();
     let coworkers_with_merged_prs: HashSet<String> =
         super::pr::get_coworkers_with_merged_prs(state);
+    // Merged PR numbers are populated as a side effect of the above call.
+    let merged_pr_numbers = super::pr::get_merged_pr_numbers(state);
     let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review) = {
         let cache = state.pr_coworker_cache.read().unwrap();
         (
@@ -404,6 +409,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         pending_tasks_without_owners,
         coworkers_with_open_prs,
         coworkers_with_merged_prs,
+        merged_pr_numbers,
         ci_passed_pr_coworkers,
         review_feedback_pr_coworkers,
         pending_task_owners,
@@ -528,6 +534,7 @@ mod tests {
             pending_tasks_without_owners: vec![],
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
@@ -609,6 +616,7 @@ mod tests {
             pending_tasks_without_owners: vec![],
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),

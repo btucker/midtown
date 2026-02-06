@@ -108,11 +108,15 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
             "--limit",
             "20",
             "--json",
-            "headRefName",
+            "headRefName,number",
         ])
         .output();
 
-    let (coworker_names, branch_names): (HashSet<String>, HashSet<String>) = match output {
+    let (coworker_names, branch_names, pr_numbers): (
+        HashSet<String>,
+        HashSet<String>,
+        HashSet<u64>,
+    ) = match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
@@ -128,19 +132,23 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
                     .iter()
                     .filter_map(|b| coworker_from_branch(b))
                     .collect();
-                (coworkers, branches)
+                let numbers: HashSet<u64> = prs
+                    .iter()
+                    .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+                    .collect();
+                (coworkers, branches, numbers)
             } else {
-                (HashSet::new(), HashSet::new())
+                (HashSet::new(), HashSet::new(), HashSet::new())
             }
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
-            (HashSet::new(), HashSet::new())
+            (HashSet::new(), HashSet::new(), HashSet::new())
         }
         Err(e) => {
             warn!("Failed to execute gh pr list (merged): {}", e);
-            (HashSet::new(), HashSet::new())
+            (HashSet::new(), HashSet::new(), HashSet::new())
         }
     };
 
@@ -149,6 +157,7 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
         let mut cache = state.pr_coworker_cache.write().unwrap();
         cache.merged_pr_owners = coworker_names.clone();
         cache.merged_pr_branches = branch_names;
+        cache.merged_pr_numbers = pr_numbers;
     }
     {
         let mut cooldowns = state.cooldowns.lock().unwrap();
@@ -156,6 +165,15 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
     }
 
     coworker_names
+}
+
+/// Get PR numbers of recently merged PRs from cache.
+///
+/// Used by task dispatch to skip tasks referencing merged PRs.
+/// Data is populated by `get_coworkers_with_merged_prs()` as a side effect.
+pub(super) fn get_merged_pr_numbers(state: &DaemonState) -> HashSet<u64> {
+    let cache = state.pr_coworker_cache.read().unwrap();
+    cache.merged_pr_numbers.clone()
 }
 
 /// Compute a time-aware hash of PR data for caching purposes.
