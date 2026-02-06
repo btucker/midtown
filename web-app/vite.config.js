@@ -55,4 +55,7 @@ export default defineConfig({
   build: {
     emptyOutDir: true,
   },
+  test: {
+    exclude: ['e2e/**', 'node_modules/**'],
+  },
 })
