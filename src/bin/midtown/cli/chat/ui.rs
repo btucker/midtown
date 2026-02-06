@@ -718,6 +718,35 @@ struct ImagePlacement {
     png_data: Vec<u8>,
 }
 
+/// Resolve an `ImagePlacement` to screen coordinates, returning an `InlineImage`
+/// positioned correctly within the chat panel.
+///
+/// The image is horizontally offset by the difference between the panel width
+/// and the image column count (i.e., the timestamp gutter), so that it aligns
+/// with the message content rather than overlapping the gutter.
+///
+/// Returns `None` if the image's start line falls outside the visible window.
+fn resolve_image_placement(
+    placement: &ImagePlacement,
+    inner: Rect,
+    truncation_offset: usize,
+) -> Option<InlineImage> {
+    let start = placement.line_index;
+    if start >= truncation_offset && start < truncation_offset + inner.height as usize {
+        let screen_y = inner.y + (start - truncation_offset) as u16;
+        let indent = inner.width.saturating_sub(placement.cols);
+        Some(InlineImage {
+            x: inner.x + indent,
+            y: screen_y,
+            cols: placement.cols,
+            rows: placement.rows.min(inner.y + inner.height - screen_y),
+            png_data: placement.png_data.clone(),
+        })
+    } else {
+        None
+    }
+}
+
 /// Draw the chat panel showing messages
 ///
 /// Returns inline images to be rendered after ratatui draws using
@@ -829,17 +858,8 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<InlineImage>
     // Resolve image placements to screen coordinates after truncation
     let mut inline_images = Vec::new();
     for placement in &image_placements {
-        // Check if this image's start line is in the visible window
-        let start = placement.line_index;
-        if start >= truncation_offset && start < truncation_offset + inner.height as usize {
-            let screen_y = inner.y + (start - truncation_offset) as u16;
-            inline_images.push(InlineImage {
-                x: inner.x,
-                y: screen_y,
-                cols: placement.cols,
-                rows: placement.rows.min(inner.y + inner.height - screen_y),
-                png_data: placement.png_data.clone(),
-            });
+        if let Some(image) = resolve_image_placement(placement, inner, truncation_offset) {
+            inline_images.push(image);
         }
     }
 
@@ -2647,5 +2667,85 @@ mod tests {
     #[test]
     fn test_format_duration_estimate_less_than_one_minute() {
         assert_eq!(format_duration_estimate(10.0), "~<1m left");
+    }
+
+    #[test]
+    fn test_resolve_image_placement_x_offset_by_gutter() {
+        // Image placement should be horizontally offset by the gutter width
+        // so that it aligns with message content, not the timestamp column.
+        let inner = Rect::new(1, 2, 80, 40);
+        let content_width = (80 - TIMESTAMP_GUTTER_WIDTH) as u16; // 73
+
+        let placement = ImagePlacement {
+            line_index: 5,
+            rows: 10,
+            cols: content_width,
+            png_data: vec![0x89, b'P', b'N', b'G'],
+        };
+
+        let image = resolve_image_placement(&placement, inner, 0).unwrap();
+
+        // x should be inner.x + gutter, not inner.x
+        let expected_x = inner.x + TIMESTAMP_GUTTER_WIDTH as u16;
+        assert_eq!(
+            image.x, expected_x,
+            "Image x should be offset by timestamp gutter ({}), got {} (inner.x={})",
+            TIMESTAMP_GUTTER_WIDTH, image.x, inner.x
+        );
+        assert_eq!(image.y, inner.y + 5);
+        assert_eq!(image.cols, content_width);
+    }
+
+    #[test]
+    fn test_resolve_image_placement_outside_visible_window() {
+        let inner = Rect::new(0, 0, 80, 20);
+
+        let placement = ImagePlacement {
+            line_index: 25, // beyond visible window
+            rows: 5,
+            cols: 73,
+            png_data: vec![1, 2, 3],
+        };
+
+        // Image at line 25 with truncation_offset=0 and height=20 -> outside window
+        assert!(resolve_image_placement(&placement, inner, 0).is_none());
+    }
+
+    #[test]
+    fn test_resolve_image_placement_with_truncation() {
+        let inner = Rect::new(2, 3, 80, 20);
+        let content_width = (80 - TIMESTAMP_GUTTER_WIDTH) as u16;
+
+        let placement = ImagePlacement {
+            line_index: 30,
+            rows: 8,
+            cols: content_width,
+            png_data: vec![0x89, b'P', b'N', b'G'],
+        };
+
+        // truncation_offset=25 means lines 25..45 are visible
+        let image = resolve_image_placement(&placement, inner, 25).unwrap();
+
+        assert_eq!(image.x, inner.x + TIMESTAMP_GUTTER_WIDTH as u16);
+        // line 30 in original -> offset 5 in visible -> screen_y = inner.y + 5
+        assert_eq!(image.y, inner.y + 5);
+    }
+
+    #[test]
+    fn test_resolve_image_placement_rows_clamped_to_panel_bottom() {
+        let inner = Rect::new(0, 0, 80, 20);
+        let content_width = (80 - TIMESTAMP_GUTTER_WIDTH) as u16;
+
+        let placement = ImagePlacement {
+            line_index: 15,
+            rows: 10, // Would extend 5 rows past panel bottom
+            cols: content_width,
+            png_data: vec![0x89, b'P', b'N', b'G'],
+        };
+
+        let image = resolve_image_placement(&placement, inner, 0).unwrap();
+
+        // Image starts at row 15, panel ends at row 20, so only 5 rows fit
+        assert_eq!(image.rows, 5, "Rows should be clamped to panel bottom");
     }
 }
