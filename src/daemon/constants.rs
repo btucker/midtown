@@ -84,6 +84,12 @@ pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 /// Only spawn one coworker per tick, with a minimum gap between spawns.
 pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
 
+/// Grace period after a coworker stops before orphan recovery kicks in (60 seconds).
+/// When a coworker completes work and goes idle → shutdown, the task may not yet
+/// be marked done. This grace period prevents false recovery by giving the system
+/// time to process the task completion (e.g., PR auto-complete, manual status update).
+pub(super) const ORPHAN_RECOVERY_GRACE_PERIOD: Duration = Duration::from_secs(60);
+
 /// Cooldown after a coworker spawn failure before retrying (2 minutes).
 /// Prevents infinite respawn loops when a coworker's environment is broken
 /// (missing worktree, bad session, etc.). The task is reset to pending so

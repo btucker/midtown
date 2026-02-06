@@ -45,6 +45,18 @@ pub(super) fn check_and_recover_orphans(
         return vec![];
     }
 
+    // Compute recently-stopped coworkers (within grace period).
+    // When a coworker completes work and goes idle → shutdown, the task may
+    // not yet be marked done. This grace period prevents false orphan recovery
+    // by giving the system time to process the task completion.
+    let grace_period = chrono::Duration::seconds(ORPHAN_RECOVERY_GRACE_PERIOD.as_secs() as i64);
+    let recently_stopped: HashSet<String> = snap
+        .coworker_stop_times
+        .iter()
+        .filter(|(_, stop_time)| snap.now_utc.signed_duration_since(**stop_time) < grace_period)
+        .map(|(name, _)| name.clone())
+        .collect();
+
     // Decide which orphan (if any) to recover using pure decision function
     let recovery = crate::rules::decide_orphan_recovery(
         &snap.in_progress_tasks,
@@ -52,6 +64,7 @@ pub(super) fn check_and_recover_orphans(
         snap.is_at_dev_limit,
         &snap.coworkers_with_open_prs,
         &snap.review_feedback_pr_coworkers,
+        &recently_stopped,
     );
 
     let Some(recovery) = recovery else {
@@ -743,6 +756,12 @@ pub(super) fn spawn_for_pending_tasks(
         // about main task list updates — they have their own review assignments)
         let is_owner_reviewer = snap.active_reviewers.contains(&owner.to_lowercase());
 
+        // Check if the owner already has an in_progress task (one-task-per-coworker invariant)
+        let has_in_progress_task = snap
+            .in_progress_tasks
+            .iter()
+            .any(|(_, _, task_owner)| task_owner.to_lowercase() == owner.to_lowercase());
+
         // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
             task_id,
@@ -752,6 +771,7 @@ pub(super) fn spawn_for_pending_tasks(
             snap.is_at_dev_limit,
             on_nudge_cooldown,
             is_owner_reviewer,
+            has_in_progress_task,
         );
 
         match action {

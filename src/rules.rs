@@ -1694,6 +1694,7 @@ pub(crate) enum PendingTaskAction {
 /// # Arguments
 /// * `is_owner_reviewer` - If true, the owner is an active reviewer. Reviewers should
 ///   not be nudged about main task list updates — they have their own review work.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decide_pending_task_action(
     task_id: &str,
     task_subject: &str,
@@ -1702,6 +1703,7 @@ pub(crate) fn decide_pending_task_action(
     at_dev_limit: bool,
     on_nudge_cooldown: bool,
     is_owner_reviewer: bool,
+    has_in_progress_task: bool,
 ) -> PendingTaskAction {
     // Skip empty or lead-owned tasks
     if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
@@ -1715,6 +1717,19 @@ pub(crate) fn decide_pending_task_action(
         return PendingTaskAction::Skip {
             reason: format!(
                 "task #{} owner '{}' is not a valid coworker name",
+                task_id, owner
+            ),
+        };
+    }
+
+    // Skip coworkers that already have an in_progress task.
+    // Enforces the one-task-per-coworker invariant: never assign a new task
+    // to a coworker that already owns an in_progress task. This prevents the
+    // double-assignment bug where a coworker ends up with two active tasks.
+    if has_in_progress_task {
+        return PendingTaskAction::Skip {
+            reason: format!(
+                "task #{} owner '{}' already has an in_progress task",
                 task_id, owner
             ),
         };
@@ -1786,6 +1801,7 @@ pub(crate) fn decide_orphan_recovery(
     at_dev_limit: bool,
     coworkers_with_open_prs: &HashSet<String>,
     review_feedback_pr_coworkers: &HashSet<String>,
+    recently_stopped: &HashSet<String>,
 ) -> Option<OrphanRecovery> {
     if at_dev_limit {
         return None;
@@ -1803,6 +1819,13 @@ pub(crate) fn decide_orphan_recovery(
             continue;
         }
         if active_names.contains(&owner_lower) {
+            continue;
+        }
+        // Skip coworkers that recently stopped (within grace period).
+        // When a coworker completes work and goes idle → shutdown, the task may
+        // not yet be marked done. Without this grace period, orphan recovery
+        // would immediately respawn the coworker for a task they already finished.
+        if recently_stopped.contains(&owner_lower) {
             continue;
         }
         // Skip coworkers whose PR is open and has no review feedback.
@@ -3244,7 +3267,7 @@ mod tests {
     fn pending_task_nudges_active_owner() {
         let names = set(&["york"]);
         let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false);
+            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false, false);
         assert!(matches!(action, PendingTaskAction::NudgeOwner { .. }));
     }
 
@@ -3252,7 +3275,7 @@ mod tests {
     fn pending_task_skips_nudge_on_cooldown() {
         let names = set(&["york"]);
         let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, false, true, false);
+            decide_pending_task_action("42", "Fix bug", "york", &names, false, true, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
@@ -3260,7 +3283,7 @@ mod tests {
     fn pending_task_spawns_inactive_owner() {
         let names = set(&["amsterdam"]);
         let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false);
+            decide_pending_task_action("42", "Fix bug", "york", &names, false, false, false, false);
         assert_eq!(
             action,
             PendingTaskAction::SpawnOwner {
@@ -3275,7 +3298,7 @@ mod tests {
     fn pending_task_skips_at_dev_limit() {
         let names = set(&["amsterdam"]);
         let action =
-            decide_pending_task_action("42", "Fix bug", "york", &names, true, false, false);
+            decide_pending_task_action("42", "Fix bug", "york", &names, true, false, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
@@ -3283,14 +3306,15 @@ mod tests {
     fn pending_task_skips_lead_owner() {
         let names = set(&["york"]);
         let action =
-            decide_pending_task_action("42", "Fix bug", "lead", &names, false, false, false);
+            decide_pending_task_action("42", "Fix bug", "lead", &names, false, false, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
     #[test]
     fn pending_task_skips_empty_owner() {
         let names = set(&["york"]);
-        let action = decide_pending_task_action("42", "Fix bug", "", &names, false, false, false);
+        let action =
+            decide_pending_task_action("42", "Fix bug", "", &names, false, false, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
     }
 
@@ -3299,8 +3323,52 @@ mod tests {
         // "fix" is not a valid coworker name (not an avenue name)
         let names = set(&["york"]);
         let action =
-            decide_pending_task_action("42", "Fix bug", "fix", &names, false, false, false);
+            decide_pending_task_action("42", "Fix bug", "fix", &names, false, false, false, false);
         assert!(matches!(action, PendingTaskAction::Skip { .. }));
+    }
+
+    #[test]
+    fn pending_task_skips_owner_with_in_progress_task() {
+        // Bug: coworker york has an in_progress task (#832). The daemon creates
+        // a new task (#835) and assigns it to york. York now has two in_progress
+        // tasks, violating the one-task-per-coworker invariant.
+        //
+        // Fix: skip task assignment for coworkers that already have an in_progress task.
+        let names = set(&[]);
+        let action = decide_pending_task_action(
+            "835",
+            "Fix false orphan recovery",
+            "york",
+            &names,
+            false,
+            false,
+            false,
+            true, // has_in_progress_task = true
+        );
+        assert!(
+            matches!(action, PendingTaskAction::Skip { .. }),
+            "Should not assign a new task to a coworker that already has an in_progress task"
+        );
+    }
+
+    #[test]
+    fn pending_task_spawns_owner_without_in_progress_task() {
+        // Normal case: owner has no in_progress tasks, should be spawned
+        let names = set(&[]);
+        let action = decide_pending_task_action(
+            "835",
+            "Fix false orphan recovery",
+            "york",
+            &names,
+            false,
+            false,
+            false,
+            false, // has_in_progress_task = false
+        );
+        assert!(
+            matches!(action, PendingTaskAction::SpawnOwner { .. }),
+            "Should spawn owner when they have no in_progress task"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3312,7 +3380,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert_eq!(
             result,
             Some(OrphanRecovery {
@@ -3328,7 +3396,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["york"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3337,7 +3405,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3346,7 +3414,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "lead".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -3362,7 +3430,7 @@ mod tests {
         ];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         assert_eq!(result.unwrap().task_id, "1");
     }
 
@@ -3373,7 +3441,7 @@ mod tests {
         let tasks = vec![("42".to_string(), "Fix bug".to_string(), "fix".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         // Should be None because "fix" is not a valid coworker name
         assert!(result.is_none());
     }
@@ -3384,7 +3452,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "YORK".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
         // Should return recovery because "YORK" maps to valid coworker "york"
         assert!(result.is_some());
         assert_eq!(result.unwrap().owner, "YORK");
@@ -3410,6 +3478,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
         );
         // Should NOT recover — coworker is correctly waiting for review
         assert!(
@@ -3437,6 +3506,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
         );
         // SHOULD recover — there's actionable review feedback
         assert!(result.is_some());
@@ -3465,6 +3535,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR. CI failures
         // are handled by the webhook/PR poll pathway, not orphan recovery.
@@ -3492,6 +3563,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
         );
         // SHOULD recover — no PR means work isn't done yet
         assert!(result.is_some());
@@ -3526,6 +3598,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR and no review feedback.
         // CI status is unknown (not cached yet), but the safe default should be
@@ -3565,6 +3638,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR. Even though CI status
         // is unknown, the safe default is to wait for the PR poll to determine
@@ -3573,6 +3647,53 @@ mod tests {
             result.is_none(),
             "Should not recover coworker with open PR even when CI status is not yet cached"
         );
+    }
+
+    #[test]
+    fn orphan_recovery_skips_recently_stopped_coworker() {
+        // Bug: coworker completes work, goes idle, gets shut down. The task
+        // is still in_progress because it hasn't been marked done yet. Orphan
+        // recovery fires and respawns the coworker for a task it already finished.
+        //
+        // Fix: skip recovery for coworkers that recently stopped (within a grace
+        // period), giving the system time to mark the task complete.
+        let tasks = vec![(
+            "832".to_string(),
+            "Review feedback".to_string(),
+            "york".to_string(),
+        )];
+        let active = set(&[]); // york is not active (just shut down)
+        let empty = HashSet::new();
+        let recently_stopped = set(&["york"]); // york stopped within grace period
+
+        let result =
+            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        assert!(
+            result.is_none(),
+            "Should not recover coworker that recently stopped (within grace period)"
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_recovers_after_grace_period() {
+        // After the grace period expires, the coworker should be recovered
+        // if their task is still in_progress and they're not active.
+        let tasks = vec![(
+            "832".to_string(),
+            "Review feedback".to_string(),
+            "york".to_string(),
+        )];
+        let active = set(&[]); // york is not active
+        let empty = HashSet::new();
+        let recently_stopped = set(&[]); // york NOT in recently_stopped (grace period expired)
+
+        let result =
+            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        assert!(
+            result.is_some(),
+            "Should recover coworker after grace period expires"
+        );
+        assert_eq!(result.unwrap().task_id, "832");
     }
 
     // -----------------------------------------------------------------------
@@ -5599,6 +5720,7 @@ Now implementing the fix.
             false, // not at dev limit
             false, // not on cooldown
             true,  // IS active reviewer
+            false, // no in_progress task
         );
 
         assert!(
@@ -5630,6 +5752,7 @@ Now implementing the fix.
             false, // not at dev limit
             false, // not on cooldown
             false, // NOT a reviewer
+            false, // no in_progress task
         );
 
         assert!(
@@ -5652,6 +5775,7 @@ Now implementing the fix.
             false, // not at dev limit
             false, // not on cooldown
             false, // NOT a reviewer
+            false, // no in_progress task
         );
 
         assert!(
@@ -5675,6 +5799,7 @@ Now implementing the fix.
             false, // not at dev limit
             false, // not on cooldown
             true,  // IS reviewer (even though inactive)
+            false, // no in_progress task
         );
 
         assert!(
