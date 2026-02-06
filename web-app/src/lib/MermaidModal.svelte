@@ -84,6 +84,7 @@
   function handleTouchStart(e) {
     if (e.touches.length === 2) {
       e.preventDefault()
+      dragging = false
       const t0 = e.touches[0]
       const t1 = e.touches[1]
       lastPinchDist = getTouchDist(t0, t1)
@@ -134,13 +135,21 @@
     if (e.touches.length < 2) {
       lastPinchDist = 0
     }
-    if (e.touches.length === 0) {
+    if (e.touches.length === 1) {
+      // Re-anchor drag state when transitioning from pinch back to single touch
+      dragging = true
+      dragStartX = e.touches[0].clientX
+      dragStartY = e.touches[0].clientY
+      dragStartTranslateX = translateX
+      dragStartTranslateY = translateY
+    } else if (e.touches.length === 0) {
       dragging = false
     }
   }
 
   function handleKeyDown(e) {
     if (e.key === 'Escape') {
+      e.stopPropagation()
       onclose()
     }
   }
