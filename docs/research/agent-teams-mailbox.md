@@ -171,8 +171,8 @@ fn write_to_mailbox(agent_name: &str, team_name: &str, message: MailboxMessage) 
     let inbox_path = inbox_dir.join(format!("{}.json", agent_name));
     let lock_path = inbox_dir.join(format!("{}.json.lock", agent_name));
 
-    // Acquire file lock
-    let _lock = file_lock(&lock_path)?;
+    // Acquire lock using lockfile protocol (mkdir-based, matching Claude Code's `lockfile` npm package)
+    let _lock = lockfile_lock(&lock_path)?;
 
     // Read existing messages
     let mut messages: Vec<MailboxMessage> = if inbox_path.exists() {
@@ -232,7 +232,7 @@ Before spawning any coworker, create `~/.claude/teams/{team-name}/config.json`:
 
 #### 5.3 Mailbox Writer Module (new: src/mailbox.rs)
 
-A new module implementing the mailbox write protocol in Rust, using `fs2` for file locking (already a dependency for channel.rs).
+A new module implementing the mailbox write protocol in Rust. **Must use the `lockfile` npm package's locking protocol** (mkdir-based `.lock` directory creation), NOT `fs2` OS-level file locks. Claude Code's reader uses `lockfile`, so the daemon writer must match. See Section 6.2 for details on the two locking mechanisms.
 
 #### 5.4 Dual Delivery Strategy
 
@@ -248,9 +248,11 @@ The daemon could use both channels:
 - When idle, there's a separate polling interval (implementation-specific, likely 500ms-1s)
 
 #### 6.2 Lock Contention
-- The `lockfile` npm package and Rust's `fs2` use different locking mechanisms
-- `lockfile` uses `.lock` files (advisory lock pattern), while `fs2` uses OS-level file locks
-- We'd need to match the `lockfile` package's locking protocol: create `{path}.lock` as a lockfile
+- **The daemon must use the `lockfile` npm package's locking protocol**, not `fs2` OS-level locks. These are fundamentally different mechanisms:
+  - `lockfile` (Claude Code's reader): Creates a `.lock` **directory** via `mkdir` (atomic on POSIX). Lock is held while the directory exists. Stale lock detection uses mtime.
+  - `fs2` (midtown's channel.rs): Uses OS-level `flock()`/`fcntl()` file locks. Invisible to `lockfile`-based readers.
+- Using `fs2` would provide **no mutual exclusion** with Claude Code — both sides would read/write simultaneously, risking data corruption.
+- Implementation: Create `{path}.lock` directory with `mkdir`, remove on unlock. Handle stale locks (check mtime, remove if older than threshold).
 
 #### 6.3 Agent Name Sanitization
 - The `HGT()` function sanitizes agent names for use as filenames
