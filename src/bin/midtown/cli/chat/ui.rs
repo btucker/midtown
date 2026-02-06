@@ -1054,37 +1054,47 @@ fn render_message_with_mermaid(
                     .next()
                     .unwrap_or("diagram");
 
-                if mermaid_cache.get_cached(source).is_some() {
-                    // Image is ready: show a placeholder.
-                    // Only the first 9 diagrams get numbered shortcuts (keys 1-9).
+                let indent = " ".repeat(indent_width);
+
+                if let Some(diagram) = mermaid_cache.get_cached(source) {
+                    // Diagram is ready: show inline ASCII art with separators
                     let diagram_num = diagram_sources.len() + 1;
                     diagram_sources.push(source.clone());
 
-                    let placeholder = if diagram_num <= 9 {
-                        format!(
-                            "{}[{}] Diagram: {} (press {} to view)",
-                            " ".repeat(indent_width),
-                            diagram_num,
-                            diagram_type,
-                            diagram_num,
-                        )
+                    // Top separator: --- graph type ---
+                    let top_sep = format!("{}--- {} ---", indent, diagram_type);
+                    lines.push(Line::from(Span::styled(
+                        top_sep,
+                        Style::default().fg(Color::DarkGray),
+                    )));
+
+                    // ASCII art lines (cyan, indented, truncated to content_width)
+                    for art_line in diagram.ascii_art.lines() {
+                        let truncated = if art_line.len() > content_width {
+                            &art_line[..content_width]
+                        } else {
+                            art_line
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{}{}", indent, truncated),
+                            Style::default().fg(Color::Cyan),
+                        )));
+                    }
+
+                    // Bottom separator with browser hint
+                    let bottom_sep = if diagram_num <= 9 {
+                        format!("{}--- press {} to open in browser ---", indent, diagram_num,)
                     } else {
-                        format!("{}    Diagram: {}", " ".repeat(indent_width), diagram_type,)
+                        format!("{}--- {} ---", indent, diagram_type)
                     };
                     lines.push(Line::from(Span::styled(
-                        placeholder,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
+                        bottom_sep,
+                        Style::default().fg(Color::DarkGray),
                     )));
                     is_first_content_line = false;
                 } else if mermaid_cache.is_pending(source) {
                     // Rendering in progress: show placeholder
-                    let placeholder = format!(
-                        "{}[rendering {}...]",
-                        " ".repeat(indent_width),
-                        diagram_type
-                    );
+                    let placeholder = format!("{}[rendering {}...]", indent, diagram_type);
                     lines.push(Line::from(Span::styled(
                         placeholder,
                         Style::default()
@@ -1094,8 +1104,7 @@ fn render_message_with_mermaid(
                     is_first_content_line = false;
                 } else {
                     // Not yet queued: show placeholder and queue for rendering
-                    let placeholder =
-                        format!("{}[{} diagram]", " ".repeat(indent_width), diagram_type);
+                    let placeholder = format!("{}[{} diagram]", indent, diagram_type);
                     lines.push(Line::from(Span::styled(
                         placeholder,
                         Style::default()
@@ -2633,12 +2642,11 @@ mod tests {
 
     // --- Mermaid placeholder rendering tests ---
 
-    /// Helper to create a dummy RenderedImage for cache injection
-    fn dummy_rendered_image() -> mermaid::RenderedImage {
-        mermaid::RenderedImage {
-            png_data: vec![0x89, b'P', b'N', b'G'],
-            width: 800,
-            height: 600,
+    /// Helper to create a dummy RenderedDiagram for cache injection
+    fn dummy_rendered_diagram() -> mermaid::RenderedDiagram {
+        mermaid::RenderedDiagram {
+            ascii_art: "┌───────┐\n│ Hello │\n└───────┘".to_string(),
+            svg: "<svg>test</svg>".to_string(),
         }
     }
 
@@ -2654,10 +2662,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_diagram_shows_numbered_placeholder() {
+    fn test_cached_diagram_shows_inline_ascii_art() {
         let source = "graph TD\n  A-->B";
         let mut cache = MermaidCache::new();
-        cache.insert_cached(source, dummy_rendered_image());
+        cache.insert_cached(source, dummy_rendered_diagram());
 
         let msg = test_message("ignored"); // content unused; segments drive rendering
         let segments = vec![ContentSegment::Mermaid(source.to_string())];
@@ -2679,28 +2687,43 @@ mod tests {
             &mut mermaid_to_render,
         );
 
-        // Find the placeholder line (skip sender header)
-        let placeholder_text: String = lines
+        let all_text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect::<Vec<_>>()
-            .join("");
+            .join("\n");
+
+        // Should contain top separator with diagram type
         assert!(
-            placeholder_text.contains("[1] Diagram: graph (press 1 to view)"),
-            "Expected numbered placeholder, got: {}",
-            placeholder_text
+            all_text.contains("--- graph ---"),
+            "Expected top separator, got: {}",
+            all_text
+        );
+        // Should contain ASCII art content
+        assert!(
+            all_text.contains("Hello"),
+            "Expected ASCII art content, got: {}",
+            all_text
+        );
+        // Should contain bottom separator with browser hint
+        assert!(
+            all_text.contains("--- press 1 to open in browser ---"),
+            "Expected bottom separator with hint, got: {}",
+            all_text
         );
 
-        // Placeholder should be styled Cyan + Bold
-        let placeholder_line = lines.last().unwrap();
-        assert_eq!(placeholder_line.spans[0].style.fg, Some(Color::Cyan));
-        assert!(
-            placeholder_line.spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
+        // Bottom separator should be styled DarkGray
+        let bottom_line = lines.last().unwrap();
+        assert_eq!(bottom_line.spans[0].style.fg, Some(Color::DarkGray));
+
+        // ASCII art lines should be Cyan
+        // Find a line with ASCII art (contains box drawing chars)
+        let ascii_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("Hello")));
+        assert!(ascii_line.is_some(), "Should have an ASCII art line");
+        assert_eq!(ascii_line.unwrap().spans[0].style.fg, Some(Color::Cyan));
     }
 
     #[test]
@@ -2807,7 +2830,7 @@ mod tests {
             .collect();
         let mut cache = MermaidCache::new();
         for s in &sources {
-            cache.insert_cached(s, dummy_rendered_image());
+            cache.insert_cached(s, dummy_rendered_diagram());
         }
 
         let msg = test_message("ignored");
@@ -2836,16 +2859,16 @@ mod tests {
         // Should have 3 diagram sources tracked
         assert_eq!(diagram_sources.len(), 3);
 
-        // Check sequential numbering in placeholder text
+        // Check sequential numbering in bottom separators
         let all_text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(all_text.contains("[1] Diagram: graph (press 1 to view)"));
-        assert!(all_text.contains("[2] Diagram: graph (press 2 to view)"));
-        assert!(all_text.contains("[3] Diagram: graph (press 3 to view)"));
+        assert!(all_text.contains("--- press 1 to open in browser ---"));
+        assert!(all_text.contains("--- press 2 to open in browser ---"));
+        assert!(all_text.contains("--- press 3 to open in browser ---"));
     }
 
     #[test]
@@ -2855,7 +2878,7 @@ mod tests {
             .collect();
         let mut cache = MermaidCache::new();
         for s in &sources {
-            cache.insert_cached(s, dummy_rendered_image());
+            cache.insert_cached(s, dummy_rendered_diagram());
         }
 
         let msg = test_message("ignored");
@@ -2891,26 +2914,28 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Diagrams 1-9 should have numbered shortcuts
+        // Diagrams 1-9 should have numbered browser hints
         for i in 1..=9 {
             assert!(
-                all_text.contains(&format!("[{}] Diagram: graph (press {} to view)", i, i)),
-                "Diagram {} should have a numbered shortcut",
+                all_text.contains(&format!("--- press {} to open in browser ---", i)),
+                "Diagram {} should have a numbered browser hint",
                 i
             );
         }
 
-        // Diagrams 10-11 should have unnumbered placeholders
-        // Count lines with numbered "[N] Diagram:" pattern vs total "Diagram:" occurrences
-        let numbered_count = all_text.matches("] Diagram: graph (press").count();
-        assert_eq!(numbered_count, 9, "Only 9 diagrams should be numbered");
+        // Diagrams 10-11 should have unnumbered separators
+        let numbered_count = all_text.matches("to open in browser ---").count();
+        assert_eq!(
+            numbered_count, 9,
+            "Only 9 diagrams should have browser hints"
+        );
     }
 
     #[test]
     fn test_mixed_text_and_mermaid_segments() {
         let source = "graph TD\n  A-->B";
         let mut cache = MermaidCache::new();
-        cache.insert_cached(source, dummy_rendered_image());
+        cache.insert_cached(source, dummy_rendered_diagram());
 
         let msg = test_message("ignored");
         let segments = vec![
@@ -2943,7 +2968,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("");
         assert!(all_text.contains("Before the diagram"));
-        assert!(all_text.contains("[1] Diagram: graph (press 1 to view)"));
+        assert!(all_text.contains("--- graph ---"));
+        assert!(all_text.contains("--- press 1 to open in browser ---"));
         assert!(all_text.contains("After the diagram"));
     }
 
@@ -2959,7 +2985,7 @@ mod tests {
 
         for (source, expected_type) in test_cases {
             let mut cache = MermaidCache::new();
-            cache.insert_cached(source, dummy_rendered_image());
+            cache.insert_cached(source, dummy_rendered_diagram());
 
             let msg = test_message("ignored");
             let segments = vec![ContentSegment::Mermaid(source.to_string())];
@@ -2988,8 +3014,8 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("");
             assert!(
-                all_text.contains(&format!("Diagram: {}", expected_type)),
-                "Expected diagram type '{}' in placeholder, got: {}",
+                all_text.contains(&format!("--- {} ---", expected_type)),
+                "Expected diagram type '{}' in separator, got: {}",
                 expected_type,
                 all_text
             );
@@ -3000,10 +3026,10 @@ mod tests {
     fn test_action_message_mermaid_placeholder_extra_indent() {
         // Action messages have a "* " prefix (2 extra chars) which increases
         // the indent_width from TIMESTAMP_GUTTER_WIDTH (7) to 9.
-        // Mermaid placeholders should use this wider indent.
+        // Mermaid diagram lines (separators + ASCII art) should use this wider indent.
         let source = "graph TD\n  A-->B";
         let mut cache = MermaidCache::new();
-        cache.insert_cached(source, dummy_rendered_image());
+        cache.insert_cached(source, dummy_rendered_diagram());
 
         let msg = Message {
             id: "1".to_string(),
@@ -3031,23 +3057,32 @@ mod tests {
             &mut mermaid_to_render,
         );
 
-        // Find the placeholder line (last line after sender header)
-        let placeholder_line = lines.last().unwrap();
-        let placeholder_text: String = placeholder_line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-
         // Action messages: indent_width = TIMESTAMP_GUTTER_WIDTH + 2 = 9
-        let expected_indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + 2);
+        let action_indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + 2);
+
+        // All diagram lines (top separator, ASCII art, bottom separator) should
+        // use the wider action message indent.
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
         assert!(
-            placeholder_text.starts_with(&expected_indent),
-            "Action message placeholder should have {} chars indent, got: {:?}",
+            all_text.contains(&format!("{}--- graph ---", action_indent)),
+            "Action message top separator should have {} chars indent, got:\n{}",
             TIMESTAMP_GUTTER_WIDTH + 2,
-            placeholder_text
+            all_text
         );
-        assert!(placeholder_text.contains("[1] Diagram: graph (press 1 to view)"));
+        assert!(
+            all_text.contains(&format!(
+                "{}--- press 1 to open in browser ---",
+                action_indent
+            )),
+            "Action message bottom separator should have {} chars indent",
+            TIMESTAMP_GUTTER_WIDTH + 2,
+        );
 
         // Compare with normal text message indent
         let normal_msg = test_message("ignored");
@@ -3068,25 +3103,24 @@ mod tests {
             &mut normal_mermaid_to_render,
         );
 
-        let normal_placeholder: String = normal_lines
-            .last()
-            .unwrap()
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-
-        // Normal message indent should be 2 chars shorter than action message indent
         let normal_indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH);
+        let normal_text: String = normal_lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Normal message should use the narrower indent
         assert!(
-            normal_placeholder.starts_with(&normal_indent),
-            "Normal message should have {} chars indent",
-            TIMESTAMP_GUTTER_WIDTH
+            normal_text.contains(&format!("{}--- graph ---", normal_indent)),
+            "Normal message top separator should have {} chars indent",
+            TIMESTAMP_GUTTER_WIDTH,
         );
-        assert_eq!(
-            placeholder_text.len(),
-            normal_placeholder.len() + 2,
-            "Action message placeholder should be exactly 2 chars wider than normal due to extra indent"
+        // Verify action indent is wider: action separator should NOT appear in normal output
+        assert!(
+            !normal_text.contains(&format!("{}--- graph ---", action_indent)),
+            "Normal message should NOT have the wider action indent"
         );
     }
 }
