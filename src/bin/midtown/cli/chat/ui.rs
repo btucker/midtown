@@ -3083,9 +3083,10 @@ mod tests {
             "Normal message should have {} chars indent",
             TIMESTAMP_GUTTER_WIDTH
         );
-        assert!(
-            placeholder_text.len() > normal_placeholder.len(),
-            "Action message placeholder should be wider than normal due to extra indent"
+        assert_eq!(
+            placeholder_text.len(),
+            normal_placeholder.len() + 2,
+            "Action message placeholder should be exactly 2 chars wider than normal due to extra indent"
         );
     }
 }
