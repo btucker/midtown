@@ -211,15 +211,16 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
     }
 }
 
-/// Route an @all broadcast: nudge every active coworker and the lead, except the sender.
+/// Route an @all broadcast: nudge every running coworker and the lead, except the sender.
 fn route_at_all(state: &DaemonState, msg: &Message) {
-    let active_coworkers = state.coworkers.list();
+    // Only nudge Running coworkers — Stopping/Starting coworkers have no tmux window.
+    let running_coworkers = state.coworkers.list_running();
     let nudge_text = format!("{} said: {}", msg.from, msg.content);
 
     info!(
-        "@all broadcast from {} to {} active coworker(s) + lead",
+        "@all broadcast from {} to {} running coworker(s) + lead",
         msg.from,
-        active_coworkers.len()
+        running_coworkers.len()
     );
 
     // Nudge the lead (unless the lead sent the message)
@@ -231,8 +232,8 @@ fn route_at_all(state: &DaemonState, msg: &Message) {
         }
     }
 
-    // Nudge all active coworkers (except the sender)
-    for coworker in &active_coworkers {
+    // Nudge all running coworkers (except the sender)
+    for coworker in &running_coworkers {
         if coworker.name.eq_ignore_ascii_case(&msg.from) {
             continue;
         }
