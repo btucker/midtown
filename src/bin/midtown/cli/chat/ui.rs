@@ -15,7 +15,6 @@ use ratatui::{
 use midtown::{Message, MessageType};
 
 use super::app::{App, CiStatus, RepoStatus};
-use super::kitty::InlineImage;
 use super::mermaid::{self, ContentSegment, MermaidCache};
 
 /// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
@@ -147,10 +146,10 @@ fn repo_status_height(app: &App) -> u16 {
 
 /// Draw the main UI
 ///
-/// Returns hyperlinks and inline images that should be rendered after ratatui draws.
-/// These need to be written directly to the terminal using escape sequences,
-/// bypassing ratatui's buffer system (which doesn't support hyperlinks or images).
-pub fn draw(f: &mut Frame, app: &mut App) -> (Vec<Hyperlink>, Vec<InlineImage>) {
+/// Returns hyperlinks that should be rendered after ratatui draws.
+/// These need to be written directly to the terminal using OSC 8 escape sequences,
+/// bypassing ratatui's buffer system (which doesn't support hyperlinks).
+pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
     // Calculate dynamic kanban height based on In Progress and Review columns
     let (_pending, in_progress, _completed) = app.tasks_by_status();
     let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
@@ -170,13 +169,13 @@ pub fn draw(f: &mut Frame, app: &mut App) -> (Vec<Hyperlink>, Vec<InlineImage>) 
 
     draw_repo_status_lines(f, app, chunks[0]);
     let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
-    let images = draw_chat_panel(f, app, chunks[2]);
+    draw_chat_panel(f, app, chunks[2]);
 
     if app.usage_data.is_some() {
         draw_usage_bars(f, app, chunks[3]);
     }
 
-    (hyperlinks, images)
+    hyperlinks
 }
 
 /// Format relative time (e.g., "3 minutes ago", "2 hours ago", "1 day ago")
@@ -706,52 +705,8 @@ fn extract_identifier(s: &str) -> Option<String> {
     Some(format!("#{}", digits))
 }
 
-/// Tracks an image that needs to be rendered at a specific line position
-struct ImagePlacement {
-    /// Line index in the pre-truncation line array where the image starts
-    line_index: usize,
-    /// Number of rows the image occupies
-    rows: u16,
-    /// Number of columns the image occupies
-    cols: u16,
-    /// PNG image data
-    png_data: Vec<u8>,
-}
-
-/// Resolve an `ImagePlacement` to screen coordinates, returning an `InlineImage`
-/// positioned correctly within the chat panel.
-///
-/// The image is horizontally offset by the difference between the panel width
-/// and the image column count (i.e., the timestamp gutter), so that it aligns
-/// with the message content rather than overlapping the gutter.
-///
-/// Returns `None` if the image's start line falls outside the visible window.
-fn resolve_image_placement(
-    placement: &ImagePlacement,
-    inner: Rect,
-    truncation_offset: usize,
-) -> Option<InlineImage> {
-    let start = placement.line_index;
-    if start >= truncation_offset && start < truncation_offset + inner.height as usize {
-        let screen_y = inner.y + (start - truncation_offset) as u16;
-        let indent = inner.width.saturating_sub(placement.cols);
-        Some(InlineImage {
-            x: inner.x + indent,
-            y: screen_y,
-            cols: placement.cols,
-            rows: placement.rows.min(inner.y + inner.height - screen_y),
-            png_data: placement.png_data.clone(),
-        })
-    } else {
-        None
-    }
-}
-
 /// Draw the chat panel showing messages
-///
-/// Returns inline images to be rendered after ratatui draws using
-/// the Kitty graphics protocol.
-fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<InlineImage> {
+fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Show selection mode indicator in title
     let title = if app.selection_mode {
         " #midtown [SELECT: press 's' to exit] "
@@ -786,13 +741,14 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<InlineImage>
     let visible: Vec<Message> = app.visible_messages().to_vec();
 
     // Build lines for messages, tracking previous sender for grouping.
-    // Also collect image placements for mermaid diagrams.
     let mut lines: Vec<Line> = Vec::new();
-    let mut image_placements: Vec<ImagePlacement> = Vec::new();
     let prev_sender: Option<&str> = None;
 
     // Collect mermaid sources that need rendering (to avoid borrow conflicts)
     let mut mermaid_to_render: Vec<String> = Vec::new();
+
+    // Reset diagram index for this render pass
+    app.diagram_sources.clear();
 
     // Track previous sender by index for lifetime management
     for (idx, msg) in visible.iter().enumerate() {
@@ -827,7 +783,7 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<InlineImage>
                 user_display_name.as_deref(),
                 &app.mermaid_cache,
                 &mut lines,
-                &mut image_placements,
+                &mut app.diagram_sources,
                 &mut mermaid_to_render,
             );
         }
@@ -840,35 +796,22 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<InlineImage>
 
     // Handle line truncation based on scroll position.
     let total_lines = lines.len();
-    let truncation_offset;
     let visible_lines = if total_lines > inner.height as usize {
         if app.is_at_max_scroll() {
-            truncation_offset = 0;
             lines.truncate(inner.height as usize);
             lines
         } else {
-            truncation_offset = total_lines - inner.height as usize;
+            let truncation_offset = total_lines - inner.height as usize;
             lines.split_off(truncation_offset)
         }
     } else {
-        truncation_offset = 0;
         lines
     };
-
-    // Resolve image placements to screen coordinates after truncation
-    let mut inline_images = Vec::new();
-    for placement in &image_placements {
-        if let Some(image) = resolve_image_placement(placement, inner, truncation_offset) {
-            inline_images.push(image);
-        }
-    }
 
     let paragraph = Paragraph::new(visible_lines);
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
-
-    inline_images
 }
 
 /// Render a single message into one or more Lines
@@ -1011,9 +954,9 @@ fn render_message(
 /// Render a message that contains mermaid code fences.
 ///
 /// Splits the message content into text and mermaid segments, rendering
-/// text normally and inserting image placeholders (blank lines) for
-/// mermaid diagrams that have been rendered to PNG. Tracks image placements
-/// so they can be overlaid after ratatui draws.
+/// text normally and inserting selectable placeholders for mermaid diagrams.
+/// Each diagram gets a numbered label that the user can select to open
+/// in a fullscreen viewer.
 #[allow(clippy::too_many_arguments)]
 fn render_message_with_mermaid(
     msg: &Message,
@@ -1024,7 +967,7 @@ fn render_message_with_mermaid(
     user_display_name: Option<&str>,
     mermaid_cache: &MermaidCache,
     lines: &mut Vec<Line<'static>>,
-    image_placements: &mut Vec<ImagePlacement>,
+    diagram_sources: &mut Vec<String>,
     mermaid_to_render: &mut Vec<String>,
 ) {
     let local_time = msg.timestamp.with_timezone(&Local);
@@ -1102,28 +1045,46 @@ fn render_message_with_mermaid(
                 }
             }
             ContentSegment::Mermaid(source) => {
-                if let Some(image) = mermaid_cache.get_cached(source) {
-                    // Image is ready: insert placeholder lines and track placement
-                    let image_rows = mermaid::estimate_image_rows(image, content_width as u16);
-                    let image_cols = content_width as u16;
+                // Extract diagram type from the first line for the label
+                let diagram_type = source
+                    .lines()
+                    .next()
+                    .unwrap_or("diagram")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("diagram");
 
-                    // Record the line index where the image starts
-                    let start_line = lines.len();
-                    image_placements.push(ImagePlacement {
-                        line_index: start_line,
-                        rows: image_rows,
-                        cols: image_cols,
-                        png_data: image.png_data.clone(),
-                    });
+                if mermaid_cache.get_cached(source).is_some() {
+                    // Image is ready: show a placeholder.
+                    // Only the first 9 diagrams get numbered shortcuts (keys 1-9).
+                    let diagram_num = diagram_sources.len() + 1;
+                    diagram_sources.push(source.clone());
 
-                    // Insert blank placeholder lines for the image
-                    for _ in 0..image_rows {
-                        lines.push(Line::from(""));
-                    }
+                    let placeholder = if diagram_num <= 9 {
+                        format!(
+                            "{}[{}] Diagram: {} (press {} to view)",
+                            " ".repeat(indent_width),
+                            diagram_num,
+                            diagram_type,
+                            diagram_num,
+                        )
+                    } else {
+                        format!("{}    Diagram: {}", " ".repeat(indent_width), diagram_type,)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        placeholder,
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )));
                     is_first_content_line = false;
                 } else if mermaid_cache.is_pending(source) {
                     // Rendering in progress: show placeholder
-                    let placeholder = format!("{}[rendering diagram...]", " ".repeat(indent_width));
+                    let placeholder = format!(
+                        "{}[rendering {}...]",
+                        " ".repeat(indent_width),
+                        diagram_type
+                    );
                     lines.push(Line::from(Span::styled(
                         placeholder,
                         Style::default()
@@ -1133,7 +1094,8 @@ fn render_message_with_mermaid(
                     is_first_content_line = false;
                 } else {
                     // Not yet queued: show placeholder and queue for rendering
-                    let placeholder = format!("{}[mermaid diagram]", " ".repeat(indent_width));
+                    let placeholder =
+                        format!("{}[{} diagram]", " ".repeat(indent_width), diagram_type);
                     lines.push(Line::from(Span::styled(
                         placeholder,
                         Style::default()
@@ -2667,85 +2629,5 @@ mod tests {
     #[test]
     fn test_format_duration_estimate_less_than_one_minute() {
         assert_eq!(format_duration_estimate(10.0), "~<1m left");
-    }
-
-    #[test]
-    fn test_resolve_image_placement_x_offset_by_gutter() {
-        // Image placement should be horizontally offset by the gutter width
-        // so that it aligns with message content, not the timestamp column.
-        let inner = Rect::new(1, 2, 80, 40);
-        let content_width = (80 - TIMESTAMP_GUTTER_WIDTH) as u16; // 73
-
-        let placement = ImagePlacement {
-            line_index: 5,
-            rows: 10,
-            cols: content_width,
-            png_data: vec![0x89, b'P', b'N', b'G'],
-        };
-
-        let image = resolve_image_placement(&placement, inner, 0).unwrap();
-
-        // x should be inner.x + gutter, not inner.x
-        let expected_x = inner.x + TIMESTAMP_GUTTER_WIDTH as u16;
-        assert_eq!(
-            image.x, expected_x,
-            "Image x should be offset by timestamp gutter ({}), got {} (inner.x={})",
-            TIMESTAMP_GUTTER_WIDTH, image.x, inner.x
-        );
-        assert_eq!(image.y, inner.y + 5);
-        assert_eq!(image.cols, content_width);
-    }
-
-    #[test]
-    fn test_resolve_image_placement_outside_visible_window() {
-        let inner = Rect::new(0, 0, 80, 20);
-
-        let placement = ImagePlacement {
-            line_index: 25, // beyond visible window
-            rows: 5,
-            cols: 73,
-            png_data: vec![1, 2, 3],
-        };
-
-        // Image at line 25 with truncation_offset=0 and height=20 -> outside window
-        assert!(resolve_image_placement(&placement, inner, 0).is_none());
-    }
-
-    #[test]
-    fn test_resolve_image_placement_with_truncation() {
-        let inner = Rect::new(2, 3, 80, 20);
-        let content_width = (80 - TIMESTAMP_GUTTER_WIDTH) as u16;
-
-        let placement = ImagePlacement {
-            line_index: 30,
-            rows: 8,
-            cols: content_width,
-            png_data: vec![0x89, b'P', b'N', b'G'],
-        };
-
-        // truncation_offset=25 means lines 25..45 are visible
-        let image = resolve_image_placement(&placement, inner, 25).unwrap();
-
-        assert_eq!(image.x, inner.x + TIMESTAMP_GUTTER_WIDTH as u16);
-        // line 30 in original -> offset 5 in visible -> screen_y = inner.y + 5
-        assert_eq!(image.y, inner.y + 5);
-    }
-
-    #[test]
-    fn test_resolve_image_placement_rows_clamped_to_panel_bottom() {
-        let inner = Rect::new(0, 0, 80, 20);
-        let content_width = (80 - TIMESTAMP_GUTTER_WIDTH) as u16;
-
-        let placement = ImagePlacement {
-            line_index: 15,
-            rows: 10, // Would extend 5 rows past panel bottom
-            cols: content_width,
-            png_data: vec![0x89, b'P', b'N', b'G'],
-        };
-
-        let image = resolve_image_placement(&placement, inner, 0).unwrap();
-
-        // Image starts at row 15, panel ends at row 20, so only 5 rows fit
-        assert_eq!(image.rows, 5, "Rows should be clamped to panel bottom");
     }
 }

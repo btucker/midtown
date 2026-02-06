@@ -105,9 +105,11 @@ pub fn parse_content_segments(content: &str) -> Vec<ContentSegment> {
 pub struct RenderedImage {
     /// PNG image data
     pub png_data: Vec<u8>,
-    /// Image width in pixels
+    /// Image width in pixels (used for aspect ratio in tests)
+    #[allow(dead_code)]
     pub width: u32,
-    /// Image height in pixels
+    /// Image height in pixels (used for aspect ratio in tests)
+    #[allow(dead_code)]
     pub height: u32,
 }
 
@@ -264,24 +266,6 @@ fn svg_to_png(svg: &str, target_width: u32) -> Option<RenderedImage> {
     })
 }
 
-/// Estimate the number of terminal rows an image will occupy
-///
-/// Uses an assumed cell aspect ratio of ~2:1 (cells are taller than wide).
-/// A typical terminal cell is about 8px wide and 16px tall.
-pub fn estimate_image_rows(image: &RenderedImage, available_cols: u16) -> u16 {
-    if image.width == 0 || image.height == 0 {
-        return 1;
-    }
-
-    // Estimate rows needed when the image is scaled to fill available_cols.
-    // Terminal cells are typically ~2:1 aspect ratio (8px wide, 16px tall),
-    // so divide the pixel-level height ratio by 2 to get row count.
-    let rows = (image.height as f64 * available_cols as f64 / image.width as f64 / 2.0).ceil();
-
-    // Clamp to reasonable bounds
-    (rows as u16).clamp(1, 20)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,34 +365,6 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_image_rows() {
-        // 800x400 image at 80 cols -> aspect ratio 2:1
-        let image = RenderedImage {
-            png_data: vec![],
-            width: 800,
-            height: 400,
-        };
-        let rows = estimate_image_rows(&image, 80);
-        assert!(
-            (10..=20).contains(&rows),
-            "Expected 10-20 rows, got {}",
-            rows
-        );
-    }
-
-    #[test]
-    fn test_estimate_image_rows_clamped() {
-        // Very tall image should be capped at 20
-        let image = RenderedImage {
-            png_data: vec![],
-            width: 100,
-            height: 10000,
-        };
-        let rows = estimate_image_rows(&image, 80);
-        assert_eq!(rows, 20);
-    }
-
-    #[test]
     fn test_mermaid_cache_new() {
         let cache = MermaidCache::new();
         assert!(cache.images.is_empty());
@@ -424,6 +380,18 @@ mod tests {
         assert!(image.width > 0, "Width should be positive");
         assert!(image.height > 0, "Height should be positive");
         // Verify it's a valid PNG (check signature)
+        assert_eq!(&image.png_data[0..4], b"\x89PNG");
+    }
+
+    #[test]
+    fn test_render_mermaid_to_png_sequence_diagram() {
+        let source = "sequenceDiagram\n    Alice->>Bob: Hello\n    Bob->>Alice: Hi";
+        let result = render_mermaid_to_png(source);
+        assert!(result.is_some(), "Sequence diagram should render");
+        let image = result.unwrap();
+        assert!(!image.png_data.is_empty(), "PNG data should not be empty");
+        assert!(image.width > 0, "Width should be positive");
+        assert!(image.height > 0, "Height should be positive");
         assert_eq!(&image.png_data[0..4], b"\x89PNG");
     }
 
