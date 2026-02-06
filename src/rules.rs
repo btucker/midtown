@@ -3760,6 +3760,39 @@ mod tests {
         assert_eq!(result.unwrap().owner, "madison");
     }
 
+    /// Regression test for #874: auth switch shuts down multiple coworkers.
+    ///
+    /// When handle_auth_switch shuts down all running coworkers, it must record
+    /// stop times for each one. Otherwise, any coworker with an in_progress task
+    /// gets falsely recovered on the next TaskDispatchTick.
+    #[test]
+    fn orphan_recovery_skips_coworkers_shut_down_by_auth_switch() {
+        // Scenario: auth switch shuts down madison and park. Both have in_progress
+        // tasks. The RPC handler records stop times for both.
+        let tasks = vec![
+            (
+                "861".to_string(),
+                "Review PR #705".to_string(),
+                "madison".to_string(),
+            ),
+            (
+                "862".to_string(),
+                "Fix auth bug".to_string(),
+                "park".to_string(),
+            ),
+        ];
+        let active = set(&[]); // all coworkers shut down
+        let empty = HashSet::new();
+        let recently_stopped = set(&["madison", "park"]); // stop times recorded
+
+        let result =
+            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        assert!(
+            result.is_none(),
+            "Should NOT recover coworkers shut down by auth switch (recently stopped)"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // CooldownTracker spawn failure tests
     // -----------------------------------------------------------------------

@@ -531,13 +531,7 @@ fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Resp
     state.broadcast_coworker_update(name, "stopped", None);
     match state.coworkers.shutdown(name) {
         Ok(()) => {
-            // Record stop time for orphan recovery grace period (#874).
-            // Without this, the next TaskDispatchTick falsely recovers the coworker
-            // for their in_progress task (which may just need time to be marked done).
-            {
-                let mut stop_times = state.coworker_stop_times.write().unwrap();
-                stop_times.insert(name.to_lowercase(), chrono::Utc::now());
-            }
+            state.record_coworker_stop_time(name);
             info!("Sent coworker on a break: {}", name);
             Response::success(
                 id,
@@ -615,6 +609,7 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
 
         match shutdown_result {
             Ok(Ok(())) => {
+                state.record_coworker_stop_time(name);
                 // Only clear records on successful shutdown
                 {
                     let mut records = state.coworker_records.write().await;
@@ -933,14 +928,7 @@ async fn handle_coworker_report_state(
                     // Broadcast WebSocket update (only after successful shutdown)
                     state.broadcast_coworker_update(name, "stopped", None);
 
-                    // Record stop time for orphan recovery grace period (#874).
-                    // Without this, the next TaskDispatchTick sees the coworker's
-                    // in_progress task as orphaned (coworker not active, not in
-                    // recently_stopped) and falsely respawns them.
-                    {
-                        let mut stop_times = state.coworker_stop_times.write().unwrap();
-                        stop_times.insert(name.to_lowercase(), chrono::Utc::now());
-                    }
+                    state.record_coworker_stop_time(name);
 
                     // Remove from coworker_records
                     {
