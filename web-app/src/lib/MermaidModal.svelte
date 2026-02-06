@@ -137,6 +137,7 @@
       lastPinchMidY = midY
     } else if (e.touches.length === 1 && dragging) {
       e.preventDefault()
+      mouseMovedDuringPress = true
       translateX = dragStartTranslateX + (e.touches[0].clientX - dragStartX)
       translateY = dragStartTranslateY + (e.touches[0].clientY - dragStartY)
     }
@@ -149,12 +150,18 @@
     if (e.touches.length === 1) {
       // Re-anchor drag state when transitioning from pinch back to single touch
       dragging = true
+      mouseMovedDuringPress = false
       dragStartX = e.touches[0].clientX
       dragStartY = e.touches[0].clientY
       dragStartTranslateX = translateX
       dragStartTranslateY = translateY
     } else if (e.touches.length === 0) {
+      const wasDragging = dragging
       dragging = false
+      // Close on tap (no drag) in the empty area outside the diagram
+      if (wasDragging && !mouseMovedDuringPress && e.target === containerEl) {
+        onclose()
+      }
     }
   }
 
