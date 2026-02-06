@@ -344,7 +344,13 @@ pub fn hooks_log_file() -> PathBuf {
 /// the rename step of an atomic write fails (e.g., permission denied).
 pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
     if let Err(e) = fs::rename(tmp, target) {
-        let _ = fs::remove_file(tmp);
+        if let Err(cleanup_err) = fs::remove_file(tmp) {
+            tracing::warn!(
+                "Failed to clean up temp file {} after failed rename: {}",
+                tmp.display(),
+                cleanup_err
+            );
+        }
         return Err(e);
     }
     Ok(())
@@ -598,6 +604,35 @@ mod tests {
         assert!(
             !tmp_file.exists(),
             "temp file should be cleaned up after failed rename"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_rename_leaks_tmp_when_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let subdir = tmp.path().join("restricted");
+        fs::create_dir(&subdir).unwrap();
+
+        let tmp_file = subdir.join("target.json.tmp");
+        let target = subdir.join("target.json");
+
+        fs::write(&tmp_file, "data").unwrap();
+        // Make target a directory so rename would fail
+        fs::create_dir(&target).unwrap();
+        // Remove write permission on parent so remove_file also fails
+        fs::set_permissions(&subdir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = atomic_rename(&tmp_file, &target);
+        assert!(result.is_err(), "rename should fail");
+
+        // Restore permissions so we can inspect and clean up
+        fs::set_permissions(&subdir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            tmp_file.exists(),
+            "temp file should be leaked when cleanup fails"
         );
     }
 
