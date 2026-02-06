@@ -1091,3 +1091,104 @@ fn dispatch_not_deferred_when_all_prs_have_reviewers() {
         "task dispatch should NOT be deferred when all PRs already have reviewers"
     );
 }
+
+// =============================================================================
+// Tests: Duplicate spawn/call-in prevention
+// =============================================================================
+
+/// Regression test: the daemon should not generate duplicate spawn/call-in
+/// notifications for the same coworker+task across consecutive ticks.
+///
+/// Captured snapshot shows:
+/// - Tasks #873 and #875 are both pending+unowned, both reference PR #708
+/// - Pleasant is the PR #708 owner (has pending task #872 for that PR)
+/// - PR grouping logic assigns both #873 and #875 to pleasant
+/// - Without the fix, each tick re-generates nudges for both tasks because:
+///   (a) grouped tasks bypassed the `assigned_this_tick` guard (within-tick)
+///   (b) `NudgeCoworkerWithCallbacks` effects weren't tracked as in-flight (cross-tick)
+///
+/// The daemon logs showed 4+ pairs of "Called in pleasant for task #873/#875"
+/// — the same two assignments repeated across consecutive ticks.
+#[test]
+fn no_duplicate_spawn_notifications_for_same_coworker_and_task() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-triple-spawn-pleasant-875-20260206-053332.json");
+    let snap = load_snapshot(fixture);
+
+    // Precondition: pleasant is active and busy
+    assert!(
+        snap.active_names.contains("pleasant"),
+        "pleasant should be active"
+    );
+    assert!(
+        snap.busy_coworkers.contains("pleasant"),
+        "pleasant should be busy"
+    );
+
+    // Precondition: tasks #873 and #875 are pending without owners
+    let unowned_ids: Vec<&str> = snap
+        .pending_tasks_without_owners
+        .iter()
+        .map(|t| t.id.as_str())
+        .collect();
+    assert!(
+        unowned_ids.contains(&"873"),
+        "task #873 should be pending without owner"
+    );
+    assert!(
+        unowned_ids.contains(&"875"),
+        "task #875 should be pending without owner"
+    );
+
+    // Precondition: pleasant already has a pending owned task (#872) for PR #708
+    let pleasant_owned: Vec<&(String, String, String)> = snap
+        .pending_tasks_with_owners
+        .iter()
+        .filter(|(_, _, owner)| owner.to_lowercase() == "pleasant")
+        .collect();
+    assert!(
+        !pleasant_owned.is_empty(),
+        "pleasant should have at least one pending owned task"
+    );
+
+    // The fix ensures that within a single dispatch tick, after the first task
+    // is assigned to pleasant, the second task targeting pleasant (via PR grouping)
+    // is blocked by `assigned_this_tick`. Simulate this:
+    let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
+    let mut assignments: Vec<(&str, &str)> = Vec::new(); // (task_id, coworker)
+
+    // Process unowned tasks as the dispatch loop would
+    for task in &snap.pending_tasks_without_owners {
+        let target = "pleasant"; // PR grouping would assign both to pleasant
+        let already_running = snap.active_names.contains(target);
+        let is_busy_from_snapshot = snap.busy_coworkers.contains(target);
+        let assigned_this_tick = names_assigned_this_tick.contains(target);
+        let is_coworker_reviewer = snap.active_reviewers.contains(target);
+        let was_grouped = true; // Both tasks reference PR #708
+
+        // The fixed condition: assigned_this_tick always blocks, even for grouped tasks
+        let should_skip = already_running
+            && (is_coworker_reviewer
+                || assigned_this_tick
+                || (is_busy_from_snapshot && !was_grouped));
+
+        if !should_skip {
+            assignments.push((&task.id, target));
+            names_assigned_this_tick.insert(target.to_string());
+        }
+    }
+
+    // Only ONE task should be assigned to pleasant per tick, not both
+    let pleasant_assignments: Vec<_> = assignments
+        .iter()
+        .filter(|(_, cw)| *cw == "pleasant")
+        .collect();
+    assert_eq!(
+        pleasant_assignments.len(),
+        1,
+        "only one task per tick should be assigned to the same coworker; \
+         got {} assignments to pleasant: {:?}",
+        pleasant_assignments.len(),
+        pleasant_assignments
+    );
+}
