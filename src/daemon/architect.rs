@@ -7,11 +7,23 @@
 //! agent.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::headless::{HeadlessConfig, execute};
 use crate::message::Message;
+
+/// Maximum number of concurrent architect sessions.
+const MAX_CONCURRENT_SESSIONS: usize = 2;
+
+/// Timeout for a single architect session.
+const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Semaphore to limit concurrent architect sessions.
+/// Prevents resource exhaustion when many insights arrive in quick succession.
+static ARCHITECT_SEMAPHORE: Semaphore = Semaphore::const_new(MAX_CONCURRENT_SESSIONS);
 
 const ARCHITECT_SYSTEM_PROMPT: &str = r#"You are an architectural diagram illustrator for a software project. You receive an insight about the codebase and have full tool access to explore the code.
 
@@ -35,6 +47,19 @@ Rules:
 /// and posts the result to the channel. Errors are logged and silently skipped;
 /// the insight itself has already been posted before this function runs.
 pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: String) {
+    // Limit concurrent architect sessions to prevent resource exhaustion.
+    // If all permits are taken, skip this diagram rather than queuing up.
+    let _permit = match ARCHITECT_SEMAPHORE.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            info!(
+                "Architect: skipping diagram — {} concurrent sessions already running",
+                MAX_CONCURRENT_SESSIONS
+            );
+            return;
+        }
+    };
+
     let cwd_str = cwd.to_string_lossy().to_string();
 
     let config = HeadlessConfig {
@@ -51,7 +76,7 @@ pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: 
         cwd_str
     );
 
-    let result = match execute(&config, &insight).await {
+    let result = match execute(&config, &insight, SESSION_TIMEOUT).await {
         Ok(r) => r,
         Err(e) => {
             warn!("Architect: headless execution failed: {}", e);
@@ -132,6 +157,21 @@ fn extract_mermaid_block(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_session_timeout_is_reasonable() {
+        // Architect timeout should be long enough for a session to complete
+        // but short enough to prevent indefinite hangs
+        assert!(SESSION_TIMEOUT.as_secs() >= 60);
+        assert!(SESSION_TIMEOUT.as_secs() <= 300);
+    }
+
+    #[test]
+    fn test_max_concurrent_sessions_bounded() {
+        // Sanity check: concurrency limit is set to a small, reasonable value
+        assert!(MAX_CONCURRENT_SESSIONS >= 1);
+        assert!(MAX_CONCURRENT_SESSIONS <= 4);
+    }
 
     #[test]
     fn test_extract_mermaid_block_basic() {

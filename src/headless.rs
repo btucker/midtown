@@ -16,6 +16,7 @@
 //! - `{"type":"user","message":{"role":"user","content":"..."}}`
 
 use std::process::Stdio;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -236,6 +237,14 @@ impl HeadlessSession {
         Ok(())
     }
 
+    /// Close stdin, signaling no more input will arrive.
+    ///
+    /// For one-shot queries, closing stdin after sending the prompt ensures the
+    /// claude process doesn't hang waiting for additional input.
+    pub fn close_stdin(&mut self) {
+        self.stdin = None;
+    }
+
     /// Get the session ID (available after the init event).
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
@@ -261,67 +270,100 @@ impl Drop for HeadlessSession {
     }
 }
 
-/// Execute a one-shot headless query and return the final result.
+/// Execute a one-shot headless query with a timeout and return the final result.
 ///
 /// This is a convenience function that:
 /// 1. Spawns a headless session
-/// 2. Sends the prompt
-/// 3. Collects all events until the result
+/// 2. Sends the prompt and closes stdin (signals no more input)
+/// 3. Collects all events until the result, subject to timeout
 /// 4. Returns the result text and cost
 ///
+/// On timeout, the child process is killed via the `Drop` impl on `HeadlessSession`.
+///
 /// For multi-turn conversations or streaming, use `HeadlessSession` directly.
-pub async fn execute(config: &HeadlessConfig, prompt: &str) -> std::io::Result<HeadlessResult> {
+pub async fn execute(
+    config: &HeadlessConfig,
+    prompt: &str,
+    timeout: Duration,
+) -> std::io::Result<HeadlessResult> {
     let mut session = HeadlessSession::spawn(config)?;
 
     // Send the initial prompt
     session.send_message(prompt).await?;
 
-    let mut result_text = None;
-    let mut cost_usd = None;
-    let mut duration_ms = None;
-    let mut is_error = false;
-    let mut session_id = None;
+    // Close stdin — one-shot mode doesn't need further input. Keeping stdin open
+    // can cause the process to wait for more messages instead of completing.
+    session.close_stdin();
 
-    // Collect events until we get the result
-    while let Some(event) = session.next_event().await {
-        match event {
-            StreamEvent::System { ref subtype, .. } if subtype == "init" => {
-                session_id = session.session_id().map(String::from);
-                debug!("Headless session initialized: {:?}", session_id);
-            }
-            StreamEvent::Result {
-                result,
-                total_cost_usd,
-                duration_ms: dur,
-                is_error: err,
-                session_id: sid,
-                ..
-            } => {
-                result_text = result;
-                cost_usd = total_cost_usd;
-                duration_ms = dur;
-                is_error = err;
-                if session_id.is_none() {
-                    session_id = sid;
+    debug!(
+        "Headless: prompt sent, stdin closed, waiting for result (timeout={}s)",
+        timeout.as_secs()
+    );
+
+    // Wrap event collection in a timeout. On timeout, the future is dropped,
+    // which drops `session`, which calls start_kill() on the child process.
+    match tokio::time::timeout(timeout, async move {
+        let mut result_text = None;
+        let mut cost_usd = None;
+        let mut duration_ms = None;
+        let mut is_error = false;
+        let mut session_id = None;
+
+        // Collect events until we get the result
+        while let Some(event) = session.next_event().await {
+            match event {
+                StreamEvent::System { ref subtype, .. } if subtype == "init" => {
+                    session_id = session.session_id().map(String::from);
+                    debug!("Headless session initialized: {:?}", session_id);
                 }
-                break;
-            }
-            _ => {
-                // Skip intermediate events (assistant messages, tool use, etc.)
+                StreamEvent::Result {
+                    result,
+                    total_cost_usd,
+                    duration_ms: dur,
+                    is_error: err,
+                    session_id: sid,
+                    ..
+                } => {
+                    result_text = result;
+                    cost_usd = total_cost_usd;
+                    duration_ms = dur;
+                    is_error = err;
+                    if session_id.is_none() {
+                        session_id = sid;
+                    }
+                    break;
+                }
+                _ => {
+                    // Skip intermediate events (assistant messages, tool use, etc.)
+                }
             }
         }
-    }
 
-    // Wait for the process to exit cleanly
-    let _ = session.wait().await;
+        // Wait for the process to exit cleanly
+        let _ = session.wait().await;
 
-    Ok(HeadlessResult {
-        result: result_text,
-        cost_usd,
-        duration_ms,
-        is_error,
-        session_id,
+        HeadlessResult {
+            result: result_text,
+            cost_usd,
+            duration_ms,
+            is_error,
+            session_id,
+        }
     })
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(_elapsed) => {
+            warn!(
+                "Headless session timed out after {}s — process will be killed on drop",
+                timeout.as_secs()
+            );
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("headless session timed out after {}s", timeout.as_secs()),
+            ))
+        }
+    }
 }
 
 /// Result of a one-shot headless execution.
