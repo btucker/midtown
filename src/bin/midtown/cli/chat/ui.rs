@@ -1055,16 +1055,22 @@ fn render_message_with_mermaid(
                     .unwrap_or("diagram");
 
                 if mermaid_cache.get_cached(source).is_some() {
-                    // Image is ready: show a selectable numbered placeholder
+                    // Image is ready: show a placeholder.
+                    // Only the first 9 diagrams get numbered shortcuts (keys 1-9).
                     let diagram_num = diagram_sources.len() + 1;
                     diagram_sources.push(source.clone());
 
-                    let placeholder = format!(
-                        "{}[{}] Diagram: {} (Enter to view)",
-                        " ".repeat(indent_width),
-                        diagram_num,
-                        diagram_type,
-                    );
+                    let placeholder = if diagram_num <= 9 {
+                        format!(
+                            "{}[{}] Diagram: {} (press {} to view)",
+                            " ".repeat(indent_width),
+                            diagram_num,
+                            diagram_type,
+                            diagram_num,
+                        )
+                    } else {
+                        format!("{}    Diagram: {}", " ".repeat(indent_width), diagram_type,)
+                    };
                     lines.push(Line::from(Span::styled(
                         placeholder,
                         Style::default()
