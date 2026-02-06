@@ -96,7 +96,11 @@ run_full_tests() {
     cargo test --release --test full_stack_e2e -- --ignored --test-threads=1 "${test_args[@]}"
 
     echo "--- mailbox_e2e (real Claude) ---"
-    cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 "${test_args[@]}"
+    # Skip daemon-only tests already run in coordination suite
+    cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 \
+        --skip test_spawn_creates \
+        --skip test_daemon_delivers \
+        "${test_args[@]}"
 
     echo ""
     echo "=== Full E2E tests complete ==="

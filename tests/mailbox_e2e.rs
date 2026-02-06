@@ -20,8 +20,9 @@
 use ntest::timeout;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -30,6 +31,41 @@ use std::time::Duration;
 // ── Shared test infrastructure ─────────────────────────────────────
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// RAII guard that makes a path read-only and restores original permissions on drop.
+/// Used to test fallback behavior when write operations fail.
+struct ReadOnlyGuard {
+    path: PathBuf,
+    original_mode: u32,
+}
+
+impl ReadOnlyGuard {
+    fn new(path: &Path) -> Self {
+        let metadata = fs::metadata(path).expect("Path should exist");
+        let original_mode = metadata.permissions().mode();
+
+        // Make read-only (remove write bits)
+        let mut perms = metadata.permissions();
+        perms.set_mode(original_mode & !0o222);
+        fs::set_permissions(path, perms).expect("Should set read-only permissions");
+
+        Self {
+            path: path.to_path_buf(),
+            original_mode,
+        }
+    }
+}
+
+impl Drop for ReadOnlyGuard {
+    fn drop(&mut self) {
+        // Restore original permissions
+        let mut perms = fs::metadata(&self.path)
+            .expect("Path should still exist")
+            .permissions();
+        perms.set_mode(self.original_mode);
+        let _ = fs::set_permissions(&self.path, perms);
+    }
+}
 
 fn test_repo_name() -> String {
     let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -1118,24 +1154,29 @@ fn test_mailbox_fallback_to_tmux_on_write_failure() {
         return;
     }
 
-    // Make the inboxes directory read-only to force write failures
+    // Make the inboxes directory read-only to force write failures.
+    // Use RAII guard to ensure permissions are restored even on panic.
     let inboxes_dir = fixture.team_dir.join("inboxes");
-    if inboxes_dir.exists() {
-        let mut perms = fs::metadata(&inboxes_dir)
-            .expect("Should read inboxes metadata")
-            .permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        {
-            perms.set_readonly(true);
-        }
-        fs::set_permissions(&inboxes_dir, perms.clone()).expect("Should set permissions");
+    let _readonly_guard = if inboxes_dir.exists() {
+        Some(ReadOnlyGuard::new(&inboxes_dir))
+    } else {
+        None
+    };
 
-        // Restore permissions on cleanup (Drop won't be able to remove read-only dirs)
-        // We'll restore at the end of this test
-    }
+    // Record existing inbox state before triggering the task assignment,
+    // so we can verify whether the daemon wrote via mailbox or fell back to tmux.
+    let inbox_path = fixture
+        .team_dir
+        .join("inboxes")
+        .join(format!("{}.json", coworker_name));
+    let pre_task_inbox_size = fs::read_to_string(&inbox_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<Vec<serde_json::Value>>(&c).ok())
+        .map(|msgs| msgs.len())
+        .unwrap_or(0);
 
     // Now trigger a task assignment — the daemon should try mailbox first,
-    // fail, and fall back to tmux send-keys
+    // fail (due to read-only inboxes dir), and fall back to tmux send-keys
     let unique_tag = format!("fallback-test-{}", std::process::id());
     fixture.create_task("88", &unique_tag, "pending", None);
 
@@ -1153,27 +1194,34 @@ fn test_mailbox_fallback_to_tmux_on_write_failure() {
         }
     }
 
-    // Restore permissions before assertions (so cleanup works)
-    let inboxes_dir = fixture.team_dir.join("inboxes");
-    if inboxes_dir.exists() {
-        let mut perms = fs::metadata(&inboxes_dir)
-            .unwrap_or_else(|_| fs::metadata(".").unwrap())
-            .permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        {
-            perms.set_readonly(false);
-        }
-        let _ = fs::set_permissions(&inboxes_dir, perms);
-    }
+    // Check whether the inbox was written despite read-only permissions.
+    // If the inbox grew, the daemon wrote via mailbox (race: it assigned
+    // before read-only took effect). If it didn't grow, the write was
+    // blocked and we should see a tmux fallback nudge.
+    let post_task_inbox_size = fs::read_to_string(&inbox_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<Vec<serde_json::Value>>(&c).ok())
+        .map(|msgs| msgs.len())
+        .unwrap_or(0);
 
-    // Note: This assertion may be flaky because the daemon might assign the
-    // task to the coworker before we make the directory read-only. We check
-    // that *some* nudge was delivered (either via mailbox or tmux fallback).
-    if !nudge_found {
+    let mailbox_was_written = post_task_inbox_size > pre_task_inbox_size;
+
+    if mailbox_was_written {
+        // The daemon assigned the task before we made the directory read-only.
+        // This is a known race — the test still passes because delivery occurred
+        // (just via mailbox instead of tmux fallback).
         eprintln!(
-            "WARNING: Nudge not found in pane within timeout. This can happen if the daemon \
-             assigned the task before we made the inbox read-only, or if the coworker was \
-             already processing the initial prompt."
+            "INFO: Daemon delivered via mailbox (inbox grew from {} to {} messages). \
+             Read-only was applied after delivery — fallback path not exercised this run.",
+            pre_task_inbox_size, post_task_inbox_size
+        );
+    } else {
+        // Read-only blocked the write — tmux fallback should have been used.
+        assert!(
+            nudge_found,
+            "Mailbox write was blocked (inbox stayed at {} messages) but tmux fallback \
+             nudge was not found in pane within 120s. The fallback path may be broken.",
+            pre_task_inbox_size
         );
     }
 }
