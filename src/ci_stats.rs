@@ -26,6 +26,16 @@ pub const RERUN_COOLDOWN_SECS: i64 = 3600;
 /// been running for more than this multiple of the typical duration.
 pub const STALE_THRESHOLD_MULTIPLIER: f64 = 4.0;
 
+/// Multiplier for detecting stale PENDING checks. A pending check is considered
+/// stale if sibling checks have been running for more than this multiple of the
+/// pending check's typical duration.
+pub const PENDING_STALE_MULTIPLIER: f64 = 2.0;
+
+/// Minimum time (seconds) before a PENDING check is considered stale, even if
+/// the multiplier-based threshold would be shorter. This prevents false positives
+/// on fresh pushes where checks are still queuing.
+pub const MIN_PENDING_STALE_SECS: u64 = 1800; // 30 minutes
+
 /// Statistics for CI check durations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CiCheckStats {
@@ -102,6 +112,17 @@ impl CiCheckStats {
         let typical = self.typical_duration_or_default(check_name);
         let threshold = (typical as f64 * STALE_THRESHOLD_MULTIPLIER) as u64;
         running_duration_secs > threshold
+    }
+
+    /// Check if a PENDING check has exceeded the stale threshold based on how
+    /// long sibling checks have been running.
+    ///
+    /// Uses 2x typical duration with a minimum floor of MIN_PENDING_STALE_SECS.
+    pub fn is_pending_stale(&self, check_name: &str, time_since_siblings_started: u64) -> bool {
+        let typical = self.typical_duration_or_default(check_name);
+        let multiplier_threshold = (typical as f64 * PENDING_STALE_MULTIPLIER) as u64;
+        let threshold = multiplier_threshold.max(MIN_PENDING_STALE_SECS);
+        time_since_siblings_started > threshold
     }
 
     /// Check if we can re-run a workflow (not on cooldown).
