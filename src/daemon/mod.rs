@@ -440,6 +440,13 @@ pub(crate) struct DaemonState {
     /// from being posted to the channel multiple times. Resets on daemon restart,
     /// which is acceptable because transcript cursors prevent re-extraction.
     insight_hashes: std::sync::Mutex<HashSet<u64>>,
+    /// In-memory deduplication for reviewer `[Review Note]` channel messages.
+    ///
+    /// Tracks (reviewer, PR number) pairs. When a reviewer posts a `[Review Note]`
+    /// for a PR they've already posted one for, subsequent notes are suppressed and
+    /// logged. This prevents near-duplicate notes about the same code area from
+    /// flooding the channel. Resets on daemon restart.
+    review_note_tracker: std::sync::Mutex<HashSet<(String, u64)>>,
     /// In-memory deduplication for task creation nudges sent to the Lead.
     ///
     /// When the daemon needs to create a task (e.g., review feedback), it nudges the
@@ -600,6 +607,7 @@ impl DaemonState {
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             github_user,
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
+            review_note_tracker: std::sync::Mutex::new(HashSet::new()),
             pending_task_creations: std::sync::Mutex::new(HashMap::new()),
         })
     }
