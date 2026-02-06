@@ -2388,6 +2388,7 @@ mod tests {
 
         // Verify common settings are merged in
         assert_eq!(settings["autoUpdates"], false);
+        assert_eq!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "1");
 
         // Verify coworker-specific settings
         assert_eq!(settings["editorMode"], "normal");
@@ -2451,6 +2452,7 @@ mod tests {
 
         // Verify common settings are merged in
         assert_eq!(settings["autoUpdates"], false);
+        assert_eq!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "1");
 
         // Verify lead-specific hooks
         let stop_hooks = &settings["hooks"]["Stop"];
