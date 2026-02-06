@@ -25,7 +25,8 @@
 //!         └── daemon.pid    # Daemon PID file
 //! ```
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Detect the current git repository name.
 ///
@@ -337,6 +338,24 @@ pub fn hooks_log_file() -> PathBuf {
     hooks_log_file_for_repo(&repo)
 }
 
+/// Rename `tmp` to `target`, cleaning up `tmp` if the rename fails.
+///
+/// This wraps `fs::rename` to ensure temp files are not leaked on disk when
+/// the rename step of an atomic write fails (e.g., permission denied).
+pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    if let Err(e) = fs::rename(tmp, target) {
+        if let Err(cleanup_err) = fs::remove_file(tmp) {
+            tracing::warn!(
+                "Failed to clean up temp file {} after failed rename: {}",
+                tmp.display(),
+                cleanup_err
+            );
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// Migrate data from the old directory structure to the new one.
 ///
 /// Old structure: `~/.midtown/<repo>/...`
@@ -553,6 +572,68 @@ mod tests {
         assert!(path.to_string_lossy().contains("projects"));
         assert!(path.to_string_lossy().contains("myproject"));
         assert!(path.to_string_lossy().ends_with("logs"));
+    }
+
+    #[test]
+    fn test_atomic_rename_succeeds() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("target.json");
+        let tmp_file = tmp.path().join("target.json.tmp");
+
+        fs::write(&tmp_file, r#"{"ok": true}"#).unwrap();
+        atomic_rename(&tmp_file, &target).unwrap();
+
+        assert!(!tmp_file.exists(), "temp file should be gone after rename");
+        assert!(target.exists(), "target should exist after rename");
+        assert_eq!(fs::read_to_string(&target).unwrap(), r#"{"ok": true}"#);
+    }
+
+    #[test]
+    fn test_atomic_rename_cleans_tmp_on_failure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("target.json");
+        let tmp_file = tmp.path().join("target.json.tmp");
+
+        // Make target a directory so rename(file, dir) fails
+        fs::create_dir(&target).unwrap();
+        fs::write(&tmp_file, r#"{"ok": true}"#).unwrap();
+        assert!(tmp_file.exists());
+
+        let result = atomic_rename(&tmp_file, &target);
+        assert!(result.is_err(), "rename file → dir should fail");
+        assert!(
+            !tmp_file.exists(),
+            "temp file should be cleaned up after failed rename"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_rename_leaks_tmp_when_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let subdir = tmp.path().join("restricted");
+        fs::create_dir(&subdir).unwrap();
+
+        let tmp_file = subdir.join("target.json.tmp");
+        let target = subdir.join("target.json");
+
+        fs::write(&tmp_file, "data").unwrap();
+        // Make target a directory so rename would fail
+        fs::create_dir(&target).unwrap();
+        // Remove write permission on parent so remove_file also fails
+        fs::set_permissions(&subdir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = atomic_rename(&tmp_file, &target);
+        assert!(result.is_err(), "rename should fail");
+
+        // Restore permissions so we can inspect and clean up
+        fs::set_permissions(&subdir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            tmp_file.exists(),
+            "temp file should be leaked when cleanup fails"
+        );
     }
 
     #[test]

@@ -72,7 +72,7 @@ impl DaemonPersistentState {
         let contents = serde_json::to_string_pretty(self)?;
         let tmp_path = path.with_extension("json.tmp");
         fs::write(&tmp_path, &contents)?;
-        fs::rename(&tmp_path, &path)?;
+        crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
             "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}",
             self.github.pr_reviewers.len(),
