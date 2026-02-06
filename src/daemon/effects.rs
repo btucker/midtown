@@ -361,7 +361,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 // Spawn the coworker and set ownership + in_progress on disk.
                 // The coworker also claims the task via `midtown task claim` after starting,
-                // which nudges the Lead to confirm ownership via TaskUpdate.
+                // which writes ownership directly via the daemon.
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {

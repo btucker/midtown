@@ -1145,6 +1145,9 @@ async fn handle_task_request(
 }
 
 /// Handle task.create RPC — daemon creates a task directly in shared storage.
+///
+/// Only performs I/O (write task, post to channel). Dispatch for the new task
+/// happens on the next `TaskDispatchTick` via the canonical event loop pipeline.
 async fn handle_task_create(
     id: RequestId,
     subject: &str,
@@ -1153,19 +1156,16 @@ async fn handle_task_create(
 ) -> Response {
     let repo_name = state.repo_name.clone();
 
-    match crate::tasks::create_task_for_repo(subject, description, "", "", &repo_name) {
+    // Generate active_form (present continuous) from subject for task UI spinner
+    let active_form = generate_active_form(subject);
+
+    match crate::tasks::create_task_for_repo(subject, description, &active_form, "", &repo_name) {
         Ok(task_id) => {
             // Post to channel so team is aware
             let msg = Message::text("lead", format!("created task: {}", subject));
             if let Err(e) = state.send_and_broadcast_async(&msg).await {
                 warn!("Failed to post task creation to channel: {}", e);
             }
-
-            // Trigger pending task dispatch
-            let snap = super::snapshot::collect_world_snapshot(state).await;
-            let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
-            state.mark_in_flight_spawns_from_effects(&pending_effects);
-            super::effects::execute_effects(pending_effects, state).await;
 
             info!("Created task #{}: {}", task_id, subject);
             Response::success(
@@ -1180,6 +1180,50 @@ async fn handle_task_create(
             id,
             RpcError::new(-32603, format!("Failed to create task: {}", e)),
         ),
+    }
+}
+
+/// Generate a present-continuous `activeForm` from a task subject.
+///
+/// Converts imperative subjects like "Fix auth bug" → "Fixing auth bug".
+/// Falls back to "Working on: <subject>" for unrecognized patterns.
+fn generate_active_form(subject: &str) -> String {
+    let trimmed = subject.trim();
+    let first_word = trimmed.split_whitespace().next().unwrap_or("");
+    let rest = trimmed.strip_prefix(first_word).unwrap_or("").trim_start();
+
+    // Common imperative verbs → present continuous
+    let continuous = match first_word.to_lowercase().as_str() {
+        "add" => "Adding",
+        "fix" => "Fixing",
+        "update" => "Updating",
+        "remove" => "Removing",
+        "implement" => "Implementing",
+        "refactor" => "Refactoring",
+        "create" => "Creating",
+        "build" => "Building",
+        "review" => "Reviewing",
+        "address" => "Addressing",
+        "debug" => "Debugging",
+        "test" => "Testing",
+        "move" => "Moving",
+        "rename" => "Renaming",
+        "delete" => "Deleting",
+        "replace" => "Replacing",
+        "revert" => "Reverting",
+        "migrate" => "Migrating",
+        "upgrade" => "Upgrading",
+        "clean" => "Cleaning",
+        "configure" => "Configuring",
+        "enable" => "Enabling",
+        "disable" => "Disabling",
+        _ => return format!("Working on: {}", trimmed),
+    };
+
+    if rest.is_empty() {
+        continuous.to_string()
+    } else {
+        format!("{} {}", continuous, rest)
     }
 }
 
@@ -1216,13 +1260,16 @@ fn handle_task_update(
         );
     }
 
-    // Update in-memory assignment tracking if owner changed
+    // Update in-memory assignment tracking
     if let Some(new_owner) = owner {
+        // Clear old assignment before recording new one (prevents stale entries
+        // when a task is reassigned from coworker A to coworker B)
+        state.clear_task_assignment_by_task(task_id);
         state.record_task_assignment(new_owner, task_id);
     }
 
-    // Clear blocked-by tracking if task completed
-    if status == Some("completed") {
+    // Clear assignment when task is completed or reset to pending
+    if matches!(status, Some("completed") | Some("pending")) {
         state.clear_task_assignment_by_task(task_id);
     }
 

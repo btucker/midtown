@@ -635,9 +635,9 @@ pub(super) fn spawn_for_pending_tasks(
     let mut effects = Vec::new();
 
     // Case 1: Pending tasks with owners assigned but coworker not running.
-    // With the new task.claim flow, this case is rare (tasks go directly to in_progress
-    // via the Lead). It mainly handles backward compatibility with pre-existing tasks
-    // or tasks where the Lead manually set an owner.
+    // With the daemon-managed task.claim flow, this case is rare (claims set
+    // both owner and in_progress directly). It mainly handles backward compatibility
+    // with pre-existing tasks or tasks where the Lead manually set an owner.
     let pending_with_owners = &snap.pending_tasks_with_owners;
     for (task_id, task_subject, owner) in pending_with_owners.iter() {
         // Check nudge cooldown for this task
@@ -925,8 +925,8 @@ pub(super) fn spawn_for_pending_tasks(
 
         if already_running {
             // Step 2a: Coworker is already running (grouped task) — nudge to claim the task.
-            // The coworker runs `midtown task claim`, which nudges the Lead to set ownership
-            // via TaskUpdate. No direct disk write needed.
+            // The coworker runs `midtown task claim`, which writes ownership directly
+            // via the daemon's RPC handler.
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
                 &task.id.to_string(),
