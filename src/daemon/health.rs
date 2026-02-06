@@ -537,7 +537,7 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
     ]
 }
 
-/// Check if a scheduled usage limit nudge is due, and if so, nudge all active coworkers.
+/// Check if a scheduled usage limit nudge is due, and if so, nudge all running coworkers.
 pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Pure decision: should we nudge?
     let decision = crate::rules::decide_usage_limit_expiry(
@@ -549,13 +549,13 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
         return vec![];
     }
 
-    if snap.active_coworkers.is_empty() {
+    if snap.running_coworkers.is_empty() {
         return vec![];
     }
 
     info!(
-        "Usage limit expired — nudging {} active coworkers",
-        snap.active_coworkers.len()
+        "Usage limit expired — nudging {} running coworkers",
+        snap.running_coworkers.len()
     );
 
     let mut effects = vec![
@@ -564,12 +564,13 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
             sender: "system".to_string(),
             message: format!(
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
-                snap.active_coworkers.len()
+                snap.running_coworkers.len()
             ),
         },
     ];
 
-    for cw in &snap.active_coworkers {
+    // Only nudge Running coworkers — Stopping/Starting coworkers have no tmux window.
+    for cw in &snap.running_coworkers {
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
             message: "continue".to_string(),
@@ -1053,5 +1054,100 @@ mod tests {
             now,
             grace
         ));
+    }
+
+    /// Test that usage limit expiry nudges only target Running coworkers.
+    ///
+    /// Regression test: the function previously iterated `snap.active_coworkers`
+    /// (all statuses) to generate NudgeCoworker effects. Nudges target tmux
+    /// windows via send-keys, so Stopping/Starting coworkers (no window) would
+    /// cause "can't find window" errors.
+    #[test]
+    fn test_usage_limit_nudge_only_targets_running_coworkers() {
+        use crate::coworker::{Coworker, CoworkerStatus};
+        use std::collections::{HashMap, HashSet};
+
+        let running = Coworker {
+            name: "lexington".to_string(),
+            status: CoworkerStatus::Running,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            isolated_tasks: false,
+        };
+        let stopping = Coworker {
+            name: "park".to_string(),
+            status: CoworkerStatus::Stopping,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            isolated_tasks: false,
+        };
+
+        // Build a snapshot where the nudge should fire
+        let snap = snapshot::WorldSnapshot {
+            active_coworkers: vec![running.clone(), stopping.clone()],
+            running_coworkers: vec![running.clone()],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            pane_contents: HashMap::new(),
+            blank_pane_coworkers: HashSet::new(),
+            coworkers_with_running_subagents: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: true,
+            // Set nudge time in the past so it fires
+            usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now: Instant::now(),
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        let effects = maybe_nudge_usage_limit_expiry(&snap);
+
+        // Should have effects: ClearUsageLimitNudge + PostToChannel + 1 NudgeCoworker
+        let nudge_names: Vec<&str> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::NudgeCoworker { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // Only the Running coworker should be nudged
+        assert!(
+            nudge_names.contains(&"lexington"),
+            "Running coworker should be nudged"
+        );
+        assert!(
+            !nudge_names.contains(&"park"),
+            "Stopping coworker must NOT be nudged"
+        );
+        assert_eq!(nudge_names.len(), 1, "Only 1 coworker should be nudged");
     }
 }
