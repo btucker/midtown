@@ -531,6 +531,7 @@ fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Resp
     state.broadcast_coworker_update(name, "stopped", None);
     match state.coworkers.shutdown(name) {
         Ok(()) => {
+            state.record_coworker_stop_time(name);
             info!("Sent coworker on a break: {}", name);
             Response::success(
                 id,
@@ -608,6 +609,7 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
 
         match shutdown_result {
             Ok(Ok(())) => {
+                state.record_coworker_stop_time(name);
                 // Only clear records on successful shutdown
                 {
                     let mut records = state.coworker_records.write().await;
@@ -925,6 +927,8 @@ async fn handle_coworker_report_state(
 
                     // Broadcast WebSocket update (only after successful shutdown)
                     state.broadcast_coworker_update(name, "stopped", None);
+
+                    state.record_coworker_stop_time(name);
 
                     // Remove from coworker_records
                     {
