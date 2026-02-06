@@ -756,11 +756,10 @@ pub(super) fn spawn_for_pending_tasks(
         // about main task list updates — they have their own review assignments)
         let is_owner_reviewer = snap.active_reviewers.contains(&owner.to_lowercase());
 
-        // Check if the owner already has an in_progress task (one-task-per-coworker invariant)
-        let has_in_progress_task = snap
-            .in_progress_tasks
-            .iter()
-            .any(|(_, _, task_owner)| task_owner.to_lowercase() == owner.to_lowercase());
+        // Check if the owner already has an in_progress task (one-task-per-coworker invariant).
+        // Uses the pre-computed busy_coworkers HashSet (O(1)) rather than scanning
+        // in_progress_tasks (O(n)), following the snapshot pre-computation pattern.
+        let has_in_progress_task = snap.busy_coworkers.contains(&owner.to_lowercase());
 
         // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
