@@ -20,6 +20,20 @@ pub enum Effect {
     NudgeCoworker { name: String, message: String },
     /// Nudge the Lead by sending a message to their tmux pane.
     NudgeLead { message: String },
+    /// Deliver a message to a coworker via the agent teams mailbox.
+    ///
+    /// Uses the filesystem-based inbox (`~/.claude/teams/{team}/inboxes/{name}.json`)
+    /// for non-urgent messages like task assignments and PR feedback. The coworker
+    /// polls its inbox between turns, so delivery is not immediate but avoids the
+    /// terminal corruption risks of tmux send-keys.
+    ///
+    /// Phase 1: Used alongside tmux nudges for task assignment to idle coworkers.
+    /// As mailbox reliability is confirmed, more nudge paths can migrate here.
+    DeliverMailboxMessage {
+        name: String,
+        message: String,
+        summary: Option<String>,
+    },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     PostToChannel { sender: String, message: String },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
@@ -248,6 +262,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::NudgeLead { message } => {
                 if let Err(e) = state.coworkers.nudge_lead(&message) {
                     warn!("Failed to nudge Lead: {}", e);
+                }
+            }
+            Effect::DeliverMailboxMessage {
+                name,
+                message,
+                summary,
+            } => {
+                let team_name = crate::mailbox::team_name_for_repo(&state.repo_name);
+                let mut msg = crate::mailbox::MailboxMessage::new(&message, "midtown")
+                    .with_color("yellow".to_string());
+                if let Some(s) = summary {
+                    msg = msg.with_summary(s);
+                }
+                match crate::mailbox::write_to_inbox(&team_name, &name, msg) {
+                    Ok(()) => {
+                        debug!("Delivered mailbox message to {}", name);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to deliver mailbox message to {}: {} — falling back to tmux",
+                            name, e
+                        );
+                        // Fallback: try tmux send-keys as a last resort
+                        if let Err(nudge_err) = state.coworkers.nudge(&name, &message) {
+                            warn!(
+                                "Fallback tmux nudge also failed for {}: {}",
+                                name, nudge_err
+                            );
+                        }
+                    }
                 }
             }
             Effect::PostToChannel { sender, message } => {
