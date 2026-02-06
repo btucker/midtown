@@ -14,7 +14,8 @@
 //!
 //! When running inside tmux, APC sequences must be wrapped in DCS passthrough:
 //!   \x1bPtmux;\x1b\x1b_G{params};{data}\x1b\x1b\\\x1b\\
-//! Every ESC in the original sequence is doubled inside the passthrough.
+//! The ESC characters at the APC start and end delimiters are doubled inside
+//! the passthrough. The base64 payload is ESC-free by construction.
 
 use std::io::{self, Write};
 
@@ -331,5 +332,71 @@ mod tests {
             "Each chunk should be wrapped in DCS passthrough, got {} wrappings",
             dcs_count
         );
+    }
+
+    #[test]
+    fn test_is_inside_tmux_detection() {
+        // Save original value
+        let original = std::env::var("TMUX").ok();
+
+        // SAFETY: env var mutation is not thread-safe; run with --test-threads=1
+        unsafe {
+            // With TMUX set, should detect tmux
+            std::env::set_var("TMUX", "/tmp/tmux-1000/default,12345,0");
+            assert!(is_inside_tmux(), "Should detect tmux when TMUX is set");
+
+            // With TMUX removed, should not detect tmux
+            std::env::remove_var("TMUX");
+            assert!(
+                !is_inside_tmux(),
+                "Should not detect tmux when TMUX is unset"
+            );
+
+            // Restore original value
+            if let Some(val) = original {
+                std::env::set_var("TMUX", val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_render_single_image_public_api() {
+        // Save original value
+        let original = std::env::var("TMUX").ok();
+
+        // SAFETY: env var mutation is not thread-safe; run with --test-threads=1
+        unsafe {
+            // Ensure TMUX is unset so the public API uses non-wrapped output
+            std::env::remove_var("TMUX");
+        }
+
+        let mut buf = Vec::new();
+        {
+            let mut backend = CrosstermBackend::new(&mut buf);
+            let image = InlineImage {
+                x: 0,
+                y: 0,
+                cols: 10,
+                rows: 5,
+                png_data: vec![0x89, b'P', b'N', b'G'],
+            };
+            render_single_image(&mut backend, &image).unwrap();
+            backend.flush().unwrap();
+        }
+
+        let output = String::from_utf8_lossy(&buf);
+        // Without tmux, should use bare APC (no DCS passthrough)
+        assert!(output.contains("\x1b_G"), "Should contain Kitty APC start");
+        assert!(
+            !output.contains("\x1bPtmux;"),
+            "Should not contain DCS passthrough"
+        );
+
+        // Restore original value
+        unsafe {
+            if let Some(val) = original {
+                std::env::set_var("TMUX", val);
+            }
+        }
     }
 }
