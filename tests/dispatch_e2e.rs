@@ -1047,6 +1047,79 @@ fn should_defer_task_dispatch(snap: &DispatchSnapshot) -> bool {
 /// Regression test: dispatch deferral should NOT block when all PRs needing review
 /// already have active reviewers assigned.
 ///
+/// Captured snapshot from bug #860: PRs #702 and #703 sat without reviews for 2+ hours.
+/// The root cause was two interacting bugs:
+/// 1. Usage limit detection patterns didn't match the new `/extra-usage` message
+///    format from Claude Code v2.1.33+, so york and vernon weren't detected as
+///    usage-limited even though their panes showed the limit screen.
+/// 2. Because usage-limited reviewers weren't detected, cleanup_expired_preserving()
+///    kept refreshing their assignment timestamps, preventing reassignment.
+#[test]
+fn usage_limited_reviewers_detected_from_pane_contents() {
+    let fixture =
+        include_str!("fixtures/snapshot/snapshot-stuck-reviews-702-703-20260206-050712.json");
+    let v: Value = serde_json::from_str(fixture).expect("valid JSON");
+
+    // The snapshot recorded usage_limited_coworkers as empty — that was the bug
+    let recorded_usage_limited: Vec<String> = v["usage_limited_coworkers"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        recorded_usage_limited.is_empty(),
+        "snapshot recorded empty usage_limited_coworkers (the bug)"
+    );
+
+    // But the pane contents clearly show usage limits for york and vernon
+    let pane_contents: HashMap<String, String> = v["pane_contents"]
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Verify york and vernon panes contain usage limit indicators
+    assert!(
+        pane_contents["york"].contains("/extra-usage"),
+        "york pane should contain /extra-usage"
+    );
+    assert!(
+        pane_contents["vernon"].contains("/extra-usage"),
+        "vernon pane should contain /extra-usage"
+    );
+
+    // After the fix, has_usage_limit_pattern should detect these
+    let usage_limited: HashSet<String> = pane_contents
+        .iter()
+        .filter(|(_, content)| midtown::rules::has_usage_limit_pattern(content))
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    assert!(
+        usage_limited.contains("york"),
+        "york should be detected as usage-limited"
+    );
+    assert!(
+        usage_limited.contains("vernon"),
+        "vernon should be detected as usage-limited"
+    );
+    // park and amsterdam should NOT be usage-limited
+    assert!(
+        !usage_limited.contains("park"),
+        "park should not be usage-limited"
+    );
+    assert!(
+        !usage_limited.contains("amsterdam"),
+        "amsterdam should not be usage-limited"
+    );
+}
+
 /// Captured snapshot shows: prs_needing_review=2, active_reviewers=[pleasant, york],
 /// reviewer_pr_assignments={pleasant: 644, york: 645}. Both PRs are covered, so
 /// task dispatch should proceed. The bug was that the deferral only checked

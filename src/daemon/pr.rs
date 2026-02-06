@@ -225,10 +225,13 @@ pub(super) async fn poll_prs_for_issues(
     // Get running coworkers for cleanup_expired_preserving, which removes timed-out
     // reviewer assignments but preserves those for still-running reviewers (i.e., reviews
     // that are taking longer than the timeout but the reviewer is still actively working).
+    // Exclude usage-limited coworkers: they're running but can't complete reviews,
+    // so their expired assignments should be cleaned up to allow reassignment.
     let running_coworker_names: HashSet<String> = snap
         .running_coworkers
         .iter()
         .map(|c| c.name.clone())
+        .filter(|name| !snap.usage_limited_coworkers.contains(&name.to_lowercase()))
         .collect();
 
     // Get list of idle coworkers for handoff decisions

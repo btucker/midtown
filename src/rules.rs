@@ -418,15 +418,16 @@ pub(crate) fn decide_idle_shutdowns(
 /// Patterns that indicate a coworker has hit a usage/rate limit (case-insensitive).
 ///
 /// When Claude Code hits a usage limit, it displays a message with "/upgrade"
-/// as an action option. We look for contextual patterns to avoid false positives
-/// when coworkers edit code containing "/upgrade" in strings or comments:
+/// or "/extra-usage" as an action option. We look for contextual patterns to
+/// avoid false positives when coworkers edit code containing these in strings:
 /// - "- /upgrade" (menu option format in the usage limit screen)
 /// - "/upgrade to" (instruction format: "/upgrade to increase your limit")
 /// - "/upgrade or" (options format: "/upgrade or wait")
+/// - "/extra-usage" (Claude Code v2.1.33+: "/extra-usage to finish what you're working on")
 ///
 /// Previous patterns like "usage limit" caused false positives when coworkers
 /// were editing code with those strings in comments.
-const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade or"];
+const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade or", "/extra-usage"];
 
 /// Patterns that indicate a Claude API error in pane content.
 ///
@@ -552,12 +553,31 @@ fn is_at_usage_limit(content: &str) -> bool {
 /// - Box-drawing characters (│, ┌, ├, └, etc.)
 /// - Bullet points and task indicators (◼, ◻, ✔, ●, ○, ■, □)
 /// - Cursor prompts (❯, >, $, %)
+/// - Claude Code task list lines (◼/◻/✔ + text)
+/// - Claude Code cogitation/status indicators (✻, ⏵)
+/// - Claude Code UI hints (lines containing "ctrl+" key bindings)
 fn is_ui_chrome(line: &str) -> bool {
     // Lines that are entirely horizontal rules
     if line
         .chars()
         .all(|c| matches!(c, '─' | '━' | '=' | '-' | ' '))
     {
+        return true;
+    }
+
+    // Claude Code task list lines: bullet character followed by text.
+    // These appear after usage limit screens and are UI, not recovery content.
+    let first_non_ws = line.trim_start();
+    if first_non_ws
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '◼' | '◻' | '✔' | '✻' | '⏵'))
+    {
+        return true;
+    }
+
+    // Lines containing Claude Code UI key hints
+    if first_non_ws.contains("ctrl+") && first_non_ws.contains(" to ") {
         return true;
     }
 
@@ -1296,7 +1316,7 @@ fn parse_12hour_time(text: &str) -> Option<Duration> {
 /// hasn't recovered (no significant activity after the limit message).
 ///
 /// Used directly in tests and indirectly via `decide_usage_limit_detection`.
-pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
+pub fn has_usage_limit_pattern(pane_content: &str) -> bool {
     is_at_usage_limit(pane_content)
 }
 
