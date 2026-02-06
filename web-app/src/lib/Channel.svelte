@@ -148,13 +148,33 @@
           </div>
         {/if}
 
-        {#if isAction(msg)}
+        {#if isAction(msg) && !hasMermaid(msg.content)}
           <!-- Action message: HH:MM * content -->
           <div class="message-line">
             <span class="time-gutter">{formatTime(msg.timestamp)}</span>
             <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
             <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(getActionContent(msg))}</span>
           </div>
+        {:else if isAction(msg) && hasMermaid(msg.content)}
+          <!-- Action message with mermaid diagram(s) -->
+          {#each parseSegments(getActionContent(msg)) as segment, si}
+            {#if segment.type === 'mermaid'}
+              <div class="mermaid-block">
+                <MermaidDiagram code={segment.content} />
+              </div>
+            {:else}
+              <div class="message-line">
+                {#if si === 0}
+                  <span class="time-gutter">{formatTime(msg.timestamp)}</span>
+                  <span class="action-star" style="color: {getSenderColor(msg.from)}">*</span>
+                {:else}
+                  <span class="time-gutter"></span>
+                  <span class="action-star" style="visibility: hidden">*</span>
+                {/if}
+                <span class="action-text" style="color: {getSenderColor(msg.from)}">{@html renderContent(segment.content)}</span>
+              </div>
+            {/if}
+          {/each}
         {:else if hasMermaid(msg.content)}
           <!-- Message with mermaid diagram(s) -->
           {#each parseSegments(msg.content) as segment, si}
