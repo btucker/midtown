@@ -616,6 +616,12 @@ impl DaemonState {
             config.name.clone(),
             crate::rules::CoworkerRecord::new_spawn(),
         );
+        // Clear stale stop time so orphan recovery grace period doesn't reference
+        // a previous session's shutdown timestamp.
+        {
+            let mut stop_times = self.coworker_stop_times.write().unwrap();
+            stop_times.remove(&config.name.to_lowercase());
+        }
         Ok(())
     }
 

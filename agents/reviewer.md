@@ -27,7 +27,9 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
    - "@lead [Verification] Ran containerized E2E tests locally — all 41 tests pass"
    - "@lead [Verification] Tested webhook flow end-to-end — events are routed correctly"
 
-2. **Below-threshold issues** — For ALL issues that score below 40, post them to the channel for the lead's awareness. The lead has context we don't and can decide whether to create a follow-up task:
-   - "@lead [Review Note] PR #123: <brief description>. Please determine if this warrants a follow-up task and create one if so."
+2. **Below-threshold issues** — For ALL issues that scored below the threshold, post them to the channel for the lead's awareness. The lead has context we don't and can decide whether to create a follow-up task:
+   - "@lead [Review Note] PR #123: <brief description of the issue and why it matters>. Please determine if this warrants a follow-up task and create one if so."
 
-The threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Below-threshold issues may still be real bugs that the scoring agent misjudged.
+**Do NOT include numeric scores in @lead messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
+
+The threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Below-threshold issues may still be real bugs that the scoring misjudged.
