@@ -2968,13 +2968,16 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
 
     #[test]
     fn test_usage_limit_patterns_detect_common_messages() {
-        // The usage limit pattern is "/upgrade" which appears on Claude Code's
-        // actual usage limit screen. This avoids false positives from code that
-        // mentions "usage limit" in comments.
+        // The usage limit pattern is "/upgrade" or "/extra-usage" which appears
+        // on Claude Code's actual usage limit screen. This avoids false positives
+        // from code that mentions "usage limit" in comments.
         let messages = vec![
             "You've hit your usage limit. /upgrade to increase your limit.",
             "Usage limit reached for this model. Options: /upgrade or wait.",
             "Try /upgrade to get more tokens or wait 15 minutes.",
+            // Claude Code v2.1.33+ uses /extra-usage instead of /upgrade
+            "You've hit your limit · resets 11pm (America/Chicago)\n     /extra-usage to finish what you're working on.",
+            "/extra-usage to continue working on this task.",
         ];
 
         for msg in messages {

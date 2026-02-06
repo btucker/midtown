@@ -418,15 +418,16 @@ pub(crate) fn decide_idle_shutdowns(
 /// Patterns that indicate a coworker has hit a usage/rate limit (case-insensitive).
 ///
 /// When Claude Code hits a usage limit, it displays a message with "/upgrade"
-/// as an action option. We look for contextual patterns to avoid false positives
-/// when coworkers edit code containing "/upgrade" in strings or comments:
+/// or "/extra-usage" as an action option. We look for contextual patterns to
+/// avoid false positives when coworkers edit code containing these in strings:
 /// - "- /upgrade" (menu option format in the usage limit screen)
 /// - "/upgrade to" (instruction format: "/upgrade to increase your limit")
 /// - "/upgrade or" (options format: "/upgrade or wait")
+/// - "/extra-usage" (Claude Code v2.1.33+: "/extra-usage to finish what you're working on")
 ///
 /// Previous patterns like "usage limit" caused false positives when coworkers
 /// were editing code with those strings in comments.
-const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade or"];
+const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade or", "/extra-usage"];
 
 /// Patterns that indicate a Claude API error in pane content.
 ///
@@ -552,12 +553,31 @@ fn is_at_usage_limit(content: &str) -> bool {
 /// - Box-drawing characters (│, ┌, ├, └, etc.)
 /// - Bullet points and task indicators (◼, ◻, ✔, ●, ○, ■, □)
 /// - Cursor prompts (❯, >, $, %)
+/// - Claude Code task list lines (◼/◻/✔ + text)
+/// - Claude Code cogitation/status indicators (✻, ⏵)
+/// - Claude Code UI hints (lines containing "ctrl+" key bindings)
 fn is_ui_chrome(line: &str) -> bool {
     // Lines that are entirely horizontal rules
     if line
         .chars()
         .all(|c| matches!(c, '─' | '━' | '=' | '-' | ' '))
     {
+        return true;
+    }
+
+    // Claude Code task list lines: bullet character followed by text.
+    // These appear after usage limit screens and are UI, not recovery content.
+    let first_non_ws = line.trim_start();
+    if first_non_ws
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '◼' | '◻' | '✔' | '✻' | '⏵'))
+    {
+        return true;
+    }
+
+    // Lines containing Claude Code UI key hints
+    if first_non_ws.contains("ctrl+") && first_non_ws.contains(" to ") {
         return true;
     }
 
@@ -1295,8 +1315,10 @@ fn parse_12hour_time(text: &str) -> Option<Duration> {
 /// Returns true only if the usage limit pattern is present AND the coworker
 /// hasn't recovered (no significant activity after the limit message).
 ///
-/// Used directly in tests and indirectly via `decide_usage_limit_detection`.
-pub(crate) fn has_usage_limit_pattern(pane_content: &str) -> bool {
+/// Used indirectly via `decide_usage_limit_detection` and in snapshot collection.
+/// Public (not `pub(crate)`) because integration tests in `dispatch_e2e.rs` call
+/// this to verify usage limit detection against captured snapshot pane contents.
+pub fn has_usage_limit_pattern(pane_content: &str) -> bool {
     is_at_usage_limit(pane_content)
 }
 
@@ -5699,6 +5721,73 @@ Now implementing the fix.
         assert!(
             !has_usage_limit_pattern(recovered_with_real_output),
             "real activity after usage limit should indicate recovery"
+        );
+    }
+
+    #[test]
+    fn ui_chrome_detects_task_list_items() {
+        // Claude Code renders task list items with bullet chars + text
+        assert!(is_ui_chrome("◼ Run 5 parallel code review agents"));
+        assert!(is_ui_chrome("◻ Score and filter issues"));
+        assert!(is_ui_chrome("✔ Check PR #702 eligibility"));
+        assert!(is_ui_chrome("  ◼ Run 5 parallel code review agents")); // indented
+    }
+
+    #[test]
+    fn ui_chrome_detects_cogitation_and_status() {
+        assert!(is_ui_chrome("✻ Worked for 1m 49s"));
+        assert!(is_ui_chrome(
+            "✻ Running parallel code reviews… (2m 4s · ↓ 4.1k tokens)"
+        ));
+        assert!(is_ui_chrome(
+            "⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks"
+        ));
+    }
+
+    #[test]
+    fn ui_chrome_detects_ctrl_key_hints() {
+        assert!(is_ui_chrome(
+            "6 tasks (3 done, 1 in progress, 2 open) · ctrl+t to hide tasks"
+        ));
+        assert!(is_ui_chrome("ctrl+b ctrl+b (twice) to run in background"));
+    }
+
+    #[test]
+    fn ui_chrome_does_not_match_real_content() {
+        assert!(!is_ui_chrome("Reading file src/main.rs"));
+        assert!(!is_ui_chrome("OK I'll continue working."));
+        assert!(!is_ui_chrome("Let me read the file."));
+        assert!(!is_ui_chrome("Now implementing the fix."));
+    }
+
+    #[test]
+    fn usage_limit_extra_usage_with_claude_code_ui() {
+        // Real pane content from Claude Code v2.1.33+ hitting usage limit.
+        // After the /extra-usage pattern, Claude Code renders its task list
+        // and status bar — these should be recognized as UI chrome, not recovery.
+        let pane = r#"
+  ⎿  You've hit your limit · resets 11pm (America/Chicago)
+     /extra-usage to finish what you're working on.
+
+✻ Worked for 1m 49s
+
+  6 tasks (3 done, 1 in progress, 2 open) · ctrl+t to hide tasks
+  ◼ Run 5 parallel code review agents
+  ◻ Score and filter issues
+  ◻ Post review comment on PR
+  ✔ Check PR #702 eligibility
+  ✔ Find relevant CLAUDE.md files
+  ✔ Get PR #702 summary
+
+─────────────────────────────────────────────
+❯
+─────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks
+"#;
+
+        assert!(
+            has_usage_limit_pattern(pane),
+            "usage limit with Claude Code UI chrome after /extra-usage should be detected"
         );
     }
 
