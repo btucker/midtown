@@ -2675,7 +2675,7 @@ mod tests {
         // The "github" sender is in SKIP_SENDERS, so chat monitor correctly
         // skips batched messages.
         assert!(
-            SKIP_SENDERS.iter().any(|&s| s == "github"),
+            SKIP_SENDERS.contains(&"github"),
             "github must be in SKIP_SENDERS"
         );
     }
