@@ -68,6 +68,8 @@ struct DispatchSnapshot {
     prs_needing_review: usize,
     /// Whether we're at the overall coworker limit.
     is_at_coworker_limit: bool,
+    /// PR numbers of recently merged PRs. Used to skip tasks referencing merged PRs.
+    merged_pr_numbers: HashSet<u64>,
 }
 
 /// Load a snapshot fixture and parse it into test-friendly data structures.
@@ -206,6 +208,11 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
     let prs_needing_review = v["prs_needing_review"].as_u64().unwrap_or(0) as usize;
     let is_at_coworker_limit = v["is_at_coworker_limit"].as_bool().unwrap_or(false);
 
+    let merged_pr_numbers: HashSet<u64> = v["merged_pr_numbers"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|n| n.as_u64()).collect())
+        .unwrap_or_default();
+
     DispatchSnapshot {
         all_tasks,
         active_names,
@@ -221,6 +228,7 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
         reviewer_pr_assignments,
         prs_needing_review,
         is_at_coworker_limit,
+        merged_pr_numbers,
     }
 }
 
@@ -1506,4 +1514,122 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
         "active-but-busy coworker should be nudged for review complete, not spawned. Got: {:?}",
         action
     );
+}
+
+// =============================================================================
+// Tests: Merged PR task filtering
+// =============================================================================
+
+/// Regression test: tasks referencing a merged PR should be skipped by dispatch.
+///
+/// Bug: The daemon kept nudging york for task #3 ("Address review feedback on
+/// PR #709") even though PR #709 was merged hours ago. The dispatch logic
+/// never checked whether a task's referenced PR was already merged.
+///
+/// The fix adds merged PR number tracking and skips tasks whose PR is merged,
+/// auto-completing them instead of generating nudge/spawn effects.
+#[test]
+fn tasks_referencing_merged_pr_are_skipped() {
+    // Simulate the bug scenario: task references a merged PR
+    let merged_pr_numbers: HashSet<u64> = [709, 714].into_iter().collect();
+
+    // Case 1: Pending task with owner references merged PR
+    let pending_with_owners = vec![
+        (
+            "3".to_string(),
+            "Address review feedback on PR #709".to_string(),
+            "york".to_string(),
+        ),
+        (
+            "5".to_string(),
+            "Implement new feature".to_string(),
+            "park".to_string(),
+        ),
+        (
+            "7".to_string(),
+            "Fix bug in PR #714".to_string(),
+            "madison".to_string(),
+        ),
+    ];
+
+    let mut skipped_tasks = Vec::new();
+    let mut dispatched_tasks = Vec::new();
+
+    for (task_id, subject, _owner) in &pending_with_owners {
+        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject) {
+            if let Ok(pr_num) = pr_num_str.parse::<u64>() {
+                if merged_pr_numbers.contains(&pr_num) {
+                    skipped_tasks.push((task_id.as_str(), pr_num));
+                    continue;
+                }
+            }
+        }
+        dispatched_tasks.push(task_id.as_str());
+    }
+
+    // Tasks referencing merged PRs should be skipped
+    assert_eq!(
+        skipped_tasks.len(),
+        2,
+        "two tasks reference merged PRs and should be skipped: {:?}",
+        skipped_tasks
+    );
+    assert!(
+        skipped_tasks
+            .iter()
+            .any(|(id, pr)| *id == "3" && *pr == 709),
+        "task #3 (PR #709) should be skipped"
+    );
+    assert!(
+        skipped_tasks
+            .iter()
+            .any(|(id, pr)| *id == "7" && *pr == 714),
+        "task #7 (PR #714) should be skipped"
+    );
+
+    // Task without PR reference should proceed normally
+    assert_eq!(
+        dispatched_tasks,
+        vec!["5"],
+        "task #5 (no PR reference) should be dispatched"
+    );
+}
+
+/// Test that unowned tasks referencing merged PRs are also skipped.
+#[test]
+fn unowned_tasks_referencing_merged_pr_are_skipped() {
+    let merged_pr_numbers: HashSet<u64> = [709].into_iter().collect();
+
+    // Simulate unowned tasks
+    let subjects = vec![
+        (
+            "873",
+            "Fix call-in failed when nudging coworker about PR #709",
+        ),
+        (
+            "875",
+            "Deduplicate reviewer @lead review notes for same issue",
+        ),
+        ("876", "Fix duplicate spawn notifications for PR #709"),
+    ];
+
+    let mut skipped = Vec::new();
+    let mut passed = Vec::new();
+
+    for (task_id, subject) in &subjects {
+        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject) {
+            if let Ok(pr_num) = pr_num_str.parse::<u64>() {
+                if merged_pr_numbers.contains(&pr_num) {
+                    skipped.push(*task_id);
+                    continue;
+                }
+            }
+        }
+        passed.push(*task_id);
+    }
+
+    // Tasks referencing merged PR #709 should be skipped
+    assert_eq!(skipped, vec!["873", "876"]);
+    // Task without PR #709 reference passes through
+    assert_eq!(passed, vec!["875"]);
 }

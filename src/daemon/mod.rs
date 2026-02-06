@@ -295,6 +295,10 @@ struct PrCoworkerCache {
     /// Used for precise orphan filtering - avoids hiding genuinely orphaned
     /// worktrees when the same coworker has other merged PRs.
     merged_pr_branches: HashSet<String>,
+    /// PR numbers of recently merged PRs. Used by task dispatch to skip
+    /// tasks that reference a PR that's already merged (e.g., "Address
+    /// review feedback on PR #709" when PR #709 is merged).
+    merged_pr_numbers: HashSet<u64>,
     /// Coworker names whose open PR has all CI checks passing.
     /// Used by snapshot to determine PR break eligibility.
     ci_passed_pr_owners: HashSet<String>,
@@ -316,6 +320,7 @@ impl PrCoworkerCache {
             open_pr_owners: HashSet::new(),
             merged_pr_owners: HashSet::new(),
             merged_pr_branches: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
             ci_passed_pr_owners: HashSet::new(),
             review_feedback_pr_owners: HashSet::new(),
             prs_needing_review: 0,
