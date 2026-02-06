@@ -389,17 +389,37 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 name,
                 message,
                 on_success,
-            } => match state.coworkers.nudge(&name, &message) {
-                Ok(()) => {
-                    info!("Nudged coworker {} successfully", name);
-                    // Record pending nudge for attribution tracking
-                    state.record_pending_nudge(&name, &message);
-                    Box::pin(execute_effects(on_success, state)).await;
+            } => {
+                // Extract task IDs from on_success RecordTaskAssignment effects
+                // to clear their in-flight markers after the nudge completes.
+                let task_ids: Vec<String> = on_success
+                    .iter()
+                    .filter_map(|e| {
+                        if let Effect::RecordTaskAssignment { task_id, .. } = e {
+                            Some(task_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                match state.coworkers.nudge(&name, &message) {
+                    Ok(()) => {
+                        info!("Nudged coworker {} successfully", name);
+                        // Record pending nudge for attribution tracking
+                        state.record_pending_nudge(&name, &message);
+                        Box::pin(execute_effects(on_success, state)).await;
+                    }
+                    Err(e) => {
+                        warn!("Failed to nudge coworker {}: {}", name, e);
+                    }
                 }
-                Err(e) => {
-                    warn!("Failed to nudge coworker {}: {}", name, e);
+                // Clear in-flight markers regardless of success/failure,
+                // so these tasks can be retried on the next tick if needed.
+                for task_id in &task_ids {
+                    state.clear_task_spawn_in_flight(task_id);
                 }
-            },
+            }
             Effect::AssignAndSpawn {
                 task_id,
                 owner,

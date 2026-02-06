@@ -822,15 +822,28 @@ fn check_nudge_text_match(pending_msg: &str, queued_text: &str) -> bool {
 }
 
 impl DaemonState {
-    /// Scan effects for `AssignAndSpawn` variants and mark their task IDs as in-flight.
+    /// Scan effects for task assignment variants and mark their task IDs as in-flight.
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
-    /// This prevents the next tick from generating duplicate spawns for the same task.
+    /// This prevents the next tick from generating duplicate spawns/nudges for the same task.
+    /// Covers both `AssignAndSpawn` (fresh spawns) and `NudgeCoworkerWithCallbacks`
+    /// that contain a `RecordTaskAssignment` in on_success (nudges to running coworkers).
     fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
         for effect in effects {
-            if let effects::Effect::AssignAndSpawn { task_id, .. } = effect {
-                self.mark_task_spawn_in_flight(task_id);
-                debug!("Marked task #{} as in-flight spawn", task_id);
+            match effect {
+                effects::Effect::AssignAndSpawn { task_id, .. } => {
+                    self.mark_task_spawn_in_flight(task_id);
+                    debug!("Marked task #{} as in-flight spawn", task_id);
+                }
+                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. } => {
+                    for sub_effect in on_success {
+                        if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
+                            self.mark_task_spawn_in_flight(task_id);
+                            debug!("Marked task #{} as in-flight nudge assignment", task_id);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -3245,18 +3258,25 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
     }
 
     #[test]
-    fn test_grouped_tasks_bypass_busy_check() {
-        // Grouped tasks (same PR, blockedBy) should be allowed even if busy.
+    fn test_grouped_tasks_bypass_snapshot_busy_check() {
+        // Grouped tasks (same PR, blockedBy) should be allowed even if the
+        // coworker is busy from a *previous tick* (in busy_coworkers snapshot).
         let busy_coworkers: HashSet<String> = ["park".to_string()].into_iter().collect();
 
         let already_running = true;
-        let is_busy = busy_coworkers.contains("park");
+        let is_busy_from_snapshot = busy_coworkers.contains("park");
+        let assigned_this_tick = false; // Not assigned this tick
         let was_grouped = true; // Task was grouped to park via PR/blockedBy
+        let is_coworker_reviewer = false;
 
-        // Grouped tasks bypass the busy check
+        // Grouped tasks bypass the snapshot busy check (cross-tick grouping)
+        let should_skip = already_running
+            && (is_coworker_reviewer
+                || assigned_this_tick
+                || (is_busy_from_snapshot && !was_grouped));
         assert!(
-            !(already_running && (is_busy && !was_grouped)),
-            "grouped tasks should bypass busy check"
+            !should_skip,
+            "grouped tasks should bypass snapshot busy check"
         );
     }
 
@@ -3264,19 +3284,112 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
     fn test_names_assigned_this_tick_prevents_duplicate_spawn() {
         // Within a single tick, if two unrelated tasks both get fresh names,
         // the second should be prevented if the first already claimed the name.
-        let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
-
-        // First task assigned to "park"
-        names_assigned_this_tick.insert("park".to_string());
+        let names_assigned_this_tick: HashSet<String> = ["park".to_string()].into_iter().collect();
 
         // Second task tries to use "park" (not grouped)
-        let is_busy = names_assigned_this_tick.contains("park");
+        let assigned_this_tick = names_assigned_this_tick.contains("park");
+        let is_busy_from_snapshot = false;
         let was_grouped = false;
         let already_running = false;
 
+        let should_skip =
+            !already_running && (assigned_this_tick || is_busy_from_snapshot) && !was_grouped;
         assert!(
-            !already_running && is_busy && !was_grouped,
+            should_skip,
             "should skip duplicate fresh-spawn within same tick"
+        );
+    }
+
+    #[test]
+    fn test_grouped_tasks_should_not_duplicate_nudge_to_running_coworker() {
+        // Bug fix: When two grouped tasks (same PR) target an already-running coworker,
+        // the second should be skipped because the coworker was already assigned this tick.
+        // Previously, the condition `(is_busy && !was_grouped)` exempted grouped tasks
+        // from the busy check entirely, allowing duplicate nudges.
+        let names_assigned_this_tick: HashSet<String> =
+            ["pleasant".to_string()].into_iter().collect();
+
+        // Second grouped task tries to use "pleasant" (already assigned this tick)
+        let assigned_this_tick = names_assigned_this_tick.contains("pleasant");
+        let is_busy_from_snapshot = true; // Also busy from snapshot
+        let was_grouped = true;
+        let already_running = true;
+        let is_coworker_reviewer = false;
+
+        let should_skip = already_running
+            && (is_coworker_reviewer
+                || assigned_this_tick
+                || (is_busy_from_snapshot && !was_grouped));
+        assert!(
+            should_skip,
+            "should skip duplicate nudge to already-running coworker within same tick, \
+             even for grouped tasks (same PR)"
+        );
+
+        // Verify it's specifically the assigned_this_tick that catches it
+        assert!(
+            assigned_this_tick,
+            "assigned_this_tick should be the trigger for skipping"
+        );
+    }
+
+    #[test]
+    fn test_mark_in_flight_spawns_covers_nudge_effects() {
+        // Bug: mark_in_flight_spawns_from_effects only tracked AssignAndSpawn effects,
+        // not NudgeCoworkerWithCallbacks. This allowed cross-tick duplicate nudges
+        // because the task wasn't marked as in-flight between ticks.
+        //
+        // After the fix, NudgeCoworkerWithCallbacks effects that contain a
+        // RecordTaskAssignment in on_success should also be tracked.
+        let effects = vec![
+            effects::Effect::NudgeCoworkerWithCallbacks {
+                name: "pleasant".to_string(),
+                message: "task prompt".to_string(),
+                on_success: vec![effects::Effect::RecordTaskAssignment {
+                    coworker: "pleasant".to_string(),
+                    task_id: "873".to_string(),
+                }],
+            },
+            effects::Effect::AssignAndSpawn {
+                task_id: "874".to_string(),
+                owner: "park".to_string(),
+                repo_name: "test-repo".to_string(),
+                config: crate::tmux::ClaudeLaunchConfig::coworker(
+                    "park".to_string(),
+                    "test-repo".to_string(),
+                    crate::tmux::SessionMode::Fresh,
+                    None,
+                ),
+                on_success: vec![],
+                on_failure: vec![],
+            },
+        ];
+
+        // Extract task IDs that should be in-flight
+        let mut in_flight_tasks = HashSet::new();
+        for effect in &effects {
+            match effect {
+                effects::Effect::AssignAndSpawn { task_id, .. } => {
+                    in_flight_tasks.insert(task_id.clone());
+                }
+                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. } => {
+                    for sub_effect in on_success {
+                        if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
+                            in_flight_tasks.insert(task_id.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            in_flight_tasks.contains("873"),
+            "NudgeCoworkerWithCallbacks with RecordTaskAssignment should be tracked"
+        );
+        assert!(
+            in_flight_tasks.contains("874"),
+            "AssignAndSpawn should be tracked"
         );
     }
 

@@ -982,25 +982,36 @@ pub(super) fn spawn_for_pending_tasks(
             .contains(&coworker_name.to_lowercase());
 
         // Check if this coworker is already busy with an assigned task.
-        // With isolated task lists, the daemon tracks assignments internally.
-        // Also check within-tick assignments to prevent duplicate fresh-spawns.
-        let is_busy = snap.busy_coworkers.contains(&coworker_name.to_lowercase())
-            || names_assigned_this_tick.contains(&coworker_name.to_lowercase());
+        // Split into two sources: persistent busyness (from snapshot) and
+        // same-tick assignments (from this loop iteration).
+        let is_busy_from_snapshot = snap.busy_coworkers.contains(&coworker_name.to_lowercase());
+        let assigned_this_tick = names_assigned_this_tick.contains(&coworker_name.to_lowercase());
 
         // Skip running coworkers that are busy or reviewing.
-        // Grouped tasks (same PR, blockedBy) are allowed to go to busy coworkers
-        // since they represent intentionally related work.
-        if already_running && (is_coworker_reviewer || (is_busy && !was_grouped)) {
+        // Grouped tasks (same PR, blockedBy) are allowed to go to coworkers
+        // that are busy from *previous ticks* (cross-tick grouping).
+        // However, always skip if already assigned *this tick* — one nudge
+        // per coworker per tick is sufficient, even for grouped tasks.
+        if already_running
+            && (is_coworker_reviewer
+                || assigned_this_tick
+                || (is_busy_from_snapshot && !was_grouped))
+        {
             debug!(
-                "Task #{}: skipping coworker {} (busy={}, reviewer={}, grouped={})",
-                task.id, coworker_name, is_busy, is_coworker_reviewer, was_grouped
+                "Task #{}: skipping coworker {} (busy_snapshot={}, assigned_tick={}, reviewer={}, grouped={})",
+                task.id,
+                coworker_name,
+                is_busy_from_snapshot,
+                assigned_this_tick,
+                is_coworker_reviewer,
+                was_grouped
             );
             continue;
         }
 
         // For fresh-spawn names (not grouped), prevent assigning multiple tasks
         // to the same not-yet-spawned coworker within the same tick.
-        if !already_running && is_busy && !was_grouped {
+        if !already_running && (assigned_this_tick || is_busy_from_snapshot) && !was_grouped {
             debug!(
                 "Task #{}: skipping {} (already assigned this tick)",
                 task.id, coworker_name
