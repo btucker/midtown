@@ -662,7 +662,10 @@ async fn handle_headless_execute(
         config.json_schema.is_some()
     );
 
-    match crate::headless::execute(config, prompt).await {
+    // Default timeout of 5 minutes for RPC-invoked headless sessions
+    let timeout = std::time::Duration::from_secs(300);
+
+    match crate::headless::execute(config, prompt, timeout).await {
         Ok(result) => {
             info!(
                 "Headless execute complete: cost=${:.4}, duration={}ms, error={}",
