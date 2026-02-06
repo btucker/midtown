@@ -38,7 +38,9 @@
     getSelkie().then((selkie) => {
       try {
         const id = `mermaid-${counter++}`
-        const result = selkie.render(id, currentCode)
+        // Apply dark theme directive to match TUI rendering
+        const themedCode = `%%{init: {"theme": "dark"}}%%\n${currentCode}`
+        const result = selkie.render(id, themedCode)
         svgHtml = sanitizeSvg(result.svg)
         error = ''
       } catch (e) {
