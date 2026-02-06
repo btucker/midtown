@@ -33,6 +33,14 @@ use app::App;
 use ratatui::style::Color as RatatuiColor;
 use ui::Hyperlink;
 
+/// Whether the app is in fullscreen diagram viewer mode
+enum ViewMode {
+    /// Normal chat view
+    Chat,
+    /// Fullscreen diagram viewer (index into app.diagram_sources, 0-based)
+    DiagramViewer(usize),
+}
+
 /// Run the chat TUI
 pub fn run() -> Result<(), String> {
     // Setup terminal
@@ -90,23 +98,35 @@ async fn run_app_async(
     // and forgot. Prevents the chat from appearing frozen when it's just scrolled up.
     let mut auto_scroll_interval = interval(Duration::from_secs(30));
 
+    let mut view_mode = ViewMode::Chat;
+
     loop {
-        // Draw UI and collect post-render overlays (hyperlinks + images)
-        let mut hyperlinks = Vec::new();
-        let mut inline_images = Vec::new();
-        terminal.draw(|f| {
-            let (h, i) = ui::draw(f, app);
-            hyperlinks = h;
-            inline_images = i;
-        })?;
+        // Draw based on current view mode
+        match &view_mode {
+            ViewMode::Chat => {
+                // Draw UI and collect post-render overlays (hyperlinks)
+                let mut hyperlinks = Vec::new();
+                terminal.draw(|f| {
+                    hyperlinks = ui::draw(f, app);
+                })?;
 
-        // Write hyperlinks using OSC 8 sequences (after ratatui draws)
-        // This bypasses ratatui's buffer system which doesn't support escape sequences
-        render_hyperlinks(terminal.backend_mut(), &hyperlinks)?;
-
-        // Write inline images using Kitty graphics protocol (after ratatui draws)
-        if !inline_images.is_empty() {
-            kitty::render_kitty_images(terminal.backend_mut(), &inline_images)?;
+                // Write hyperlinks using OSC 8 sequences (after ratatui draws)
+                // This bypasses ratatui's buffer system which doesn't support escape sequences
+                render_hyperlinks(terminal.backend_mut(), &hyperlinks)?;
+            }
+            ViewMode::DiagramViewer(idx) => {
+                // Render fullscreen diagram
+                if let Some(source) = app.diagram_sources.get(*idx)
+                    && let Some(image) = app.mermaid_cache.get_cached(source)
+                {
+                    terminal.draw(|f| {
+                        let area = f.area();
+                        let block = ratatui::widgets::Block::default();
+                        f.render_widget(block, area);
+                    })?;
+                    kitty::render_fullscreen_image(terminal.backend_mut(), &image.png_data)?;
+                }
+            }
         }
 
         // Use tokio::select! to wait for either:
@@ -119,7 +139,7 @@ async fn run_app_async(
                 match maybe_event {
                     Some(Ok(event)) => {
                         // Handle the first event
-                        match handle_event(app, event) {
+                        match handle_event(app, event, &view_mode) {
                             EventResult::Exit => return Ok(()),
                             EventResult::ToggleSelectionMode => {
                                 if app.selection_mode {
@@ -127,6 +147,12 @@ async fn run_app_async(
                                 } else {
                                     let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
                                 }
+                            }
+                            EventResult::OpenDiagram(idx) => {
+                                view_mode = ViewMode::DiagramViewer(idx);
+                            }
+                            EventResult::CloseDiagram => {
+                                view_mode = ViewMode::Chat;
                             }
                             EventResult::Continue => {}
                         }
@@ -138,7 +164,7 @@ async fn run_app_async(
                         while let Ok(Some(Ok(event))) =
                             tokio::time::timeout(Duration::ZERO, event_stream.next()).await
                         {
-                            match handle_event(app, event) {
+                            match handle_event(app, event, &view_mode) {
                                 EventResult::Exit => return Ok(()),
                                 EventResult::ToggleSelectionMode => {
                                     if app.selection_mode {
@@ -146,6 +172,12 @@ async fn run_app_async(
                                     } else {
                                         let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
                                     }
+                                }
+                                EventResult::OpenDiagram(idx) => {
+                                    view_mode = ViewMode::DiagramViewer(idx);
+                                }
+                                EventResult::CloseDiagram => {
+                                    view_mode = ViewMode::Chat;
                                 }
                                 EventResult::Continue => {}
                             }
@@ -279,31 +311,78 @@ enum EventResult {
     Exit,
     /// Toggle selection mode (needs to update terminal mouse capture)
     ToggleSelectionMode,
+    /// Open a diagram in fullscreen viewer (0-based index into diagram_sources)
+    OpenDiagram(usize),
+    /// Close the diagram viewer and return to chat
+    CloseDiagram,
 }
 
 /// Handle a terminal event, returns the result
-fn handle_event(app: &mut App, event: Event) -> EventResult {
-    match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return EventResult::Exit,
-            KeyCode::Char('s') => {
-                app.toggle_selection_mode();
-                return EventResult::ToggleSelectionMode;
+fn handle_event(app: &mut App, event: Event, view_mode: &ViewMode) -> EventResult {
+    match view_mode {
+        ViewMode::DiagramViewer(_) => {
+            // In diagram viewer: any key returns to chat
+            if let Event::Key(key) = event
+                && key.kind == KeyEventKind::Press
+            {
+                return EventResult::CloseDiagram;
             }
-            KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
-            KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
-            KeyCode::PageUp => app.page_up(),
-            KeyCode::PageDown => app.page_down(),
-            KeyCode::Home | KeyCode::Char('g') => app.scroll_to_top(),
-            KeyCode::End | KeyCode::Char('G') => app.scroll_to_bottom(),
-            _ => {}
+            EventResult::Continue
+        }
+        ViewMode::Chat => match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => EventResult::Exit,
+                KeyCode::Char('s') => {
+                    app.toggle_selection_mode();
+                    EventResult::ToggleSelectionMode
+                }
+                // Number keys 1-9 open the corresponding diagram
+                KeyCode::Char(c @ '1'..='9') => {
+                    let idx = (c as usize) - ('1' as usize); // 0-based
+                    if idx < app.diagram_sources.len() {
+                        EventResult::OpenDiagram(idx)
+                    } else {
+                        EventResult::Continue
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.scroll_up();
+                    EventResult::Continue
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.scroll_down();
+                    EventResult::Continue
+                }
+                KeyCode::PageUp => {
+                    app.page_up();
+                    EventResult::Continue
+                }
+                KeyCode::PageDown => {
+                    app.page_down();
+                    EventResult::Continue
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    app.scroll_to_top();
+                    EventResult::Continue
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    app.scroll_to_bottom();
+                    EventResult::Continue
+                }
+                _ => EventResult::Continue,
+            },
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    app.scroll_up();
+                    EventResult::Continue
+                }
+                MouseEventKind::ScrollDown => {
+                    app.scroll_down();
+                    EventResult::Continue
+                }
+                _ => EventResult::Continue,
+            },
+            _ => EventResult::Continue,
         },
-        Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => app.scroll_up(),
-            MouseEventKind::ScrollDown => app.scroll_down(),
-            _ => {}
-        },
-        _ => {}
     }
-    EventResult::Continue
 }

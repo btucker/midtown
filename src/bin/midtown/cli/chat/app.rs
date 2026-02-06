@@ -169,6 +169,9 @@ pub struct App {
     intentionally_at_top: bool,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
+    /// Mermaid diagram sources visible in the current render pass (indexed from 1 in the UI).
+    /// Populated during each draw call; used to look up which diagram to open fullscreen.
+    pub diagram_sources: Vec<String>,
     /// Current usage data (session + weekly utilization)
     pub usage_data: Option<UsageData>,
     /// Receiver for async usage data from background thread
@@ -225,6 +228,7 @@ impl App {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            diagram_sources: Vec::new(),
             usage_data: None,
             usage_receiver: None,
             usage_last_refresh: Instant::now() - USAGE_REFRESH_INTERVAL, // Force initial refresh
@@ -1398,6 +1402,7 @@ mod tests {
             tasks_cache_hash: 0,
             intentionally_at_top: false,
             mermaid_cache: MermaidCache::new(),
+            diagram_sources: Vec::new(),
             usage_data: None,
             usage_receiver: None,
             usage_last_refresh: Instant::now(),
