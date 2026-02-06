@@ -310,7 +310,7 @@ pub fn get_pending_tasks_with_owners() -> Vec<(String, String, String)> {
 /// Get pending tasks that have no owner (unclaimed and not started).
 ///
 /// Applies a grace period to skip recently-created tasks, giving the creating
-/// coworker time to set ownership via TaskUpdate before the daemon claims them.
+/// coworker time to claim ownership via `midtown task claim` before the daemon assigns them.
 pub fn get_pending_tasks_without_owners() -> Vec<Task> {
     get_pending_tasks_without_owners_with_grace(TASK_CREATION_GRACE_SECS)
 }
@@ -417,8 +417,8 @@ fn is_within_grace_period(
 
 /// Update a task's owner, keeping status as "pending".
 ///
-/// Writes the updated task back to disk. This is called by the Lead (via
-/// TaskUpdate) when a coworker claims a task through `midtown task claim`.
+/// Writes the updated task back to disk. Called by the daemon when a coworker
+/// claims a task through `midtown task claim`.
 /// The task remains "pending" with an owner set — this "pending with owner"
 /// state is used by dispatch.rs for spawn decisions and snapshot.rs for idle
 /// shutdown protection. The status transitions to "in_progress" separately.
@@ -440,7 +440,7 @@ pub fn update_task_owner(task_id: &str, owner: &str) -> Result<(), String> {
 /// This only sets the owner field, leaving status as "pending". The "pending with
 /// owner" state is load-bearing: dispatch.rs uses it for spawn decisions and
 /// snapshot.rs uses it for idle shutdown protection. The transition to "in_progress"
-/// happens separately (e.g., when the Lead processes the claim).
+/// happens separately (the daemon sets both owner and in_progress on claim).
 ///
 /// This is the path-injectable version used by tests and by `update_task_owner`.
 fn update_task_owner_in_dir(
@@ -466,6 +466,66 @@ fn update_task_owner_in_dir(
     std::fs::write(&task_file, updated_content)
         .map_err(|e| format!("Failed to write task: {}", e))?;
 
+    Ok(())
+}
+
+/// Update specific fields on a task.
+///
+/// Only fields that are `Some` are updated; `None` fields are left unchanged.
+/// This is the daemon's direct write path — no Lead proxy needed.
+pub fn update_task_fields_for_repo(
+    task_id: &str,
+    repo_name: &str,
+    owner: Option<&str>,
+    status: Option<&str>,
+    description: Option<&str>,
+    blocked_by: Option<&[String]>,
+) -> Result<(), String> {
+    use fs2::FileExt;
+
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+
+    // Open for read+write and lock exclusively to prevent TOCTTOU races
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&task_file)
+        .map_err(|e| format!("Failed to open task {}: {}", task_id, e))?;
+    file.lock_exclusive()
+        .map_err(|e| format!("Failed to lock task {}: {}", task_id, e))?;
+
+    let content = std::fs::read_to_string(&task_file)
+        .map_err(|e| format!("Failed to read task {}: {}", task_id, e))?;
+
+    let mut task: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse task {}: {}", task_id, e))?;
+
+    if let Some(o) = owner {
+        task["owner"] = serde_json::json!(o);
+    }
+    if let Some(s) = status {
+        task["status"] = serde_json::json!(s);
+    }
+    if let Some(d) = description {
+        task["description"] = serde_json::json!(d);
+    }
+    if let Some(bb) = blocked_by {
+        task["blockedBy"] = serde_json::json!(bb);
+    }
+
+    let updated_content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+
+    std::fs::write(&task_file, updated_content)
+        .map_err(|e| format!("Failed to write task: {}", e))?;
+
+    let _ = file.unlock();
     Ok(())
 }
 
@@ -894,6 +954,7 @@ pub fn create_task_for_repo(
 ///
 /// Reads existing tasks once to both determine the next ID and check for duplicates.
 /// A task with the same subject and owner (regardless of status) is considered a duplicate.
+/// Uses directory-level locking to prevent concurrent ID collisions.
 fn create_task_in_dir(
     tasks_dir: &std::path::Path,
     subject: &str,
@@ -901,12 +962,28 @@ fn create_task_in_dir(
     active_form: &str,
     owner: &str,
 ) -> Result<String, String> {
+    use fs2::FileExt;
+
     let tasks_dir_buf = tasks_dir.to_path_buf();
+
+    // Acquire directory-level lock to prevent concurrent ID assignment races
+    let lock_path = tasks_dir.join(".tasks.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("Failed to open lock file: {}", e))?;
+    lock_file
+        .lock_exclusive()
+        .map_err(|e| format!("Failed to acquire task dir lock: {}", e))?;
+
     let existing = read_tasks_from_dir(&tasks_dir_buf);
 
     // Check for duplicate: same subject + owner in any status
     for task in &existing {
         if task.subject == subject && task.owner.as_deref() == Some(owner) {
+            let _ = lock_file.unlock();
             return Ok(task.id.clone());
         }
     }
@@ -936,6 +1013,7 @@ fn create_task_in_dir(
         .map_err(|e| format!("Failed to serialize task: {}", e))?;
     std::fs::write(&path, content).map_err(|e| format!("Failed to write task file: {}", e))?;
 
+    let _ = lock_file.unlock();
     Ok(task_id)
 }
 

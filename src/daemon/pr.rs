@@ -2278,9 +2278,8 @@ pub(super) async fn handle_pr_comment_nudge(
         tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
     }
 
-    // Also nudge the Lead to create a review feedback task for consistent "task #X"
-    // formatting. Routed through the Lead to avoid TOCTTOU races on task file writes.
-    // In-memory deduplication prevents repeated nudges while waiting for the Lead.
+    // Create a review feedback task directly. In-memory deduplication prevents
+    // repeated creation while the same review cycle is active.
     if success {
         let key = super::DaemonState::task_creation_key(pr_number, &owner);
         if state.is_task_creation_pending(&key) {
@@ -2289,21 +2288,34 @@ pub(super) async fn handle_pr_comment_nudge(
                 owner, pr_number
             );
         } else {
-            let pr_title = format!("PR #{}", pr_number);
-            let nudge_message =
-                super::DaemonState::task_creation_nudge(pr_number, &pr_title, &owner);
             state.mark_task_creation_pending(&key);
-            if let Err(e) = state.coworkers.nudge_lead(&nudge_message) {
-                warn!(
-                    "Failed to nudge lead for task creation (PR #{}, {}): {}",
-                    pr_number, owner, e
-                );
-                state.clear_task_creation_pending(&key);
-            } else {
-                info!(
-                    "Nudged lead to create review feedback task for {} (PR #{}) via webhook",
-                    owner, pr_number
-                );
+            let subject = format!("Address review feedback on PR #{}", pr_number);
+            let description = format!(
+                "PR #{} has review feedback that needs to be addressed. \
+                 Please review the comments, make the requested changes, and push updates. \
+                 Once feedback is addressed, the reviewer will re-check and approve.",
+                pr_number
+            );
+            match crate::tasks::create_task_for_repo(
+                &subject,
+                &description,
+                &format!("Addressing review feedback on PR #{}", pr_number),
+                &owner,
+                &state.repo_name,
+            ) {
+                Ok(task_id) => {
+                    info!(
+                        "Created review feedback task #{} for {} (PR #{}) via webhook",
+                        task_id, owner, pr_number
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to create review feedback task for {} (PR #{}): {}",
+                        owner, pr_number, e
+                    );
+                    state.clear_task_creation_pending(&key);
+                }
             }
         }
     }

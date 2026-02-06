@@ -56,14 +56,10 @@ use crate::worktree::WorktreeManager;
 
 /// An in-memory task assignment record with timing metadata.
 ///
-/// Tracks when a coworker was assigned a task so the daemon can detect
-/// stale claims (e.g., Lead failed to process a `task.claim` nudge).
+/// Tracks in-memory task assignment for busy coworker tracking.
 #[derive(Debug, Clone)]
 pub(crate) struct TaskAssignment {
     pub task_id: String,
-    pub assigned_at: std::time::Instant,
-    /// Number of times the Lead has been re-nudged for this claim.
-    pub nudge_retries: u32,
 }
 
 /// Configuration for the daemon server.
@@ -665,8 +661,6 @@ impl DaemonState {
             coworker.to_lowercase(),
             TaskAssignment {
                 task_id: task_id.to_string(),
-                assigned_at: std::time::Instant::now(),
-                nudge_retries: 0,
             },
         );
     }
@@ -691,38 +685,6 @@ impl DaemonState {
     pub(crate) fn get_busy_coworker_names(&self) -> HashSet<String> {
         let assignments = self.coworker_task_assignments.lock().unwrap();
         assignments.keys().cloned().collect()
-    }
-
-    /// Get stale claim assignments: tasks assigned in-memory but still pending on disk.
-    ///
-    /// Returns `(coworker_name, task_id, nudge_retries)` tuples for assignments older
-    /// than `timeout`. These represent claims where the Lead failed to process the nudge.
-    pub(crate) fn get_stale_claim_assignments(
-        &self,
-        timeout: std::time::Duration,
-        on_disk_in_progress: &HashSet<String>,
-    ) -> Vec<(String, String, u32)> {
-        let assignments = self.coworker_task_assignments.lock().unwrap();
-        let now = std::time::Instant::now();
-        assignments
-            .iter()
-            .filter(|(_, a)| {
-                now.duration_since(a.assigned_at) > timeout
-                    && !on_disk_in_progress.contains(&a.task_id)
-            })
-            .map(|(name, a)| (name.clone(), a.task_id.clone(), a.nudge_retries))
-            .collect()
-    }
-
-    /// Increment the nudge retry count and reset the timestamp for a claim assignment.
-    ///
-    /// Called when re-nudging the Lead for a stale claim.
-    pub(crate) fn increment_claim_retry(&self, coworker: &str) {
-        let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        if let Some(a) = assignments.get_mut(&coworker.to_lowercase()) {
-            a.nudge_retries += 1;
-            a.assigned_at = std::time::Instant::now();
-        }
     }
 
     /// Get busy coworkers from both disk-based task storage and internal tracking.
@@ -828,20 +790,6 @@ impl DaemonState {
     /// confirming the Lead created it successfully.
     pub(crate) fn clear_task_creation_pending(&self, key: &str) {
         self.pending_task_creations.lock().unwrap().remove(key);
-    }
-
-    /// Build the Lead nudge message for creating a review feedback task.
-    ///
-    /// The message instructs the Lead to use TaskCreate with specific fields.
-    pub(crate) fn task_creation_nudge(pr_number: u64, pr_title: &str, owner: &str) -> String {
-        format!(
-            "Create a task for {owner} to address review feedback on PR #{pr_number} ({pr_title}). \
-             Use TaskCreate with subject \"Address review feedback on PR #{pr_number}\", \
-             description \"PR #{pr_number} ({pr_title}) has review feedback that needs to be addressed. \
-             Please review the comments, make the requested changes, and push updates. \
-             Once feedback is addressed, the reviewer will re-check and approve.\", \
-             owner \"{owner}\", and activeForm \"Addressing review feedback on PR #{pr_number}\"."
-        )
     }
 }
 
@@ -3310,161 +3258,6 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
     }
 
     // -----------------------------------------------------------------------
-    // TaskAssignment and stale claim detection tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_stale_claim_detected_when_task_not_in_progress() {
-        // Simulate: coworker was assigned a task 2 minutes ago, but it's still
-        // not in_progress on disk (Lead didn't process the nudge).
-        let assignments: HashMap<String, TaskAssignment> = [(
-            "park".to_string(),
-            TaskAssignment {
-                task_id: "42".to_string(),
-                // Assigned 2 minutes ago
-                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
-                nudge_retries: 0,
-            },
-        )]
-        .into_iter()
-        .collect();
-
-        let on_disk_in_progress: HashSet<String> = HashSet::new();
-        let timeout = std::time::Duration::from_secs(60);
-        let now = std::time::Instant::now();
-
-        let stale: Vec<_> = assignments
-            .iter()
-            .filter(|(_, a)| {
-                now.duration_since(a.assigned_at) > timeout
-                    && !on_disk_in_progress.contains(&a.task_id)
-            })
-            .map(|(name, a)| (name.clone(), a.task_id.clone(), a.nudge_retries))
-            .collect();
-
-        assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].0, "park");
-        assert_eq!(stale[0].1, "42");
-        assert_eq!(stale[0].2, 0);
-    }
-
-    #[test]
-    fn test_stale_claim_not_detected_when_task_is_in_progress() {
-        // Simulate: coworker was assigned a task and Lead already processed it
-        // (task is in_progress on disk). Should NOT be flagged as stale.
-        let assignments: HashMap<String, TaskAssignment> = [(
-            "park".to_string(),
-            TaskAssignment {
-                task_id: "42".to_string(),
-                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
-                nudge_retries: 0,
-            },
-        )]
-        .into_iter()
-        .collect();
-
-        let on_disk_in_progress: HashSet<String> = ["42".to_string()].into_iter().collect();
-        let timeout = std::time::Duration::from_secs(60);
-        let now = std::time::Instant::now();
-
-        let stale: Vec<_> = assignments
-            .iter()
-            .filter(|(_, a)| {
-                now.duration_since(a.assigned_at) > timeout
-                    && !on_disk_in_progress.contains(&a.task_id)
-            })
-            .collect();
-
-        assert!(
-            stale.is_empty(),
-            "Task in_progress on disk should not be stale"
-        );
-    }
-
-    #[test]
-    fn test_stale_claim_not_detected_when_recent() {
-        // Simulate: coworker was assigned a task just 10 seconds ago.
-        // Not yet past the timeout — should not be flagged as stale.
-        let assignments: HashMap<String, TaskAssignment> = [(
-            "park".to_string(),
-            TaskAssignment {
-                task_id: "42".to_string(),
-                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(10),
-                nudge_retries: 0,
-            },
-        )]
-        .into_iter()
-        .collect();
-
-        let on_disk_in_progress: HashSet<String> = HashSet::new();
-        let timeout = std::time::Duration::from_secs(60);
-        let now = std::time::Instant::now();
-
-        let stale: Vec<_> = assignments
-            .iter()
-            .filter(|(_, a)| {
-                now.duration_since(a.assigned_at) > timeout
-                    && !on_disk_in_progress.contains(&a.task_id)
-            })
-            .collect();
-
-        assert!(stale.is_empty(), "Recent assignment should not be stale");
-    }
-
-    #[test]
-    fn test_stale_claim_tracks_retry_count() {
-        // Simulate: assignment has been retried twice already.
-        // Verify the retry count is correctly propagated.
-        let assignments: HashMap<String, TaskAssignment> = [(
-            "amsterdam".to_string(),
-            TaskAssignment {
-                task_id: "99".to_string(),
-                assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
-                nudge_retries: 2,
-            },
-        )]
-        .into_iter()
-        .collect();
-
-        let on_disk_in_progress: HashSet<String> = HashSet::new();
-        let timeout = std::time::Duration::from_secs(60);
-        let now = std::time::Instant::now();
-
-        let stale: Vec<_> = assignments
-            .iter()
-            .filter(|(_, a)| {
-                now.duration_since(a.assigned_at) > timeout
-                    && !on_disk_in_progress.contains(&a.task_id)
-            })
-            .map(|(name, a)| (name.clone(), a.task_id.clone(), a.nudge_retries))
-            .collect();
-
-        assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].2, 2, "retry count should be 2");
-    }
-
-    #[test]
-    fn test_increment_claim_retry_updates_count_and_timestamp() {
-        let mut assignment = TaskAssignment {
-            task_id: "42".to_string(),
-            assigned_at: std::time::Instant::now() - std::time::Duration::from_secs(120),
-            nudge_retries: 1,
-        };
-
-        let old_time = assignment.assigned_at;
-
-        // Simulate increment
-        assignment.nudge_retries += 1;
-        assignment.assigned_at = std::time::Instant::now();
-
-        assert_eq!(assignment.nudge_retries, 2);
-        assert!(
-            assignment.assigned_at > old_time,
-            "timestamp should be updated on retry"
-        );
-    }
-
-    // -----------------------------------------------------------------------
     // Task creation dedup tests
     // -----------------------------------------------------------------------
 
@@ -3486,15 +3279,5 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         let key1 = DaemonState::task_creation_key(42, "broadway");
         let key2 = DaemonState::task_creation_key(42, "park");
         assert_ne!(key1, key2);
-    }
-
-    #[test]
-    fn test_task_creation_nudge_contains_fields() {
-        let msg = DaemonState::task_creation_nudge(42, "Add auth endpoint", "broadway");
-        assert!(msg.contains("broadway"));
-        assert!(msg.contains("PR #42"));
-        assert!(msg.contains("Add auth endpoint"));
-        assert!(msg.contains("TaskCreate"));
-        assert!(msg.contains("Address review feedback on PR #42"));
     }
 }

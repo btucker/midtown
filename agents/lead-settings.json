@@ -8,18 +8,6 @@
       }]
     }],
     "PostToolUse": [{
-      "matcher": "TaskUpdate",
-      "hooks": [{
-        "type": "command",
-        "command": "{bin} hook task"
-      }]
-    }, {
-      "matcher": "TaskCreate",
-      "hooks": [{
-        "type": "command",
-        "command": "{bin} hook task"
-      }]
-    }, {
       "hooks": [{
         "type": "command",
         "command": "{bin} hook insight"

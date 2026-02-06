@@ -18,6 +18,8 @@ pub enum Effect {
     ShutdownCoworker { name: String, message: String },
     /// Nudge a coworker by sending a message to their tmux pane.
     NudgeCoworker { name: String, message: String },
+    /// Nudge the Lead by sending a message to their tmux pane.
+    NudgeLead { message: String },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     PostToChannel { sender: String, message: String },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
@@ -60,10 +62,8 @@ pub enum Effect {
     },
     /// Spawn a coworker for a pending task.
     ///
-    /// Records an in-memory task assignment for busy tracking but does NOT
-    /// write ownership to disk. The coworker claims the task after starting
-    /// via `midtown task claim`, which nudges the Lead to set ownership
-    /// through TaskUpdate.
+    /// Records an in-memory task assignment for busy tracking and writes
+    /// ownership + in_progress status directly to disk.
     AssignAndSpawn {
         task_id: String,
         owner: String,
@@ -91,15 +91,6 @@ pub enum Effect {
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
     RecordTaskAssignment { coworker: String, task_id: String },
-    /// Nudge the Lead with a message (via tmux send-keys to the lead pane).
-    NudgeLead { message: String },
-    /// Directly write task ownership to disk as a fallback.
-    ///
-    /// Used when the Lead fails to process a task.claim nudge after max retries.
-    /// Sets the task owner on disk. The in-memory assignment already exists.
-    AssignTaskOwnerDirect { task_id: String, owner: String },
-    /// Increment the nudge retry counter for a stale claim assignment.
-    IncrementClaimRetry { coworker: String },
     /// Clear a saved PR break session after successful resume.
     ClearPrBreakSession { name: String },
     /// Send raw tmux keys to a coworker (e.g., Escape, Enter) without the
@@ -154,9 +145,8 @@ pub enum Effect {
     },
     /// Create a new task for a PR author to address review feedback.
     ///
-    /// Nudges the Lead to create the task via TaskCreate (routed through the
-    /// Lead's Claude Code session to avoid TOCTTOU races on task file writes).
-    /// Includes in-memory deduplication to prevent repeated nudges.
+    /// Writes the task directly to shared storage. Includes in-memory
+    /// deduplication to prevent repeated task creation.
     CreateReviewFeedbackTask {
         pr_number: u64,
         pr_title: String,
@@ -253,6 +243,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     Err(e) => {
                         warn!("Failed to nudge coworker {}: {}", name, e);
                     }
+                }
+            }
+            Effect::NudgeLead { message } => {
+                if let Err(e) = state.coworkers.nudge_lead(&message) {
+                    warn!("Failed to nudge Lead: {}", e);
                 }
             }
             Effect::PostToChannel { sender, message } => {
@@ -371,7 +366,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 // Spawn the coworker and set ownership + in_progress on disk.
                 // The coworker also claims the task via `midtown task claim` after starting,
-                // which nudges the Lead to confirm ownership via TaskUpdate.
+                // which writes ownership directly via the daemon.
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
@@ -432,27 +427,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 state.record_task_assignment(&coworker, &task_id);
-            }
-            Effect::NudgeLead { message } => {
-                if let Err(e) = state.coworkers.nudge_lead(&message) {
-                    warn!("Failed to nudge Lead: {}", e);
-                }
-            }
-            Effect::AssignTaskOwnerDirect { task_id, owner } => {
-                if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
-                    warn!(
-                        "Failed to directly assign task #{} to {}: {}",
-                        task_id, owner, e
-                    );
-                } else {
-                    info!(
-                        "Directly assigned task #{} to {} (Lead nudge fallback)",
-                        task_id, owner
-                    );
-                }
-            }
-            Effect::IncrementClaimRetry { coworker } => {
-                state.increment_claim_retry(&coworker);
             }
             Effect::ClearPrBreakSession { name } => {
                 let mut sessions = state.pr_break_sessions.write().unwrap();
@@ -574,21 +548,34 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         owner, pr_number
                     );
                 } else {
-                    let nudge_message =
-                        DaemonState::task_creation_nudge(pr_number, &pr_title, &owner);
                     state.mark_task_creation_pending(&key);
-                    if let Err(e) = state.coworkers.nudge_lead(&nudge_message) {
-                        warn!(
-                            "Failed to nudge lead for task creation (PR #{}, {}): {}",
-                            pr_number, owner, e
-                        );
-                        // Clear pending marker so it can be retried next tick
-                        state.clear_task_creation_pending(&key);
-                    } else {
-                        info!(
-                            "Nudged lead to create review feedback task for {} (PR #{})",
-                            owner, pr_number
-                        );
+                    let subject = format!("Address review feedback on PR #{}", pr_number);
+                    let description = format!(
+                        "PR #{} ({}) has review feedback that needs to be addressed. \
+                         Please review the comments, make the requested changes, and push updates. \
+                         Once feedback is addressed, the reviewer will re-check and approve.",
+                        pr_number, pr_title
+                    );
+                    match crate::tasks::create_task_for_repo(
+                        &subject,
+                        &description,
+                        &format!("Addressing review feedback on PR #{}", pr_number),
+                        &owner,
+                        &state.repo_name,
+                    ) {
+                        Ok(task_id) => {
+                            info!(
+                                "Created review feedback task #{} for {} (PR #{})",
+                                task_id, owner, pr_number
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to create review feedback task for {} (PR #{}): {}",
+                                owner, pr_number, e
+                            );
+                            state.clear_task_creation_pending(&key);
+                        }
                     }
                 }
             }

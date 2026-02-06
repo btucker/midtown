@@ -19,6 +19,23 @@ pub enum TaskCommand {
         /// Task ID to claim
         id: String,
     },
+    /// Update a task's fields
+    Update {
+        /// Task ID to update
+        id: String,
+        /// Set task owner
+        #[arg(long)]
+        owner: Option<String>,
+        /// Set task status (pending, in_progress, completed)
+        #[arg(long)]
+        status: Option<String>,
+        /// Set task description
+        #[arg(long)]
+        description: Option<String>,
+        /// Set blocked-by task IDs (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        blocked_by: Option<Vec<String>>,
+    },
     /// Mark a task as done
     Done {
         /// Task ID to mark done
@@ -58,6 +75,19 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             subject,
             description,
         } => client.task_create(subject, description),
+        TaskCommand::Update {
+            id,
+            owner,
+            status,
+            description,
+            blocked_by,
+        } => client.task_update(
+            id,
+            owner.as_deref(),
+            status.as_deref(),
+            description.as_deref(),
+            blocked_by.as_deref(),
+        ),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),
         TaskCommand::Request { description } => client.task_request(description),
