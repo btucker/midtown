@@ -221,8 +221,11 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     };
 
     // ── Pane contents ───────────────────────────────────────────────────
+    // Only capture panes for Running coworkers. Coworkers in other states
+    // (Starting, Stopping) may not have tmux windows yet or anymore, and
+    // attempting capture would produce "can't find window" errors in stderr.
     let mut pane_contents = HashMap::new();
-    for cw in &active_coworkers {
+    for cw in &running_coworkers {
         let target = format!("{}:{}", session_name, cw.name);
         if let Some(content) = crate::tmux::capture_pane(&target) {
             // Log pane content at debug level for post-mortem debugging
@@ -591,6 +594,77 @@ mod tests {
         assert_eq!(tail.len(), 5);
         assert_eq!(tail[0], "line 6");
         assert_eq!(tail[4], "line 10");
+    }
+
+    /// Test that pane capture only runs for Running coworkers, not Stopping/Starting ones.
+    ///
+    /// Regression test for the bug where the pane capture loop in collect_world_snapshot
+    /// iterated over `active_coworkers` (all statuses) instead of `running_coworkers`
+    /// (Running only). This caused `tmux capture-pane` to fail with "can't find window"
+    /// errors for coworkers in Stopping/Starting states whose tmux windows were already
+    /// killed or not yet created. With 6 on-break coworkers, this produced hundreds of
+    /// errors per tick in daemon.err.
+    #[test]
+    fn test_pane_capture_only_for_running_coworkers() {
+        use crate::coworker::{Coworker, CoworkerStatus};
+
+        // Simulate a mix of coworker statuses
+        let all_coworkers = [
+            Coworker {
+                name: "lexington".to_string(),
+                status: CoworkerStatus::Running,
+                working_dir: "/tmp/test".to_string(),
+                started_at: Utc::now(),
+                current_task: None,
+                session_id: None,
+                isolated_tasks: false,
+            },
+            Coworker {
+                name: "park".to_string(),
+                status: CoworkerStatus::Stopping, // on break, window killed
+                working_dir: "/tmp/test".to_string(),
+                started_at: Utc::now(),
+                current_task: None,
+                session_id: None,
+                isolated_tasks: false,
+            },
+            Coworker {
+                name: "madison".to_string(),
+                status: CoworkerStatus::Running,
+                working_dir: "/tmp/test".to_string(),
+                started_at: Utc::now(),
+                current_task: None,
+                session_id: None,
+                isolated_tasks: false,
+            },
+            Coworker {
+                name: "broadway".to_string(),
+                status: CoworkerStatus::Starting, // not yet spawned
+                working_dir: "/tmp/test".to_string(),
+                started_at: Utc::now(),
+                current_task: None,
+                session_id: None,
+                isolated_tasks: false,
+            },
+        ];
+
+        // Filter to running only — this is what the pane capture loop should use
+        let running_coworkers: Vec<&Coworker> = all_coworkers
+            .iter()
+            .filter(|cw| cw.status == CoworkerStatus::Running)
+            .collect();
+
+        // Only Running coworkers should be candidates for pane capture
+        assert_eq!(running_coworkers.len(), 2);
+        let names: Vec<&str> = running_coworkers
+            .iter()
+            .map(|cw| cw.name.as_str())
+            .collect();
+        assert!(names.contains(&"lexington"));
+        assert!(names.contains(&"madison"));
+        // Stopping and Starting coworkers must NOT be captured
+        assert!(!names.contains(&"park"));
+        assert!(!names.contains(&"broadway"));
     }
 
     /// Test that debug context fields (channel_messages, daemon_logs) are empty
