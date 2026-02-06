@@ -51,7 +51,6 @@ pub(super) fn check_and_recover_orphans(
         &snap.active_names,
         snap.is_at_dev_limit,
         &snap.coworkers_with_open_prs,
-        &snap.ci_passed_pr_coworkers,
         &snap.review_feedback_pr_coworkers,
     );
 
