@@ -18,7 +18,7 @@ When you're working with Claude Code on a complex project, you might want to par
 
 Midtown provides two UIs:
 
-1. A tmux-based TUI
+1. A tmux-based TUI with an IRC-style chat pane (includes mermaid diagram rendering and inline images)
 2. A web interface (meant to be run as a PWA) so you can collaborate with the lead (and the team) while on the go.
 
 Midtown makes extensive use of the new Claude Code Tasks system to manage the state of all work, create dependencies, and assign ownership.
@@ -79,6 +79,107 @@ midtown attach myapp
 ### 4. Work with the lead as you typically would work with Claude Code
 
 The lead is just a claude code session, but it's been booted with some a [special system prompt](agents/lead.md). The system prompt instructs the lead how to execute in the midtown environment-- mostly to not take on work itself (unless it's trivial) and to instead make Claude Code tasks.
+
+## CLI Reference
+
+### Core Commands
+
+| Command | Description |
+|---------|-------------|
+| `midtown start [--project <name>] [--add-repo <path>]` | Start the daemon and tmux session |
+| `midtown stop [--keep-session]` | Stop the daemon (optionally keep tmux session) |
+| `midtown restart` | Restart the daemon |
+| `midtown attach [<project>]` | Attach to the project's tmux session |
+| `midtown status` | Show system status |
+| `midtown chat` | Open the IRC-style chat TUI |
+| `midtown log [--hooks] [--path] [-f] [-n <lines>]` | View daemon or hook logs |
+
+### Channel
+
+| Command | Description |
+|---------|-------------|
+| `midtown channel post <message>` | Post a message to the channel |
+| `midtown channel read [--all]` | Read recent channel messages |
+
+### Coworker Management
+
+| Command | Description |
+|---------|-------------|
+| `midtown coworker call-in [--resume] [--prompt <msg>]` | Call in a new coworker |
+| `midtown coworker break <name>` | Send a coworker on a break |
+| `midtown coworker list` | List all coworkers |
+| `midtown coworker view <name>` | View a coworker's terminal output |
+| `midtown coworker nudge <name> [--message <msg>]` | Nudge a coworker to check in |
+
+### Task Management
+
+| Command | Description |
+|---------|-------------|
+| `midtown task create <subject> --description <desc>` | Create a new task |
+| `midtown task list [--all]` | List tasks (pending/in-progress by default) |
+| `midtown task view <id>` | View task details |
+| `midtown task update <id> [--owner <name>] [--status <status>]` | Update a task |
+| `midtown task claim <id>` | Claim a task |
+| `midtown task done <id>` | Mark a task as completed |
+| `midtown task request <description>` | Request new work (posts to channel for lead) |
+
+### Pull Requests
+
+| Command | Description |
+|---------|-------------|
+| `midtown pr list` | List pull requests |
+
+### Project Management
+
+| Command | Description |
+|---------|-------------|
+| `midtown project list` | List all known projects and their status |
+
+### Headless Execution
+
+Run Claude Code sessions non-interactively with JSON streaming output:
+
+```bash
+midtown headless "Summarize this codebase" --model sonnet
+midtown headless "Generate a report" --json-schema '{"type": "object", ...}'
+midtown headless "Fix the bug" --allow-tools --max-budget-usd 0.50
+```
+
+| Flag | Description |
+|------|-------------|
+| `--model <name>` | Model to use (default: `sonnet`) |
+| `--system-prompt <text>` | System prompt for the session |
+| `--json-schema <json>` | JSON schema for structured output |
+| `--max-budget-usd <float>` | Maximum budget in USD |
+| `--allow-tools` | Allow tool use (default: no tools) |
+
+### Lead Commands
+
+| Command | Description |
+|---------|-------------|
+| `midtown lead register-session` | Register Lead's Claude session for task sharing |
+| `midtown lead remind all-work-merged <message>` | Set a reminder for when all work is merged |
+| `midtown lead remind list` | List active reminders |
+| `midtown lead remind cancel <id>` | Cancel a reminder |
+
+### Webserver
+
+The multi-project webserver serves the web UI and proxies to per-project daemons.
+
+| Command | Description |
+|---------|-------------|
+| `midtown webserver run [--port 47022] [--foreground]` | Start the webserver |
+| `midtown webserver stop` | Stop the webserver |
+| `midtown webserver restart` | Restart the webserver |
+
+### E2E Testing
+
+| Command | Description |
+|---------|-------------|
+| `midtown e2e auth` | One-time auth setup for container testing |
+| `midtown e2e run coordination` | Run coordination E2E tests (fast, no auth) |
+| `midtown e2e run full` | Run full E2E tests (requires auth) |
+| `midtown e2e capture [--label <name>]` | Capture daemon state snapshot for test fixtures |
 
 ## Configuration
 
@@ -263,6 +364,17 @@ midtown auth status
 
 ## How It Works
 
+### Daemon
+
+The daemon is the central coordinator. It runs an event-driven state machine that collects an immutable snapshot of the world each tick, makes pure decisions about what should happen, and then executes the resulting effects. This strict separation between decision logic and side effects keeps the core testable.
+
+The daemon handles:
+- Coworker lifecycle (spawning, health checks, stuck detection, shutdown)
+- Task assignment and dispatch
+- GitHub webhook processing (PR events, CI status, reviews)
+- PR polling for merge conflicts and stuck conditions
+- @mention routing between team members
+
 ### Coworkers
 
 Each coworker runs in:
@@ -272,17 +384,67 @@ Each coworker runs in:
 - With a Stop hook that syncs the channel at natural pause points
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 
+Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
+
 ### Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.
+
+### Mailbox Messaging
+
+In addition to the shared channel, the daemon can deliver targeted messages to individual coworkers via the Claude Code agent teams mailbox protocol. Messages are written as JSON to `~/.claude/teams/{team-name}/inboxes/{agent-name}.json` using atomic file operations with mkdir-based locking for safe concurrent access.
 
 ### Worktree Lifecycle
 
 When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.
 
+### GitHub Integration
+
+The daemon receives real-time GitHub events via webhooks (PR creation, reviews, check runs) verified with HMAC-SHA256 signatures. PR polling runs as a backstop for missed webhook deliveries and handles time-based concerns like merge conflict detection and stuck PR identification.
+
 ### Webhook Ports
 
 Each project daemon runs its own webhook server for GitHub integration. Port 47022 is reserved for the shared multi-project webserver. Per-project daemons auto-assign ports starting at 47023, persisting the assignment in the project's `config.toml` for stability across restarts.
+
+### Chat TUI
+
+The `midtown chat` command opens an IRC-style chat interface with:
+
+- Real-time channel message display
+- Mermaid diagram detection and rendering (via `selkie-rs` with content-hash caching)
+- Inline image display via the Kitty graphics protocol
+- Mouse support for scrolling and navigation
+- Clickable hyperlinks via OSC 8 escape sequences
+- Real-time token usage and cost tracking
+
+### Web UI
+
+The web interface is a Svelte 5 + Vite SPA served on port 47022:
+
+- Installable as a PWA for mobile use
+- Real-time updates via WebSocket
+- Kanban board for task visualization
+- Channel chat interface with mermaid diagram rendering
+- Coworker status monitoring
+- Auth profile switching
+- Push notifications (W3C Push API with VAPID)
+
+### Reminders
+
+The Lead can set reminders that trigger on specific conditions:
+
+```bash
+# Remind me when all tasks are done and PRs merged
+midtown lead remind all-work-merged "Time to deploy!"
+
+# List active reminders
+midtown lead remind list
+
+# Cancel a reminder
+midtown lead remind cancel <id>
+```
+
+Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluated by the daemon each tick.
 
 ## License
 
