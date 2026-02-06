@@ -230,16 +230,13 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
                     // Merge on_success into the existing nudge's callbacks.
                     // Find the first NudgeCoworkerWithCallbacks for this coworker
                     // and append the callbacks there.
-                    let merged = merge_callbacks_into_existing(&mut result, &key, on_success);
-                    if !merged {
-                        // First nudge was a plain NudgeCoworker — just append
-                        // the callbacks as standalone effects since the coworker
-                        // will already be nudged.
-                        // Note: RecordPrNudge etc. should still fire since the
-                        // nudge will succeed for the first one.
-                        // Actually, skip the callbacks too — they record cooldowns
-                        // that would fire on_success of a nudge that didn't happen.
-                        // The first nudge's on_success already recorded its cooldown.
+                    let remaining = merge_callbacks_into_existing(&mut result, &key, on_success);
+                    if let Some(unmerged) = remaining {
+                        // First nudge was a plain NudgeCoworker — promote the
+                        // callbacks to standalone effects. These include state-tracking
+                        // effects like RecordPrNudge that must fire to prevent the
+                        // same nudge from triggering again on the next tick.
+                        result.extend(unmerged);
                     }
                     continue;
                 }
@@ -260,12 +257,13 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
 }
 
 /// Merge `on_success` callbacks into an existing `NudgeCoworkerWithCallbacks` effect
-/// for the same coworker. Returns `true` if a matching effect was found and updated.
+/// for the same coworker. Returns `None` if merged successfully, or `Some(callbacks)`
+/// if no matching effect was found (e.g., first nudge was a plain `NudgeCoworker`).
 fn merge_callbacks_into_existing(
     effects: &mut [Effect],
     target_key: &str,
     additional_callbacks: Vec<Effect>,
-) -> bool {
+) -> Option<Vec<Effect>> {
     for effect in effects.iter_mut() {
         if let Effect::NudgeCoworkerWithCallbacks {
             name, on_success, ..
@@ -273,10 +271,10 @@ fn merge_callbacks_into_existing(
             && name.to_lowercase() == target_key
         {
             on_success.extend(additional_callbacks);
-            return true;
+            return None;
         }
     }
-    false
+    Some(additional_callbacks)
 }
 
 /// Execute a list of effects against the daemon state.
@@ -1079,9 +1077,10 @@ mod tests {
     }
 
     #[test]
-    fn test_dedup_mixed_nudge_types_same_coworker() {
-        // Plain NudgeCoworker first, then NudgeCoworkerWithCallbacks — the second
-        // should be deduped (callbacks dropped since first was plain).
+    fn test_dedup_mixed_nudge_types_promotes_callbacks() {
+        // Plain NudgeCoworker first, then NudgeCoworkerWithCallbacks — the nudge
+        // is deduped but on_success callbacks are promoted to standalone effects
+        // so state tracking (RecordPrNudge) still fires.
         let effects = vec![
             Effect::NudgeCoworker {
                 name: "riverside".into(),
@@ -1098,8 +1097,16 @@ mod tests {
         ];
 
         let deduped = dedup_nudge_effects(effects);
-        assert_eq!(deduped.len(), 1);
+        // 1 NudgeCoworker + 1 promoted RecordPrNudge callback
+        assert_eq!(deduped.len(), 2);
         assert_eq!(count_nudge_coworker(&deduped, "riverside"), 1);
+        // Verify the RecordPrNudge callback was promoted as a standalone effect
+        assert!(
+            deduped
+                .iter()
+                .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 42, .. })),
+            "RecordPrNudge callback should be promoted to standalone effect"
+        );
     }
 
     #[test]
