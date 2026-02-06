@@ -58,6 +58,17 @@ run_coordination_tests() {
     echo "--- task_sharing ---"
     cargo test --release --test task_sharing -- "${test_args[@]}"
 
+    echo "--- mailbox_e2e (coordination) ---"
+    # Run non-ignored mailbox tests (concurrent writes, inbox format validation)
+    cargo test --release --test mailbox_e2e -- "${test_args[@]}"
+
+    echo "--- mailbox_e2e (daemon) ---"
+    # Run ignored mailbox tests that need the daemon but not real Claude
+    cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 \
+        --skip test_real_claude \
+        --skip test_mailbox_fallback \
+        "${test_args[@]}"
+
     echo ""
     echo "=== Coordination tests complete ==="
 }
@@ -83,6 +94,9 @@ run_full_tests() {
 
     echo "--- full_stack_e2e ---"
     cargo test --release --test full_stack_e2e -- --ignored --test-threads=1 "${test_args[@]}"
+
+    echo "--- mailbox_e2e (real Claude) ---"
+    cargo test --release --test mailbox_e2e -- --ignored --test-threads=1 "${test_args[@]}"
 
     echo ""
     echo "=== Full E2E tests complete ==="
