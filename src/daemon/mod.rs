@@ -651,9 +651,10 @@ impl DaemonState {
             .insert(task_id.to_string());
     }
 
-    /// Clear the in-flight marker for a task after its `AssignAndSpawn` completes.
+    /// Clear the in-flight marker for a task after its spawn or nudge effect completes.
     ///
-    /// Called from `execute_effects` when the effect succeeds or fails.
+    /// Called from `execute_effects` when `AssignAndSpawn` or
+    /// `NudgeCoworkerWithCallbacks` (with `RecordTaskAssignment`) succeeds or fails.
     pub(crate) fn clear_task_spawn_in_flight(&self, task_id: &str) {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
     }
