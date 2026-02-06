@@ -828,6 +828,23 @@ fn hash_insight(insight: &str) -> u64 {
     hasher.finish()
 }
 
+/// Extract PR number from a `[Review Note] PR #123: ...` message.
+///
+/// Returns `Some(pr_number)` if the message contains the review note pattern,
+/// `None` otherwise. Used for per-reviewer per-PR deduplication.
+fn extract_review_note_pr(message: &str) -> Option<u64> {
+    // Match "[Review Note]" followed by "PR #" and a number
+    let review_note_idx = message.find("[Review Note]")?;
+    let after = &message[review_note_idx..];
+    let pr_hash_idx = after.find("PR #").or_else(|| after.find("pr #"))?;
+    let after_hash = &after[pr_hash_idx + 4..];
+    let num_str: String = after_hash
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    num_str.parse().ok()
+}
+
 /// Handle coworker.list RPC method.
 fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
     // Build a map of coworker name -> task subject from in_progress tasks
@@ -1435,6 +1452,36 @@ pub(super) async fn handle_channel_post(
     } else {
         (message.to_string(), MessageType::Text)
     };
+
+    // Deduplicate [Review Note] messages: suppress rapid-fire notes from the same
+    // reviewer for the same PR (within 60s cooldown). Notes after the cooldown
+    // (e.g., corrections or follow-ups) are allowed through.
+    if let Some(pr_num) = extract_review_note_pr(&content) {
+        let key = (from.to_lowercase(), pr_num);
+        let now = std::time::Instant::now();
+        let cooldown = std::time::Duration::from_secs(60);
+        let mut tracker = state.review_note_tracker.lock().unwrap();
+        if tracker
+            .get(&key)
+            .is_some_and(|first_seen| now.duration_since(*first_seen) < cooldown)
+        {
+            debug!(
+                "channel.post: suppressing duplicate [Review Note] from {} for PR #{} (within {}s cooldown)",
+                from,
+                pr_num,
+                cooldown.as_secs()
+            );
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "posted": false,
+                    "reason": "duplicate_review_note",
+                }),
+            );
+        }
+        // Record or refresh the timestamp
+        tracker.insert(key, now);
+    }
 
     let msg = Message::new(from, content.clone(), msg_type.clone());
 
@@ -2469,5 +2516,30 @@ mod tests {
         assert_eq!(hash1, hash2, "extra whitespace should be normalized");
         assert_eq!(hash1, hash3, "newlines should be normalized");
         assert_eq!(hash1, hash4, "case should be normalized");
+    }
+
+    #[test]
+    fn test_extract_review_note_pr_standard_format() {
+        let msg = "@lead [Review Note] PR #708: The new is_ui_chrome() pattern for ctrl+ key hints is heuristic. Please determine if this warrants a follow-up task.";
+        assert_eq!(extract_review_note_pr(msg), Some(708));
+    }
+
+    #[test]
+    fn test_extract_review_note_pr_no_match() {
+        assert_eq!(extract_review_note_pr("@lead some regular message"), None);
+        assert_eq!(extract_review_note_pr("fixed PR #42"), None);
+        assert_eq!(extract_review_note_pr("[Review Note] no PR ref"), None);
+    }
+
+    #[test]
+    fn test_extract_review_note_pr_various_numbers() {
+        assert_eq!(
+            extract_review_note_pr("@lead [Review Note] PR #1: minor issue"),
+            Some(1)
+        );
+        assert_eq!(
+            extract_review_note_pr("@lead [Review Note] PR #9999: edge case"),
+            Some(9999)
+        );
     }
 }
