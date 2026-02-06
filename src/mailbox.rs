@@ -252,8 +252,16 @@ pub struct TeamConfig {
 /// - `~/.claude/teams/{team-name}/inboxes/`
 ///
 /// If the config already exists, it is overwritten with the new members list.
+/// Uses a mkdir-based lock on `config.json.lock` to prevent concurrent writes
+/// from corrupting the file, and atomic write (temp file + rename) to ensure
+/// readers never see partial content.
 pub fn ensure_team_config(team_name: &str, members: &[TeamMember]) -> std::io::Result<()> {
     let team_dir = teams_dir(team_name);
+    ensure_team_config_at(&team_dir, members)
+}
+
+/// Internal implementation that accepts a team directory path (testable).
+fn ensure_team_config_at(team_dir: &Path, members: &[TeamMember]) -> std::io::Result<()> {
     let inboxes_dir = team_dir.join("inboxes");
     fs::create_dir_all(&inboxes_dir)?;
 
@@ -261,7 +269,15 @@ pub fn ensure_team_config(team_name: &str, members: &[TeamMember]) -> std::io::R
         members: members.to_vec(),
     };
     let config_path = team_dir.join("config.json");
-    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    let lock_path = team_dir.join("config.json.lock");
+
+    // Acquire mkdir lock to prevent concurrent writes from corrupting the file
+    let _lock = MkdirLock::acquire(&lock_path, 20)?;
+
+    // Write atomically via temp file + rename
+    let tmp_path = config_path.with_extension("json.tmp");
+    fs::write(&tmp_path, serde_json::to_string_pretty(&config)?)?;
+    fs::rename(&tmp_path, &config_path)?;
 
     debug!(
         "Wrote team config to {} with {} members",
@@ -485,8 +501,6 @@ mod tests {
         let inboxes_dir = team_dir.join("inboxes");
         let config_path = team_dir.join("config.json");
 
-        // Create dirs and write config manually (matching ensure_team_config logic)
-        fs::create_dir_all(&inboxes_dir).unwrap();
         let members = vec![
             TeamMember {
                 name: "lexington".to_string(),
@@ -499,12 +513,9 @@ mod tests {
                 agent_type: "coworker".to_string(),
             },
         ];
-        let config = TeamConfig {
-            members: members.clone(),
-        };
-        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        ensure_team_config_at(&team_dir, &members).unwrap();
 
-        // Verify
+        // Verify directory structure and config
         assert!(inboxes_dir.exists());
         assert!(config_path.exists());
 
@@ -513,6 +524,44 @@ mod tests {
         assert_eq!(parsed.members.len(), 2);
         assert_eq!(parsed.members[0].name, "lexington");
         assert_eq!(parsed.members[1].agent_id, "park@midtown-repo");
+    }
+
+    #[test]
+    fn test_ensure_team_config_concurrent_no_corruption() {
+        use std::sync::Arc;
+
+        let tmp = TempDir::new().unwrap();
+        let team_dir = Arc::new(tmp.path().join("test-team"));
+
+        // Spawn 10 threads all calling ensure_team_config_at concurrently
+        // with different member lists. Without locking, this can corrupt the file.
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let dir = Arc::clone(&team_dir);
+                std::thread::spawn(move || {
+                    let members = vec![TeamMember {
+                        name: format!("agent-{}", i),
+                        agent_id: format!("agent-{}@team", i),
+                        agent_type: "coworker".to_string(),
+                    }];
+                    ensure_team_config_at(&dir, &members).unwrap();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // The file must be valid JSON (no corruption from concurrent writes)
+        let config_path = team_dir.join("config.json");
+        let content = fs::read_to_string(&config_path).unwrap();
+        let parsed: TeamConfig = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            parsed.members.len(),
+            1,
+            "ensure_team_config overwrites (not appends), so last writer wins with 1 member"
+        );
     }
 
     #[test]
