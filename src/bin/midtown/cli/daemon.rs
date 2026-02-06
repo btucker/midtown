@@ -579,6 +579,11 @@ pub fn handle_start(
             return Err(format!("Failed to create session '{}'", session));
         }
 
+        // Enable Kitty graphics protocol passthrough for terminals that support it (e.g., Ghostty)
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", &session, "allow-passthrough", "on"])
+            .status();
+
         // Configure status bar with dark gray background and yellow foreground (Lead's color)
         let _ = Command::new("tmux")
             .args([
