@@ -77,13 +77,16 @@ fn read_highwatermark(tasks_dir: &std::path::Path) -> u64 {
 }
 
 /// Write the `.highwatermark` file in a tasks directory.
-fn write_highwatermark(tasks_dir: &std::path::Path, value: u64) {
+fn write_highwatermark(tasks_dir: &std::path::Path, value: u64) -> Result<(), String> {
     let path = tasks_dir.join(".highwatermark");
-    let _ = std::fs::write(&path, value.to_string());
+    std::fs::write(&path, value.to_string())
+        .map_err(|e| format!("Failed to write .highwatermark: {}", e))
 }
 
-/// Compute the next task ID from existing tasks and the `.highwatermark` file,
-/// then update the highwatermark. Must be called while holding the directory lock.
+/// Compute the next task ID from existing tasks and the `.highwatermark` file.
+/// Does NOT update the highwatermark — callers must call `write_highwatermark()`
+/// after the task file is successfully written.
+/// Must be called while holding the directory lock.
 fn next_task_id(tasks_dir: &std::path::Path, existing: &[Task]) -> u64 {
     let max_existing = existing
         .iter()
@@ -91,9 +94,7 @@ fn next_task_id(tasks_dir: &std::path::Path, existing: &[Task]) -> u64 {
         .max()
         .unwrap_or(0);
     let hwm = read_highwatermark(tasks_dir);
-    let next_id = max_existing.max(hwm) + 1;
-    write_highwatermark(tasks_dir, next_id);
-    next_id
+    max_existing.max(hwm) + 1
 }
 
 /// Read all tasks from a directory containing task JSON files.
@@ -831,6 +832,7 @@ pub fn ensure_task_in_shared_dir(
     let content = serde_json::to_string_pretty(&task)
         .map_err(|e| format!("Failed to serialize task: {}", e))?;
     std::fs::write(&path, content).map_err(|e| format!("Failed to write task file: {}", e))?;
+    write_highwatermark(tasks_dir, next_id)?;
 
     let _ = lock_file.unlock();
     Ok((task_id, true))
@@ -1031,6 +1033,7 @@ fn create_task_in_dir(
     let content = serde_json::to_string_pretty(&task)
         .map_err(|e| format!("Failed to serialize task: {}", e))?;
     std::fs::write(&path, content).map_err(|e| format!("Failed to write task file: {}", e))?;
+    write_highwatermark(tasks_dir, next_id)?;
 
     let _ = lock_file.unlock();
     Ok(task_id)
