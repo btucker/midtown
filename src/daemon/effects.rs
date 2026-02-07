@@ -184,6 +184,40 @@ pub enum Effect {
     ///
     /// Catches branches left behind after worktree removal.
     CleanStaleBranches,
+    /// Clean up a task-based worktree after its PR is merged.
+    ///
+    /// Looks up the worktree in the registry by PR number or branch name,
+    /// removes it from the registry, and deletes the worktree directory.
+    #[allow(dead_code)]
+    CleanupMergedWorktree { pr_number: u64, branch: String },
+    /// Bind a coworker to a worktree in the registry.
+    ///
+    /// Called when a coworker is assigned to work in an existing task-based
+    /// worktree. Updates the registry's reverse indexes.
+    #[allow(dead_code)]
+    BindCoworkerToWorktree {
+        worktree_id: String,
+        coworker: String,
+    },
+    /// Unbind a coworker from their worktree in the registry.
+    ///
+    /// Called when a coworker is shut down. The worktree persists for reuse
+    /// by the next coworker assigned to the same task.
+    #[allow(dead_code)]
+    UnbindCoworkerFromWorktree { coworker: String },
+    /// Register a new task-based worktree assignment in the registry.
+    ///
+    /// Called during task dispatch when a new worktree is allocated for a task.
+    #[allow(dead_code)]
+    RegisterWorktreeAssignment {
+        assignment: crate::worktree_registry::WorktreeAssignment,
+    },
+    /// Set the PR number for a worktree in the registry.
+    ///
+    /// Called when a coworker opens a PR, linking the worktree to the PR
+    /// for automatic cleanup on merge.
+    #[allow(dead_code)]
+    SetWorktreePrNumber { worktree_id: String, pr_number: u64 },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -343,6 +377,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 state.clear_pending_nudge(&name);
                 // Clear task assignment tracking (coworker is no longer active)
                 state.clear_coworker_assignments(&name);
+                // Unbind from worktree registry (worktree persists for build cache reuse)
+                {
+                    let mut ps = state.persistent_state.lock().await;
+                    ps.worktree_registry.unbind_coworker(&name);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save daemon state after unbinding coworker: {}",
+                            e
+                        );
+                    }
+                }
             }
             Effect::NudgeCoworker { name, message } => {
                 match state.coworkers.nudge(&name, &message) {
@@ -660,6 +705,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut ps = state.persistent_state.lock().await;
                 ps.github
                     .store_pr_author_session(pr_number, &session_id, &branch, &author);
+                // Link the PR to the worktree if one exists for this coworker
+                if let Some(assignment) = ps.worktree_registry.get_by_coworker(&author) {
+                    let wt_id = assignment.worktree_id.clone();
+                    ps.worktree_registry.set_pr_number(&wt_id, pr_number);
+                    debug!(
+                        "Linked PR #{} to worktree {} (author: {})",
+                        pr_number, wt_id, author
+                    );
+                }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to persist PR author session: {}", e);
                 } else {
@@ -785,6 +839,95 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         cleaned.len(),
                         cleaned.join(", ")
                     );
+                }
+            }
+            Effect::CleanupMergedWorktree { pr_number, branch } => {
+                // Remove from registry
+                let removed = {
+                    let mut ps = state.persistent_state.lock().await;
+                    let removed = ps.worktree_registry.cleanup_for_merged_pr(pr_number);
+                    if removed.is_some()
+                        && let Err(e) = ps.save_for_repo(&state.repo_name)
+                    {
+                        warn!("Failed to save daemon state after worktree cleanup: {}", e);
+                    }
+                    removed
+                };
+                if let Some(assignment) = removed {
+                    // Remove the worktree directory using the primary worktree manager
+                    let wt_mgr = state.coworkers.worktree_manager().clone();
+                    let wt_id = assignment.worktree_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
+                            warn!("Failed to remove task worktree {}: {}", wt_id, e);
+                        } else {
+                            info!(
+                                "Cleaned up task worktree {} (PR #{} merged)",
+                                wt_id, pr_number
+                            );
+                        }
+                    })
+                    .await
+                    .ok();
+                } else {
+                    debug!(
+                        "No worktree registered for PR #{} (branch: {}), skipping cleanup",
+                        pr_number, branch
+                    );
+                }
+            }
+            Effect::BindCoworkerToWorktree {
+                worktree_id,
+                coworker,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                if let Err(e) = ps.worktree_registry.bind_coworker(&worktree_id, &coworker) {
+                    warn!(
+                        "Failed to bind {} to worktree {}: {}",
+                        coworker, worktree_id, e
+                    );
+                } else {
+                    debug!("Bound {} to worktree {}", coworker, worktree_id);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!("Failed to save daemon state after binding coworker: {}", e);
+                    }
+                }
+            }
+            Effect::UnbindCoworkerFromWorktree { coworker } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.worktree_registry.unbind_coworker(&coworker);
+                debug!("Unbound {} from worktree", coworker);
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!(
+                        "Failed to save daemon state after unbinding coworker: {}",
+                        e
+                    );
+                }
+            }
+            Effect::RegisterWorktreeAssignment { assignment } => {
+                let mut ps = state.persistent_state.lock().await;
+                let wt_id = assignment.worktree_id.clone();
+                if let Err(e) = ps.worktree_registry.assign_worktree(assignment) {
+                    warn!("Failed to register worktree assignment {}: {}", wt_id, e);
+                } else {
+                    debug!("Registered worktree assignment {}", wt_id);
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save daemon state after registering worktree: {}",
+                            e
+                        );
+                    }
+                }
+            }
+            Effect::SetWorktreePrNumber {
+                worktree_id,
+                pr_number,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.worktree_registry.set_pr_number(&worktree_id, pr_number);
+                debug!("Set PR #{} for worktree {}", pr_number, worktree_id);
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!("Failed to save daemon state after setting PR number: {}", e);
                 }
             }
         }

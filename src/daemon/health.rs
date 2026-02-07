@@ -1137,6 +1137,7 @@ mod tests {
             api_error_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now: Instant::now(),

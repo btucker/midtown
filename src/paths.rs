@@ -11,9 +11,12 @@
 //! ~/.midtown/
 //! ├── config.toml           # Global configuration
 //! ├── agents/               # Custom agent prompts
-//! ├── coworkers/            # Coworker worktrees by project
+//! ├── coworkers/            # Legacy coworker worktrees (named by coworker)
 //! │   └── <repo>/
 //! │       └── <coworker>/   # Individual worktree
+//! ├── worktrees/            # Task-based worktrees (named by branch slug)
+//! │   └── <repo>/
+//! │       └── <branch-slug>/# Individual worktree
 //! ├── lead/                 # Lead session data by project
 //! │   └── <repo>/
 //! │       └── session-id    # Lead's Claude session ID
@@ -155,12 +158,24 @@ pub fn projects_dir_for_repo(repo: &str) -> PathBuf {
 ///
 /// Returns `~/.midtown/coworkers/<repo>/`.
 ///
-/// This is where coworker worktrees are created.
+/// This is the legacy location for coworker worktrees (named by coworker).
+/// New worktrees should use `worktrees_dir_for_repo()` instead.
 ///
 /// Automatically migrates from old directory structure on first access.
 pub fn coworkers_dir_for_repo(repo: &str) -> PathBuf {
     auto_migrate(repo);
     midtown_base_dir().join("coworkers").join(repo)
+}
+
+/// Get the task-based worktrees directory for a specific repository.
+///
+/// Returns `~/.midtown/worktrees/<repo>/`.
+///
+/// This is where task-based worktrees are created. Each worktree is named
+/// by its branch slug (e.g., `task-42-add-auth-endpoint/`), decoupled from
+/// coworker identity to enable build cache reuse across reassignment.
+pub fn worktrees_dir_for_repo(repo: &str) -> PathBuf {
+    midtown_base_dir().join("worktrees").join(repo)
 }
 
 /// Get the lead directory for a specific repository.

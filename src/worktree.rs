@@ -1,9 +1,12 @@
 //! Git worktree management for coworker isolation.
 //!
-//! Each coworker gets an isolated git worktree at:
-//! `~/.midtown/coworkers/<repo>/<coworker-name>/`
+//! Supports two worktree layouts:
 //!
-//! The worktree is created with a dedicated branch `<coworker-name>/work`.
+//! **Legacy (coworker-named):** `~/.midtown/coworkers/<repo>/<coworker-name>/`
+//! **Task-based:** `~/.midtown/worktrees/<repo>/<branch-slug>/`
+//!
+//! New task assignments use the task-based layout. Legacy worktrees are still
+//! recognized during migration.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,14 +47,16 @@ impl From<WorktreeError> for Error {
 }
 
 /// Manages git worktrees for coworker isolation
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorktreeManager {
     /// Root repository path (the main checkout)
     repo_root: PathBuf,
     /// Repository name (for ~/.midtown/coworkers/<repo>/)
     repo_name: String,
-    /// Base path for worktrees (~/.midtown/coworkers/<repo>/)
+    /// Base path for legacy coworker-named worktrees (~/.midtown/coworkers/<repo>/)
     worktrees_base: PathBuf,
+    /// Base path for task-based worktrees (~/.midtown/worktrees/<repo>/)
+    task_worktrees_base: PathBuf,
 }
 
 impl WorktreeManager {
@@ -60,11 +65,13 @@ impl WorktreeManager {
         let repo_root = detect_repo_root()?;
         let repo_name = repo_name_from_path(&repo_root)?;
         let worktrees_base = worktrees_base_path(&repo_name)?;
+        let task_worktrees_base = crate::paths::worktrees_dir_for_repo(&repo_name);
 
         Ok(Self {
             repo_root,
             repo_name,
             worktrees_base,
+            task_worktrees_base,
         })
     }
 
@@ -72,11 +79,13 @@ impl WorktreeManager {
     pub fn new(repo_root: PathBuf) -> WorktreeResult<Self> {
         let repo_name = repo_name_from_path(&repo_root)?;
         let worktrees_base = worktrees_base_path(&repo_name)?;
+        let task_worktrees_base = crate::paths::worktrees_dir_for_repo(&repo_name);
 
         Ok(Self {
             repo_root,
             repo_name,
             worktrees_base,
+            task_worktrees_base,
         })
     }
 
@@ -685,6 +694,269 @@ impl WorktreeManager {
 
         cleaned
     }
+
+    // ========================================================================
+    // Task-based worktree operations
+    // ========================================================================
+
+    /// Get the path for a task-based worktree.
+    ///
+    /// Returns `~/.midtown/worktrees/<repo>/<worktree_id>/`.
+    pub fn task_worktree_path(&self, worktree_id: &str) -> PathBuf {
+        self.task_worktrees_base.join(worktree_id)
+    }
+
+    /// Create a task-based worktree at `~/.midtown/worktrees/<repo>/<worktree_id>/`.
+    ///
+    /// The worktree is created detached at HEAD, then checked out on a branch
+    /// matching the worktree_id. This is the preferred path for new task
+    /// assignments.
+    pub fn create_task_worktree(&self, worktree_id: &str) -> WorktreeResult<PathBuf> {
+        let worktree_path = self.task_worktree_path(worktree_id);
+
+        if worktree_path.exists() {
+            return Err(WorktreeError::AlreadyExists(worktree_path));
+        }
+
+        if let Some(parent) = worktree_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Create worktree at the branch (creating branch if needed)
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                worktree_id,
+                worktree_path.to_str().unwrap(),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            // If the branch already exists, try detach + checkout
+            if stderr.contains("already exists") {
+                let output = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args([
+                        "worktree",
+                        "add",
+                        worktree_path.to_str().unwrap(),
+                        worktree_id,
+                    ])
+                    .output()?;
+
+                if !output.status.success() {
+                    // Prune and retry as last resort
+                    if !worktree_path.exists() {
+                        let _ = self.prune();
+                        let retry = Command::new("git")
+                            .current_dir(&self.repo_root)
+                            .args([
+                                "worktree",
+                                "add",
+                                "-b",
+                                worktree_id,
+                                worktree_path.to_str().unwrap(),
+                            ])
+                            .output()?;
+                        if !retry.status.success() {
+                            return Err(WorktreeError::GitError(
+                                String::from_utf8_lossy(&retry.stderr).to_string(),
+                            ));
+                        }
+                    } else {
+                        return Err(WorktreeError::GitError(
+                            String::from_utf8_lossy(&output.stderr).to_string(),
+                        ));
+                    }
+                }
+            } else if !worktree_path.exists() {
+                // Prune stale references and retry
+                tracing::warn!(
+                    "git worktree add failed ({}), pruning and retrying",
+                    stderr.trim()
+                );
+                let _ = self.prune();
+                let retry = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args([
+                        "worktree",
+                        "add",
+                        "-b",
+                        worktree_id,
+                        worktree_path.to_str().unwrap(),
+                    ])
+                    .output()?;
+                if !retry.status.success() {
+                    return Err(WorktreeError::GitError(
+                        String::from_utf8_lossy(&retry.stderr).to_string(),
+                    ));
+                }
+            } else {
+                return Err(WorktreeError::GitError(stderr));
+            }
+        }
+
+        Ok(worktree_path)
+    }
+
+    /// Remove a task-based worktree and its branch.
+    pub fn remove_task_worktree(&self, worktree_id: &str, force: bool) -> WorktreeResult<()> {
+        let worktree_path = self.task_worktree_path(worktree_id);
+
+        if !worktree_path.exists() {
+            return Err(WorktreeError::NotFound(worktree_path));
+        }
+
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(worktree_path.to_str().unwrap());
+
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(&args)
+            .output()?;
+
+        if !output.status.success() {
+            return Err(WorktreeError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Force cleanup a task-based worktree: remove directory, prune refs, delete branch.
+    pub fn force_cleanup_task_worktree(&self, worktree_id: &str) -> WorktreeResult<()> {
+        let worktree_path = self.task_worktree_path(worktree_id);
+
+        // Get the branch name before removal
+        let branch_name = if worktree_path.exists() {
+            Command::new("git")
+                .current_dir(&worktree_path)
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|b| b != "HEAD")
+        } else {
+            None
+        };
+
+        // Try git removal first
+        let _ = self.remove_task_worktree(worktree_id, true);
+
+        // If directory still exists, remove manually
+        if worktree_path.exists() {
+            std::fs::remove_dir_all(&worktree_path)?;
+        }
+
+        self.prune()?;
+
+        // Delete the branch
+        if let Some(branch) = &branch_name {
+            let _ = Command::new("git")
+                .current_dir(&self.repo_root)
+                .args(["branch", "-D", branch])
+                .output();
+        }
+
+        Ok(())
+    }
+
+    /// Get the base path for task-based worktrees.
+    pub fn task_worktrees_base(&self) -> &Path {
+        &self.task_worktrees_base
+    }
+
+    /// Find orphaned task-based worktrees — directories in the task worktrees
+    /// base that are not tracked in the registry.
+    pub fn find_orphaned_task_worktrees(&self, registered_ids: &[String]) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.task_worktrees_base) else {
+            return vec![];
+        };
+
+        entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            .filter(|name| !registered_ids.contains(name))
+            .collect()
+    }
+
+    /// Clean up stale branches that match the task-based naming pattern
+    /// (task-<id>-*) and are already merged into the default branch.
+    pub fn clean_stale_task_branches(&self) -> Vec<String> {
+        let default_branch =
+            detect_default_branch(&self.repo_root).unwrap_or_else(|| "main".to_string());
+
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+            .output();
+
+        let branches: Vec<String> = match output {
+            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.to_string())
+                .collect(),
+            _ => return vec![],
+        };
+
+        // Get branches in use by worktrees
+        let worktree_branches: std::collections::HashSet<String> = self
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|wt| wt.branch)
+            .collect();
+
+        let mut cleaned = Vec::new();
+
+        for branch in branches {
+            if branch == default_branch {
+                continue;
+            }
+
+            // Check if this looks like a task branch or review branch
+            if !branch.starts_with("task-") && !branch.starts_with("review-pr-") {
+                continue;
+            }
+
+            if worktree_branches.contains(&branch) {
+                continue;
+            }
+
+            let output = Command::new("git")
+                .current_dir(&self.repo_root)
+                .args(["merge-base", "--is-ancestor", &branch, &default_branch])
+                .output();
+
+            let is_merged = match output {
+                Ok(output) => output.status.success(),
+                Err(_) => false,
+            };
+
+            if is_merged {
+                let result = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args(["branch", "-D", &branch])
+                    .output();
+                if result.is_ok_and(|o| o.status.success()) {
+                    cleaned.push(branch);
+                }
+            }
+        }
+
+        cleaned
+    }
 }
 
 /// Information about a worktree
@@ -828,6 +1100,7 @@ mod tests {
             repo_root: PathBuf::from("/tmp/repo"),
             repo_name: "myrepo".to_string(),
             worktrees_base: PathBuf::from("/home/user/.midtown/coworkers/myrepo"),
+            task_worktrees_base: PathBuf::from("/home/user/.midtown/worktrees/myrepo"),
         };
 
         assert_eq!(
