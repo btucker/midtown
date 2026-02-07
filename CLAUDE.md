@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Midtown is a multi-Claude Code workspace manager. It coordinates a Lead (human-facing Claude Code) and multiple autonomous Coworkers, each running in isolated git worktrees within a shared tmux session. Communication happens through an IRC-style append-only channel log.
+Midtown is a multi-Claude Code workspace manager. It coordinates a Lead (human-facing Claude Code in tmux) and multiple autonomous Coworkers (headless Claude Code sessions), each running in isolated git worktrees. Communication happens through an IRC-style append-only channel log.
 
 ## Build & Development Commands
 
@@ -83,14 +83,16 @@ Event sources (timer ticks, webhooks, RPC, signals)
 
 `src/coworker.rs` manages coworker state (spawn, nudge, shutdown). Each coworker:
 - Runs in an isolated git worktree (`~/.midtown/coworkers/<repo>/<name>/`)
-- Gets a dedicated tmux window in the `midtown-<project>` session
+- Runs as a headless Claude Code session using `SessionManager` with JSON streaming
 - Is named after Manhattan avenues (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon)
 
-`src/tmux.rs` handles all tmux operations — window create/kill, `send-keys` for nudges, pane capture, status parsing from `/me` messages.
+`src/launch.rs` builds Claude CLI commands and settings for both lead (tmux-based) and coworkers (headless). `src/session_manager.rs` manages headless coworker sessions using JSON streaming for communication.
 
 ### Nudge System
 
-Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`, which calls `tmux::send_keys()` in `src/tmux.rs`.
+Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`:
+- **Lead nudges**: `tmux::send_keys()` to inject messages into the tmux pane
+- **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
 
 ### GitHub Integration
 
@@ -169,9 +171,9 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 **Effect-based side effects**: Never perform I/O in decision functions. Return `Effect` variants from `rules.rs`, execute them in `effects.rs`. This keeps the core logic pure and testable.
 
-**Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See `write_coworker_prompt_file()` in `tmux.rs`.
+**Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See `write_lead_prompt_file()` in `tmux.rs` and prompt writing in `launch.rs`.
 
-**Tmux as the process model**: All agents (Lead + Coworkers) are tmux windows. Status is communicated via `/me` channel messages which get parsed into tmux tab names. Nudges are delivered via `tmux send-keys`.
+**Hybrid process model**: Lead runs in a tmux window for interactive use; Coworkers run as headless Claude Code sessions. Status is communicated via `/me` channel messages. Lead nudges use `tmux send-keys`; coworker nudges use JSON streaming via `SessionManager`.
 
 ## Lead Maintenance
 
