@@ -1210,26 +1210,15 @@ async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
-    match crate::tasks::create_task_for_repo(subject, description, &active_form, "", &repo_name) {
+    match crate::tasks::create_task_for_repo(
+        subject,
+        description,
+        &active_form,
+        "",
+        &repo_name,
+        blocked_by,
+    ) {
         Ok(task_id) => {
-            // Apply blocked-by if specified
-            if let Some(bb) = blocked_by
-                && !bb.is_empty()
-                && let Err(e) = crate::tasks::update_task_fields_for_repo(
-                    &task_id,
-                    &repo_name,
-                    None,
-                    None,
-                    None,
-                    Some(bb),
-                )
-            {
-                warn!(
-                    "Created task #{} but failed to set blocked-by: {}",
-                    task_id, e
-                );
-            }
-
             // Post to channel so team is aware
             let msg = Message::text("lead", format!("created task: {}", subject));
             if let Err(e) = state.send_and_broadcast_async(&msg).await {

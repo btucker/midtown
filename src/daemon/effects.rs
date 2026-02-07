@@ -723,6 +723,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         &format!("Addressing review feedback on PR #{}", pr_number),
                         &owner,
                         &state.repo_name,
+                        None,
                     ) {
                         Ok(task_id) => {
                             info!(

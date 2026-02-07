@@ -959,6 +959,7 @@ pub fn create_task_for_repo(
     active_form: &str,
     owner: &str,
     repo_name: &str,
+    blocked_by: Option<&[String]>,
 ) -> Result<String, String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
@@ -973,7 +974,14 @@ pub fn create_task_for_repo(
             .map_err(|e| format!("Failed to create tasks directory: {}", e))?;
     }
 
-    create_task_in_dir(&tasks_dir, subject, description, active_form, owner)
+    create_task_in_dir(
+        &tasks_dir,
+        subject,
+        description,
+        active_form,
+        owner,
+        blocked_by,
+    )
 }
 
 /// Inner implementation: create a task in the given directory.
@@ -987,6 +995,7 @@ fn create_task_in_dir(
     description: &str,
     active_form: &str,
     owner: &str,
+    blocked_by: Option<&[String]>,
 ) -> Result<String, String> {
     use fs2::FileExt;
 
@@ -1018,13 +1027,18 @@ fn create_task_in_dir(
     let next_id = next_task_id(&tasks_dir_buf, &existing);
 
     let task_id = next_id.to_string();
+    let blocked_by_ids: Vec<&str> = blocked_by
+        .unwrap_or(&[])
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     let task = serde_json::json!({
         "id": task_id,
         "subject": subject,
         "description": description,
         "status": "pending",
         "owner": owner,
-        "blockedBy": [],
+        "blockedBy": blocked_by_ids,
         "blocks": [],
         "activeForm": active_form,
     });
@@ -1783,6 +1797,7 @@ mod tests {
             "PR #42 has feedback",
             "Addressing review feedback on PR #42",
             "madison",
+            None,
         );
         assert!(result.is_ok());
         let task_id = result.unwrap();
@@ -1805,6 +1820,7 @@ mod tests {
             "desc",
             "Addressing review feedback on PR #42",
             "madison",
+            None,
         )
         .unwrap();
 
@@ -1815,6 +1831,7 @@ mod tests {
             "desc",
             "Addressing review feedback on PR #42",
             "madison",
+            None,
         )
         .unwrap();
 
@@ -1844,6 +1861,7 @@ mod tests {
             "desc",
             "Addressing review feedback on PR #42",
             "madison",
+            None,
         )
         .unwrap();
 
@@ -1865,6 +1883,7 @@ mod tests {
             "desc",
             "Addressing feedback",
             "madison",
+            None,
         )
         .unwrap();
 
@@ -1875,6 +1894,7 @@ mod tests {
             "desc",
             "Addressing feedback",
             "lexington",
+            None,
         )
         .unwrap();
 
@@ -1896,6 +1916,7 @@ mod tests {
             "desc",
             "Working on new task",
             "carol",
+            None,
         )
         .unwrap();
 
@@ -1913,12 +1934,13 @@ mod tests {
         create_task_file(temp_dir.path(), "3", "pending", Some("alice"));
 
         // This should read once, find max_id=3, and assign id=4
-        let id = create_task_in_dir(temp_dir.path(), "New task", "desc", "Working", "bob").unwrap();
+        let id = create_task_in_dir(temp_dir.path(), "New task", "desc", "Working", "bob", None)
+            .unwrap();
         assert_eq!(id, "4");
 
         // Dedup should work for the newly created task
-        let id2 =
-            create_task_in_dir(temp_dir.path(), "New task", "desc", "Working", "bob").unwrap();
+        let id2 = create_task_in_dir(temp_dir.path(), "New task", "desc", "Working", "bob", None)
+            .unwrap();
         assert_eq!(id2, "4", "should dedup against newly created task");
     }
 
@@ -2303,6 +2325,7 @@ mod tests {
                     &format!("Description {}", i),
                     &format!("Working on task {}", i),
                     &format!("worker-{}", i),
+                    None,
                 )
                 .unwrap()
             }));
@@ -2351,6 +2374,7 @@ mod tests {
             "desc",
             "Working",
             "madison",
+            None,
         )
         .unwrap();
 
@@ -2369,14 +2393,16 @@ mod tests {
         assert_eq!(read_highwatermark(tasks_dir), 0);
 
         // Create first task
-        let id1 = create_task_in_dir(tasks_dir, "Task one", "desc", "Working", "alice").unwrap();
+        let id1 =
+            create_task_in_dir(tasks_dir, "Task one", "desc", "Working", "alice", None).unwrap();
         assert_eq!(id1, "1");
 
         // Highwatermark should now be 1
         assert_eq!(read_highwatermark(tasks_dir), 1);
 
         // Create second task
-        let id2 = create_task_in_dir(tasks_dir, "Task two", "desc", "Working", "bob").unwrap();
+        let id2 =
+            create_task_in_dir(tasks_dir, "Task two", "desc", "Working", "bob", None).unwrap();
         assert_eq!(id2, "2");
         assert_eq!(read_highwatermark(tasks_dir), 2);
     }
@@ -2409,10 +2435,75 @@ mod tests {
         std::fs::write(tasks_dir.join(".highwatermark"), "50").unwrap();
         create_task_file(tasks_dir, "100", "pending", Some("alice"));
 
-        let id = create_task_in_dir(tasks_dir, "New task", "desc", "Working", "bob").unwrap();
+        let id = create_task_in_dir(tasks_dir, "New task", "desc", "Working", "bob", None).unwrap();
         assert_eq!(id, "101", "should use max(files, watermark) + 1");
 
         // Watermark updated to new value
         assert_eq!(read_highwatermark(tasks_dir), 101);
+    }
+
+    #[test]
+    fn test_create_task_with_blocked_by() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a blocker task first
+        let blocker_id =
+            create_task_in_dir(temp_dir.path(), "Blocker", "desc", "Working", "alice", None)
+                .unwrap();
+
+        // Create a task that depends on the blocker
+        let blocked_by = vec![blocker_id.clone()];
+        let id = create_task_in_dir(
+            temp_dir.path(),
+            "Blocked task",
+            "desc",
+            "Working",
+            "bob",
+            Some(&blocked_by),
+        )
+        .unwrap();
+
+        // Read the task back and verify blockedBy is set atomically
+        let tasks = read_tasks_from_dir(&temp_dir.path().to_path_buf());
+        let blocked_task = tasks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(blocked_task.blocked_by, vec![blocker_id]);
+    }
+
+    #[test]
+    fn test_create_task_with_empty_blocked_by() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let id = create_task_in_dir(
+            temp_dir.path(),
+            "No blockers",
+            "desc",
+            "Working",
+            "alice",
+            Some(&[]),
+        )
+        .unwrap();
+
+        let tasks = read_tasks_from_dir(&temp_dir.path().to_path_buf());
+        let task = tasks.iter().find(|t| t.id == id).unwrap();
+        assert!(task.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn test_create_task_with_none_blocked_by() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let id = create_task_in_dir(
+            temp_dir.path(),
+            "Default blockers",
+            "desc",
+            "Working",
+            "alice",
+            None,
+        )
+        .unwrap();
+
+        let tasks = read_tasks_from_dir(&temp_dir.path().to_path_buf());
+        let task = tasks.iter().find(|t| t.id == id).unwrap();
+        assert!(task.blocked_by.is_empty());
     }
 }
