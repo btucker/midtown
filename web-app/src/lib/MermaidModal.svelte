@@ -237,8 +237,8 @@
 
   .modal-toolbar {
     position: absolute;
-    top: 16px;
-    right: 56px;
+    top: calc(env(safe-area-inset-top, 0px) + 16px);
+    right: calc(env(safe-area-inset-right, 0px) + 56px);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -269,10 +269,17 @@
     color: #5fafaf;
   }
 
+  @media (max-width: 600px) {
+    .toolbar-btn {
+      padding: 10px 18px;
+      font-size: 0.9rem;
+    }
+  }
+
   .close-btn {
     position: absolute;
-    top: 12px;
-    right: 12px;
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
+    right: calc(env(safe-area-inset-right, 0px) + 12px);
     width: 36px;
     height: 36px;
     border: 1px solid #4a4a4a;
@@ -287,6 +294,14 @@
     align-items: center;
     justify-content: center;
     padding: 0;
+  }
+
+  @media (max-width: 600px) {
+    .close-btn {
+      width: 44px;
+      height: 44px;
+      font-size: 1.5rem;
+    }
   }
 
   .close-btn:hover {
