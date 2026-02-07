@@ -132,7 +132,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|v| v.as_str());
 
             match name {
-                Some(name) => handle_coworker_break(request.id, name, state),
+                Some(name) => handle_coworker_break(request.id, name, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -438,6 +438,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         agent_id: None,
                         agent_name: None,
                         settings_path: None,
+                        env: std::collections::HashMap::new(),
                     };
                     handle_headless_execute(request.id, prompt, &config).await
                 }
@@ -567,7 +568,7 @@ fn handle_coworker_spawn(
 }
 
 /// Handle coworker.break RPC method.
-fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Response {
+async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Response {
     // Check if the coworker is tracked - if not, they're already "on break"
     if state.coworkers.get(name).is_none() {
         info!("Coworker {} is already on break (not tracked)", name);
@@ -581,23 +582,22 @@ fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Resp
     }
 
     state.broadcast_coworker_update(name, "stopped", None);
-    match state.coworkers.shutdown(name) {
-        Ok(()) => {
-            state.record_coworker_stop_time(name);
-            info!("Sent coworker on a break: {}", name);
-            Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("Sent {} on a break", name),
-                }),
-            )
-        }
-        Err(e) => {
-            error!("Failed to send coworker {} on a break: {}", name, e);
-            Response::error(id, RpcError::new(-32603, e.to_string()))
-        }
+
+    // Shut down the headless session, then deregister from tracking
+    if let Err(e) = state.session_manager.shutdown(name).await {
+        warn!("Failed to shut down headless session for {}: {}", name, e);
     }
+    state.coworkers.deregister(name);
+    state.record_coworker_stop_time(name);
+
+    info!("Sent coworker on a break: {}", name);
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+            "message": format!("Sent {} on a break", name),
+        }),
+    )
 }
 
 /// Handle auth.switch RPC method.

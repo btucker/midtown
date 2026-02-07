@@ -1477,7 +1477,7 @@ fn coworker_settings_json() -> serde_json::Value {
 
 /// Write coworker settings to a shared file and return the path.
 /// All coworkers use the same settings file.
-fn write_coworker_settings_file() -> crate::Result<PathBuf> {
+pub fn write_coworker_settings_file() -> crate::Result<PathBuf> {
     let dir = state_dir();
     std::fs::create_dir_all(&dir).map_err(Error::Io)?;
 

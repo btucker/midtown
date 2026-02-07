@@ -71,6 +71,13 @@ pub struct HeadlessConfig {
     /// Path to a Claude Code settings JSON file. When set, adds `--settings` flag.
     #[serde(default)]
     pub settings_path: Option<String>,
+    /// Additional environment variables to set on the child process.
+    ///
+    /// Applied after the default env_remove calls (MIDTOWN_AGENT, CLAUDE_CODE_TASK_LIST_ID),
+    /// so values here take precedence. Use this to pass coworker-specific env vars
+    /// like `MIDTOWN_AGENT`, `CLAUDE_CODE_TASK_LIST_ID`, and `CLAUDE_CONFIG_DIR`.
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
 }
 
 /// Custom serde module for `Option<Duration>` as seconds (f64).
@@ -227,7 +234,8 @@ impl HeadlessSession {
             cmd.current_dir(cwd);
         }
 
-        // Prevent Claude from inheriting MIDTOWN_AGENT or CLAUDE_CODE_TASK_LIST_ID
+        // Clear inherited daemon env vars, then re-apply from config.env
+        // so coworker-specific values (MIDTOWN_AGENT, CLAUDE_CODE_TASK_LIST_ID) take effect.
         cmd.env_remove("MIDTOWN_AGENT");
         cmd.env_remove("CLAUDE_CODE_TASK_LIST_ID");
         cmd.env("DISABLE_AUTOUPDATER", "1");
@@ -235,6 +243,11 @@ impl HeadlessSession {
         // Agent teams requires this env var
         if config.team_name.is_some() {
             cmd.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
+        }
+
+        // Apply caller-provided env vars (e.g., MIDTOWN_AGENT for coworker identity)
+        for (key, value) in &config.env {
+            cmd.env(key, value);
         }
 
         cmd.stdin(Stdio::piped());
@@ -513,6 +526,7 @@ mod tests {
             agent_id: None,
             agent_name: None,
             settings_path: None,
+            env: std::collections::HashMap::new(),
         }
     }
 

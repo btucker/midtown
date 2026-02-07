@@ -420,7 +420,10 @@ impl CoworkerManager {
         }
     }
 
-    /// Send a coworker on a break (shut down their session).
+    /// Send a coworker on a break (shut down their tmux session).
+    ///
+    /// This is the **tmux legacy path**. For headless coworkers, use
+    /// `deregister()` after calling `SessionManager::shutdown()`.
     pub fn shutdown(&self, name: &str) -> crate::Result<()> {
         // Update status to stopping
         {
@@ -459,6 +462,24 @@ impl CoworkerManager {
         }
 
         kill_result
+    }
+
+    /// Remove a coworker from tracking without killing any tmux windows.
+    ///
+    /// Used by the headless shutdown path: the `SessionManager` handles
+    /// killing the headless process, and this method handles the tracking
+    /// cleanup (removing from HashMap + cleaning up additional worktrees).
+    pub fn deregister(&self, name: &str) {
+        // Clean up additional repo worktrees (multi-repo projects)
+        self.cleanup_additional_worktrees(name);
+
+        // Remove from tracking
+        {
+            let mut coworkers = self.coworkers.write().unwrap();
+            coworkers.remove(name);
+        }
+
+        tracing::info!("Deregistered coworker {}", name);
     }
 
     /// Send all coworkers on a break.
@@ -870,22 +891,21 @@ impl CoworkerManager {
         tmux::send_bell(&self.session_name, "lead.1")
     }
 
-    /// Spawn a coworker with a specific name using a `ClaudeLaunchConfig`.
+    /// Prepare a coworker's worktree and return the working directory and augmented config.
     ///
-    /// Unlike `spawn()` which picks a random available name, this takes an explicit
-    /// config with the name already set. This is useful for:
-    /// - @mention routing where the mentioned coworker name is known
-    /// - Orphan task recovery where the task owner's name is known
-    /// - Reviewer spawns with isolated task lists
+    /// This handles all worktree lifecycle management:
+    /// - Creates a new worktree if one doesn't exist
+    /// - Reuses valid existing worktrees (for orphan recovery, break-resume)
+    /// - Detects and recreates corrupted worktrees
+    /// - Creates worktrees in additional repos (multi-repo)
+    /// - Ensures the worktree is not on the default branch
     ///
-    /// Creates a new worktree if one doesn't exist, or reuses an existing one.
-    /// The `additional_dirs` field in the config is augmented with worktree paths
-    /// created for multi-repo projects.
-    ///
-    /// Returns the coworker name on success.
-    pub fn spawn_with_name(&self, config: &tmux::ClaudeLaunchConfig) -> crate::Result<String> {
+    /// Returns `(working_dir, augmented_config)` on success.
+    pub fn prepare_spawn(
+        &self,
+        config: &crate::launch::LaunchConfig,
+    ) -> crate::Result<(String, crate::launch::LaunchConfig)> {
         let name = &config.name;
-        let isolated_tasks = matches!(config.task_mode, tmux::TaskMode::Isolated);
 
         // Check if already running
         {
@@ -902,24 +922,9 @@ impl CoworkerManager {
         let worktree_path = match self.worktree_manager.create(name) {
             Ok(path) => path,
             Err(WorktreeError::AlreadyExists(_)) => {
-                // Worktree exists - check if there's a corresponding tmux window
-                let window_exists = tmux::window_exists(&self.session_name, name).unwrap_or(false);
-
-                if window_exists {
-                    // There's an active window, so the coworker is actually running
-                    return Err(crate::Error::Rpc {
-                        code: -32603,
-                        message: format!(
-                            "Coworker {} is already running (worktree and window exist)",
-                            name
-                        ),
-                    });
-                }
-
-                // Worktree exists but no window - validate it's a valid git worktree
+                // Worktree exists but no active session - validate it
                 let worktree_path = self.worktree_manager.worktree_path(name);
                 if !is_valid_git_worktree(&worktree_path) {
-                    // Worktree is corrupted - clean up and recreate
                     tracing::warn!(
                         "Worktree for {} is corrupted (git metadata missing), recreating",
                         name
@@ -934,7 +939,6 @@ impl CoworkerManager {
                             ),
                         })?;
 
-                    // Retry creating the worktree
                     self.worktree_manager
                         .create(name)
                         .map_err(|e| crate::Error::Rpc {
@@ -945,24 +949,14 @@ impl CoworkerManager {
                             ),
                         })?
                 } else {
-                    // Valid worktree but stale (no window) - reuse it so the
-                    // coworker keeps its existing branch and any uncommitted work
-                    // (important for orphan recovery and PR break-and-resume).
-                    //
-                    // Exception: if the worktree is on the default branch (main/master),
-                    // we create a recovery branch to prevent working on main. This takes
-                    // precedence over preserving the branch state since main checkout
-                    // causes conflicts with the Lead's worktree.
                     tracing::info!("Reusing existing valid worktree for {}", name);
 
                     // Safety check: ensure the worktree is not on the default branch.
-                    // Coworkers must never work on main/master to avoid conflicts.
                     if self.worktree_manager.is_on_default_branch(name) {
                         tracing::warn!(
                             "Coworker {} worktree is on default branch - creating recovery branch",
                             name
                         );
-                        // Create a recovery feature branch to get off the default branch
                         match self.worktree_manager.checkout_new_branch(name, "recovery") {
                             Ok(branch) => {
                                 tracing::info!(
@@ -1009,48 +1003,85 @@ impl CoworkerManager {
         let mut launch_config = config.clone();
         launch_config.additional_dirs.extend(additional_dirs);
 
+        Ok((working_dir, launch_config))
+    }
+
+    /// Register a coworker as running after its session has been spawned.
+    ///
+    /// This adds the coworker to the internal tracking map. Call this after
+    /// the headless session has been successfully started.
+    ///
+    /// Returns an error if the name was taken by a concurrent spawn.
+    pub fn register(
+        &self,
+        name: &str,
+        working_dir: String,
+        session_id: Option<String>,
+        isolated_tasks: bool,
+    ) -> crate::Result<()> {
+        let mut coworkers = self.coworkers.write().unwrap();
+
+        if coworkers.contains_key(name) {
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "Coworker {} was registered by another concurrent request",
+                    name
+                ),
+            });
+        }
+
+        let coworker = Coworker {
+            name: name.to_string(),
+            status: CoworkerStatus::Running,
+            working_dir,
+            started_at: Utc::now(),
+            current_task: None,
+            session_id,
+            isolated_tasks,
+        };
+        coworkers.insert(name.to_string(), coworker);
+
+        tracing::info!("Registered coworker {}", name);
+        Ok(())
+    }
+
+    /// Spawn a coworker with a specific name using a `ClaudeLaunchConfig`.
+    ///
+    /// This is the **tmux-based legacy path** — used only for the Lead session
+    /// and during the migration period. For headless coworkers, use
+    /// `prepare_spawn()` + `SessionManager::spawn()` + `register()` instead.
+    ///
+    /// Creates a new worktree if one doesn't exist, or reuses an existing one.
+    /// The `additional_dirs` field in the config is augmented with worktree paths
+    /// created for multi-repo projects.
+    ///
+    /// Returns the coworker name on success.
+    pub fn spawn_with_name(&self, config: &tmux::ClaudeLaunchConfig) -> crate::Result<String> {
+        let name = &config.name;
+
+        let (working_dir, launch_config) = self.prepare_spawn(config)?;
+
         let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &launch_config)?;
 
-        // Record the coworker with their session ID for symlink management.
-        //
-        // IMPORTANT: Check again if the name is taken before inserting. This closes
-        // the TOCTTOU race window where a concurrent spawn could have inserted the
-        // same name while we were doing slow work (worktree creation, tmux spawn).
-        // If the name is now taken, we must kill the tmux window we just created
-        // and return an error rather than overwriting the existing coworker.
-        {
-            let mut coworkers = self.coworkers.write().unwrap();
+        let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
 
-            if coworkers.contains_key(name) {
-                // Race condition: another spawn beat us to it. Clean up the tmux
-                // window we just created and return an error.
-                drop(coworkers); // Release lock before tmux operations
-                tracing::warn!(
-                    "Spawn race detected for {}: name was taken during slow work, killing orphaned window",
-                    name
+        // Register with TOCTTOU race check
+        if let Err(e) = self.register(name, working_dir, Some(session_id), isolated_tasks) {
+            // Race condition: another spawn beat us to it. Clean up the tmux
+            // window we just created and return an error.
+            tracing::warn!(
+                "Spawn race detected for {}: name was taken during slow work, killing orphaned window",
+                name
+            );
+            if let Err(kill_err) = tmux::kill_all_windows_by_name(&self.session_name, name) {
+                tracing::error!(
+                    "Failed to kill orphaned window(s) for {}: {}",
+                    name,
+                    kill_err
                 );
-                if let Err(e) = tmux::kill_all_windows_by_name(&self.session_name, name) {
-                    tracing::error!("Failed to kill orphaned window(s) for {}: {}", name, e);
-                }
-                return Err(crate::Error::Rpc {
-                    code: -32603,
-                    message: format!(
-                        "Coworker {} was spawned by another concurrent request",
-                        name
-                    ),
-                });
             }
-
-            let coworker = Coworker {
-                name: name.to_string(),
-                status: CoworkerStatus::Running,
-                working_dir,
-                started_at: Utc::now(),
-                current_task: None,
-                session_id: Some(session_id),
-                isolated_tasks,
-            };
-            coworkers.insert(name.to_string(), coworker);
+            return Err(e);
         }
 
         tracing::info!(

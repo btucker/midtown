@@ -90,6 +90,7 @@ pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: 
         agent_id: None,
         agent_name: None,
         settings_path: None,
+        env: std::collections::HashMap::new(),
     };
 
     info!(
