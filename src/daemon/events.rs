@@ -84,25 +84,35 @@ pub async fn evaluate_tick(
     }
 }
 
-/// Deduplicate SpawnCoworker effects by coworker name.
+/// Deduplicate spawn effects by coworker name.
 ///
 /// Multiple independent decision functions (orphan recovery, pending task spawn,
 /// dead process respawn, PR call-in) can each decide to spawn the same coworker
 /// in a single tick. Without deduplication, the first spawn succeeds but subsequent
-/// ones fail with "session already exists", and the failure handler destructively
-/// resets the task to pending — undoing the successful first spawn.
+/// ones trigger `on_success` callbacks (since the idempotent guard returns Ok),
+/// posting duplicate "Called in" messages.
 ///
-/// Keeps the first SpawnCoworker effect for each name, drops duplicates.
+/// Handles all spawn-like effect variants: `SpawnCoworker`,
+/// `SpawnCoworkerWithCallbacks`, `AssignAndSpawn`, and `ResumeCoworker`.
+/// Keeps the first spawn effect for each coworker name, drops duplicates.
 /// Non-spawn effects are always preserved.
 fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
     let mut seen_spawns: HashSet<String> = HashSet::new();
     effects
         .into_iter()
         .filter(|effect| {
-            if let Effect::SpawnCoworker(config) = effect {
-                let name = config.name.to_lowercase();
+            let spawn_name = match effect {
+                Effect::SpawnCoworker(config) => Some(config.name.to_lowercase()),
+                Effect::SpawnCoworkerWithCallbacks { config, .. } => {
+                    Some(config.name.to_lowercase())
+                }
+                Effect::AssignAndSpawn { config, .. } => Some(config.name.to_lowercase()),
+                Effect::ResumeCoworker { name, .. } => Some(name.to_lowercase()),
+                _ => None,
+            };
+            if let Some(name) = spawn_name {
                 if seen_spawns.contains(&name) {
-                    tracing::debug!("Deduplicated duplicate SpawnCoworker for '{}'", config.name);
+                    tracing::debug!("Deduplicated duplicate spawn effect for '{}'", name);
                     return false;
                 }
                 seen_spawns.insert(name);
@@ -186,5 +196,77 @@ mod tests {
     fn dedup_empty_effects_returns_empty() {
         let deduped = dedup_spawn_effects(vec![]);
         assert!(deduped.is_empty());
+    }
+
+    fn make_spawn_with_callbacks(name: &str) -> Effect {
+        let config = LaunchConfig {
+            name: name.to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            role: CoworkerRole::Coworker,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: false,
+            pr_number: None,
+            team_name: None,
+        };
+        Effect::SpawnCoworkerWithCallbacks {
+            config,
+            on_success: vec![],
+            on_failure: vec![],
+        }
+    }
+
+    fn make_assign_and_spawn(name: &str) -> Effect {
+        let config = LaunchConfig {
+            name: name.to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            role: CoworkerRole::Coworker,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: false,
+            pr_number: None,
+            team_name: None,
+        };
+        Effect::AssignAndSpawn {
+            task_id: "1".to_string(),
+            owner: name.to_string(),
+            repo_name: "test".to_string(),
+            config,
+            on_success: vec![],
+            on_failure: vec![],
+        }
+    }
+
+    #[test]
+    fn dedup_removes_duplicate_spawn_with_callbacks() {
+        let effects = vec![
+            make_spawn_with_callbacks("lexington"),
+            make_spawn_with_callbacks("lexington"), // duplicate
+            make_spawn_with_callbacks("park"),
+        ];
+
+        let deduped = dedup_spawn_effects(effects);
+        assert_eq!(deduped.len(), 2, "Should keep one lexington + one park");
+    }
+
+    #[test]
+    fn dedup_across_spawn_variants() {
+        // AssignAndSpawn and SpawnCoworkerWithCallbacks for the same coworker
+        // should deduplicate (first one wins).
+        let effects = vec![
+            make_assign_and_spawn("lexington"),
+            make_spawn_with_callbacks("lexington"), // same coworker, different variant
+            make_spawn("park"),
+        ];
+
+        let deduped = dedup_spawn_effects(effects);
+        assert_eq!(deduped.len(), 2, "Should keep first lexington + park");
+        // First effect should be the AssignAndSpawn (it came first)
+        assert!(
+            matches!(&deduped[0], Effect::AssignAndSpawn { config, .. } if config.name == "lexington"),
+            "First effect should be AssignAndSpawn for lexington"
+        );
     }
 }
