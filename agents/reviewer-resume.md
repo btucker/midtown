@@ -10,4 +10,6 @@ TASK DESCRIPTION VERIFICATION: Before continuing the code review, verify the PR 
 
 Task descriptions can evolve after a coworker starts working. The coworker may not notice updates. This check catches that gap.
 
+If you haven't already run the code review skill, run it now: /code-review:code-review {pr_number}
+
 REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@lead PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`

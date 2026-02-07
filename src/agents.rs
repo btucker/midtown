@@ -652,6 +652,10 @@ mod tests {
             prompt.contains("TASK DESCRIPTION VERIFICATION"),
             "Reviewer resume prompt should contain TASK DESCRIPTION VERIFICATION section"
         );
+        assert!(
+            prompt.contains("/code-review:code-review"),
+            "Reviewer resume prompt should contain explicit code-review skill invocation"
+        );
     }
 
     #[test]
