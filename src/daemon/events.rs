@@ -11,8 +11,6 @@
 //!                   → execute_effects(effects)
 //! ```
 
-use std::collections::HashSet;
-
 use super::DaemonState;
 use super::effects::Effect;
 use super::snapshot::WorldSnapshot;
@@ -57,23 +55,6 @@ pub async fn evaluate_tick(
             // Health checks: idle shutdown, stuck detection, usage limits.
             effects.extend(super::health::check_and_shutdown_idle_coworkers(snap, state).await);
             effects.extend(super::health::check_and_restart_stuck_coworkers(snap, state).await);
-
-            // Extract names of coworkers being shut down from effects accumulated so far.
-            // This prevents race conditions where we interrupt a coworker that's about
-            // to terminate (e.g., the amsterdam/compaction race at break time).
-            let shutting_down: HashSet<String> = effects
-                .iter()
-                .filter_map(|e| match e {
-                    Effect::ShutdownCoworker { name, .. } => Some(name.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            effects.extend(super::health::check_and_recover_stuck_ui(
-                snap,
-                state,
-                &shutting_down,
-            ));
             effects.extend(super::health::check_for_usage_limits(snap));
             effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
             effects.extend(super::health::check_and_nudge_api_errors(snap, state));
@@ -84,7 +65,7 @@ pub async fn evaluate_tick(
             effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
             effects.extend(super::dispatch::check_and_recover_orphans(snap, state));
             effects.extend(super::dispatch::spawn_for_pending_tasks(snap, state));
-            effects.extend(super::health::check_and_respawn_zombies(snap, state).await);
+            effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);
             effects
         }

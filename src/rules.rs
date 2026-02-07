@@ -135,10 +135,6 @@ pub(crate) struct CoworkerRecord {
     pub task_id: Option<u32>,
     /// When the workflow phase was last updated via RPC.
     pub workflow_updated_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Pane content hash and last-changed timestamp for stuck detection.
-    pub pane_hash: Option<(u64, Instant)>,
-    /// Number of consecutive zombie respawn attempts. Reset on normal spawn.
-    pub zombie_respawn_count: u32,
 }
 
 impl CoworkerRecord {
@@ -150,8 +146,6 @@ impl CoworkerRecord {
             workflow_phase: None,
             task_id: None,
             workflow_updated_at: None,
-            pane_hash: None,
-            zombie_respawn_count: 0,
         }
     }
 
@@ -189,8 +183,6 @@ pub(crate) fn set_health(
             workflow_phase: None,
             task_id: None,
             workflow_updated_at: None,
-            pane_hash: None,
-            zombie_respawn_count: 0,
         })
         .health = Some(health);
 }
@@ -217,8 +209,6 @@ pub(crate) fn set_workflow(
             workflow_phase: None,
             task_id: None,
             workflow_updated_at: None,
-            pane_hash: None,
-            zombie_respawn_count: 0,
         });
     record.workflow_phase = Some(phase);
     record.task_id = task_id;
@@ -301,7 +291,6 @@ pub(crate) fn decide_idle_shutdowns(
     coworkers_with_open_prs: &HashSet<String>,
     active_reviewers: &HashSet<String>,
     coworkers_with_unblocked_deps: &HashSet<String>,
-    coworkers_with_running_subagents: &HashSet<String>,
     ci_passed_pr_coworkers: &HashSet<String>,
     usage_limited_coworkers: &HashSet<String>,
     api_error_coworkers: &HashSet<String>,
@@ -343,9 +332,6 @@ pub(crate) fn decide_idle_shutdowns(
         let has_unblocked_deps = coworkers_with_unblocked_deps
             .iter()
             .any(|d| d.eq_ignore_ascii_case(coworker));
-        let has_running_subagent = coworkers_with_running_subagents
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case(coworker));
         let ci_passed = ci_passed_pr_coworkers
             .iter()
             .any(|c| c.eq_ignore_ascii_case(coworker));
@@ -359,23 +345,17 @@ pub(crate) fn decide_idle_shutdowns(
             .any(|r| r.eq_ignore_ascii_case(coworker));
 
         // Coworkers with active/pending tasks, review assignments, unblocked deps,
-        // running subagents, usage limits, or API errors are never sent on break.
+        // usage limits, or API errors are never sent on break.
         //
         // Coworkers with open PRs CAN go on break if their CI has passed
         // AND they have no review feedback to address. If they DO have review
         // feedback, they're protected (prevents spawn→idle→break loop from #753).
-        //
-        // Note: pane content changes are NOT checked here. Idle coworkers may
-        // have pane activity from daemon nudges and UI updates, which previously
-        // blocked idle breaks (bug #62). The other flags already cover all
-        // legitimate work scenarios.
         let protected_by_open_pr = has_open_pr && (!ci_passed || has_review_feedback);
         if is_busy
             || has_pending_task
             || protected_by_open_pr
             || is_reviewing
             || has_unblocked_deps
-            || has_running_subagent
             || is_usage_limited
             || has_api_error
         {
@@ -440,6 +420,7 @@ const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade o
 /// - `"type":"api_error"` - JSON response type field
 /// - `"type":"error"` with `api_error` - Structured error response
 /// - `Internal server error` - Common error message
+#[allow(dead_code)] // Used via has_api_error_pattern (pub(crate)), only called from tests currently
 const API_ERROR_PATTERNS: &[&str] = &[
     "API Error: 500",
     "API Error: 502",
@@ -449,61 +430,6 @@ const API_ERROR_PATTERNS: &[&str] = &[
     r#""type":"overloaded_error""#,
     "Internal server error",
 ];
-
-/// Detect whether pane content indicates a subagent (Task tool) is running.
-///
-/// When a coworker launches a Task agent, their pane shows status indicators
-/// while waiting for the subagent to complete. During this time, the main pane
-/// content doesn't change (it shows "Waiting..." or the task status), but the
-/// coworker is actively working via the subagent.
-///
-/// Patterns detected:
-/// - `✽` (whirlpool) at start of line = subagent actively thinking/running
-/// - `Running X Task agent` = subagent(s) in progress
-pub(crate) fn has_running_subagent(pane_content: &str) -> bool {
-    for line in pane_content.lines() {
-        let trimmed = line.trim();
-        // Whirlpool indicator: ✽ followed by task description
-        if trimmed.starts_with('✽') {
-            return true;
-        }
-        // Running Task agents indicator
-        if trimmed.contains("Running") && trimmed.contains("Task agent") {
-            return true;
-        }
-    }
-    false
-}
-
-/// Decision output for usage limit detection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum UsageLimitDecision {
-    /// Usage limit detected in pane — schedule a nudge.
-    Detected { coworker: String },
-    /// No usage limit found in any pane.
-    NoneDetected,
-}
-
-/// Decide whether pane contents indicate a usage limit.
-///
-/// Scans pane contents for known usage/rate limit patterns.
-/// The caller is responsible for skipping this call when a nudge is already scheduled.
-///
-/// To detect recovery: if the usage limit pattern appears but there's significant
-/// activity AFTER it, the coworker has recovered and should not be marked as limited.
-pub(crate) fn decide_usage_limit_detection(
-    pane_contents: &HashMap<String, String>,
-) -> UsageLimitDecision {
-    for (name, content) in pane_contents {
-        if is_at_usage_limit(content) {
-            return UsageLimitDecision::Detected {
-                coworker: name.clone(),
-            };
-        }
-    }
-
-    UsageLimitDecision::NoneDetected
-}
 
 /// Check if pane content indicates an active (not recovered) usage limit.
 ///
@@ -660,77 +586,54 @@ pub(crate) struct StuckCoworkerRestart {
     pub task_subject: String,
 }
 
-/// Result of stuck coworker detection: restart decisions and updated hash state.
-pub(crate) struct StuckDetectionResult {
-    /// Coworkers that should be restarted.
-    pub restarts: Vec<StuckCoworkerRestart>,
-    /// Updated pane hash entries to replace the current state.
-    pub updated_hashes: HashMap<String, (u64, Instant)>,
-}
-
-/// Detect coworkers whose pane content hasn't changed for `stuck_duration`
-/// while showing activity indicators (running subagent).
+/// Detect coworkers whose headless process has not emitted events for
+/// `stuck_duration`, indicating a stuck/hung process.
 ///
 /// A coworker is only considered stuck if:
-/// 1. Pane content hash unchanged for `stuck_duration` (3 minutes)
-/// 2. Pane shows activity indicators (whirlpool, "Running X Task agent")
+/// 1. Process is alive (`is_alive` = true)
+/// 2. No stream events received for `stuck_duration`
+/// 3. Has an in-progress task (idle coworkers are handled elsewhere)
 ///
-/// If pane is frozen but shows NO activity indicators, the coworker is likely
-/// idle/waiting, not stuck. This prevents false positives on legitimately
-/// idle coworkers.
+/// Skips coworkers with usage limits, API errors, or running subagents —
+/// they are paused/busy but not stuck.
 ///
-/// Pure function: takes the current pane hash state and pane contents,
-/// returns restart decisions and the updated hash state. The caller is
-/// responsible for applying the hash updates to persistent state.
+/// Pure function: takes ProcessHealth data and returns restart decisions.
 pub(crate) fn decide_stuck_coworker_restarts(
-    pane_hashes: &HashMap<String, (u64, Instant)>,
-    pane_contents: &HashMap<String, String>,
+    process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
     in_progress_tasks: &[(String, String, String)],
     usage_limited_coworkers: &HashSet<String>,
     api_error_coworkers: &HashSet<String>,
-    now: Instant,
+    now_utc: DateTime<Utc>,
     stuck_duration: Duration,
-) -> StuckDetectionResult {
-    use std::hash::{Hash, Hasher};
-
+) -> Vec<StuckCoworkerRestart> {
+    let stuck_threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
     let mut restarts = Vec::new();
-    let mut updated_hashes = pane_hashes.clone();
 
-    for (name, content) in pane_contents {
-        // Skip coworkers at usage limit — they're frozen but not stuck
+    for (name, health) in process_health {
+        // Only check alive processes
+        if !health.is_alive {
+            continue;
+        }
+        // Skip coworkers at usage limit — they're paused but not stuck
         if usage_limited_coworkers.contains(&name.to_lowercase()) {
             continue;
         }
-        // Skip coworkers with API errors — they're waiting but may recover on retry
+        // Skip coworkers with API errors — they're waiting but may recover
         if api_error_coworkers.contains(&name.to_lowercase()) {
             continue;
         }
-        // Hash the pane content for cheap comparison
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        content.hash(&mut hasher);
-        let new_hash = hasher.finish();
-
-        let entry = updated_hashes
-            .entry(name.clone())
-            .or_insert((new_hash, now));
-
-        if entry.0 != new_hash {
-            // Pane changed — update hash and timestamp
-            entry.0 = new_hash;
-            entry.1 = now;
+        // Skip coworkers with running subagents — parent session goes quiet
+        // while Task tool subagents work, which can take several minutes
+        if health.has_running_subagent {
             continue;
         }
-
-        // Hash unchanged — check if stuck long enough
-        if now.duration_since(entry.1) < stuck_duration {
-            continue;
-        }
-
-        // CRITICAL: Skip if coworker has running subagents.
-        // The pane will be frozen while waiting for Task agents to complete,
-        // which is normal behavior — not stuck. Only consider stuck if the
-        // pane is frozen AND there are NO running subagents (true hang).
-        if has_running_subagent(content) {
+        // Check last_event_at — no events yet means just spawned, skip
+        let last_event = match health.last_event_at {
+            Some(t) => t,
+            None => continue,
+        };
+        let elapsed = now_utc.signed_duration_since(last_event);
+        if elapsed < stuck_threshold {
             continue;
         }
 
@@ -748,568 +651,12 @@ pub(crate) fn decide_stuck_coworker_restarts(
             task_id: task_id.clone(),
             task_subject: task_subject.clone(),
         });
-
-        // Reset the hash tracker so we don't immediately re-trigger
-        entry.1 = now;
     }
 
-    // Clean up entries for coworkers no longer in the snapshot
-    updated_hashes.retain(|name, _| pane_contents.contains_key(name));
-
-    StuckDetectionResult {
-        restarts,
-        updated_hashes,
-    }
+    restarts
 }
 
 // ---------------------------------------------------------------------------
-// Compaction whirlpool & queued prompt detection
-// ---------------------------------------------------------------------------
-
-/// Action to recover a coworker from a stuck UI state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StuckUiRecovery {
-    /// Coworker is stuck in compaction (whirlpool/baking). Send Escape.
-    InterruptCompaction { name: String },
-    /// Coworker has queued text sitting in the input but is not processing it.
-    /// If the text matches a daemon-sent nudge, send Enter to auto-submit.
-    /// Otherwise, leave it alone (could be user-typed input).
-    InterruptQueuedNudges { name: String },
-}
-
-/// Detect coworkers stuck in Claude Code's compaction state.
-///
-/// Compaction shows a status line like `Whirlpooling your conversation…`
-/// followed by `(esc to interrupt · 18m 50s · ↓ 0 tokens)`. The key verbs are:
-/// - "Whirlpooling" (active compaction)
-/// - "Baking" (active compaction)
-/// - "Simmering" (active compaction)
-/// - "Sautéed" (completed compaction, still in post-compaction state)
-///
-/// IMPORTANT: Normal "thinking" states also show "esc to interrupt" but are
-/// NOT compaction. For example: "✢ Fixing tmux window naming… (esc to interrupt...)"
-/// We must check for actual compaction verbs, not just "esc to interrupt".
-///
-/// Only flags coworkers whose compaction has been running for at least
-/// `min_duration` — compaction is a normal, useful operation and we must not
-/// interrupt short-running compactions.
-///
-/// Returns the names of coworkers that should receive an Escape keypress.
-/// The caller is responsible for cooldown enforcement.
-pub(crate) fn detect_compaction_stuck(
-    pane_contents: &HashMap<String, String>,
-    min_duration: Duration,
-) -> Vec<String> {
-    pane_contents
-        .iter()
-        .filter(|(_name, content)| {
-            // Find a status line that has BOTH a compaction verb AND sufficient duration.
-            // This prevents false positives when compaction verbs appear in displayed code
-            // while an unrelated "esc to interrupt" thinking line shows elapsed time.
-            content.lines().any(|line| {
-                // For "Sautéed for Xm Ys" format (completed compaction)
-                // Must have the compaction indicator on the same line to avoid
-                // false positives from "Sautéed for" appearing in code/comments
-                if is_completed_compaction_line(line) {
-                    return parse_sauteed_duration(line)
-                        .map(|d| d >= min_duration)
-                        .unwrap_or(false);
-                }
-
-                // For active compaction: the line must contain BOTH:
-                // 1. A compaction verb (Whirlpooling, Baking, Simmering)
-                // 2. "esc to interrupt" with parseable duration
-                if !is_active_compaction_line(line) {
-                    return false;
-                }
-                // Parse duration from pattern like "· 18m 50s ·" or "· 5m 00s ·"
-                match parse_compaction_duration(line) {
-                    Some(elapsed) => elapsed >= min_duration,
-                    // If we can't parse the duration, be conservative and don't interrupt
-                    None => false,
-                }
-            })
-        })
-        .map(|(name, _content)| name.clone())
-        .collect()
-}
-
-/// Check if a line contains an active compaction verb (case-insensitive).
-///
-/// Compaction verbs are: Whirlpooling, Baking, Simmering.
-/// These are distinct from normal "thinking" states like "Fixing...",
-/// "Scoring...", "Checking...", etc.
-fn has_active_compaction_verb(line: &str) -> bool {
-    let line_lower = line.to_lowercase();
-    line_lower.contains("whirlpooling")
-        || line_lower.contains("baking")
-        || line_lower.contains("simmering")
-}
-
-/// Check if a line is an active compaction status line.
-///
-/// Active compaction has BOTH the verb AND "esc to interrupt" on the same line.
-/// This distinguishes actual compaction from compaction verbs appearing in
-/// displayed code (comments, strings, etc.).
-///
-/// Case-insensitive matching for "esc to interrupt" handles both "esc" and "Esc"
-/// variants that Claude Code may output.
-fn is_active_compaction_line(line: &str) -> bool {
-    let line_lower = line.to_lowercase();
-    has_active_compaction_verb(line) && line_lower.contains("esc to interrupt")
-}
-
-/// Check if a line is a completed compaction status line.
-///
-/// Completed compaction shows "Sautéed for Xm Ys" format with the ✻ indicator.
-/// Case-insensitive to handle both "Sautéed" and "Sauteed" (ASCII).
-fn is_completed_compaction_line(line: &str) -> bool {
-    let line_lower = line.to_lowercase();
-    // Must contain "sautéed for" or "sauteed for" (case-insensitive)
-    // and should look like a status line (has ✻ marker or starts with whitespace + marker)
-    (line_lower.contains("sautéed for") || line_lower.contains("sauteed for"))
-        && (line.contains('✻') || line.trim_start().starts_with('✻'))
-}
-
-/// Check if the pane content has active compaction in progress.
-///
-/// This checks for actual compaction status lines (verb + "esc to interrupt"
-/// on the same line), NOT just verb presence. This avoids false positives
-/// when compaction verbs appear in displayed code (comments, strings, etc.).
-///
-/// Use this to determine if a coworker is currently compacting and should
-/// be excluded from other recovery mechanisms (like queued nudge detection).
-fn has_compaction_indicator(content: &str) -> bool {
-    content.lines().any(is_active_compaction_line)
-}
-
-/// Parse duration from "Sautéed for Xm Ys" format.
-fn parse_sauteed_duration(line: &str) -> Option<Duration> {
-    // Case-insensitive search for "for" to handle "Sautéed FOR" (unlikely but possible)
-    let line_lower = line.to_lowercase();
-    let for_pos = line_lower.find(" for ")?;
-    let after_for = &line[for_pos + 5..]; // Skip " for "
-
-    let mut total_secs: u64 = 0;
-    let mut found_time = false;
-
-    for part in after_for.split_whitespace() {
-        if let Some(m) = part.strip_suffix('m')
-            && let Ok(mins) = m.parse::<u64>()
-        {
-            total_secs += mins * 60;
-            found_time = true;
-        } else if let Some(s) = part.strip_suffix('s')
-            && let Ok(secs) = s.parse::<u64>()
-        {
-            total_secs += secs;
-            found_time = true;
-        }
-    }
-
-    if found_time {
-        Some(Duration::from_secs(total_secs))
-    } else {
-        None
-    }
-}
-
-/// Parse the elapsed duration from a compaction status line.
-///
-/// Expected format: `(esc to interrupt · 18m 50s · ↓ 0 tokens)`
-/// Returns the parsed duration, or None if the format doesn't match.
-///
-/// Case-insensitive matching for "esc to interrupt" handles both "esc" and "Esc"
-/// variants that Claude Code may output.
-fn parse_compaction_duration(line: &str) -> Option<Duration> {
-    // Look for the pattern "· Xm Ys ·" after "esc to interrupt" (case-insensitive)
-    let line_lower = line.to_lowercase();
-    let split_pos = line_lower.find("esc to interrupt")?;
-    let after_esc = &line[split_pos + "esc to interrupt".len()..];
-
-    let mut total_secs: u64 = 0;
-    let mut found_time = false;
-
-    for part in after_esc.split_whitespace() {
-        if let Some(m) = part.strip_suffix('m')
-            && let Ok(mins) = m.parse::<u64>()
-        {
-            total_secs += mins * 60;
-            found_time = true;
-        } else if let Some(s) = part.strip_suffix('s')
-            && let Ok(secs) = s.parse::<u64>()
-        {
-            total_secs += secs;
-            found_time = true;
-        }
-    }
-
-    if found_time {
-        Some(Duration::from_secs(total_secs))
-    } else {
-        None
-    }
-}
-
-/// Detect coworkers with queued nudge messages that aren't being processed.
-///
-/// Claude Code's TUI structure (from bottom to top):
-/// - Status bar (permissions/interrupt hints)
-/// - Bottom input separator (`───────...`)
-/// - Input line (`❯ [text being typed]`)
-/// - Top input separator (`───────...`)
-/// - **Queued nudges appear here** (`❯ message` lines)
-/// - Action/verb line (`✳` in-progress or `⏺` completed)
-/// - Conversation history (already processed)
-///
-/// Queued nudges are messages that were sent via tmux send-keys but haven't
-/// been submitted yet. They appear BELOW the action line but ABOVE the input
-/// separator. We need to parse the TUI structure to find them, not just look
-/// for any `❯` line (which would match conversation history).
-pub(crate) fn detect_queued_prompt_stuck(pane_contents: &HashMap<String, String>) -> Vec<String> {
-    pane_contents
-        .iter()
-        .filter(|(_name, content)| has_queued_nudges(content))
-        .map(|(name, _content)| name.clone())
-        .collect()
-}
-
-/// Check if pane content has queued nudges waiting to be processed.
-///
-/// Returns true if there are `❯ text` lines between the action line and
-/// the input separator, indicating nudges that were sent but not submitted.
-fn has_queued_nudges(content: &str) -> bool {
-    // Don't check during actual compaction (separate recovery mechanism).
-    // Note: "esc to interrupt" appears in ALL thinking states, not just compaction,
-    // so we must check for actual compaction verbs (Whirlpooling, Baking, etc.)
-    if has_compaction_indicator(content) {
-        return false;
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    // Find the input separator (line of mostly ─ characters) scanning from bottom
-    // The input area has two separators; we want the top one (second from bottom)
-    let mut separator_indices: Vec<usize> = Vec::new();
-    for (i, line) in lines.iter().enumerate().rev() {
-        if is_input_separator(line) {
-            separator_indices.push(i);
-            if separator_indices.len() >= 2 {
-                break;
-            }
-        }
-    }
-
-    // Need at least the top input separator to locate the queued area
-    let top_separator_idx = match separator_indices.last() {
-        Some(&idx) => idx,
-        None => return false,
-    };
-
-    // Find the action line (starts with ✳ or ⏺) scanning upward from separator
-    let mut action_line_idx = None;
-    for i in (0..top_separator_idx).rev() {
-        let trimmed = lines[i].trim();
-        if trimmed.starts_with('✳') || trimmed.starts_with('⏺') {
-            action_line_idx = Some(i);
-            break;
-        }
-    }
-
-    let action_idx = match action_line_idx {
-        Some(idx) => idx,
-        None => return false,
-    };
-
-    // Look for queued nudges between action line and top separator
-    // These are `❯ text` lines (with actual content after the prompt)
-    for line in lines
-        .iter()
-        .skip(action_idx + 1)
-        .take(top_separator_idx.saturating_sub(action_idx + 1))
-    {
-        let trimmed = line.trim();
-        if trimmed.starts_with('❯') && trimmed.len() > "❯".len() + 1 {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Extract the text content of queued nudges from pane content.
-///
-/// Uses the same TUI parsing logic as `has_queued_nudges` but returns the actual
-/// text content, which can be used to verify if it matches a daemon-sent nudge.
-/// Returns None if no queued nudges are found.
-pub(crate) fn extract_queued_nudge_text(content: &str) -> Option<String> {
-    // Don't check during actual compaction (separate recovery mechanism).
-    if has_compaction_indicator(content) {
-        return None;
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    // Find the input separator (line of mostly ─ characters) scanning from bottom
-    let mut separator_indices: Vec<usize> = Vec::new();
-    for (i, line) in lines.iter().enumerate().rev() {
-        if is_input_separator(line) {
-            separator_indices.push(i);
-            if separator_indices.len() >= 2 {
-                break;
-            }
-        }
-    }
-
-    // Need at least the top input separator to locate the queued area
-    let top_separator_idx = match separator_indices.last() {
-        Some(&idx) => idx,
-        None => return None,
-    };
-
-    // Find the action line (starts with ✳ or ⏺) scanning upward from separator
-    let mut action_line_idx = None;
-    for i in (0..top_separator_idx).rev() {
-        let trimmed = lines[i].trim();
-        if trimmed.starts_with('✳') || trimmed.starts_with('⏺') {
-            action_line_idx = Some(i);
-            break;
-        }
-    }
-
-    let action_idx = action_line_idx?;
-
-    // Collect all queued nudge text between action line and top separator
-    let mut queued_texts = Vec::new();
-    for line in lines
-        .iter()
-        .skip(action_idx + 1)
-        .take(top_separator_idx.saturating_sub(action_idx + 1))
-    {
-        let trimmed = line.trim();
-        if trimmed.starts_with('❯') && trimmed.len() > "❯".len() + 1 {
-            // Extract text after the ❯ symbol (skip ❯ and any following space)
-            let text = trimmed.trim_start_matches('❯').trim();
-            if !text.is_empty() {
-                queued_texts.push(text.to_string());
-            }
-        }
-    }
-
-    if queued_texts.is_empty() {
-        None
-    } else {
-        // Join multiple queued lines (rare but possible)
-        Some(queued_texts.join(" "))
-    }
-}
-
-/// Check if a line is an input separator (horizontal line of ─ characters).
-fn is_input_separator(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    // Input separators are long lines of ─ (box drawing horizontal)
-    let dash_count = trimmed.chars().filter(|&c| c == '─').count();
-    dash_count > 20 && dash_count as f64 / trimmed.chars().count() as f64 > 0.9
-}
-
-/// Pure decision: determine which coworkers need UI recovery actions.
-///
-/// Checks pane contents for two stuck states and returns the appropriate
-/// recovery actions. Cooldown tracking is the caller's responsibility.
-///
-/// `min_compaction_duration` sets the minimum elapsed time before a
-/// compaction is considered stuck. Short compactions are normal and useful.
-///
-/// `coworker_start_times` and `now_utc` are used for age-based protection:
-/// coworkers younger than `min_queued_nudge_age` are excluded from queued
-/// nudge detection (the TUI structure is still forming during startup).
-pub(crate) fn decide_stuck_ui_recoveries(
-    pane_contents: &HashMap<String, String>,
-    min_compaction_duration: Duration,
-    coworker_start_times: &HashMap<String, DateTime<Utc>>,
-    now_utc: DateTime<Utc>,
-    min_queued_nudge_age: chrono::Duration,
-) -> Vec<StuckUiRecovery> {
-    let mut recoveries = Vec::new();
-
-    for name in detect_compaction_stuck(pane_contents, min_compaction_duration) {
-        recoveries.push(StuckUiRecovery::InterruptCompaction { name });
-    }
-
-    for name in detect_queued_prompt_stuck(pane_contents) {
-        // Age-based protection: skip coworkers younger than min_queued_nudge_age.
-        // During startup, the TUI structure is still forming and has_queued_nudges()
-        // can produce false positives.
-        let is_old_enough = coworker_start_times
-            .get(&name)
-            .map(|started| now_utc.signed_duration_since(*started) >= min_queued_nudge_age)
-            .unwrap_or(false);
-
-        if is_old_enough {
-            recoveries.push(StuckUiRecovery::InterruptQueuedNudges { name });
-        }
-    }
-
-    recoveries
-}
-
-// ---------------------------------------------------------------------------
-// Blank-pane zombie detection
-// ---------------------------------------------------------------------------
-
-/// Identify coworkers with blank panes that have been running long enough
-/// to rule out normal startup delays.
-///
-/// Returns the names of coworkers that should be respawned. A coworker is
-/// considered a zombie if:
-/// 1. Its pane is entirely blank (no terminal output)
-/// 2. It has been running for at least `min_age` seconds
-///
-/// The age threshold prevents false positives during the ~3-8s window after
-/// spawn where the TUI hasn't rendered yet.
-pub(crate) fn detect_blank_pane_zombies(
-    blank_pane_coworkers: &HashSet<String>,
-    coworker_start_times: &HashMap<String, DateTime<Utc>>,
-    now_utc: DateTime<Utc>,
-    min_age: chrono::Duration,
-) -> Vec<String> {
-    blank_pane_coworkers
-        .iter()
-        .filter(|name| {
-            // The lead window has its own health check (check_and_respawn_lead)
-            // and must never be treated as a zombie coworker.
-            if *name == "lead" {
-                return false;
-            }
-            coworker_start_times
-                .get(*name)
-                .map(|started| now_utc.signed_duration_since(*started) >= min_age)
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect()
-}
-
-/// Try to parse a duration from usage limit text.
-///
-/// Looks for patterns like:
-/// - "try again in 15 minutes", "resets in 2 hours" (relative duration)
-/// - "available after 30 minutes" (relative duration)
-/// - "resets at 3:45" or "at 15:30" (24-hour absolute time)
-/// - "resets 12pm" or "resets 3am" (12-hour absolute time)
-/// - "resets 12pm (America/Chicago)" (12-hour with timezone - timezone ignored, uses UTC)
-///
-/// Returns a default of 15 minutes if no parseable duration is found.
-pub(crate) fn parse_usage_limit_duration(pane_content: &str) -> Duration {
-    let lower = pane_content.to_lowercase();
-
-    for keyword in &["in ", "after "] {
-        let mut search_from = 0;
-        while let Some(rel_idx) = lower[search_from..].find(keyword) {
-            let idx = search_from + rel_idx;
-            let after = &lower[idx + keyword.len()..];
-            search_from = idx + keyword.len();
-
-            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(num) = num_str.parse::<u64>() {
-                if num == 0 {
-                    continue;
-                }
-                let remaining = after[num_str.len()..].trim_start();
-                if remaining.starts_with("hour") {
-                    return Duration::from_secs(num * 3600);
-                } else if remaining.starts_with("min") {
-                    return Duration::from_secs(num * 60);
-                } else if remaining.starts_with("sec") {
-                    return Duration::from_secs(num);
-                }
-            }
-        }
-    }
-
-    // Look for 12-hour format: "resets 12pm", "resets 3am", "resets 12pm (America/Chicago)"
-    // Pattern: "resets" followed by a number and am/pm
-    if let Some(idx) = lower.find("resets ") {
-        let after = &lower[idx + 7..];
-        if let Some(duration) = parse_12hour_time(after) {
-            return duration;
-        }
-    }
-
-    // Look for HH:MM timestamp pattern like "resets at 3:45" or "at 15:30"
-    if let Some(idx) = lower.find("at ") {
-        let after = &lower[idx + 3..];
-        let time_str: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == ':')
-            .collect();
-        if let Some((h, m)) = time_str.split_once(':')
-            && let (Ok(hour), Ok(min)) = (h.parse::<u32>(), m.parse::<u32>())
-        {
-            let now = chrono::Utc::now();
-            let mut target = now
-                .date_naive()
-                .and_hms_opt(hour, min, 0)
-                .unwrap_or_default();
-            if target < now.naive_utc() {
-                target += chrono::Duration::days(1);
-            }
-            let diff = target - now.naive_utc();
-            if let Ok(std_diff) = diff.to_std() {
-                return std_diff;
-            }
-        }
-    }
-
-    // Default: 15 minutes
-    Duration::from_secs(15 * 60)
-}
-
-/// Parse 12-hour time format like "12pm", "3am", "12pm (America/Chicago)".
-///
-/// Returns duration until the specified time. If the time is in the past,
-/// assumes it's tomorrow. Timezone in parentheses is noted but ignored
-/// (we use UTC for simplicity - the error is at most a few hours).
-fn parse_12hour_time(text: &str) -> Option<Duration> {
-    // Extract the hour number
-    let num_str: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let hour_12: u32 = num_str.parse().ok()?;
-
-    if hour_12 == 0 || hour_12 > 12 {
-        return None;
-    }
-
-    // Check for am/pm immediately after the number
-    let after_num = text[num_str.len()..].trim_start();
-    let is_pm = after_num.starts_with("pm");
-    let is_am = after_num.starts_with("am");
-
-    if !is_pm && !is_am {
-        return None;
-    }
-
-    // Convert to 24-hour format
-    let hour_24 = if is_pm {
-        if hour_12 == 12 { 12 } else { hour_12 + 12 }
-    } else {
-        // am
-        if hour_12 == 12 { 0 } else { hour_12 }
-    };
-
-    let now = chrono::Utc::now();
-    let mut target = now.date_naive().and_hms_opt(hour_24, 0, 0)?;
-
-    if target < now.naive_utc() {
-        target += chrono::Duration::days(1);
-    }
-
-    let diff = target - now.naive_utc();
-    diff.to_std().ok()
-}
-
 /// Check if pane content indicates an active (not recovered) usage limit.
 ///
 /// Returns true only if the usage limit pattern is present AND the coworker
@@ -1331,6 +678,7 @@ pub fn has_usage_limit_pattern(pane_content: &str) -> bool {
 /// - Usage limits have a known reset time; API errors are transient
 /// - Usage limit nudges happen once at reset; API error nudges are periodic
 /// - Both should skip stuck detection and idle shutdown
+#[allow(dead_code)] // Used in tests; will be needed for Lead pane monitoring
 pub(crate) fn has_api_error_pattern(pane_content: &str) -> bool {
     is_at_api_error(pane_content)
 }
@@ -1339,6 +687,7 @@ pub(crate) fn has_api_error_pattern(pane_content: &str) -> bool {
 ///
 /// Uses the same recovery detection as usage limits: if there's significant
 /// activity after the error message, the coworker has recovered.
+#[allow(dead_code)]
 fn is_at_api_error(content: &str) -> bool {
     // Find the last occurrence of any API error pattern (case-insensitive)
     let content_lower = content.to_lowercase();
@@ -2127,8 +1476,6 @@ mod tests {
                 workflow_phase: None,
                 task_id: None,
                 workflow_updated_at: None,
-                pane_hash: None,
-                zombie_respawn_count: 0,
             },
         );
         map
@@ -2150,7 +1497,6 @@ mod tests {
 
         let (decisions, transitions) = decide_idle_shutdowns(
             &coworkers,
-            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]),
@@ -2188,7 +1534,6 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
             &set(&[]), // pending_task_owners
@@ -2221,7 +1566,6 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
             &set(&[]), // pending_task_owners
@@ -2249,7 +1593,6 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&["york"]),
-            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
@@ -2280,7 +1623,6 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&["york"]),
-            &set(&[]),
             &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
@@ -2314,7 +1656,6 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
             &set(&[]), // pending_task_owners
@@ -2342,7 +1683,6 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
             &set(&[]), // pending_task_owners
@@ -2364,7 +1704,6 @@ mod tests {
 
         let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
-            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]),
@@ -2402,7 +1741,6 @@ mod tests {
             &set(&[]),
             &set(&[]),
             &set(&[]),
-            &set(&[]),
             &set(&[]), // usage_limited_coworkers
             &set(&[]), // api_error_coworkers
             &set(&[]), // pending_task_owners
@@ -2432,9 +1770,6 @@ mod tests {
                 workflow_phase: None,
                 task_id: None,
                 workflow_updated_at: None,
-                // Pane changed just 10 seconds ago — but coworker has no task
-                pane_hash: Some((12345, Instant::now() - Duration::from_secs(10))),
-                zombie_respawn_count: 0,
             },
         );
 
@@ -2442,7 +1777,6 @@ mod tests {
         // even though pane content changed recently
         let (decisions, _transitions) = decide_idle_shutdowns(
             &coworkers,
-            &set(&[]),
             &set(&[]),
             &set(&[]),
             &set(&[]),
@@ -2466,86 +1800,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_shutdown_allows_break_with_pane_hash_present() {
-        let coworkers = vec![cw("york", 10)];
-        // york has a pane_hash in its record — should not interfere with idle break
-        let mut phases = HashMap::new();
-        phases.insert(
-            "york".to_string(),
-            CoworkerRecord {
-                health: Some(SessionHealth::Idle {
-                    since: Instant::now() - Duration::from_secs(60),
-                }),
-                last_activity: None,
-                workflow_phase: None,
-                task_id: None,
-                workflow_updated_at: None,
-                pane_hash: Some((12345, Instant::now() - Duration::from_secs(300))),
-                zombie_respawn_count: 0,
-            },
-        );
-
-        // york is idle with no tasks/PRs — pane hash doesn't affect idle break decision
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
-        assert_eq!(decisions.len(), 1);
-        assert_eq!(decisions[0].name, "york");
-    }
-
-    #[test]
-    fn idle_shutdown_skips_coworker_with_running_subagent() {
-        // Test case for bug #27: coworker with running Task agent should NOT be shut down
-        let coworkers = vec![cw("madison", 10)];
-        let mut phases = lifecycle_with(
-            "madison",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // madison has a subagent running — should NOT be sent on break
-        let (decisions, transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),          // not busy (no in-progress tasks)
-            &set(&[]),          // no open PRs
-            &set(&[]),          // not reviewing
-            &set(&[]),          // no unblocked deps
-            &set(&["madison"]), // HAS RUNNING SUBAGENT
-            &set(&[]),          // ci_passed
-            &set(&[]),          // usage_limited
-            &set(&[]),          // api_error
-            &set(&[]),          // pending_task_owners
-            &set(&[]),          // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-        apply_health_transitions(&mut phases, transitions);
-
-        assert!(
-            decisions.is_empty(),
-            "coworkers with running subagents should NOT be sent on break"
-        );
-        // Subagent coworker should be cleared from idle tracking
-        assert!(get_health(&phases, "madison").is_none());
-    }
-
-    #[test]
     fn idle_shutdown_allows_coworker_with_ci_passed_pr_to_break() {
         // Bug #4: Coworkers waiting for PR review (CI passed) should go on break.
         // The daemon will respawn them when review feedback arrives.
@@ -2565,7 +1819,6 @@ mod tests {
             &set(&["york"]), // has open PR
             &set(&[]),       // not reviewing
             &set(&[]),       // no unblocked deps
-            &set(&[]),       // no running subagent
             &set(&["york"]), // CI PASSED
             &set(&[]),       // usage_limited
             &set(&[]),       // api_error
@@ -2604,7 +1857,6 @@ mod tests {
             &set(&[]),       // no open PR
             &set(&[]),       // not reviewing
             &set(&[]),       // no unblocked deps
-            &set(&[]),       // no running subagent
             &set(&[]),       // no ci_passed
             &set(&["york"]), // usage_limited
             &set(&[]),       // api_error
@@ -2640,7 +1892,6 @@ mod tests {
             &set(&[]),       // no open PR
             &set(&[]),       // not reviewing
             &set(&[]),       // no unblocked deps
-            &set(&[]),       // no running subagent
             &set(&[]),       // no ci_passed
             &set(&[]),       // not usage_limited
             &set(&["york"]), // HAS API ERROR
@@ -2677,7 +1928,6 @@ mod tests {
             &set(&[]),            // no open PR
             &set(&[]),            // not reviewing
             &set(&[]),            // no unblocked deps
-            &set(&[]),            // no running subagent
             &set(&[]),            // no ci_passed
             &set(&[]),            // not usage_limited
             &set(&[]),            // no api_error
@@ -2714,7 +1964,6 @@ mod tests {
             &set(&["madison"]), // has open PR
             &set(&[]),          // not reviewing
             &set(&[]),          // no unblocked deps
-            &set(&[]),          // no running subagent
             &set(&["madison"]), // CI PASSED
             &set(&[]),          // not usage_limited
             &set(&[]),          // no api_error
@@ -2750,7 +1999,6 @@ mod tests {
             &set(&["york"]), // has open PR
             &set(&[]),       // not reviewing
             &set(&[]),       // no unblocked deps
-            &set(&[]),       // no running subagent
             &set(&["york"]), // CI PASSED
             &set(&[]),       // not usage_limited
             &set(&[]),       // no api_error
@@ -3999,1225 +3247,6 @@ mod tests {
         assert!(matches!(action, MentionAction::Skip { .. }));
     }
 
-    // -----------------------------------------------------------------------
-    // Blank-pane zombie detection tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn zombie_detection_flags_old_blank_coworker() {
-        let mut blank = HashSet::new();
-        blank.insert("york".to_string());
-
-        let mut start_times = HashMap::new();
-        let now = chrono::Utc::now();
-        // Started 30 seconds ago — older than 20s threshold
-        start_times.insert("york".to_string(), now - chrono::Duration::seconds(30));
-
-        let zombies =
-            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
-        assert_eq!(zombies, vec!["york"]);
-    }
-
-    #[test]
-    fn zombie_detection_skips_young_coworker() {
-        let mut blank = HashSet::new();
-        blank.insert("york".to_string());
-
-        let mut start_times = HashMap::new();
-        let now = chrono::Utc::now();
-        // Started 5 seconds ago — younger than 20s threshold
-        start_times.insert("york".to_string(), now - chrono::Duration::seconds(5));
-
-        let zombies =
-            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
-        assert!(zombies.is_empty());
-    }
-
-    #[test]
-    fn zombie_detection_skips_non_blank_coworker() {
-        // Empty blank set — no zombies
-        let blank = HashSet::new();
-
-        let mut start_times = HashMap::new();
-        let now = chrono::Utc::now();
-        start_times.insert("york".to_string(), now - chrono::Duration::seconds(60));
-
-        let zombies =
-            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
-        assert!(zombies.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // Compaction whirlpool & queued prompt detection tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn compaction_detected_with_whirlpool_verb_long_duration() {
-        let mut panes = HashMap::new();
-        // Single-line format matches real Claude Code compaction status
-        panes.insert(
-            "york".to_string(),
-            "✶ Whirlpooling… (esc to interrupt · 18m 50s · ↓ 0 tokens)\n".to_string(),
-        );
-        // 18m 50s > 5 min threshold — should trigger
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert_eq!(stuck, vec!["york"]);
-    }
-
-    #[test]
-    fn compaction_not_detected_with_short_duration() {
-        let mut panes = HashMap::new();
-        // Single-line format matches real Claude Code compaction status
-        panes.insert(
-            "amsterdam".to_string(),
-            "✶ Baking… (esc to interrupt · 3m 12s · ↓ 42 tokens)\n".to_string(),
-        );
-        // 3m 12s < 5 min threshold — should NOT trigger (compaction is normal)
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "short compaction should not be interrupted"
-        );
-    }
-
-    #[test]
-    fn compaction_detected_at_exact_threshold() {
-        let mut panes = HashMap::new();
-        // Single-line format matches real Claude Code compaction status
-        panes.insert(
-            "park".to_string(),
-            "✶ Simmering… (esc to interrupt · 5m 00s · ↓ 100 tokens)\n".to_string(),
-        );
-        // 5m 00s = 5 min threshold — should trigger
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert_eq!(stuck, vec!["park"]);
-    }
-
-    #[test]
-    fn compaction_not_detected_just_under_threshold() {
-        let mut panes = HashMap::new();
-        // Single-line format matches real Claude Code compaction status
-        panes.insert(
-            "park".to_string(),
-            "✶ Simmering… (esc to interrupt · 4m 59s · ↓ 100 tokens)\n".to_string(),
-        );
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "compaction just under threshold should not be interrupted"
-        );
-    }
-
-    #[test]
-    fn compaction_not_detected_in_normal_output() {
-        let mut panes = HashMap::new();
-        panes.insert(
-            "york".to_string(),
-            "  Reading file src/main.rs\n  Edit: replaced 3 lines\n  $ cargo build\n".to_string(),
-        );
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(stuck.is_empty());
-    }
-
-    #[test]
-    fn compaction_not_detected_when_pane_mentions_esc_in_code() {
-        // "esc to interrupt" in code output but no parseable duration — conservative: don't interrupt
-        let mut panes = HashMap::new();
-        panes.insert(
-            "york".to_string(),
-            "  // detect the pattern: esc to interrupt\n  fn check() {}\n".to_string(),
-        );
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        // Can't parse duration from code comment → conservative: don't interrupt
-        assert!(
-            stuck.is_empty(),
-            "unparseable duration should not trigger (conservative)"
-        );
-    }
-
-    #[test]
-    fn parse_compaction_duration_works() {
-        assert_eq!(
-            parse_compaction_duration("  (esc to interrupt · 18m 50s · ↓ 0 tokens)"),
-            Some(Duration::from_secs(18 * 60 + 50))
-        );
-        assert_eq!(
-            parse_compaction_duration("  (esc to interrupt · 0m 30s · ↓ 0 tokens)"),
-            Some(Duration::from_secs(30))
-        );
-        assert_eq!(
-            parse_compaction_duration("  (esc to interrupt · 5m 00s · ↓ 100 tokens)"),
-            Some(Duration::from_secs(300))
-        );
-        assert_eq!(
-            parse_compaction_duration("  // detect the pattern: esc to interrupt"),
-            None,
-        );
-    }
-
-    #[test]
-    fn compaction_detected_with_capital_esc() {
-        // Task #36: Claude Code may output "Esc to interrupt" (capital E) instead of
-        // "esc to interrupt" (lowercase). Detection should be case-insensitive.
-        let mut panes = HashMap::new();
-        // Real Claude Code output uses capital E in "Esc to interrupt"
-        panes.insert(
-            "park".to_string(),
-            "✶ Whirlpooling… (Esc to interrupt · 6m 30s · ↓ 0 tokens)\n".to_string(),
-        );
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert_eq!(
-            stuck,
-            vec!["park"],
-            "compaction detection should be case-insensitive for 'Esc to interrupt'"
-        );
-    }
-
-    #[test]
-    fn parse_compaction_duration_case_insensitive() {
-        // Task #36: Duration parsing should handle both "esc" and "Esc" variants
-        assert_eq!(
-            parse_compaction_duration("  (Esc to interrupt · 10m 00s · ↓ 0 tokens)"),
-            Some(Duration::from_secs(600)),
-            "duration parsing should work with capital 'Esc'"
-        );
-        assert_eq!(
-            parse_compaction_duration("  (ESC TO INTERRUPT · 5m 30s · ↓ 0 tokens)"),
-            Some(Duration::from_secs(330)),
-            "duration parsing should work with uppercase 'ESC TO INTERRUPT'"
-        );
-    }
-
-    #[test]
-    fn queued_prompt_detected_with_nudge_messages() {
-        // Realistic TUI: queued nudge between action line and input separator
-        let mut panes = HashMap::new();
-        let tui_content = "\
-⏺ Previous completed action
-
-✳ Current action in progress...
-❯ You have a new task assignment: task #42
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("york".to_string(), tui_content.to_string());
-        let stuck = detect_queued_prompt_stuck(&panes);
-        assert_eq!(stuck, vec!["york"]);
-    }
-
-    #[test]
-    fn queued_prompt_not_detected_during_compaction() {
-        // If compaction is happening simultaneously, don't also flag queued prompt
-        let mut panes = HashMap::new();
-        panes.insert(
-            "york".to_string(),
-            "  Whirlpooling…\n  (esc to interrupt · 5m 00s · ↓ 0 tokens)\n❯ pending nudge\n"
-                .to_string(),
-        );
-        let stuck = detect_queued_prompt_stuck(&panes);
-        assert!(
-            stuck.is_empty(),
-            "should not flag queued prompt during compaction"
-        );
-    }
-
-    #[test]
-    fn queued_prompt_detected_during_normal_thinking_state() {
-        // Normal thinking state shows "esc to interrupt" but is NOT compaction.
-        // Queued nudges SHOULD be detected in this case (bug fix for PR #515 follow-up).
-        let mut panes = HashMap::new();
-        let tui_content = "\
-✳ Fixing tmux window naming…
-  (esc to interrupt · 2m 30s)
-❯ You have a new task assignment
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("york".to_string(), tui_content.to_string());
-        let stuck = detect_queued_prompt_stuck(&panes);
-        assert_eq!(
-            stuck,
-            vec!["york"],
-            "should detect queued nudges during normal thinking (not compaction)"
-        );
-    }
-
-    #[test]
-    fn queued_prompt_not_detected_with_bare_prompt() {
-        // Normal TUI with empty input - no queued nudges
-        let mut panes = HashMap::new();
-        let tui_content = "\
-⏺ Completed action
-
-✳ Working on something...
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("york".to_string(), tui_content.to_string());
-        let stuck = detect_queued_prompt_stuck(&panes);
-        assert!(
-            stuck.is_empty(),
-            "bare prompt character should not trigger recovery"
-        );
-    }
-
-    #[test]
-    fn queued_prompt_not_detected_in_normal_output() {
-        let mut panes = HashMap::new();
-        panes.insert(
-            "york".to_string(),
-            "  $ cargo test\n  running 5 tests\n  test result: ok. 5 passed\n".to_string(),
-        );
-        let stuck = detect_queued_prompt_stuck(&panes);
-        assert!(stuck.is_empty());
-    }
-
-    #[test]
-    fn queued_prompt_not_detected_in_conversation_history() {
-        // This is the FALSE POSITIVE case: ❯ lines in conversation history
-        // should NOT be detected as queued nudges
-        let mut panes = HashMap::new();
-        let tui_content = "\
-❯ Previous user message in history
-
-⏺ Claude's response to that message
-
-✳ Current action in progress...
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("york".to_string(), tui_content.to_string());
-        let stuck = detect_queued_prompt_stuck(&panes);
-        assert!(
-            stuck.is_empty(),
-            "❯ lines in conversation history should not trigger recovery"
-        );
-    }
-
-    #[test]
-    fn combined_recovery_returns_both_types() {
-        let mut panes = HashMap::new();
-        // One coworker stuck in compaction (10 min — well above threshold)
-        // Single-line format matches real Claude Code compaction status
-        panes.insert(
-            "york".to_string(),
-            "✶ Whirlpooling… (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
-        );
-        // Another coworker with queued nudges (proper TUI structure)
-        let amsterdam_tui = "\
-⏺ Previous action
-
-✳ Working on task...
-❯ Check the channel
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
-
-        // Set up coworkers as "old enough" (started 2 minutes ago)
-        let now = chrono::Utc::now();
-        let mut start_times = HashMap::new();
-        start_times.insert("york".to_string(), now - chrono::Duration::seconds(120));
-        start_times.insert(
-            "amsterdam".to_string(),
-            now - chrono::Duration::seconds(120),
-        );
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300),
-            &start_times,
-            now,
-            min_age,
-        );
-        assert_eq!(recoveries.len(), 2);
-
-        let has_compaction = recoveries
-            .iter()
-            .any(|r| matches!(r, StuckUiRecovery::InterruptCompaction { name } if name == "york"));
-        let has_queued = recoveries.iter().any(
-            |r| matches!(r, StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"),
-        );
-        assert!(has_compaction, "should detect york's compaction");
-        assert!(has_queued, "should detect amsterdam's queued nudges");
-    }
-
-    #[test]
-    fn extract_queued_text_returns_content_when_present() {
-        let tui_content = "\
-⏺ Previous completed action
-
-✳ Current action in progress...
-❯ You have a new task assignment: task #42
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        let result = extract_queued_nudge_text(tui_content);
-        assert_eq!(
-            result,
-            Some("You have a new task assignment: task #42".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_queued_text_returns_none_when_empty_prompt() {
-        let tui_content = "\
-⏺ Completed action
-
-✳ Working on something...
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        let result = extract_queued_nudge_text(tui_content);
-        assert!(
-            result.is_none(),
-            "should return None when no queued nudge text"
-        );
-    }
-
-    #[test]
-    fn extract_queued_text_returns_none_during_compaction() {
-        let tui_content = "\
-  Whirlpooling your conversation…
-  (esc to interrupt · 5m 00s · ↓ 0 tokens)
-❯ pending nudge
-";
-        let result = extract_queued_nudge_text(tui_content);
-        assert!(
-            result.is_none(),
-            "should return None during compaction (separate recovery mechanism)"
-        );
-    }
-
-    #[test]
-    fn extract_queued_text_ignores_conversation_history() {
-        let tui_content = "\
-❯ Previous user message in history
-
-⏺ Claude's response to that message
-
-✳ Current action in progress...
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        let result = extract_queued_nudge_text(tui_content);
-        assert!(
-            result.is_none(),
-            "should ignore ❯ lines in conversation history (above action line)"
-        );
-    }
-
-    #[test]
-    fn queued_prompt_detected_with_multiple_nudges_and_edit_hint() {
-        // When multiple nudges pile up, Claude Code shows queued messages in the input area.
-        // This test constructs a representative TUI state with multiple queued nudges
-        // that need interrupt (Escape) to clear.
-        let mut panes = HashMap::new();
-        let tui_content = "\
-⏺ Previous action completed
-
-✳ Analyzing the authentication module...
-  (esc to interrupt · 1m 30s)
-❯ You have a new task assignment: task #42
-❯ github said: @amsterdam CI failed on PR #123
-❯ Press up to edit queued messages
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("amsterdam".to_string(), tui_content.to_string());
-
-        // Should detect the queued nudges
-        let stuck = detect_queued_prompt_stuck(&panes);
-        assert_eq!(
-            stuck,
-            vec!["amsterdam"],
-            "should detect multiple queued nudges with 'Press up to edit' hint"
-        );
-
-        // Should also extract the queued text (first nudge)
-        let extracted = extract_queued_nudge_text(tui_content);
-        assert!(
-            extracted.is_some(),
-            "should extract queued text from multi-nudge scenario"
-        );
-        let text = extracted.unwrap();
-        // Multiple queued lines are joined with space
-        assert!(
-            text.contains("task #42"),
-            "extracted text should contain first nudge: got '{}'",
-            text
-        );
-        assert!(
-            text.contains("CI failed"),
-            "extracted text should contain second nudge: got '{}'",
-            text
-        );
-        assert!(
-            text.contains("Press up to edit"),
-            "extracted text should contain edit hint: got '{}'",
-            text
-        );
-    }
-
-    #[test]
-    fn queued_prompt_triggers_interrupt_for_stuck_queue() {
-        // Verify that decide_stuck_ui_recoveries returns InterruptQueuedNudges
-        // for a coworker with multiple queued nudges needing interrupt.
-        let mut panes = HashMap::new();
-        let tui_content = "\
-⏺ Completed previous task
-
-✳ Running cargo test...
-  (esc to interrupt · 45s)
-❯ Check the channel for updates
-❯ Your PR needs attention
-❯ Press up to edit queued messages
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("amsterdam".to_string(), tui_content.to_string());
-
-        // Set up amsterdam as "old enough" to trigger recovery
-        let now = chrono::Utc::now();
-        let mut start_times = HashMap::new();
-        start_times.insert(
-            "amsterdam".to_string(),
-            now - chrono::Duration::seconds(120),
-        );
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300), // compaction threshold
-            &start_times,
-            now,
-            min_age,
-        );
-
-        // Should trigger InterruptQueuedNudges for amsterdam
-        assert_eq!(recoveries.len(), 1, "should have one recovery action");
-        assert!(matches!(
-            &recoveries[0],
-            StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"
-        ));
-    }
-
-    #[test]
-    fn queued_prompt_skipped_when_coworker_not_in_start_times() {
-        // Safety behavior: if a coworker has queued nudges but is NOT in start_times,
-        // we should NOT trigger recovery. This prevents false positives during startup
-        // when the TUI structure is still forming. The unwrap_or(false) at line 896
-        // ensures coworkers missing from start_times are skipped.
-        let mut panes = HashMap::new();
-        let tui_content = "\
-⏺ Completed previous task
-
-✳ Running cargo test...
-  (esc to interrupt · 45s)
-❯ Check the channel for updates
-❯ Press up to edit queued messages
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("amsterdam".to_string(), tui_content.to_string());
-
-        // Empty start_times - amsterdam is NOT tracked (simulates startup scenario)
-        let now = chrono::Utc::now();
-        let start_times = HashMap::new(); // Empty!
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300), // compaction threshold
-            &start_times,
-            now,
-            min_age,
-        );
-
-        // Should NOT trigger recovery - coworker not in start_times means we can't
-        // verify their age, so we skip them to prevent false positives
-        assert!(
-            recoveries.is_empty(),
-            "should skip recovery when coworker not in start_times (safety behavior)"
-        );
-    }
-
-    #[test]
-    fn combined_recovery_skips_short_compaction() {
-        let mut panes = HashMap::new();
-        // Compaction running for only 2 minutes — below threshold
-        // Includes compaction verb (Baking) but duration is too short
-        panes.insert(
-            "york".to_string(),
-            "  Baking your conversation…\n  (esc to interrupt · 2m 00s · ↓ 0 tokens)\n".to_string(),
-        );
-        // Queued nudge with proper TUI structure
-        let amsterdam_tui = "\
-⏺ Previous action
-
-✳ Working on task...
-❯ Check the channel
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
-
-        // Set up coworkers as "old enough" (started 2 minutes ago)
-        let now = chrono::Utc::now();
-        let mut start_times = HashMap::new();
-        start_times.insert("york".to_string(), now - chrono::Duration::seconds(120));
-        start_times.insert(
-            "amsterdam".to_string(),
-            now - chrono::Duration::seconds(120),
-        );
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300),
-            &start_times,
-            now,
-            min_age,
-        );
-        // Only the queued nudge should trigger, not the short compaction
-        assert_eq!(recoveries.len(), 1);
-        assert!(matches!(
-            &recoveries[0],
-            StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"
-        ));
-    }
-
-    #[test]
-    fn recovery_empty_for_healthy_coworkers() {
-        let mut panes = HashMap::new();
-        panes.insert(
-            "york".to_string(),
-            "  Reading file\n  Edit complete\n".to_string(),
-        );
-        panes.insert(
-            "amsterdam".to_string(),
-            "  $ cargo build\n  Compiling midtown v0.4.1\n".to_string(),
-        );
-
-        let now = chrono::Utc::now();
-        let mut start_times = HashMap::new();
-        start_times.insert("york".to_string(), now - chrono::Duration::seconds(120));
-        start_times.insert(
-            "amsterdam".to_string(),
-            now - chrono::Duration::seconds(120),
-        );
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300),
-            &start_times,
-            now,
-            min_age,
-        );
-        assert!(recoveries.is_empty());
-    }
-
-    #[test]
-    fn recovery_empty_for_no_coworkers() {
-        let panes: HashMap<String, String> = HashMap::new();
-        let start_times: HashMap<String, DateTime<Utc>> = HashMap::new();
-        let now = chrono::Utc::now();
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300),
-            &start_times,
-            now,
-            min_age,
-        );
-        assert!(recoveries.is_empty());
-    }
-
-    #[test]
-    fn queued_nudge_recovery_skips_young_coworkers() {
-        // This test verifies the age-based protection for queued nudge detection.
-        // During startup, the TUI structure is still forming and has_queued_nudges()
-        // can produce false positives.
-        let mut panes = HashMap::new();
-        let amsterdam_tui = "\
-⏺ Previous action
-
-✳ Working on task...
-❯ Check the channel
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
-
-        let now = chrono::Utc::now();
-        let mut start_times = HashMap::new();
-        // Coworker started only 30 seconds ago (below 60s threshold)
-        start_times.insert("amsterdam".to_string(), now - chrono::Duration::seconds(30));
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300),
-            &start_times,
-            now,
-            min_age,
-        );
-
-        // Young coworker should NOT trigger queued nudge recovery
-        assert!(
-            recoveries.is_empty(),
-            "coworkers younger than min_age should be skipped for queued nudge recovery"
-        );
-    }
-
-    #[test]
-    fn queued_nudge_recovery_triggers_for_old_coworkers() {
-        // Verify that queued nudge detection DOES trigger for coworkers old enough.
-        let mut panes = HashMap::new();
-        let amsterdam_tui = "\
-⏺ Previous action
-
-✳ Working on task...
-❯ Check the channel
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on";
-        panes.insert("amsterdam".to_string(), amsterdam_tui.to_string());
-
-        let now = chrono::Utc::now();
-        let mut start_times = HashMap::new();
-        // Coworker started 90 seconds ago (above 60s threshold)
-        start_times.insert("amsterdam".to_string(), now - chrono::Duration::seconds(90));
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300),
-            &start_times,
-            now,
-            min_age,
-        );
-
-        // Old enough coworker SHOULD trigger queued nudge recovery
-        assert_eq!(recoveries.len(), 1);
-        assert!(matches!(
-            &recoveries[0],
-            StuckUiRecovery::InterruptQueuedNudges { name } if name == "amsterdam"
-        ));
-    }
-
-    #[test]
-    fn compaction_recovery_not_affected_by_age() {
-        // Compaction recovery should NOT use age-based protection
-        // (only queued nudge detection has this protection).
-        let mut panes = HashMap::new();
-        // Single-line format matches real Claude Code compaction status
-        panes.insert(
-            "york".to_string(),
-            "✶ Whirlpooling… (esc to interrupt · 10m 00s · ↓ 0 tokens)\n".to_string(),
-        );
-
-        let now = chrono::Utc::now();
-        let mut start_times = HashMap::new();
-        // Coworker is young (30 seconds), but compaction should still trigger
-        start_times.insert("york".to_string(), now - chrono::Duration::seconds(30));
-        let min_age = chrono::Duration::seconds(60);
-
-        let recoveries = decide_stuck_ui_recoveries(
-            &panes,
-            Duration::from_secs(300),
-            &start_times,
-            now,
-            min_age,
-        );
-
-        // Young coworker SHOULD still trigger compaction recovery
-        assert_eq!(recoveries.len(), 1);
-        assert!(matches!(
-            &recoveries[0],
-            StuckUiRecovery::InterruptCompaction { name } if name == "york"
-        ));
-    }
-
-    #[test]
-    fn zombie_detection_skips_lead_window() {
-        let mut blank = HashSet::new();
-        blank.insert("lead".to_string());
-
-        let mut start_times = HashMap::new();
-        let now = chrono::Utc::now();
-        // Lead has been running long enough to pass the age threshold
-        start_times.insert("lead".to_string(), now - chrono::Duration::seconds(60));
-
-        let zombies =
-            detect_blank_pane_zombies(&blank, &start_times, now, chrono::Duration::seconds(20));
-        assert!(
-            zombies.is_empty(),
-            "lead window must never be treated as a zombie"
-        );
-    }
-
-    #[test]
-    fn test_coworker_record_display_status_with_task_zero_omits_number() {
-        // Task ID 0 is used as a placeholder for taskless work (e.g., PR reviews
-        // without a formal task assignment). It should display without the "#0"
-        // suffix to avoid confusing window names like "PR#0".
-        use crate::coworker_state::WorkflowPhase;
-
-        let mut record = CoworkerRecord::new_spawn();
-        record.workflow_phase = Some(WorkflowPhase::PullRequest);
-        record.task_id = Some(0);
-
-        // Should show "PR" not "PR#0"
-        assert_eq!(record.display_status(), Some("PR".to_string()));
-    }
-
-    #[test]
-    fn test_coworker_record_display_status_with_valid_task() {
-        use crate::coworker_state::WorkflowPhase;
-
-        let mut record = CoworkerRecord::new_spawn();
-        record.workflow_phase = Some(WorkflowPhase::Developing);
-        record.task_id = Some(42);
-
-        assert_eq!(record.display_status(), Some("dev#42".to_string()));
-    }
-
-    #[test]
-    fn test_coworker_record_display_status_without_task() {
-        use crate::coworker_state::WorkflowPhase;
-
-        let mut record = CoworkerRecord::new_spawn();
-        record.workflow_phase = Some(WorkflowPhase::Idle);
-        record.task_id = None;
-
-        assert_eq!(record.display_status(), Some("idle".to_string()));
-    }
-
-    // -----------------------------------------------------------------------
-    // Compaction misdetection bug tests (task #7)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn compaction_not_detected_for_normal_thinking_with_esc_to_interrupt() {
-        // Bug: The daemon was interrupting coworkers doing normal work because
-        // their "thinking" status shows "esc to interrupt", even though they're
-        // NOT in compaction. Compaction has specific verbs like "Whirlpooling",
-        // "Baking", "Simmering", "Sautéed" - normal thinking says "Fixing...",
-        // "Scoring...", etc.
-        let mut panes = HashMap::new();
-
-        // Normal thinking state - NOT compaction (from actual snapshot)
-        panes.insert(
-            "vernon".to_string(),
-            "✢ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · 6m 11s · ↓ 1.4k tokens · thinking)\n"
-                .to_string(),
-        );
-
-        // Even though duration (6m 11s) exceeds threshold (5m), this is NOT
-        // compaction - it's normal task work. Should NOT trigger.
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "normal thinking state should not be detected as compaction, even with 'esc to interrupt'"
-        );
-    }
-
-    #[test]
-    fn compaction_detected_for_actual_compaction_verbs() {
-        // These ARE actual compaction - should be detected
-        // Real Claude Code compaction status has verb + duration on same line
-        let test_cases = vec![
-            (
-                "whirlpool",
-                "✶ Whirlpooling… (esc to interrupt · 6m 00s · ↓ 0 tokens)\n",
-            ),
-            (
-                "baking",
-                "✶ Baking… (esc to interrupt · 5m 30s · ↓ 100 tokens)\n",
-            ),
-            (
-                "simmering",
-                "✶ Simmering… (esc to interrupt · 7m 00s · ↓ 50 tokens)\n",
-            ),
-            ("sauteed", "  ✻ Sautéed for 6m 30s\n"),
-        ];
-
-        for (name, content) in test_cases {
-            let mut panes = HashMap::new();
-            panes.insert(name.to_string(), content.to_string());
-            let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-            assert!(
-                !stuck.is_empty(),
-                "actual compaction '{}' should be detected",
-                name
-            );
-        }
-    }
-
-    #[test]
-    fn compaction_false_positive_from_verb_in_displayed_code() {
-        // BUG REPRODUCTION: Cross-contamination between compaction verb in
-        // displayed code and duration from unrelated thinking status line.
-        //
-        // Scenario: Coworker is doing normal thinking work (6+ minutes), and
-        // the pane content includes code that happens to contain a compaction
-        // verb like "simmering" in a comment or string.
-        //
-        // Current bug: has_compaction_indicator() finds "simmering" anywhere
-        // in the content, then duration parsing finds "esc to interrupt" from
-        // the thinking line, causing a false positive.
-        let mut panes = HashMap::new();
-
-        // Normal thinking status line (not compaction) + code with "simmering" verb
-        let pane_content = r#"
-⏺ Read(src/rules.rs)
-  ⎿  Read 50 lines
-     /// Compaction verbs are: Whirlpooling, Baking, Simmering, Sautéed.
-
-⏺ Let me implement the fix for this bug.
-
-✶ Fixing false positive detection… (esc to interrupt · ctrl+t to hide tasks · 6m 30s · ↓ 12.4k tokens · thinking)
-  ⎿  ◼ #10 Fix false positive stuck compaction detection (york)
-
-─────────────────────────────────────────────────────────────────────────────────
-❯
-─────────────────────────────────────────────────────────────────────────────────
-"#;
-        panes.insert("york".to_string(), pane_content.to_string());
-
-        // This should NOT be detected as stuck compaction because:
-        // 1. The "Simmering" is in displayed code, not an actual compaction status
-        // 2. The "esc to interrupt" is from normal thinking, not compaction
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "compaction verb in displayed code should not cause false positive"
-        );
-    }
-
-    #[test]
-    fn sauteed_in_code_does_not_trigger_false_positive() {
-        // Review feedback: "Sautéed for" appearing in code/comments should not
-        // trigger stuck detection. Only actual compaction completion lines
-        // (with the ✻ marker) should be detected.
-        let mut panes = HashMap::new();
-
-        // Code comment containing "Sauteed for 10m 00s" + normal thinking status
-        let pane_content = r#"
-⏺ Read(src/rules.rs)
-  ⎿  Read 50 lines
-     // Example: "Sauteed for 10m 00s" completion format
-
-⏺ Working on the implementation.
-
-✶ Implementing feature… (esc to interrupt · 6m 30s · ↓ 12.4k tokens · thinking)
-
-─────────────────────────────────────────────────────────────────────────────────
-❯
-─────────────────────────────────────────────────────────────────────────────────
-"#;
-        panes.insert("york".to_string(), pane_content.to_string());
-
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "'Sauteed for' in code comment should not trigger false positive"
-        );
-    }
-
-    #[test]
-    fn sauteed_case_insensitive_detection() {
-        // Review feedback: uppercase SAUTEED should be detected (case insensitivity)
-        let mut panes = HashMap::new();
-
-        // Real compaction completion with uppercase (unlikely but possible)
-        panes.insert("york".to_string(), "  ✻ SAUTEED FOR 10m 00s\n".to_string());
-
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert_eq!(
-            stuck.len(),
-            1,
-            "uppercase SAUTEED should be detected (case insensitive)"
-        );
-    }
-
-    #[test]
-    fn queued_nudge_detected_despite_compaction_verb_in_code() {
-        // Review feedback: queued nudge detection should work even when
-        // displayed code contains compaction verbs like "Simmering".
-        // The has_compaction_indicator() check should only skip detection
-        // for ACTIVE compaction (verb + "esc to interrupt"), not just verb presence.
-        let tui_content = r#"
-⏺ Read(src/rules.rs)
-  ⎿  /// Compaction verbs are: Whirlpooling, Baking, Simmering, Sautéed.
-
-⏺ Completed the task.
-
-✳ Working on next task...
-❯ Check the channel for updates
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ bypass permissions on"#;
-
-        // has_queued_nudges should return true despite "Simmering" in displayed code
-        assert!(
-            has_queued_nudges(tui_content),
-            "queued nudge should be detected even when compaction verb appears in displayed code"
-        );
-    }
-
-    #[test]
-    fn compaction_not_detected_for_various_normal_thinking_states() {
-        // All of these are normal work states, NOT compaction
-        let test_cases = vec![
-            (
-                "scoring",
-                "✢ Scoring issues… (esc to interrupt · ctrl+t to hide tasks · 10m 2s · ↓ 4.2k tokens · thought for 2s)",
-            ),
-            (
-                "fixing",
-                "✳ Fixing tmux window naming… (esc to interrupt · ctrl+t to hide tasks · 8m 20s · ↓ 3.5k tokens · thinking)",
-            ),
-            (
-                "checking",
-                "✽ Checking PR eligibility… (esc to interrupt · ctrl+t to hide tasks · 6m 0s · ↓ 784 tokens · thinking)",
-            ),
-            (
-                "reading",
-                "✶ Reading file… (esc to interrupt · ctrl+t to hide tasks · 5m 30s · ↓ 500 tokens · thinking)",
-            ),
-        ];
-
-        for (name, content) in test_cases {
-            let mut panes = HashMap::new();
-            panes.insert(name.to_string(), content.to_string());
-            let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-            assert!(
-                stuck.is_empty(),
-                "normal thinking state '{}' should NOT be detected as compaction",
-                name
-            );
-        }
-    }
-
-    #[test]
-    fn snapshot_20260203_023607_no_false_compaction_detections() {
-        // Test against real snapshot data where 6+ coworkers were incorrectly
-        // interrupted. This snapshot captures the actual bug scenario:
-        // - amsterdam: Scoring PR review issues
-        // - broadway: Scoring PR review issues
-        // - park: Completed scoring agents
-        // - pleasant: Posting to channel after task completion
-        // - riverside: Creating a PR
-        // - york: Running cargo fmt
-        //
-        // None of these are compaction, but they all have "esc to interrupt"
-        // in their pane content because that's shown during normal work.
-
-        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023607.json");
-        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
-        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
-
-        let mut panes: HashMap<String, String> = HashMap::new();
-        for (name, content) in pane_contents {
-            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
-        }
-
-        // With the fix, none of these should be detected as stuck compaction
-        // because none of them contain actual compaction verbs
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "snapshot should have no compaction detections, but found: {:?}",
-            stuck
-        );
-    }
-
-    #[test]
-    fn snapshot_20260203_023035_no_false_compaction_detections() {
-        // Second snapshot captured during the same incident - broadway mid-review
-        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023035.json");
-        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
-        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
-
-        let mut panes: HashMap<String, String> = HashMap::new();
-        for (name, content) in pane_contents {
-            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
-        }
-
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "snapshot should have no compaction detections, but found: {:?}",
-            stuck
-        );
-    }
-
-    #[test]
-    fn snapshot_20260204_175139_compaction_investigation_no_false_positives() {
-        // Task #36: This snapshot was captured while investigating compaction false positives.
-        // The pane content includes "✻ Investigating stuck compaction false positives…"
-        // which has the ✻ marker but is NOT actual compaction (no "Sautéed for" text).
-        // The detection logic should correctly ignore this.
-        let fixture = include_str!(
-            "../tests/fixtures/snapshot/snapshot-compaction-investigation-20260204-175139.json"
-        );
-        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
-        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
-
-        let mut panes: HashMap<String, String> = HashMap::new();
-        for (name, content) in pane_contents {
-            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
-        }
-
-        let stuck = detect_compaction_stuck(&panes, Duration::from_secs(300));
-        assert!(
-            stuck.is_empty(),
-            "snapshot should have no compaction detections (task status lines with ✻ are not compaction), but found: {:?}",
-            stuck
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Subagent detection E2E tests (using real snapshot fixtures)
-    // -----------------------------------------------------------------------
-
-    /// E2E test: verify subagent detection works with real captured pane content.
-    ///
-    /// This test uses the snapshot-20260203-023607.json fixture which captured
-    /// Madison with a running subagent ("✽ Checking PR eligibility…").
-    /// This is the exact scenario from bug #27 where Madison was being falsely
-    /// detected as idle while her scoring subagent was running.
-    #[test]
-    fn snapshot_20260203_023607_detects_madison_running_subagent() {
-        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023607.json");
-        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
-        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
-
-        let mut panes: HashMap<String, String> = HashMap::new();
-        for (name, content) in pane_contents {
-            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
-        }
-
-        // Madison should have a running subagent detected (she has ✽ Checking PR eligibility…)
-        let madison_pane = panes.get("madison").expect("madison should be in snapshot");
-        assert!(
-            has_running_subagent(madison_pane),
-            "madison's pane should show a running subagent (whirlpool indicator)"
-        );
-
-        // Verify the specific pattern is present
-        assert!(
-            madison_pane.contains("✽"),
-            "madison's pane should contain whirlpool indicator"
-        );
-
-        // Count total coworkers with running subagents
-        let coworkers_with_subagents: HashSet<String> = panes
-            .iter()
-            .filter(|(_, content)| has_running_subagent(content))
-            .map(|(name, _)| name.to_lowercase())
-            .collect();
-
-        assert!(
-            coworkers_with_subagents.contains("madison"),
-            "madison should be in the set of coworkers with running subagents"
-        );
-    }
-
-    /// E2E test: verify idle shutdown protection for coworkers with running subagents.
-    ///
-    /// Uses the same fixture as above but tests the full idle shutdown decision flow
-    /// to ensure Madison would be protected from idle shutdown while her subagent runs.
-    #[test]
-    fn snapshot_20260203_023607_madison_protected_from_idle_shutdown() {
-        let fixture = include_str!("../tests/fixtures/snapshot/snapshot-20260203-023607.json");
-        let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
-        let pane_contents = snapshot["pane_contents"].as_object().unwrap();
-
-        let mut panes: HashMap<String, String> = HashMap::new();
-        for (name, content) in pane_contents {
-            panes.insert(name.clone(), content.as_str().unwrap_or("").to_string());
-        }
-
-        // Build the set of coworkers with running subagents (same as snapshot collector does)
-        let coworkers_with_running_subagents: HashSet<String> = panes
-            .iter()
-            .filter(|(_, content)| has_running_subagent(content))
-            .map(|(name, _)| name.to_lowercase())
-            .collect();
-
-        // Create a CoworkerSnapshot for madison (10 minutes old, so past minimum lifetime)
-        let coworkers = vec![CoworkerSnapshot {
-            name: "madison".to_string(),
-            started_at: Utc::now() - chrono::Duration::minutes(10),
-            isolated_tasks: true, // madison is an isolated reviewer
-        }];
-
-        // Create idle health state (madison has been "idle" for 60+ seconds)
-        let mut phases = HashMap::new();
-        phases.insert(
-            "madison".to_string(),
-            CoworkerRecord {
-                health: Some(SessionHealth::Idle {
-                    since: Instant::now() - Duration::from_secs(60),
-                }),
-                last_activity: None,
-                workflow_phase: None,
-                task_id: None,
-                workflow_updated_at: None,
-                pane_hash: Some((12345, Instant::now() - Duration::from_secs(300))), // stale pane
-                zombie_respawn_count: 0,
-            },
-        );
-
-        // Run idle shutdown decision with madison having a running subagent
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),                         // not busy (no in-progress tasks)
-            &set(&[]),                         // no open PRs
-            &set(&[]),                         // not reviewing
-            &set(&[]),                         // no unblocked deps
-            &coworkers_with_running_subagents, // madison HAS running subagent
-            &set(&[]),                         // ci_passed
-            &set(&[]),                         // usage_limited
-            &set(&[]),                         // api_error
-            &set(&[]),                         // pending_task_owners
-            &set(&[]),                         // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
-        // Madison should NOT be shut down because she has a running subagent
-        assert!(
-            decisions.is_empty(),
-            "madison should NOT be sent on break while she has a running subagent. \
-             This is the fix for bug #27: false idle detection when subagent is running. \
-             Decisions: {:?}",
-            decisions
-        );
-    }
-
     /// Snapshot from bug #756: madison was in a break/respawn loop for 4+ hours
     /// with 4 duplicate tmux windows accumulating. The snapshot captures the state
     /// where madison has an open PR (#649) with CI passed AND review feedback,
@@ -5280,7 +3309,6 @@ mod tests {
             &coworkers_with_open_prs,
             &set(&[]), // not reviewing
             &set(&[]), // no unblocked deps
-            &set(&[]), // no running subagents
             &ci_passed,
             &set(&[]),        // not usage limited
             &set(&[]),        // no api errors
@@ -5349,176 +3377,27 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // decide_stuck_coworker_restarts tests (ProcessHealth-based)
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn usage_limit_decide_detection_false_positive() {
-        // Test the full decision function with code content
-        let mut panes = HashMap::new();
-        panes.insert(
+    fn stuck_detection_triggers_for_no_events() {
+        use crate::daemon::snapshot::ProcessHealth;
+
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
             "riverside".to_string(),
-            "// Health checks: idle shutdown, stuck detection, usage limits.".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                exit_code: None,
+            },
         );
-
-        let decision = decide_usage_limit_detection(&panes);
-        assert_eq!(
-            decision,
-            UsageLimitDecision::NoneDetected,
-            "code content should not trigger usage limit detection"
-        );
-    }
-
-    #[test]
-    fn usage_limit_decide_detection_true_positive() {
-        // Test the full decision function with actual usage limit screen
-        let mut panes = HashMap::new();
-        panes.insert(
-            "broadway".to_string(),
-            "You've reached your usage limit. /upgrade to increase your limit.".to_string(),
-        );
-
-        let decision = decide_usage_limit_detection(&panes);
-        assert!(
-            matches!(decision, UsageLimitDecision::Detected { coworker } if coworker == "broadway"),
-            "actual usage limit screen should trigger detection"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // parse_usage_limit_duration tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn parse_usage_limit_duration_12hour_pm() {
-        // "resets 12pm" should parse as noon (12:00)
-        let content = "Your limit resets 12pm (America/Chicago). /upgrade";
-        let duration = parse_usage_limit_duration(content);
-        // We can't assert exact value since it depends on current time,
-        // but it should be less than 24 hours
-        assert!(
-            duration.as_secs() <= 24 * 3600,
-            "12pm should be within 24 hours"
-        );
-    }
-
-    #[test]
-    fn parse_usage_limit_duration_12hour_am() {
-        // "resets 3am" should parse as 03:00
-        let content = "Your limit resets 3am. /upgrade";
-        let duration = parse_usage_limit_duration(content);
-        assert!(
-            duration.as_secs() <= 24 * 3600,
-            "3am should be within 24 hours"
-        );
-    }
-
-    #[test]
-    fn parse_usage_limit_duration_relative() {
-        // "in 2 hours" should return 2 hours
-        let content = "Your limit will reset in 2 hours. /upgrade";
-        let duration = parse_usage_limit_duration(content);
-        assert_eq!(duration.as_secs(), 2 * 3600, "should parse '2 hours'");
-    }
-
-    #[test]
-    fn parse_usage_limit_duration_relative_minutes() {
-        // "in 45 minutes" should return 45 minutes
-        let content = "Available after 45 minutes. /upgrade";
-        let duration = parse_usage_limit_duration(content);
-        assert_eq!(duration.as_secs(), 45 * 60, "should parse '45 minutes'");
-    }
-
-    #[test]
-    fn parse_usage_limit_duration_fallback() {
-        // Unknown format should return 15 minutes
-        let content = "Some unknown format. /upgrade";
-        let duration = parse_usage_limit_duration(content);
-        assert_eq!(
-            duration.as_secs(),
-            15 * 60,
-            "unknown format should default to 15 minutes"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // decide_stuck_coworker_restarts tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn stuck_detection_skips_coworkers_with_running_subagents() {
-        // Coworker with running subagents should be PROTECTED from stuck detection.
-        // The pane is frozen because it's waiting for Task agents to complete,
-        // which is normal behavior, not stuck.
-        let mut pane_hashes = HashMap::new();
-        let now = Instant::now();
-        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
-
-        // Pane content with whirlpool indicator = active subagent
-        let active_content = r#"
-✽ Checking PR eligibility… (esc to interrupt · ctrl+t to hide tasks · 33s · ↓ 784 tokens · thinking)
-  ⎿  ◼ #1 Check PR #508 eligibility for code review (madison)
-"#;
-
-        // Use the hash of this content
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        active_content.hash(&mut hasher);
-        let content_hash = hasher.finish();
-
-        // Set old hash to same value (pane unchanged for 6+ minutes)
-        pane_hashes.insert("broadway".to_string(), (content_hash, old_time));
-
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("broadway".to_string(), active_content.to_string());
-
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix bug".to_string(),
-            "broadway".to_string(),
-        )];
-
-        let usage_limited = HashSet::new();
-        let api_error = HashSet::new();
-        let result = decide_stuck_coworker_restarts(
-            &pane_hashes,
-            &pane_contents,
-            &tasks,
-            &usage_limited,
-            &api_error,
-            now,
-            Duration::from_secs(180), // 3 minute stuck duration
-        );
-
-        assert!(
-            result.restarts.is_empty(),
-            "coworker with running subagents should be PROTECTED from stuck detection"
-        );
-    }
-
-    #[test]
-    fn stuck_detection_triggers_for_frozen_pane_without_subagents() {
-        // Coworker with frozen pane AND no activity indicators = truly stuck.
-        // This could be a hung Claude Code process that needs restart.
-        let mut pane_hashes = HashMap::new();
-        let now = Instant::now();
-        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
-
-        // Pane content showing it's working but no subagent indicator
-        // (e.g., Claude Code froze mid-thinking)
-        let stuck_content = r#"
-⏺ Working on task #42
-
-Reading files...
-"#;
-
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        stuck_content.hash(&mut hasher);
-        let content_hash = hasher.finish();
-
-        // Set old hash to same value (pane unchanged)
-        pane_hashes.insert("riverside".to_string(), (content_hash, old_time));
-
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("riverside".to_string(), stuck_content.to_string());
 
         let tasks = vec![(
             "42".to_string(),
@@ -5526,104 +3405,113 @@ Reading files...
             "riverside".to_string(),
         )];
 
-        let usage_limited = HashSet::new();
-        let api_error = HashSet::new();
-        let result = decide_stuck_coworker_restarts(
-            &pane_hashes,
-            &pane_contents,
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
             &tasks,
-            &usage_limited,
-            &api_error,
+            &HashSet::new(),
+            &HashSet::new(),
             now,
-            Duration::from_secs(180), // 3 minute stuck duration
+            Duration::from_secs(180),
         );
 
-        assert_eq!(
-            result.restarts.len(),
-            1,
-            "coworker with frozen pane and NO subagents SHOULD be restarted"
-        );
-        assert_eq!(result.restarts[0].name, "riverside");
+        assert_eq!(restarts.len(), 1);
+        assert_eq!(restarts[0].name, "riverside");
     }
 
     #[test]
-    fn stuck_detection_skips_usage_limited_coworkers() {
-        // Coworkers at usage limit should be skipped from stuck detection.
-        // Their pane is frozen waiting for the limit to reset, not stuck.
-        let mut pane_hashes = HashMap::new();
-        let now = Instant::now();
-        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
+    fn stuck_detection_skips_recent_events() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-        // Pane content showing usage limit screen
-        let usage_limit_content = r#"
-You've reached your usage limit for Claude Opus 4.5.
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "riverside".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::seconds(30)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                exit_code: None,
+            },
+        );
 
-Your limit will reset in 2 hours.
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "riverside".to_string(),
+        )];
 
-Options:
-- /upgrade to increase your limit
-- /compact to reduce context
-"#;
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
+            &tasks,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(180),
+        );
 
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        usage_limit_content.hash(&mut hasher);
-        let content_hash = hasher.finish();
+        assert!(
+            restarts.is_empty(),
+            "recent events should not trigger stuck"
+        );
+    }
 
-        // Set old hash to same value (pane unchanged for 6+ minutes)
-        pane_hashes.insert("york".to_string(), (content_hash, old_time));
+    #[test]
+    fn stuck_detection_skips_usage_limited() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("york".to_string(), usage_limit_content.to_string());
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "york".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: true,
+                has_api_error: false,
+                has_running_subagent: false,
+                exit_code: None,
+            },
+        );
 
         let tasks = vec![("42".to_string(), "Fix bug".to_string(), "york".to_string())];
 
-        // Mark york as usage-limited
         let mut usage_limited = HashSet::new();
         usage_limited.insert("york".to_string());
-        let api_error = HashSet::new();
 
-        let result = decide_stuck_coworker_restarts(
-            &pane_hashes,
-            &pane_contents,
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
             &tasks,
             &usage_limited,
-            &api_error,
+            &HashSet::new(),
             now,
-            Duration::from_secs(180), // 3 minute stuck duration
+            Duration::from_secs(180),
         );
 
         assert!(
-            result.restarts.is_empty(),
-            "usage-limited coworker should be skipped from stuck detection"
+            restarts.is_empty(),
+            "usage-limited coworker should be skipped"
         );
     }
 
     #[test]
-    fn stuck_detection_skips_api_error_coworkers() {
-        // Coworkers with API errors should be skipped from stuck detection.
-        // Their pane is frozen waiting for the API to recover, not stuck.
-        let mut pane_hashes = HashMap::new();
-        let now = Instant::now();
-        let old_time = now - Duration::from_secs(400); // 6+ minutes ago
+    fn stuck_detection_skips_api_error() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-        // Pane content showing API error
-        let api_error_content = r#"
-Working on task #42...
-
-API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":"req_123"}
-"#;
-
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        api_error_content.hash(&mut hasher);
-        let content_hash = hasher.finish();
-
-        // Set old hash to same value (pane unchanged for 6+ minutes)
-        pane_hashes.insert("madison".to_string(), (content_hash, old_time));
-
-        let mut pane_contents = HashMap::new();
-        pane_contents.insert("madison".to_string(), api_error_content.to_string());
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "madison".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: true,
+                has_running_subagent: false,
+                exit_code: None,
+            },
+        );
 
         let tasks = vec![(
             "42".to_string(),
@@ -5631,124 +3519,95 @@ API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal s
             "madison".to_string(),
         )];
 
-        // Mark madison as having API error
-        let usage_limited = HashSet::new();
         let mut api_error = HashSet::new();
         api_error.insert("madison".to_string());
 
-        let result = decide_stuck_coworker_restarts(
-            &pane_hashes,
-            &pane_contents,
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
             &tasks,
-            &usage_limited,
+            &HashSet::new(),
             &api_error,
             now,
-            Duration::from_secs(180), // 3 minute stuck duration
+            Duration::from_secs(180),
         );
 
-        assert!(
-            result.restarts.is_empty(),
-            "API error coworker should be skipped from stuck detection"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // has_running_subagent tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn subagent_detection_whirlpool_indicator() {
-        // Whirlpool (✽) at start of line indicates active subagent
-        let pane_with_subagent = r#"
-✔ Task #1 updated: owner, status → in progress
-  ⎿  Running PostToolUse hooks… (1/2 done)
-
-⏺ Now let me run the first three tasks in parallel:
-
-✽ Checking PR eligibility… (esc to interrupt · ctrl+t to hide tasks · 33s · ↓ 784 tokens · thinking)
-  ⎿  ◼ #1 Check PR #508 eligibility for code review (madison)
-     ◻ #2 Find relevant CLAUDE.md files for PR #508 (madison)
-"#;
-        assert!(
-            has_running_subagent(pane_with_subagent),
-            "whirlpool indicator should be detected as running subagent"
-        );
+        assert!(restarts.is_empty(), "API error coworker should be skipped");
     }
 
     #[test]
-    fn subagent_detection_running_task_agents() {
-        // "Running X Task agent" pattern indicates subagents in progress
-        let pane_with_running_agents = r#"
-⏺ I have two issues to score. Let me launch Haiku agents to score both issues.
+    fn stuck_detection_skips_running_subagent() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-   Running 3 Task agents… (ctrl+o to expand)
-   ├─ Score issue 1: coarse filter · 15 tool uses · 51.3k tokens
-   │  ⎿  Running…
-   └─ Score issue 2: test naming · 11 tool uses · 25.8k tokens
-      ⎿  Running…
-"#;
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "park".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                // Last parent event was 10 minutes ago — normally stuck
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                // But has a running subagent, so parent stream is expected to be quiet
+                has_running_subagent: true,
+                exit_code: None,
+            },
+        );
+
+        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "park".to_string())];
+
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
+            &tasks,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(180),
+        );
+
         assert!(
-            has_running_subagent(pane_with_running_agents),
-            "'Running X Task agent' should be detected as running subagent"
+            restarts.is_empty(),
+            "coworker with running subagent should not be flagged as stuck"
         );
     }
 
     #[test]
-    fn subagent_detection_finished_agents_not_detected() {
-        // Finished agents should NOT trigger detection
-        let pane_with_finished_agents = r#"
-⏺ 5 Task agents finished (ctrl+o to expand)
-   ├─ Agent 1: CLAUDE.md compliance · 5 tool uses · 27.3k tokens
-   │  ⎿  Done
-   ├─ Agent 2: Obvious bugs scan · 15 tool uses · 31.2k tokens
-   │  ⎿  Done
-   └─ Agent 3: Git history context · 58 tool uses · 50.1k tokens
-      ⎿  Done
+    fn stuck_detection_skips_dead_processes() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-⏺ The 5 agents have completed. Let me now score the issues.
-"#;
-        assert!(
-            !has_running_subagent(pane_with_finished_agents),
-            "finished agents should NOT be detected as running subagent"
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "broadway".to_string(),
+            ProcessHealth {
+                is_alive: false,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                exit_code: Some(1),
+            },
         );
-    }
 
-    #[test]
-    fn subagent_detection_normal_idle_pane() {
-        // Normal idle pane without subagents
-        let idle_pane = r#"
-⏺ I've completed the task. Let me post to the channel.
+        let tasks = vec![(
+            "42".to_string(),
+            "Fix bug".to_string(),
+            "broadway".to_string(),
+        )];
 
-✔ Task #27 updated: status → completed
-  ⎿  Running PostToolUse hooks… (1/2 done)
-
-midtown channel post "/me finished task 27"
-  ⎿  Message posted to channel
-
-❯
-"#;
-        assert!(
-            !has_running_subagent(idle_pane),
-            "normal idle pane should NOT be detected as running subagent"
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
+            &tasks,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(180),
         );
-    }
 
-    #[test]
-    fn subagent_detection_code_with_task_agent_string() {
-        // Code that mentions "Task agent" in comments should NOT trigger
-        let _code_content = r#"
-⏺ Let me update the documentation.
-
-/// Launch a Task agent to handle the work.
-/// Running Task agent operations require proper cleanup.
-fn launch_agent() {
-    // Task agent spawned here
-}
-"#;
-        // Note: This will match because "Running Task agent" appears in comment
-        // but that's acceptable - false positives here just prevent unnecessary
-        // idle shutdown, which is safe. The key is avoiding false negatives.
-        // In practice, code files rarely have this exact pattern.
+        assert!(
+            restarts.is_empty(),
+            "dead processes are handled by check_and_respawn_dead_processes"
+        );
     }
 
     // -----------------------------------------------------------------------

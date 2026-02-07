@@ -6,7 +6,6 @@
 //! easier to test.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 
@@ -16,6 +15,46 @@ use crate::rules::CoworkerSnapshot;
 use crate::tasks::Task;
 
 use super::DaemonState;
+
+/// Health state of a headless coworker process.
+///
+/// Populated by the daemon's session management layer (future SessionManager)
+/// from `HeadlessSession` stream events and process status. Decision functions
+/// in `rules.rs` consume this structured data instead of parsing raw pane content.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProcessHealth {
+    /// Whether the child process is still running.
+    pub is_alive: bool,
+    /// When the last stream event was received from this coworker's stdout.
+    /// Used for stuck detection: if `None` or older than the stuck threshold,
+    /// the coworker may be hung.
+    pub last_event_at: Option<DateTime<Utc>>,
+    /// Whether the coworker hit a usage/rate limit (detected from
+    /// `StreamEvent::Result { is_error: true }` with usage limit content).
+    pub has_usage_limit: bool,
+    /// Whether the coworker is experiencing API errors (transient failures
+    /// that may resolve on retry).
+    pub has_api_error: bool,
+    /// Whether the coworker has a running Task tool subagent.
+    /// When true, the parent session may not emit events for several minutes
+    /// while the subagent works — stuck detection should skip these coworkers.
+    pub has_running_subagent: bool,
+    /// Process exit code, if the process has terminated.
+    pub exit_code: Option<i32>,
+}
+
+impl Default for ProcessHealth {
+    fn default() -> Self {
+        Self {
+            is_alive: true,
+            last_event_at: None,
+            has_usage_limit: false,
+            has_api_error: false,
+            has_running_subagent: false,
+            exit_code: None,
+        }
+    }
+}
 
 /// Number of recent channel messages to include in WorldSnapshot captures.
 const SNAPSHOT_CHANNEL_MESSAGE_COUNT: usize = 50;
@@ -29,8 +68,7 @@ const SNAPSHOT_DAEMON_LOG_LINES: usize = 100;
 /// evaluation functions that take `&WorldSnapshot` cannot accidentally trigger
 /// side effects on the underlying state.
 ///
-/// The struct is serializable (for debugging and test fixtures), except for
-/// `Instant` fields which are skipped during serialization.
+/// The struct is serializable (for debugging and test fixtures).
 #[derive(Debug, serde::Serialize)]
 pub struct WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
@@ -51,17 +89,11 @@ pub struct WorldSnapshot {
     /// features that need to know the last activity time of inactive coworkers.
     pub coworker_stop_times: HashMap<String, DateTime<Utc>>,
 
-    // ── Pane contents (health checks only) ─────────────────────────────
-    /// Captured tmux pane content per coworker (keyed by name).
-    /// Used for health checks only: stuck detection (hash comparison),
-    /// zombie detection (blank pane), and usage limit detection.
-    /// Workflow state is reported via RPC, not inferred from pane content.
-    pub pane_contents: HashMap<String, String>,
-    /// Running coworkers whose pane is entirely blank (no visible output).
-    pub blank_pane_coworkers: HashSet<String>,
-    /// Coworkers who have a subagent (Task tool) currently running.
-    /// Detected from pane content showing whirlpool indicator or "Running X Task agent".
-    pub coworkers_with_running_subagents: HashSet<String>,
+    // ── Process health (headless coworker monitoring) ──────────────────
+    /// Health state of headless coworker processes, keyed by coworker name.
+    /// Replaces pane scraping: stuck detection uses `last_event_at`,
+    /// usage limits and API errors use structured flags set from stream events.
+    pub headless_process_health: HashMap<String, ProcessHealth>,
 
     // ── Task state ──────────────────────────────────────────────────────
     /// In-progress tasks: `(task_id, subject, owner)`.
@@ -145,9 +177,6 @@ pub struct WorldSnapshot {
     pub is_at_coworker_limit: bool,
     /// Whether the daemon is at the dev coworker limit (reserving review headroom).
     pub is_at_dev_limit: bool,
-    /// Current monotonic instant (for timeout comparisons).
-    #[serde(skip)]
-    pub now: Instant,
     /// Current wall-clock time.
     pub now_utc: DateTime<Utc>,
     /// Repository name.
@@ -225,60 +254,13 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         stop_times.clone()
     };
 
-    // ── Pane contents ───────────────────────────────────────────────────
-    // Only capture panes for Running coworkers. Coworkers in other states
-    // (Starting, Stopping) may not have tmux windows yet or anymore, and
-    // attempting capture would produce "can't find window" errors in stderr.
-    let mut pane_contents = HashMap::new();
-    for cw in &running_coworkers {
-        let target = format!("{}:{}", session_name, cw.name);
-        if let Some(content) = crate::tmux::capture_pane(&target) {
-            // Log pane content at debug level for post-mortem debugging
-            // and automated test case generation. Use trace level for the
-            // full content to avoid flooding debug logs.
-            tracing::debug!(
-                coworker = %cw.name,
-                lines = content.lines().count(),
-                has_output = crate::tmux::content_has_output(&content),
-                has_input_text = crate::tmux::has_input_text(&content),
-                "captured pane content"
-            );
-            tracing::trace!(
-                coworker = %cw.name,
-                content = %content,
-                "pane content"
-            );
-            pane_contents.insert(cw.name.clone(), content);
-        }
-    }
-
-    // Derive blank-pane set: running coworkers whose pane has no visible output.
-    // IMPORTANT: Only mark as blank if we SUCCESSFULLY captured an empty pane.
-    // A failed pane capture (None) is NOT treated as blank - the coworker might
-    // be actively running and tmux just had a transient failure. This prevents
-    // false-positive zombie detection that kills healthy isolated reviewers.
-    let blank_pane_coworkers: HashSet<String> = running_coworkers
-        .iter()
-        .filter(|cw| {
-            pane_contents
-                .get(&cw.name)
-                .map(|c| !crate::tmux::content_has_output(c))
-                .unwrap_or(false) // pane capture failed → don't assume blank
-        })
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
-
-    // Derive subagent set: coworkers whose pane indicates a Task agent is running
-    let coworkers_with_running_subagents: HashSet<String> = running_coworkers
-        .iter()
-        .filter(|cw| {
-            pane_contents
-                .get(&cw.name)
-                .map(|c| crate::rules::has_running_subagent(c))
-                .unwrap_or(false)
-        })
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
+    // ── Process health (headless coworkers) ────────────────────────────
+    // Read process health from DaemonState. This is populated by the session
+    // management layer from HeadlessSession stream events and process status.
+    let headless_process_health: HashMap<String, ProcessHealth> = {
+        let health = state.headless_health.read().unwrap();
+        health.clone()
+    };
 
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
@@ -365,22 +347,19 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         (nudge_at.is_some(), *nudge_at)
     };
 
-    // Detect which coworkers are currently at usage limit (from pane content)
-    let usage_limited_coworkers: HashSet<String> = pane_contents
+    // Derive usage limit and API error sets from headless process health.
+    // These were previously detected from pane content; now read from structured flags.
+    let usage_limited_coworkers: HashSet<String> = headless_process_health
         .iter()
-        .filter(|(_, content)| crate::rules::has_usage_limit_pattern(content))
+        .filter(|(_, health)| health.has_usage_limit)
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
-    // Detect which coworkers are experiencing API errors (from pane content)
-    // These are transient failures that may resolve on retry
-    let api_error_coworkers: HashSet<String> = pane_contents
+    let api_error_coworkers: HashSet<String> = headless_process_health
         .iter()
-        .filter(|(name, content)| {
-            // Only detect API error if not already at usage limit
-            // (usage limit takes precedence)
-            !usage_limited_coworkers.contains(&name.to_lowercase())
-                && crate::rules::has_api_error_pattern(content)
+        .filter(|(name, health)| {
+            // Only flag API error if not already at usage limit (usage limit takes precedence)
+            health.has_api_error && !usage_limited_coworkers.contains(&name.to_lowercase())
         })
         .map(|(name, _)| name.to_lowercase())
         .collect();
@@ -405,7 +384,6 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Limits & timing ─────────────────────────────────────────────────
     let is_at_coworker_limit = state.is_at_coworker_limit();
     let is_at_dev_limit = state.is_at_dev_limit();
-    let now = Instant::now();
     let now_utc = Utc::now();
     let repo_name = state.repo_name.clone();
 
@@ -417,9 +395,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         session_name,
         coworker_start_times,
         coworker_stop_times,
-        pane_contents,
-        blank_pane_coworkers,
-        coworkers_with_running_subagents,
+        headless_process_health,
         in_progress_tasks,
         busy_coworkers,
         all_tasks,
@@ -445,7 +421,6 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         tasks_with_worktrees,
         is_at_coworker_limit,
         is_at_dev_limit,
-        now,
         now_utc,
         repo_name,
     };
@@ -464,73 +439,46 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
 mod tests {
     use super::*;
 
-    /// Test that failed pane capture does NOT result in blank pane detection.
-    ///
-    /// Regression test for the bug where `capture_pane()` returning `None` (transient
-    /// tmux failure) caused healthy coworkers to be flagged as blank-pane zombies and
-    /// killed. The fix changes `unwrap_or(true)` to `unwrap_or(false)` so that missing
-    /// pane content is NOT treated as "blank".
+    /// Test that ProcessHealth derives usage limit and API error sets correctly.
     #[test]
-    fn test_missing_pane_capture_not_treated_as_blank() {
-        use crate::coworker::{Coworker, CoworkerStatus};
-
-        // Simulate two running coworkers
-        let running_coworkers = [
-            Coworker {
-                name: "york".to_string(),
-                status: CoworkerStatus::Running,
-                working_dir: "/tmp/test".to_string(),
-                started_at: Utc::now(),
-                current_task: None,
-                session_id: None,
-                isolated_tasks: false,
+    fn test_process_health_derives_usage_limited_and_api_error_sets() {
+        let mut health = HashMap::new();
+        health.insert(
+            "york".to_string(),
+            ProcessHealth {
+                has_usage_limit: true,
+                ..Default::default()
             },
-            Coworker {
-                name: "park".to_string(),
-                status: CoworkerStatus::Running,
-                working_dir: "/tmp/test".to_string(),
-                started_at: Utc::now(),
-                current_task: None,
-                session_id: None,
-                isolated_tasks: false,
+        );
+        health.insert(
+            "park".to_string(),
+            ProcessHealth {
+                has_api_error: true,
+                ..Default::default()
             },
-        ];
+        );
+        health.insert("madison".to_string(), ProcessHealth::default());
 
-        // Simulate pane capture: york succeeded (empty pane), park FAILED (missing)
-        let mut pane_contents: HashMap<String, String> = HashMap::new();
-        pane_contents.insert("york".to_string(), "".to_string()); // captured, but empty
-
-        // Apply the same filter logic from collect_snapshot (lines 176-185)
-        let blank_pane_coworkers: HashSet<String> = running_coworkers
+        let usage_limited: HashSet<String> = health
             .iter()
-            .filter(|cw| {
-                pane_contents
-                    .get(&cw.name)
-                    .map(|c| !crate::tmux::content_has_output(c))
-                    .unwrap_or(false) // THE FIX: pane capture failed → don't assume blank
-            })
-            .map(|cw| cw.name.to_lowercase())
+            .filter(|(_, h)| h.has_usage_limit)
+            .map(|(n, _)| n.to_lowercase())
+            .collect();
+        let api_error: HashSet<String> = health
+            .iter()
+            .filter(|(n, h)| h.has_api_error && !usage_limited.contains(&n.to_lowercase()))
+            .map(|(n, _)| n.to_lowercase())
             .collect();
 
-        // york: captured empty pane → IS blank
-        assert!(
-            blank_pane_coworkers.contains("york"),
-            "york should be flagged as blank (captured empty pane)"
-        );
-
-        // park: capture FAILED (not in pane_contents) → NOT blank
-        // This is the critical fix: before the fix, park would be in blank_pane_coworkers
-        // and would be killed as a zombie even though it might be actively running.
-        assert!(
-            !blank_pane_coworkers.contains("park"),
-            "park should NOT be flagged as blank (pane capture failed)"
-        );
+        assert!(usage_limited.contains("york"));
+        assert!(!usage_limited.contains("park"));
+        assert!(api_error.contains("park"));
+        assert!(!api_error.contains("madison"));
     }
 
     /// Test that WorldSnapshot has coworker_stop_times field and it serializes correctly.
     #[test]
     fn test_world_snapshot_has_coworker_stop_times() {
-        // Create a minimal WorldSnapshot to verify the field exists and serializes
         let mut stop_times = HashMap::new();
         stop_times.insert("lexington".to_string(), Utc::now());
         stop_times.insert("broadway".to_string(), Utc::now());
@@ -543,9 +491,7 @@ mod tests {
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: stop_times.clone(),
-            pane_contents: HashMap::new(),
-            blank_pane_coworkers: HashSet::new(),
-            coworkers_with_running_subagents: HashSet::new(),
+            headless_process_health: HashMap::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
             all_tasks: vec![],
@@ -571,17 +517,14 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
-            now: Instant::now(),
             now_utc: Utc::now(),
             repo_name: "test-repo".to_string(),
         };
 
-        // Verify the field exists and has the expected values
         assert_eq!(snapshot.coworker_stop_times.len(), 2);
         assert!(snapshot.coworker_stop_times.contains_key("lexington"));
         assert!(snapshot.coworker_stop_times.contains_key("broadway"));
 
-        // Verify it serializes (WorldSnapshot derives Serialize)
         let json = serde_json::to_string(&snapshot).expect("should serialize");
         assert!(json.contains("coworker_stop_times"));
     }
@@ -613,82 +556,10 @@ mod tests {
         assert_eq!(tail[4], "line 10");
     }
 
-    /// Test that pane capture only runs for Running coworkers, not Stopping/Starting ones.
-    ///
-    /// Regression test for the bug where the pane capture loop in collect_world_snapshot
-    /// iterated over `active_coworkers` (all statuses) instead of `running_coworkers`
-    /// (Running only). This caused `tmux capture-pane` to fail with "can't find window"
-    /// errors for coworkers in Stopping/Starting states whose tmux windows were already
-    /// killed or not yet created. With 6 on-break coworkers, this produced hundreds of
-    /// errors per tick in daemon.err.
-    #[test]
-    fn test_pane_capture_only_for_running_coworkers() {
-        use crate::coworker::{Coworker, CoworkerStatus};
-
-        // Simulate a mix of coworker statuses
-        let all_coworkers = [
-            Coworker {
-                name: "lexington".to_string(),
-                status: CoworkerStatus::Running,
-                working_dir: "/tmp/test".to_string(),
-                started_at: Utc::now(),
-                current_task: None,
-                session_id: None,
-                isolated_tasks: false,
-            },
-            Coworker {
-                name: "park".to_string(),
-                status: CoworkerStatus::Stopping, // on break, window killed
-                working_dir: "/tmp/test".to_string(),
-                started_at: Utc::now(),
-                current_task: None,
-                session_id: None,
-                isolated_tasks: false,
-            },
-            Coworker {
-                name: "madison".to_string(),
-                status: CoworkerStatus::Running,
-                working_dir: "/tmp/test".to_string(),
-                started_at: Utc::now(),
-                current_task: None,
-                session_id: None,
-                isolated_tasks: false,
-            },
-            Coworker {
-                name: "broadway".to_string(),
-                status: CoworkerStatus::Starting, // not yet spawned
-                working_dir: "/tmp/test".to_string(),
-                started_at: Utc::now(),
-                current_task: None,
-                session_id: None,
-                isolated_tasks: false,
-            },
-        ];
-
-        // Filter to running only — this is what the pane capture loop should use
-        let running_coworkers: Vec<&Coworker> = all_coworkers
-            .iter()
-            .filter(|cw| cw.status == CoworkerStatus::Running)
-            .collect();
-
-        // Only Running coworkers should be candidates for pane capture
-        assert_eq!(running_coworkers.len(), 2);
-        let names: Vec<&str> = running_coworkers
-            .iter()
-            .map(|cw| cw.name.as_str())
-            .collect();
-        assert!(names.contains(&"lexington"));
-        assert!(names.contains(&"madison"));
-        // Stopping and Starting coworkers must NOT be captured
-        assert!(!names.contains(&"park"));
-        assert!(!names.contains(&"broadway"));
-    }
-
     /// Test that debug context fields (channel_messages, daemon_logs) are empty
     /// during normal snapshot collection to avoid I/O overhead on the hot path.
     #[test]
     fn test_snapshot_debug_context_empty_by_default() {
-        // Create a minimal WorldSnapshot mimicking what collect_world_snapshot returns
         let snapshot = WorldSnapshot {
             active_coworkers: vec![],
             running_coworkers: vec![],
@@ -697,9 +568,7 @@ mod tests {
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),
-            pane_contents: HashMap::new(),
-            blank_pane_coworkers: HashSet::new(),
-            coworkers_with_running_subagents: HashSet::new(),
+            headless_process_health: HashMap::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
             all_tasks: vec![],
@@ -720,27 +589,18 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
-            channel_messages: vec![], // Empty by default
-            daemon_logs: vec![],      // Empty by default
+            channel_messages: vec![],
+            daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
-            now: Instant::now(),
             now_utc: Utc::now(),
             repo_name: "test-repo".to_string(),
         };
 
-        // Debug context should be empty (not populated during tick)
-        assert!(
-            snapshot.channel_messages.is_empty(),
-            "channel_messages should be empty during normal tick collection"
-        );
-        assert!(
-            snapshot.daemon_logs.is_empty(),
-            "daemon_logs should be empty during normal tick collection"
-        );
+        assert!(snapshot.channel_messages.is_empty());
+        assert!(snapshot.daemon_logs.is_empty());
 
-        // Verify it still serializes correctly with empty fields
         let json = serde_json::to_string(&snapshot).expect("should serialize");
         assert!(json.contains("\"channel_messages\":[]"));
         assert!(json.contains("\"daemon_logs\":[]"));

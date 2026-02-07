@@ -1,15 +1,15 @@
 //! Health check functions for coworker lifecycle monitoring.
 //!
 //! These functions detect and respond to coworker health issues:
-//! idle shutdown, stuck panes, usage limits, zombie processes, and
-//! reminder firing. Pane scraping is used exclusively for health
-//! detection — workflow state is reported via RPC.
+//! idle shutdown, stuck processes, usage limits, and reminder firing.
+//! Health state is read from structured `ProcessHealth` data (populated
+//! by the session management layer from headless stream events) instead
+//! of parsing raw tmux pane content.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{config, daemon_messages, web};
 
@@ -206,7 +206,6 @@ pub(super) fn determine_lead_working(
 /// - They have open unmerged PRs (must stay available for review feedback)
 /// - They have active review assignments
 /// - They have unblocked dependent tasks
-/// - They have running subagents (Task tool agents)
 /// - They are usage-limited (waiting for usage limit reset)
 /// - They have API errors (will be nudged to retry instead)
 ///
@@ -255,7 +254,6 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             &snap.coworkers_with_open_prs,
             &snap.active_reviewers,
             &snap.coworkers_with_unblocked_deps,
-            &snap.coworkers_with_running_subagents,
             &snap.ci_passed_pr_coworkers,
             &snap.usage_limited_coworkers,
             &snap.api_error_coworkers,
@@ -291,17 +289,13 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
                 .active_reviewers
                 .iter()
                 .any(|r| r.eq_ignore_ascii_case(name));
-            let has_subagent = snap
-                .coworkers_with_running_subagents
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(name));
             let ci_passed = snap
                 .ci_passed_pr_coworkers
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(name));
             warn!(
-                "IDLE_SHUTDOWN: {} - is_busy={}, has_open_pr={}, is_reviewing={}, has_subagent={}, ci_passed={}",
-                name, is_busy, has_open_pr, is_reviewing, has_subagent, ci_passed,
+                "IDLE_SHUTDOWN: {} - is_busy={}, has_open_pr={}, is_reviewing={}, ci_passed={}",
+                name, is_busy, has_open_pr, is_reviewing, ci_passed,
             );
         }
     }
@@ -382,13 +376,12 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
     effects
 }
 
-/// Detect coworkers whose tmux pane content has not changed for `COWORKER_STUCK_DURATION`,
-/// kill them, and respawn with their current task prompt.
+/// Detect coworkers whose headless process has not produced events for
+/// `COWORKER_STUCK_DURATION`, kill them, and respawn with their current task.
 ///
-/// Uses the same pane-hashing approach as lead typing detection. Each tick we hash
-/// every coworker's captured pane content and compare to the previous hash. If the
-/// hash has been unchanged for 5 minutes, the coworker is assumed stuck (hung process,
-/// infinite loop, etc.) and is restarted.
+/// Uses `ProcessHealth.last_event_at` from the headless session stream.
+/// A coworker is stuck if it's alive but hasn't emitted any stream events
+/// for the stuck duration, and it has an in-progress task.
 pub(super) async fn check_and_restart_stuck_coworkers(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
@@ -397,44 +390,19 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         return vec![];
     }
 
-    // Extract pane hashes from unified records, run pure decision, write back
-    let mut records = state.coworker_records.write().await;
-    let hashes: HashMap<String, (u64, Instant)> = records
-        .iter()
-        .filter_map(|(name, r): (&String, &crate::rules::CoworkerRecord)| {
-            r.pane_hash.map(|h| (name.clone(), h))
-        })
-        .collect();
-    let result = crate::rules::decide_stuck_coworker_restarts(
-        &hashes,
-        &snap.pane_contents,
+    let restarts = crate::rules::decide_stuck_coworker_restarts(
+        &snap.headless_process_health,
         &snap.in_progress_tasks,
         &snap.usage_limited_coworkers,
         &snap.api_error_coworkers,
-        snap.now,
+        snap.now_utc,
         COWORKER_STUCK_DURATION,
     );
 
-    // Write updated hashes back into records
-    for (name, hash_entry) in &result.updated_hashes {
-        records
-            .entry(name.clone())
-            .or_insert_with(crate::rules::CoworkerRecord::new_spawn)
-            .pane_hash = Some(*hash_entry);
-    }
-    // Clear hashes for coworkers no longer tracked
-    for (name, record) in records.iter_mut() {
-        if !result.updated_hashes.contains_key(name) {
-            record.pane_hash = None;
-        }
-    }
-    drop(records);
-
-    // Generate effects from pure decisions
     let mut effects = Vec::new();
-    for restart in result.restarts {
+    for restart in restarts {
         info!(
-            "Coworker {} pane unchanged for {}s — restarting for task #{}",
+            "Coworker {} no events for {}s — restarting for task #{}",
             restart.name,
             COWORKER_STUCK_DURATION.as_secs(),
             restart.task_id
@@ -463,7 +431,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "🔄 Restarted stuck coworker {} (pane unchanged for {}s) — resuming task #{}",
+                "🔄 Restarted stuck coworker {} (no events for {}s) — resuming task #{}",
                 restart.name,
                 COWORKER_STUCK_DURATION.as_secs(),
                 restart.task_id
@@ -474,16 +442,14 @@ pub(super) async fn check_and_restart_stuck_coworkers(
     effects
 }
 
-// Usage limit patterns and parse_usage_limit_duration moved to crate::rules
-
-/// Check all active coworkers' tmux panes for usage/rate limit messages.
+/// Check headless coworker process health for usage/rate limit detection.
 /// If detected, schedule a nudge for when the limit expires.
 ///
 /// Usage limits are account-wide, so when one coworker hits it, all of them
-/// will be stuck. We detect it from any coworker, parse the expiry, and
-/// schedule a single nudge time for everyone.
+/// will be stuck. We detect it from any coworker's ProcessHealth flag and
+/// schedule a default nudge time (15 minutes, since we can't parse the exact
+/// duration from structured events yet).
 pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    // If we already have a nudge scheduled, don't re-detect
     if snap.usage_limit_nudge_scheduled {
         return vec![];
     }
@@ -492,37 +458,25 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
         return vec![];
     }
 
-    // Pure decision: detect usage limit
-    let decision = crate::rules::decide_usage_limit_detection(&snap.pane_contents);
+    // Find the first coworker with a usage limit flag
+    let detected_coworker = snap
+        .headless_process_health
+        .iter()
+        .find(|(_, health)| health.has_usage_limit)
+        .map(|(name, _)| name.clone());
 
-    let detected_coworker = match decision {
-        crate::rules::UsageLimitDecision::Detected { coworker } => coworker,
-        _ => return vec![],
+    let detected_coworker = match detected_coworker {
+        Some(name) => name,
+        None => return vec![],
     };
 
-    // Find the pane content for the detected coworker to parse duration
-    let pane_content = snap
-        .pane_contents
-        .get(&detected_coworker)
-        .map(|s| s.as_str())
-        .unwrap_or("");
-
-    let wait_duration = crate::rules::parse_usage_limit_duration(pane_content);
+    // Default wait: 15 minutes (structured events don't carry exact duration yet)
+    let wait_duration = Duration::from_secs(15 * 60);
     let nudge_time = tokio::time::Instant::now() + wait_duration + USAGE_LIMIT_NUDGE_BUFFER;
 
-    let human_duration = if wait_duration.as_secs() >= 3600 {
-        format!(
-            "{}h {}m",
-            wait_duration.as_secs() / 3600,
-            (wait_duration.as_secs() % 3600) / 60
-        )
-    } else {
-        format!("{}m", wait_duration.as_secs() / 60)
-    };
-
     info!(
-        "Usage limit detected via coworker {} — scheduling nudge in {} + 30s buffer",
-        detected_coworker, human_duration
+        "Usage limit detected via coworker {} — scheduling nudge in 15m + 30s buffer",
+        detected_coworker
     );
 
     vec![
@@ -530,8 +484,8 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
         Effect::PostToChannel {
             sender: "system".to_string(),
             message: format!(
-                "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~{} when it resets.",
-                detected_coworker, human_duration
+                "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~15m when it resets.",
+                detected_coworker
             ),
         },
     ]
@@ -668,288 +622,78 @@ pub(super) fn check_and_nudge_api_errors(
     effects
 }
 
-/// Detect coworkers stuck in compaction (whirlpool) or with queued prompts,
-/// and send the appropriate recovery keypress (Escape or Enter).
+/// Detect headless coworkers whose process has exited unexpectedly and restart them.
 ///
-/// Uses per-coworker cooldowns to avoid spamming keys on every tick.
-///
-/// `exclude_names` allows the caller to skip coworkers that are already being
-/// shut down (e.g., from idle shutdown effects in the same tick), preventing
-/// race conditions where we interrupt a coworker that's about to terminate.
-pub(super) fn check_and_recover_stuck_ui(
-    snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
-    exclude_names: &HashSet<String>,
-) -> Vec<Effect> {
-    if snap.active_coworkers.is_empty() {
-        return vec![];
-    }
-
-    let recoveries = crate::rules::decide_stuck_ui_recoveries(
-        &snap.pane_contents,
-        MIN_COMPACTION_STUCK_DURATION,
-        &snap.coworker_start_times,
-        snap.now_utc,
-        chrono::Duration::seconds(QUEUED_NUDGE_MIN_AGE_SECS),
-    );
-
-    let mut effects = Vec::new();
-
-    for recovery in recoveries {
-        match recovery {
-            crate::rules::StuckUiRecovery::InterruptCompaction { name } => {
-                // Skip coworkers being shut down
-                if exclude_names.contains(&name) {
-                    debug!(
-                        "Skipping compaction recovery for {} (being shut down)",
-                        name
-                    );
-                    continue;
-                }
-
-                let should_act = {
-                    let cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.check("compaction_recovery", &name, COMPACTION_RECOVERY_COOLDOWN)
-                };
-                if !should_act {
-                    debug!("Compaction recovery cooldown active for {}", name);
-                    continue;
-                }
-
-                info!(
-                    "Coworker {} stuck in compaction — sending Escape to interrupt",
-                    name
-                );
-                // Trace log pane content for debugging false positives
-                // Guard with enabled! to avoid expensive string operations when trace is disabled
-                if tracing::enabled!(tracing::Level::TRACE)
-                    && let Some(pane_content) = snap.pane_contents.get(&name)
-                {
-                    // Log last 20 lines to see what triggered detection
-                    let last_lines: Vec<&str> = pane_content.lines().rev().take(20).collect();
-                    trace!(
-                        coworker = %name,
-                        pane_tail = ?last_lines,
-                        "Compaction detection triggered - last 20 pane lines (reversed)"
-                    );
-                }
-                effects.push(Effect::SendRawKeys {
-                    name: name.clone(),
-                    keys: "Escape".to_string(),
-                });
-                effects.push(Effect::RecordCooldown {
-                    category: "compaction_recovery".to_string(),
-                    key: name.clone(),
-                });
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!("🌀 Interrupted stuck compaction for {} (sent Escape)", name),
-                });
-            }
-            crate::rules::StuckUiRecovery::InterruptQueuedNudges { name } => {
-                // Skip coworkers being shut down (effect coordination logic stays here)
-                if exclude_names.contains(&name) {
-                    debug!(
-                        "Skipping queued nudge recovery for {} (being shut down)",
-                        name
-                    );
-                    continue;
-                }
-
-                // Age-based protection is handled in the pure decision function
-                // (decide_stuck_ui_recoveries filters out young coworkers)
-
-                let should_act = {
-                    let cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.check(
-                        "queued_prompt_recovery",
-                        &name,
-                        QUEUED_PROMPT_RECOVERY_COOLDOWN,
-                    )
-                };
-                if !should_act {
-                    debug!("Queued prompt recovery cooldown active for {}", name);
-                    continue;
-                }
-
-                // Extract the queued text and check if it matches a daemon-sent nudge
-                let pane_content = snap.pane_contents.get(&name);
-                let queued_text = pane_content
-                    .and_then(|content| crate::rules::extract_queued_nudge_text(content));
-
-                let is_daemon_nudge = queued_text
-                    .as_ref()
-                    .is_some_and(|text| state.matches_pending_nudge(&name, text));
-
-                if is_daemon_nudge {
-                    // Daemon-sent nudge: send Enter to auto-submit
-                    info!(
-                        "Coworker {} has daemon-sent nudge stuck in queue — sending Enter to submit",
-                        name
-                    );
-                    effects.push(Effect::SendRawKeys {
-                        name: name.clone(),
-                        keys: "Enter".to_string(),
-                    });
-                    effects.push(Effect::RecordCooldown {
-                        category: "queued_prompt_recovery".to_string(),
-                        key: name.clone(),
-                    });
-                    effects.push(Effect::PostToChannel {
-                        sender: "midtown".to_string(),
-                        message: format!("📨 Auto-submitted stuck nudge for {} (sent Enter)", name),
-                    });
-                    // Clear the pending nudge since we're submitting it
-                    state.clear_pending_nudge(&name);
-                } else {
-                    // Not a daemon-sent nudge (user input): don't auto-submit
-                    // Just log and record cooldown to avoid spamming
-                    debug!(
-                        "Coworker {} has queued text that doesn't match pending nudge — leaving alone",
-                        name
-                    );
-                    effects.push(Effect::RecordCooldown {
-                        category: "queued_prompt_recovery".to_string(),
-                        key: name.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    effects
-}
-
-pub(super) async fn check_and_respawn_zombies(
+/// Unlike tmux-based zombie detection (blank pane), this checks if the headless
+/// process has terminated (exit_code is set, is_alive is false) while the coworker
+/// still has work assigned.
+pub(super) async fn check_and_respawn_dead_processes(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    let zombies = crate::rules::detect_blank_pane_zombies(
-        &snap.blank_pane_coworkers,
-        &snap.coworker_start_times,
-        snap.now_utc,
-        chrono::Duration::seconds(ZOMBIE_MIN_AGE_SECS),
-    );
-
     let mut effects = Vec::new();
-    for name in zombies {
-        // Skip active reviewers — they were spawned with a specific review prompt.
-        // Respawning with --continue would produce a confused coworker that doesn't
-        // know which PR to review. Just shut them down and alert.
-        if snap.active_reviewers.contains(&name.to_lowercase()) {
-            warn!(
-                "Blank-pane zombie {} is an active reviewer — shutting down instead of respawning",
-                name
-            );
-            effects.push(Effect::ShutdownCoworker {
-                name: name.clone(),
-                message: String::new(),
-            });
-            effects.push(Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: format!(
-                    "⚠️ Reviewer {} crashed on startup (blank pane). \
-                     Isolated reviewers cannot be respawned — shutting down. \
-                     The PR will be picked up for review on the next poll cycle.",
-                    name
-                ),
-            });
+
+    for (name, health) in &snap.headless_process_health {
+        // Only care about processes that died (not alive, has exit code)
+        if health.is_alive || health.exit_code.is_none() {
             continue;
         }
+
+        // Check if this coworker has an in-progress task
+        let task = snap
+            .in_progress_tasks
+            .iter()
+            .find(|(_id, _subject, owner)| owner.eq_ignore_ascii_case(name));
+
+        let Some((task_id, task_subject, _owner)) = task else {
+            continue;
+        };
 
         // Per-coworker cooldown to prevent respawn loops
         let should_check = {
             let cooldowns = state.cooldowns.lock().unwrap();
-            cooldowns.check("zombie_respawn", &name, ZOMBIE_RESPAWN_COOLDOWN)
+            cooldowns.check("process_respawn", name, ZOMBIE_RESPAWN_COOLDOWN)
         };
         if !should_check {
-            debug!("Zombie respawn cooldown active for {}", name);
+            debug!("Process respawn cooldown active for {}", name);
             continue;
         }
 
-        // Check respawn attempt count — give up after MAX_ZOMBIE_RESPAWN_ATTEMPTS
-        let attempt_count = {
-            let mut records = state.coworker_records.write().await;
-            let record = records
-                .entry(name.clone())
-                .or_insert_with(crate::rules::CoworkerRecord::new_spawn);
-            record.zombie_respawn_count += 1;
-            record.zombie_respawn_count
-        };
-
-        if attempt_count > MAX_ZOMBIE_RESPAWN_ATTEMPTS {
-            warn!(
-                "Zombie {} has failed {} respawn attempts (max {}), giving up",
-                name, attempt_count, MAX_ZOMBIE_RESPAWN_ATTEMPTS
-            );
-            effects.push(Effect::ShutdownCoworker {
-                name: name.clone(),
-                message: String::new(),
-            });
-            effects.push(Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: format!(
-                    "⚠️ Coworker {} failed to start after {} attempts — giving up. \
-                     Check daemon logs for BLANK PANE DIAGNOSTIC details.",
-                    name, MAX_ZOMBIE_RESPAWN_ATTEMPTS
-                ),
-            });
-            // Clean up the counter
-            {
-                let mut records = state.coworker_records.write().await;
-                if let Some(record) = records.get_mut(&name) {
-                    record.zombie_respawn_count = 0;
-                }
-            }
-            continue;
-        }
-
-        // Capture diagnostics before respawning
-        let target = format!("{}:{}", snap.session_name, name);
-        let pane_pid = std::process::Command::new("tmux")
-            .args([
-                "list-panes",
-                "-t",
-                &target,
-                "-F",
-                "#{pane_pid} #{pane_width}x#{pane_height}",
-            ])
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-        let raw_content = crate::tmux::capture_pane(&target)
-            .unwrap_or_default()
-            .chars()
-            .take(200)
-            .collect::<String>();
-        let age = snap
-            .coworker_start_times
-            .get(&name)
-            .map(|t| snap.now_utc.signed_duration_since(*t).num_seconds())
-            .unwrap_or(-1);
-
+        let exit_code = health.exit_code.unwrap_or(-1);
         warn!(
-            "BLANK PANE ZOMBIE {} — age={}s, attempt={}/{}, pane_info=[{}], running_coworkers={}, raw={:?}",
-            name,
-            age,
-            attempt_count,
-            MAX_ZOMBIE_RESPAWN_ATTEMPTS,
-            pane_pid,
-            snap.running_coworkers.len(),
-            raw_content,
+            "Coworker {} process died (exit code {}) — restarting for task #{}",
+            name, exit_code, task_id
         );
 
-        effects.push(Effect::RespawnZombieCoworker { name: name.clone() });
+        let prompt = format_task_prompt(
+            task_id,
+            &format!(
+                "You've been assigned task #{}: {}. Your previous session crashed (exit code {}). Check your git status and continue where you left off.",
+                task_id, task_subject, exit_code
+            ),
+        );
+
+        effects.push(Effect::ShutdownCoworker {
+            name: name.clone(),
+            message: String::new(),
+        });
+        effects.push(Effect::SpawnCoworker(
+            crate::launch::LaunchConfig::coworker(
+                name.clone(),
+                state.repo_name.clone(),
+                crate::launch::SessionMode::Fresh,
+                Some(prompt),
+            ),
+        ));
         effects.push(Effect::RecordCooldown {
-            category: "zombie_respawn".to_string(),
+            category: "process_respawn".to_string(),
             key: name.clone(),
         });
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "🧟 Detected blank-pane zombie {} — respawning (attempt {}/{})",
-                name, attempt_count, MAX_ZOMBIE_RESPAWN_ATTEMPTS
+                "💀 Coworker {} process died (exit {}) — restarting for task #{}",
+                name, exit_code, task_id
             ),
         });
     }
@@ -1111,9 +855,7 @@ mod tests {
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),
-            pane_contents: HashMap::new(),
-            blank_pane_coworkers: HashSet::new(),
-            coworkers_with_running_subagents: HashSet::new(),
+            headless_process_health: HashMap::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
             all_tasks: vec![],
@@ -1140,7 +882,6 @@ mod tests {
             tasks_with_worktrees: HashSet::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
-            now: Instant::now(),
             now_utc: chrono::Utc::now(),
             repo_name: "test-repo".to_string(),
         };
