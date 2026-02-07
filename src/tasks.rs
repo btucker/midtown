@@ -2284,6 +2284,56 @@ mod tests {
     }
 
     #[test]
+    fn test_concurrent_task_creation_with_highwatermark() {
+        // Verify that concurrent task creation with a pre-existing .highwatermark
+        // produces unique IDs that all exceed the watermark value.
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Pre-populate with a highwatermark (simulating purged tasks)
+        std::fs::write(tasks_dir.join(".highwatermark"), "100").unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let dir = tasks_dir.clone();
+            handles.push(std::thread::spawn(move || {
+                create_task_in_dir(
+                    &dir,
+                    &format!("Concurrent task {}", i),
+                    &format!("Description {}", i),
+                    &format!("Working on task {}", i),
+                    &format!("worker-{}", i),
+                )
+                .unwrap()
+            }));
+        }
+
+        let ids: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let unique_ids: std::collections::HashSet<&String> = ids.iter().collect();
+
+        // All 10 tasks should have unique IDs
+        assert_eq!(
+            unique_ids.len(),
+            10,
+            "all concurrent tasks should get unique IDs"
+        );
+
+        // All IDs should be > 100 (the highwatermark value)
+        for id in &ids {
+            let num: u64 = id.parse().unwrap();
+            assert!(num > 100, "task ID {} should be > 100 (highwatermark)", num);
+        }
+
+        // Highwatermark should reflect the highest assigned ID
+        let max_id: u64 = ids
+            .iter()
+            .filter_map(|id| id.parse::<u64>().ok())
+            .max()
+            .unwrap();
+        assert_eq!(read_highwatermark(&tasks_dir), max_id);
+    }
+
+    #[test]
     fn test_highwatermark_prevents_id_reset_after_purge() {
         // Reproduces the bug: when all task files are purged, IDs reset to 1.
         // With .highwatermark support, IDs should continue from the watermark.
