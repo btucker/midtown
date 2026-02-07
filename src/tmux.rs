@@ -1689,6 +1689,10 @@ impl ClaudeLaunchConfig {
         // Set Claude config directory from the active auth profile
         let config_dir = crate::auth::current_profile_dir();
         env_parts.push(format!("CLAUDE_CONFIG_DIR='{}'", config_dir.display()));
+        // Must be a real shell env var — Claude Code blocklists this from settings.json
+        if self.team_name.is_some() {
+            env_parts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1".to_string());
+        }
         let env_export = format!("export {}", env_parts.join(" "));
 
         // -- Claude CLI arguments (as structured Vec, not format! interpolation) --
@@ -2424,7 +2428,10 @@ mod tests {
 
         // Verify common settings are merged in
         assert_eq!(settings["autoUpdates"], false);
-        assert_eq!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "1");
+
+        // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is blocklisted from settings.json by Claude Code;
+        // it's now exported as a real shell env var in to_shell_command() instead.
+        assert!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"].is_null());
 
         // Verify coworker-specific settings
         assert_eq!(settings["editorMode"], "normal");
@@ -2488,7 +2495,10 @@ mod tests {
 
         // Verify common settings are merged in
         assert_eq!(settings["autoUpdates"], false);
-        assert_eq!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "1");
+
+        // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is blocklisted from settings.json by Claude Code;
+        // it's now exported as a real shell env var in to_shell_command() instead.
+        assert!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"].is_null());
 
         // Verify lead-specific hooks
         let stop_hooks = &settings["hooks"]["Stop"];
@@ -3233,6 +3243,12 @@ Claude is now processing the request
             result.shell_command.contains("--team-name midtown-myrepo"),
             "must include --team-name flag"
         );
+        assert!(
+            result
+                .shell_command
+                .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1"),
+            "must export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS as shell env var"
+        );
     }
 
     #[test]
@@ -3266,6 +3282,12 @@ Claude is now processing the request
         assert!(
             !result.shell_command.contains("--team-name"),
             "lead must not have --team-name flag"
+        );
+        assert!(
+            !result
+                .shell_command
+                .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"),
+            "lead must not export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
         );
     }
 

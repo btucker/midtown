@@ -154,7 +154,7 @@ To write to a running Claude Code instance's mailbox from the daemon:
 
 3. **Inbox directory must exist:** `~/.claude/teams/{team-name}/inboxes/`
 
-4. **The `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var must be `"1"`** (already set via common-settings.json).
+4. **The `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var must be `"1"`** (exported as a shell env var in the tmux launch command — cannot be set via settings.json as it is blocklisted).
 
 5. **Message format must match** the expected inbox JSON schema.
 
