@@ -639,6 +639,19 @@ mod tests {
             prompt.contains("REFACTOR DETECTION"),
             "Reviewer prompt should contain REFACTOR DETECTION section"
         );
+        assert!(
+            prompt.contains("TASK DESCRIPTION VERIFICATION"),
+            "Reviewer prompt should contain TASK DESCRIPTION VERIFICATION section"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_resume_prompt_contains_task_verification() {
+        let prompt = reviewer_resume_prompt(1);
+        assert!(
+            prompt.contains("TASK DESCRIPTION VERIFICATION"),
+            "Reviewer resume prompt should contain TASK DESCRIPTION VERIFICATION section"
+        );
     }
 
     #[test]
