@@ -57,7 +57,7 @@ ratatui = "0.29"
 crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Mermaid diagram rendering
-selkie-rs = { version = "0.2", default-features = false }
+selkie-rs = { version = "0.3", default-features = false }
 
 # Async file tailing for instant message updates
 tailf = "0.1"

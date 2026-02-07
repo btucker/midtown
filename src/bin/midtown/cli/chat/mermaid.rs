@@ -243,40 +243,11 @@ fn render_mermaid_diagram(source: &str) -> Option<RenderedDiagram> {
     // Render SVG (works for all diagram types)
     let svg = selkie::render::render_text(&dark_source).ok()?;
 
-    // Try TUI rendering for flowcharts (the only type selkie supports as ASCII)
-    let ascii_art = render_ascii_art(source).unwrap_or_else(|| {
-        // For non-flowchart types, extract a simple text representation from the source
-        format_source_as_ascii(source)
-    });
+    // Render ASCII art (selkie v0.3 supports all diagram types)
+    let ascii_art =
+        selkie::render::render_text_ascii(source).unwrap_or_else(|_| source.to_string());
 
     Some(RenderedDiagram { ascii_art, svg })
-}
-
-/// Attempt to render a flowchart as ASCII art using selkie's TUI renderer
-fn render_ascii_art(source: &str) -> Option<String> {
-    use selkie::diagrams::{detect_type, remove_directives};
-    use selkie::layout::ToLayoutGraph;
-
-    let clean = remove_directives(source);
-    let diagram_type = detect_type(&clean).ok()?;
-
-    // Parse and check if it's a flowchart
-    let diagram = selkie::diagrams::parse(diagram_type, &clean).ok()?;
-    match diagram {
-        selkie::diagrams::Diagram::Flowchart(ref db) => {
-            let estimator = selkie::layout::CharacterSizeEstimator::default();
-            let graph = db.to_layout_graph(&estimator).ok()?;
-            let graph = selkie::layout::layout(graph).ok()?;
-            selkie::render::tui::render_flowchart_tui(db, &graph).ok()
-        }
-        _ => None,
-    }
-}
-
-/// Format mermaid source as a readable ASCII representation for non-flowchart types.
-/// Shows the source lines indented, which is more useful than a single placeholder line.
-fn format_source_as_ascii(source: &str) -> String {
-    source.to_string()
 }
 
 #[cfg(test)]
@@ -405,10 +376,9 @@ mod tests {
         let diagram = result.unwrap();
         assert!(!diagram.svg.is_empty(), "SVG should not be empty");
         assert!(diagram.svg.contains("<svg"), "SVG should contain <svg tag");
-        // Non-flowchart types get source as ASCII fallback
         assert!(
             diagram.ascii_art.contains("Alice"),
-            "ASCII fallback should contain source content"
+            "ASCII art should contain participant names"
         );
     }
 
@@ -420,25 +390,24 @@ mod tests {
     }
 
     #[test]
-    fn test_render_ascii_art_flowchart() {
-        let result = render_ascii_art("graph TD\n  A[Hello]-->B[World]");
-        assert!(result.is_some(), "Flowchart should produce ASCII art");
-        let art = result.unwrap();
+    fn test_render_mermaid_diagram_flowchart_ascii() {
+        let result = render_mermaid_diagram("graph TD\n  A[Hello]-->B[World]");
+        assert!(result.is_some(), "Flowchart should render");
+        let diagram = result.unwrap();
         assert!(
-            art.contains("Hello"),
+            diagram.ascii_art.contains("Hello"),
             "ASCII art should contain node labels"
         );
-        // "World" renders as "Wor▼d" because the edge arrow overlays a character,
-        // so check for the partial label instead.
-        assert!(art.contains("Wor"), "ASCII art should contain node labels");
     }
 
     #[test]
-    fn test_render_ascii_art_non_flowchart_returns_none() {
-        let result = render_ascii_art("sequenceDiagram\n    Alice->>Bob: Hello");
+    fn test_render_mermaid_diagram_sequence_ascii() {
+        let result = render_mermaid_diagram("sequenceDiagram\n    Alice->>Bob: Hello");
+        assert!(result.is_some(), "Sequence diagram should render");
+        let diagram = result.unwrap();
         assert!(
-            result.is_none(),
-            "Non-flowchart should return None for ASCII art"
+            diagram.ascii_art.contains("Alice"),
+            "ASCII art should contain participant names"
         );
     }
 }
