@@ -193,6 +193,20 @@ impl LaunchConfig {
             (None, None)
         };
 
+        // Build env vars for the coworker process
+        let mut env = std::collections::HashMap::new();
+        env.insert("MIDTOWN_AGENT".to_string(), self.name.clone());
+        if let TaskMode::Shared { ref repo_name } = self.task_mode {
+            let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+            env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), task_list_id);
+        }
+        // Set Claude config directory from the active auth profile
+        let config_dir = crate::auth::current_profile_dir();
+        env.insert(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            config_dir.to_string_lossy().to_string(),
+        );
+
         HeadlessConfig {
             model: "sonnet".to_string(), // Default model for coworkers
             system_prompt,
@@ -207,6 +221,7 @@ impl LaunchConfig {
             agent_id,
             agent_name,
             settings_path: None, // Set by caller
+            env,
         }
     }
 

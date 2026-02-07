@@ -15,6 +15,7 @@ mod health;
 pub mod helpers;
 mod pr;
 mod rpc;
+pub(crate) mod sessions;
 pub(crate) mod snapshot;
 mod startup;
 pub(crate) mod state;
@@ -457,6 +458,11 @@ pub(crate) struct DaemonState {
     /// During this period, the coworker must be exempt from stuck detection and
     /// orphan recovery. Entries are added on attach, removed on detach.
     attached_coworkers: std::sync::Mutex<HashSet<String>>,
+    /// Manages running headless coworker sessions.
+    ///
+    /// Owns the child processes and provides spawn/nudge/shutdown primitives.
+    /// Used by `spawn_coworker()` and effect handlers for coworker lifecycle.
+    pub(crate) session_manager: sessions::SessionManager,
 }
 
 impl DaemonState {
@@ -617,26 +623,65 @@ impl DaemonState {
             pending_task_creations: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
+            session_manager: sessions::SessionManager::new(),
         })
     }
 
-    /// Spawn a coworker and initialize its record.
+    /// Spawn a coworker as a headless session and initialize its record.
     ///
-    /// Wraps `CoworkerManager::spawn_with_name` and inserts a fresh
-    /// `CoworkerRecord` on success, ensuring stale state from any
-    /// previous incarnation is replaced.
+    /// Uses `CoworkerManager::prepare_spawn` for worktree lifecycle, then
+    /// `SessionManager::spawn` for the headless process, and finally
+    /// `CoworkerManager::register` to add the coworker to the tracking map.
     async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<()> {
-        self.coworkers.spawn_with_name(config)?;
+        let name = config.name.clone();
+
+        // Prepare worktree and augment config with additional dirs
+        let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
+
+        // Build headless config from the unified launch config
+        let mut headless_config = launch_config.to_headless_config();
+        headless_config.cwd = Some(working_dir.clone());
+
+        // Write shared coworker settings file and set the path
+        let settings_file = crate::tmux::write_coworker_settings_file()?;
+        headless_config.settings_path = Some(settings_file.to_string_lossy().to_string());
+
+        // Set up agent-teams infrastructure (mailbox) before spawning
+        if let Some(ref team_name) = config.team_name {
+            let member = crate::mailbox::TeamMember {
+                name: name.clone(),
+                agent_id: crate::mailbox::agent_id(&name, team_name),
+                agent_type: match config.role {
+                    crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
+                    crate::launch::CoworkerRole::Coworker => "coworker".to_string(),
+                },
+            };
+            if let Err(e) = crate::mailbox::upsert_team_member(team_name, member) {
+                tracing::warn!("Failed to set up team config for {}: {}", name, e);
+            }
+        }
+
+        // Spawn the headless session
+        let initial_prompt = launch_config.initial_prompt.as_deref();
+        self.session_manager
+            .spawn(&name, &headless_config, initial_prompt)
+            .await?;
+
+        // Register in the CoworkerManager tracking map
+        // session_id is None initially — it arrives later via the init StreamEvent
+        let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
+        self.coworkers
+            .register(&name, working_dir, None, isolated_tasks)?;
+
+        // Insert fresh coworker record for health/workflow tracking
         let mut records = self.coworker_records.write().await;
-        records.insert(
-            config.name.clone(),
-            crate::rules::CoworkerRecord::new_spawn(),
-        );
+        records.insert(name.clone(), crate::rules::CoworkerRecord::new_spawn());
+
         // Clear stale stop time so orphan recovery grace period doesn't reference
         // a previous session's shutdown timestamp.
         {
             let mut stop_times = self.coworker_stop_times.write().unwrap();
-            stop_times.remove(&config.name.to_lowercase());
+            stop_times.remove(&name.to_lowercase());
         }
         Ok(())
     }

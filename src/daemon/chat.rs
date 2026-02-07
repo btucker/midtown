@@ -121,7 +121,7 @@ pub(super) async fn chat_monitor_loop(
 pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
     // Check for @all broadcast first
     if contains_at_all(&msg.content) {
-        route_at_all(state, msg);
+        route_at_all(state, msg).await;
         return;
     }
 
@@ -156,7 +156,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
                 name: ref n,
                 message: ref m,
             } => {
-                if let Err(e) = state.coworkers.nudge(n, m) {
+                if let Err(e) = state.session_manager.send_message(n, m).await {
                     warn!("Failed to nudge {} about @mention: {}", n, e);
                 } else {
                     info!("Nudged {} about @mention from {}", n, msg.from);
@@ -212,7 +212,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 }
 
 /// Route an @all broadcast: nudge every running coworker and the lead, except the sender.
-fn route_at_all(state: &DaemonState, msg: &Message) {
+async fn route_at_all(state: &DaemonState, msg: &Message) {
     // Only nudge Running coworkers — Stopping/Starting coworkers have no tmux window.
     let running_coworkers = state.coworkers.list_running();
     let nudge_text = format!("{} said: {}", msg.from, msg.content);
@@ -238,7 +238,11 @@ fn route_at_all(state: &DaemonState, msg: &Message) {
             continue;
         }
 
-        if let Err(e) = state.coworkers.nudge(&coworker.name, &nudge_text) {
+        if let Err(e) = state
+            .session_manager
+            .send_message(&coworker.name, &nudge_text)
+            .await
+        {
             warn!("Failed to nudge {} for @all: {}", coworker.name, e);
         } else {
             info!("Nudged {} for @all from {}", coworker.name, msg.from);

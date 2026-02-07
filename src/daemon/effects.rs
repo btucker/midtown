@@ -16,10 +16,20 @@ pub enum Effect {
     SpawnCoworker(crate::launch::LaunchConfig),
     /// Shut down a running coworker with a message.
     ShutdownCoworker { name: String, message: String },
-    /// Nudge a coworker by sending a message to their tmux pane.
+    /// Nudge a coworker by sending a message to their headless session.
     NudgeCoworker { name: String, message: String },
     /// Nudge the Lead by sending a message to their tmux pane.
     NudgeLead { message: String },
+    /// Resume a stopped headless coworker session.
+    ///
+    /// Uses `SessionManager::spawn` with `SessionMode::ResumeSession` to
+    /// restart a coworker from a previously saved session ID.
+    #[allow(dead_code)]
+    ResumeCoworker {
+        name: String,
+        session_id: String,
+        config: crate::launch::LaunchConfig,
+    },
     /// Deliver a message to a coworker via the agent teams mailbox.
     ///
     /// Uses the filesystem-based inbox (`~/.claude/teams/{team}/inboxes/{name}.json`)
@@ -329,29 +339,25 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::ShutdownCoworker { name, message } => {
-                // Log the shutdown with current window state for debugging
-                let session = state.coworkers.session_name();
-                let windows = crate::tmux::list_windows(session).unwrap_or_default();
                 info!(
                     coworker = %name,
-                    session = %session,
-                    window_count = windows.len(),
-                    windows = ?windows,
                     message_preview = %message.chars().take(50).collect::<String>(),
                     "SHUTDOWN_COWORKER: executing shutdown effect"
                 );
 
-                // Nudge the goodbye message first, then shut down
+                // Send goodbye message via headless stdin, then shut down the session
                 if !message.is_empty()
-                    && let Err(e) = state.coworkers.nudge(&name, &message)
+                    && let Err(e) = state.session_manager.send_message(&name, &message).await
                 {
                     warn!("Failed to send shutdown message to {}: {}", name, e);
                 }
-                if let Err(e) = state.coworkers.shutdown(&name) {
-                    warn!("Failed to shut down coworker {}: {}", name, e);
+                if let Err(e) = state.session_manager.shutdown(&name).await {
+                    warn!("Failed to shut down headless session {}: {}", name, e);
                 } else {
-                    info!(coworker = %name, "SHUTDOWN_COWORKER: shutdown completed");
+                    info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
                 }
+                // Remove from CoworkerManager tracking (without touching tmux)
+                state.coworkers.deregister(&name);
                 // Record stop time for workflow features that need to track coworker lifecycle
                 {
                     let mut stop_times = state.coworker_stop_times.write().unwrap();
@@ -384,7 +390,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::NudgeCoworker { name, message } => {
-                match state.coworkers.nudge(&name, &message) {
+                match state.session_manager.send_message(&name, &message).await {
                     Ok(()) => {
                         // Record pending nudge for attribution tracking
                         state.record_pending_nudge(&name, &message);
@@ -397,6 +403,22 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::NudgeLead { message } => {
                 if let Err(e) = state.coworkers.nudge_lead(&message) {
                     warn!("Failed to nudge Lead: {}", e);
+                }
+            }
+            Effect::ResumeCoworker {
+                name,
+                session_id,
+                mut config,
+            } => {
+                // Override session mode to resume the saved session
+                config.session_mode = crate::launch::SessionMode::ResumeSession(session_id);
+                match state.spawn_coworker(&config).await {
+                    Ok(_) => {
+                        info!("Resumed coworker {} successfully", name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to resume coworker {}: {}", name, e);
+                    }
                 }
             }
             Effect::DeliverMailboxMessage {
@@ -416,13 +438,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     Err(e) => {
                         warn!(
-                            "Failed to deliver mailbox message to {}: {} — falling back to tmux",
+                            "Failed to deliver mailbox message to {}: {} — falling back to headless stdin",
                             name, e
                         );
-                        // Fallback: try tmux send-keys as a last resort
-                        if let Err(nudge_err) = state.coworkers.nudge(&name, &message) {
+                        // Fallback: try headless send_message as a last resort
+                        if let Err(nudge_err) =
+                            state.session_manager.send_message(&name, &message).await
+                        {
                             warn!(
-                                "Fallback tmux nudge also failed for {}: {}",
+                                "Fallback headless nudge also failed for {}: {}",
                                 name, nudge_err
                             );
                         }
@@ -498,7 +522,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     })
                     .collect();
 
-                match state.coworkers.nudge(&name, &message) {
+                match state.session_manager.send_message(&name, &message).await {
                     Ok(()) => {
                         info!("Nudged coworker {} successfully", name);
                         // Record pending nudge for attribution tracking

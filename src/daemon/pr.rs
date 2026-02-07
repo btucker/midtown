@@ -2192,7 +2192,7 @@ pub(super) async fn handle_pr_comment_nudge(
         crate::rules::PrAction::NudgeOwner {
             owner: ref o,
             message: ref msg,
-        } => match state.coworkers.nudge(o, msg) {
+        } => match state.session_manager.send_message(o, msg).await {
             Ok(()) => {
                 info!(
                     "Nudged {} about review comment on PR #{} from {}",
@@ -2428,7 +2428,7 @@ pub(super) async fn handle_webhook_review_state_change(
         crate::rules::PrAction::NudgeOwner {
             owner: ref o,
             message: ref msg,
-        } => match state.coworkers.nudge(o, msg) {
+        } => match state.session_manager.send_message(o, msg).await {
             Ok(()) => {
                 info!(
                     "Webhook: nudged {} about {} on PR #{}",
@@ -2613,7 +2613,7 @@ pub(super) async fn handle_webhook_ci_failure(
         crate::rules::PrAction::NudgeOwner {
             owner: ref o,
             message: ref msg,
-        } => match state.coworkers.nudge(o, msg) {
+        } => match state.session_manager.send_message(o, msg).await {
             Ok(()) => {
                 info!(
                     "Webhook: nudged {} about CI failure on PR #{}",
