@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { connected, activeProject } from './store.js'
-  import { sendWsMessage } from './api.js'
+  import { sendWsMessage, onNextError } from './api.js'
 
   let paneContent = $state('')
   let error = $state(null)
@@ -9,11 +9,13 @@
   let selectedWindow = $state('lead')
   let nudgeText = $state('')
   let nudgeStatus = $state(null)
+  let nudgeError = $state(null)
   let interval = null
   let windowInterval = null
   let paneEl = null
   let resizeTimeout = null
   let nudgeStatusTimeout = null
+  let nudgeErrorTimeout = null
   let lastSentCols = 0
 
   // Approximate character width for a monospace font at 0.8rem.
@@ -87,11 +89,26 @@
   function sendNudge() {
     const text = nudgeText.trim()
     if (!text || !selectedWindow) return
-    sendWsMessage({ type: 'nudge', target: selectedWindow, message: text })
-    nudgeText = ''
-    nudgeStatus = 'sent'
-    if (nudgeStatusTimeout) clearTimeout(nudgeStatusTimeout)
-    nudgeStatusTimeout = setTimeout(() => { nudgeStatus = null }, 2000)
+
+    // Register error handler before sending
+    onNextError((errorMsg) => {
+      nudgeError = errorMsg
+      nudgeStatus = null
+      if (nudgeErrorTimeout) clearTimeout(nudgeErrorTimeout)
+      nudgeErrorTimeout = setTimeout(() => { nudgeError = null }, 4000)
+    })
+
+    if (sendWsMessage({ type: 'nudge', target: selectedWindow, message: text })) {
+      nudgeText = ''
+      nudgeStatus = 'sent'
+      nudgeError = null
+      if (nudgeStatusTimeout) clearTimeout(nudgeStatusTimeout)
+      nudgeStatusTimeout = setTimeout(() => { nudgeStatus = null }, 2000)
+    } else {
+      nudgeError = 'Not connected to server'
+      if (nudgeErrorTimeout) clearTimeout(nudgeErrorTimeout)
+      nudgeErrorTimeout = setTimeout(() => { nudgeError = null }, 4000)
+    }
   }
 
   function handleNudgeKeydown(e) {
@@ -172,6 +189,7 @@
     window.removeEventListener('resize', handleResize)
     if (resizeTimeout) clearTimeout(resizeTimeout)
     if (nudgeStatusTimeout) clearTimeout(nudgeStatusTimeout)
+    if (nudgeErrorTimeout) clearTimeout(nudgeErrorTimeout)
   })
 </script>
 
@@ -210,6 +228,9 @@
     </button>
     {#if nudgeStatus === 'sent'}
       <span class="nudge-status">Sent</span>
+    {/if}
+    {#if nudgeError}
+      <span class="nudge-error">{nudgeError}</span>
     {/if}
   </div>
 </div>
@@ -359,6 +380,13 @@
     font-size: 0.7rem;
     white-space: nowrap;
     animation: fade-out 2s forwards;
+  }
+
+  .nudge-error {
+    color: #e94560;
+    font-size: 0.7rem;
+    white-space: nowrap;
+    animation: fade-out 4s forwards;
   }
 
   @keyframes fade-out {

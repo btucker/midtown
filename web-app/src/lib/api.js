@@ -219,6 +219,23 @@ export function connectWebSocket() {
   }
 }
 
+// Callbacks for handling error responses from the server
+const errorCallbacks = new Map()
+let nextErrorCallbackId = 1
+
+// Register a callback to handle the next error from the server
+// Returns a callback ID that can be used to unregister if needed
+export function onNextError(callback) {
+  const id = nextErrorCallbackId++
+  errorCallbacks.set(id, callback)
+  return id
+}
+
+// Unregister an error callback
+export function clearErrorCallback(id) {
+  errorCallbacks.delete(id)
+}
+
 // Handle incoming WebSocket updates
 function handleUpdate(update) {
   switch (update.type) {
@@ -249,6 +266,11 @@ function handleUpdate(update) {
       if (update.data.working) {
         leadTypingTimeout = setTimeout(() => leadTyping.set(false), 45000)
       }
+      break
+    case 'error':
+      // Invoke all registered error callbacks and then clear them
+      errorCallbacks.forEach((callback) => callback(update.data.message))
+      errorCallbacks.clear()
       break
     default:
       console.log('Unknown update type:', update.type)

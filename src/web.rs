@@ -285,6 +285,9 @@ pub enum WebUpdate {
     /// Lead is actively working (typing indicator)
     #[serde(rename = "lead_typing")]
     LeadTyping(LeadTypingData),
+    /// Error response for a client action
+    #[serde(rename = "error")]
+    Error(ErrorData),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -306,6 +309,11 @@ pub struct CoworkerStatusData {
 #[derive(Debug, Clone, Serialize)]
 pub struct LeadTypingData {
     pub working: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorData {
+    pub message: String,
 }
 
 /// WebSocket message from client
@@ -1100,19 +1108,50 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
     // Subscribe to broadcast updates
     let mut updates_rx = state.updates_tx.subscribe();
 
-    // Spawn task to forward broadcast updates to this client
-    let send_task = tokio::spawn(async move {
-        while let Ok(update) = updates_rx.recv().await {
-            let json = match serde_json::to_string(&update) {
-                Ok(j) => j,
-                Err(e) => {
-                    error!("Failed to serialize update: {}", e);
-                    continue;
-                }
-            };
+    // Create a channel for sending error messages back to the client
+    let (error_tx, mut error_rx) = tokio::sync::mpsc::channel::<String>(10);
 
-            if sender.send(WsMessage::Text(json.into())).await.is_err() {
-                break;
+    // Spawn task to forward broadcast updates and error messages to this client
+    let send_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                update = updates_rx.recv() => {
+                    match update {
+                        Ok(update) => {
+                            let json = match serde_json::to_string(&update) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    error!("Failed to serialize update: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            if sender.send(WsMessage::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                error_msg = error_rx.recv() => {
+                    match error_msg {
+                        Some(msg) => {
+                            let error_update = WebUpdate::Error(ErrorData { message: msg });
+                            let json = match serde_json::to_string(&error_update) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    error!("Failed to serialize error: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            if sender.send(WsMessage::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
             }
         }
     });
@@ -1124,6 +1163,8 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
             Ok(WsMessage::Text(text)) => {
                 if let Err(e) = handle_client_message(&text, &state_clone, conn_id).await {
                     warn!("Error handling client message: {}", e);
+                    // Send error back to client
+                    let _ = error_tx.send(e).await;
                 }
             }
             Ok(WsMessage::Close(_)) => break,
@@ -1598,5 +1639,45 @@ mod tests {
         assert!(json.contains("coworker_status"));
         assert!(json.contains("park"));
         assert!(json.contains("stopped"));
+    }
+
+    #[test]
+    fn test_error_update_serialization() {
+        let update = WebUpdate::Error(ErrorData {
+            message: "Coworker nudge not supported".to_string(),
+        });
+
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains("error"));
+        assert!(json.contains("Coworker nudge not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_coworker_nudge_returns_error() {
+        // Verify that attempting to nudge a coworker returns an error.
+        // Note: We can't easily test with a real CoworkerManager in a unit test,
+        // so we test the case where coworkers is None (which also returns an error).
+        let (updates_tx, _) = broadcast::channel(10);
+        let (channel_post_tx, _) = mpsc::channel(10);
+
+        let state = Arc::new(WebState {
+            config: WebConfig::default(),
+            updates_tx,
+            coworkers: None, // No coworker manager available
+            channel_post_tx,
+            push_manager: None,
+            all_repo_paths: Vec::new(),
+            default_branch: "main".to_string(),
+            repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
+        });
+
+        let json = r#"{"type": "nudge", "target": "lexington", "message": "test nudge"}"#;
+        let result = handle_client_message(json, &state, 1).await;
+
+        // Should return an error since coworker manager is not available
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("not available"));
     }
 }
