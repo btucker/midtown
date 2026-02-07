@@ -37,7 +37,15 @@ Your job:
 1. Evaluate whether a diagram would genuinely help illustrate this insight
 2. If yes, explore the relevant source files to understand the structure
 3. Produce a single Mermaid diagram that accurately represents the insight
-4. If a diagram adds no value (e.g., the insight is about a simple naming choice), return exactly: NO_DIAGRAM
+4. Validate the diagram renders correctly using selkie (see below)
+5. If a diagram adds no value (e.g., the insight is about a simple naming choice), return exactly: NO_DIAGRAM
+
+Validation — REQUIRED before returning any diagram:
+After generating your mermaid diagram, you MUST validate it renders by running:
+  echo '<your mermaid source>' | ~/projects/selkie/target/release/selkie render - -o /dev/null
+If the command fails, read the error message, fix the diagram syntax, and re-validate.
+You have at most 2 fix attempts. If you still cannot produce a valid diagram after 2 fixes, return NO_DIAGRAM.
+Only return the ```mermaid fence block after it passes validation.
 
 Rules:
 - Output exactly one ```mermaid fence block, or NO_DIAGRAM — nothing else
@@ -117,6 +125,16 @@ pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: 
         info!("Architect: no mermaid block found in output, skipping");
         return;
     };
+
+    // Safety net: verify the diagram renders with selkie. The architect should
+    // have already validated via CLI, but LLMs don't always follow instructions.
+    if let Err(e) = selkie::render::render_text(&diagram) {
+        warn!(
+            "Architect: diagram failed selkie validation (architect may have skipped CLI check): {}",
+            e
+        );
+        return;
+    }
 
     // Post diagram to channel as "architect"
     let channel = match crate::Channel::for_repo(&repo_name) {
@@ -210,5 +228,35 @@ Done."#;
     fn test_extract_mermaid_block_no_fence() {
         let text = "Just some regular text without any mermaid blocks.";
         assert!(extract_mermaid_block(text).is_none());
+    }
+
+    #[test]
+    fn test_valid_mermaid_passes_selkie_validation() {
+        let diagram = "graph TD\n    A[Start] --> B[End]";
+        assert!(
+            selkie::render::render_text(diagram).is_ok(),
+            "valid mermaid should pass selkie validation"
+        );
+    }
+
+    #[test]
+    fn test_invalid_mermaid_fails_selkie_validation() {
+        let diagram = "not valid mermaid {{{";
+        assert!(
+            selkie::render::render_text(diagram).is_err(),
+            "invalid mermaid should fail selkie validation"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_contains_selkie_validation() {
+        assert!(
+            ARCHITECT_SYSTEM_PROMPT.contains("selkie"),
+            "system prompt should include selkie validation instructions"
+        );
+        assert!(
+            ARCHITECT_SYSTEM_PROMPT.contains("2 fix attempts"),
+            "system prompt should cap retries at 2"
+        );
     }
 }
