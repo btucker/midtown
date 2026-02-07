@@ -961,37 +961,53 @@ pub(super) async fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    // Convert snapshot HashSet to Vec for evaluate_trigger compatibility
     let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
-
     let ps = state.persistent_state.lock().await;
-    let mut fired_ids = Vec::new();
-    let mut effects = Vec::new();
+    build_reminder_effects(&ps.reminders.reminders, &open_pr_coworkers, &snap.repo_name)
+}
 
-    for reminder in &ps.reminders.reminders {
-        if reminder.fired {
-            continue;
-        }
-        if crate::reminders::evaluate_trigger(&reminder.trigger, &open_pr_coworkers) {
-            info!(
-                "Reminder {} should fire (trigger: {}): {}",
-                reminder.id, reminder.trigger, reminder.message
-            );
-            effects.push(Effect::PostToChannel {
-                sender: "system".to_string(),
-                message: format!(
-                    "\u{23f0} Reminder ({}): {}",
-                    reminder.trigger, reminder.message
-                ),
-            });
-            fired_ids.push(reminder.id.clone());
-        }
+/// Pure function: evaluate reminders and build effects (PostToChannel + NudgeLead + MarkFired).
+fn build_reminder_effects(
+    reminders: &[crate::reminders::Reminder],
+    open_pr_coworkers: &[String],
+    repo_name: &str,
+) -> Vec<Effect> {
+    let fired: Vec<&crate::reminders::Reminder> = reminders
+        .iter()
+        .filter(|r| !r.fired && crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers))
+        .collect();
+    effects_for_fired_reminders(&fired, repo_name)
+}
+
+/// Build effects for reminders that have already been evaluated as firing.
+fn effects_for_fired_reminders(
+    fired: &[&crate::reminders::Reminder],
+    repo_name: &str,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    let mut fired_ids = Vec::new();
+
+    for reminder in fired {
+        info!(
+            "Reminder {} should fire (trigger: {}): {}",
+            reminder.id, reminder.trigger, reminder.message
+        );
+        let message = format!(
+            "\u{23f0} Reminder ({}): {}",
+            reminder.trigger, reminder.message
+        );
+        effects.push(Effect::PostToChannel {
+            sender: "system".to_string(),
+            message: message.clone(),
+        });
+        effects.push(Effect::NudgeLead { message });
+        fired_ids.push(reminder.id.clone());
     }
 
     if !fired_ids.is_empty() {
         effects.push(Effect::MarkRemindersFired {
             fired_ids,
-            repo_name: snap.repo_name.clone(),
+            repo_name: repo_name.to_string(),
         });
     }
 
@@ -1149,5 +1165,46 @@ mod tests {
             "Stopping coworker must NOT be nudged"
         );
         assert_eq!(nudge_names.len(), 1, "Only 1 coworker should be nudged");
+    }
+
+    #[test]
+    fn test_fired_reminder_nudges_lead() {
+        use crate::reminders::{Reminder, ReminderTrigger};
+
+        let reminder = Reminder {
+            id: "abc123".to_string(),
+            trigger: ReminderTrigger::AllWorkMerged,
+            message: "Cut new release".to_string(),
+            created_at: chrono::Utc::now(),
+            fired: false,
+        };
+        let fired = vec![&reminder];
+
+        let effects = effects_for_fired_reminders(&fired, "test-repo");
+
+        // Should have: PostToChannel, NudgeLead, MarkRemindersFired
+        assert_eq!(effects.len(), 3, "Expected 3 effects");
+        assert!(
+            matches!(&effects[0], Effect::PostToChannel { .. }),
+            "First effect should be PostToChannel"
+        );
+        assert!(
+            matches!(&effects[1], Effect::NudgeLead { .. }),
+            "Second effect should be NudgeLead"
+        );
+        assert!(
+            matches!(&effects[2], Effect::MarkRemindersFired { .. }),
+            "Third effect should be MarkRemindersFired"
+        );
+    }
+
+    #[test]
+    fn test_fired_reminder_no_reminders_produces_no_effects() {
+        let fired: Vec<&crate::reminders::Reminder> = vec![];
+        let effects = effects_for_fired_reminders(&fired, "test-repo");
+        assert!(
+            effects.is_empty(),
+            "No fired reminders should produce no effects"
+        );
     }
 }
