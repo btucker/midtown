@@ -1125,9 +1125,22 @@ Second insight
         let second = post_insight_to_channel(&repo, "coworker-b", insight);
         assert!(!second, "second fallback post should be blocked by dedup");
 
-        // Verify only one message was posted to the channel
+        // Verify only one message was posted to the channel.
+        // Retry read_all() to handle transient WouldBlock from try_lock_shared()
+        // when the exclusive lock from send() hasn't fully released yet under
+        // CI load (same pattern as channel.rs retry_with_backoff).
         let channel = midtown::Channel::for_repo(&repo).unwrap();
-        let messages = channel.read_all().unwrap();
+        let messages = {
+            let mut result = channel.read_all();
+            for _ in 0..10 {
+                if result.is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                result = channel.read_all();
+            }
+            result.unwrap()
+        };
         let insight_messages: Vec<_> = messages
             .iter()
             .filter(|m| m.content.contains(insight))
