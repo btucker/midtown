@@ -52,8 +52,6 @@ pub enum Effect {
     ClearUsageLimitNudge,
     /// Reset a task back to pending (e.g. when a coworker can't be respawned).
     ResetTaskToPending { task_id: String, repo_name: String },
-    /// Kill a zombie coworker (blank pane) and respawn with --continue.
-    RespawnZombieCoworker { name: String },
     /// Spawn a coworker with conditional follow-up effects.
     ///
     /// On success, `on_success` effects are executed. On failure, `on_failure`
@@ -107,10 +105,6 @@ pub enum Effect {
     RecordTaskAssignment { coworker: String, task_id: String },
     /// Clear a saved PR break session after successful resume.
     ClearPrBreakSession { name: String },
-    /// Send raw tmux keys to a coworker (e.g., Escape, Enter) without the
-    /// nudge text mechanism. Used for recovering stuck states like compaction
-    /// whirlpools or queued prompts.
-    SendRawKeys { name: String, keys: String },
     /// Assign a reviewer to a PR in github_state and persist.
     AssignReviewer {
         pr_number: u64,
@@ -467,46 +461,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Clear task assignment tracking (task is no longer assigned)
                 state.clear_task_assignment_by_task(&task_id);
             }
-            Effect::RespawnZombieCoworker { name } => {
-                // Shut down properly (kills window + removes from internal registry)
-                if let Err(e) = state.coworkers.shutdown(&name) {
-                    warn!("Failed to shutdown zombie coworker {}: {}", name, e);
-                }
-                // Record stop time for workflow features that need to track coworker lifecycle
-                {
-                    let mut stop_times = state.coworker_stop_times.write().unwrap();
-                    stop_times.insert(name.to_lowercase(), chrono::Utc::now());
-                }
-                // Clean up unified coworker record
-                {
-                    let mut records = state.coworker_records.write().await;
-                    records.remove(&name);
-                }
-                // Clear cooldown entries for this coworker (prevents stale state on respawn)
-                {
-                    let mut cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.clear_for_key(&name);
-                }
-                // Clear any pending nudge for this coworker (prevents stale attribution)
-                state.clear_pending_nudge(&name);
-                // Brief delay to let tmux clean up
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                // Respawn with --continue to resume the coworker's conversation
-                let config = crate::launch::LaunchConfig::coworker(
-                    name.clone(),
-                    state.repo_name.clone(),
-                    crate::launch::SessionMode::Resume,
-                    None,
-                );
-                match state.spawn_coworker(&config).await {
-                    Ok(_) => {
-                        info!("Respawned zombie coworker {} successfully", name);
-                    }
-                    Err(e) => {
-                        warn!("Failed to respawn zombie coworker {}: {}", name, e);
-                    }
-                }
-            }
             Effect::SpawnCoworkerWithCallbacks {
                 config,
                 on_success,
@@ -647,13 +601,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 ps.github.assign_reviewer(pr_number, &reviewer_name, source);
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon-state.json: {}", e);
-                }
-            }
-            Effect::SendRawKeys { name, keys } => {
-                if let Err(e) =
-                    crate::tmux::send_keys_raw(state.coworkers.session_name(), &name, &keys)
-                {
-                    warn!("Failed to send raw keys to {}: {}", name, e);
                 }
             }
             Effect::PostSystemMessage { message } => {

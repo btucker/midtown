@@ -444,6 +444,12 @@ pub(crate) struct DaemonState {
     /// - Pre-populated for existing pending/in_progress tasks (prevents re-nudges after restart)
     /// - Auto-expired after 5 minutes (handles Lead not acting on the nudge)
     pending_task_creations: std::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// Process health state for headless coworkers, keyed by coworker name.
+    ///
+    /// Populated by the session management layer from `HeadlessSession` stream events
+    /// and process status. Read by `collect_world_snapshot()` for the health decision
+    /// functions in `rules.rs`.
+    pub(crate) headless_health: std::sync::RwLock<HashMap<String, snapshot::ProcessHealth>>,
 }
 
 impl DaemonState {
@@ -602,6 +608,7 @@ impl DaemonState {
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             pending_task_creations: std::sync::Mutex::new(HashMap::new()),
+            headless_health: std::sync::RwLock::new(HashMap::new()),
         })
     }
 
@@ -732,29 +739,6 @@ impl DaemonState {
         pending.remove(&name.to_lowercase());
     }
 
-    /// Check if queued text matches a pending nudge for a coworker.
-    ///
-    /// Returns true if the coworker has a pending nudge and a significant portion
-    /// of the message appears in the queued text. This handles cases where the
-    /// nudge text might be truncated or wrapped in the TUI.
-    ///
-    /// Also clears stale pending nudges older than 5 minutes.
-    pub(crate) fn matches_pending_nudge(&self, name: &str, queued_text: &str) -> bool {
-        const STALE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
-
-        let mut pending = self.pending_nudges.lock().unwrap();
-
-        // Clean up stale entries
-        let now = std::time::Instant::now();
-        pending.retain(|_, (_, sent_at)| now.duration_since(*sent_at) < STALE_THRESHOLD);
-
-        if let Some((pending_msg, _)) = pending.get(&name.to_lowercase()) {
-            check_nudge_text_match(pending_msg, queued_text)
-        } else {
-            false
-        }
-    }
-
     /// Build the deduplication key for a pending task creation.
     ///
     /// Matches the subject pattern used in task creation so that once the
@@ -799,28 +783,6 @@ impl DaemonState {
     pub(crate) fn clear_task_creation_pending(&self, key: &str) {
         self.pending_task_creations.lock().unwrap().remove(key);
     }
-}
-
-/// Check if queued TUI text matches a pending nudge message.
-///
-/// Uses prefix matching (first 20 chars) to handle truncation in the TUI.
-/// This is a pure function extracted for testability.
-#[inline]
-fn check_nudge_text_match(pending_msg: &str, queued_text: &str) -> bool {
-    const MIN_MATCH_LEN: usize = 20; // Match at least first 20 chars
-
-    // Empty messages never match
-    if pending_msg.is_empty() || queued_text.is_empty() {
-        return false;
-    }
-
-    // Use first N chars for matching (handles truncation)
-    let check_text = if pending_msg.len() > MIN_MATCH_LEN {
-        &pending_msg[..pending_msg.floor_char_boundary(MIN_MATCH_LEN)]
-    } else {
-        pending_msg
-    };
-    queued_text.contains(check_text)
 }
 
 impl DaemonState {
@@ -1839,10 +1801,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 mod tests {
     use super::helpers::*;
     use super::*;
-    use crate::rules::{
-        UsageLimitDecision, UsageLimitExpiryDecision, decide_usage_limit_detection,
-        decide_usage_limit_expiry,
-    };
+    use crate::rules::{UsageLimitExpiryDecision, decide_usage_limit_expiry};
 
     // URL parsing tests for extract_repo_name_from_url
     #[test]
@@ -2857,59 +2816,6 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         assert_eq!(dev_cap(10), 8);
     }
 
-    // Usage limit detection tests
-    #[test]
-    fn test_parse_usage_limit_duration_minutes() {
-        let pane = "You've hit your usage limit. Try again in 15 minutes.";
-        assert_eq!(
-            crate::rules::parse_usage_limit_duration(pane).as_secs(),
-            15 * 60
-        );
-    }
-
-    #[test]
-    fn test_parse_usage_limit_duration_hours() {
-        let pane = "Rate limited. Try again in 2 hours.";
-        assert_eq!(
-            crate::rules::parse_usage_limit_duration(pane).as_secs(),
-            2 * 3600
-        );
-    }
-
-    #[test]
-    fn test_parse_usage_limit_duration_seconds() {
-        let pane = "Too many requests. Try again in 30 seconds.";
-        assert_eq!(crate::rules::parse_usage_limit_duration(pane).as_secs(), 30);
-    }
-
-    #[test]
-    fn test_parse_usage_limit_duration_after_keyword() {
-        let pane = "Limit reached. Available after 10 minutes.";
-        assert_eq!(
-            crate::rules::parse_usage_limit_duration(pane).as_secs(),
-            10 * 60
-        );
-    }
-
-    #[test]
-    fn test_parse_usage_limit_duration_default() {
-        // No parseable duration — should default to 15 minutes
-        let pane = "Usage limit reached. Please wait.";
-        assert_eq!(
-            crate::rules::parse_usage_limit_duration(pane).as_secs(),
-            15 * 60
-        );
-    }
-
-    #[test]
-    fn test_parse_usage_limit_duration_case_insensitive() {
-        let pane = "USAGE LIMIT REACHED. TRY AGAIN IN 20 MINUTES.";
-        assert_eq!(
-            crate::rules::parse_usage_limit_duration(pane).as_secs(),
-            20 * 60
-        );
-    }
-
     #[test]
     fn test_usage_limit_patterns_detect_common_messages() {
         // The usage limit pattern is "/upgrade" or "/extra-usage" which appears
@@ -2951,40 +2857,6 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         }
     }
 
-    // ─── Usage Limit Detection Tests ───────────────────────────────────
-
-    #[test]
-    fn test_usage_limit_detected_in_pane() {
-        let mut panes = std::collections::HashMap::new();
-        panes.insert("park".to_string(), "Working on task...\n".to_string());
-        panes.insert(
-            "broadway".to_string(),
-            "Usage limit reached. Try again in 15 minutes. /upgrade to increase limit.\n"
-                .to_string(),
-        );
-
-        let decision = decide_usage_limit_detection(&panes);
-        assert_eq!(
-            decision,
-            UsageLimitDecision::Detected {
-                coworker: "broadway".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_usage_limit_none_detected() {
-        let mut panes = std::collections::HashMap::new();
-        panes.insert(
-            "park".to_string(),
-            "Running tests... all pass\n".to_string(),
-        );
-        panes.insert("broadway".to_string(), "Editing src/main.rs\n".to_string());
-
-        let decision = decide_usage_limit_detection(&panes);
-        assert_eq!(decision, UsageLimitDecision::NoneDetected);
-    }
-
     // ─── Usage Limit Expiry Tests ──────────────────────────────────────
 
     #[test]
@@ -3013,101 +2885,6 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
 
         let decision = decide_usage_limit_expiry(None, now);
         assert_eq!(decision, UsageLimitExpiryDecision::NoNudge);
-    }
-
-    // ─── Nudge Text Matching Tests ───────────────────────────────────────
-
-    #[test]
-    fn test_check_nudge_text_match_exact() {
-        // Exact match
-        assert!(check_nudge_text_match(
-            "github said: @columbus Check 'Test' passed",
-            "github said: @columbus Check 'Test' passed"
-        ));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_prefix() {
-        // Queued text contains the pending message (prefix match with 20+ chars)
-        let pending = "github said: @columbus Check 'Test' passed on PR #529";
-        let queued = "❯ github said: @columbus Check 'Test' passed on PR #529";
-        assert!(check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_truncated() {
-        // Queued text is truncated but first 20 chars match
-        let pending = "github said: @columbus Check 'Test' passed on PR #529";
-        // Only first 20 chars visible: "github said: @columb"
-        let queued = "❯ github said: @columb...";
-        assert!(check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_no_match() {
-        // No match - different message
-        let pending = "github said: @columbus Check 'Test' passed";
-        let queued = "user said: hello world";
-        assert!(!check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_short_message() {
-        // Short message (<20 chars) should match if contained
-        let pending = "Hello there";
-        let queued = "❯ Hello there";
-        assert!(check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_empty_pending() {
-        // Empty pending message should not match
-        let pending = "";
-        let queued = "❯ some text";
-        assert!(!check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_empty_queued() {
-        // Empty queued text should not match
-        let pending = "some message";
-        let queued = "";
-        assert!(!check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_partial_prefix_fail() {
-        // Partial match under 20 chars should fail
-        let pending = "github said: @columbus Check 'Test' passed on PR #529";
-        // Only 10 chars match
-        let queued = "github sai";
-        // First 20 chars of pending: "github said: @columb"
-        assert!(!check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_user_input_different() {
-        // User typing something different from daemon nudge
-        let daemon_nudge = "github said: @columbus CI passed on PR #529";
-        let user_input = "I want to add a new feature";
-        assert!(!check_nudge_text_match(daemon_nudge, user_input));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_multibyte_no_panic() {
-        // 3-byte CJK chars: boundaries at 0,3,6,...,18,21 — byte 20 is mid-char
-        let pending = "あいうえおかきくけこさしすせそたちつてと extra text here";
-        let queued = "あいうえおかきくけこさしすせそたちつてと extra text here and more";
-        // Must not panic, and should match since queued contains the prefix
-        assert!(check_nudge_text_match(pending, queued));
-    }
-
-    #[test]
-    fn test_check_nudge_text_match_multibyte_no_match() {
-        // 3-byte CJK chars that exceed MIN_MATCH_LEN of 20 bytes
-        let pending = "日本語のテストメッセージです長い文章";
-        let queued = "completely different text";
-        assert!(!check_nudge_text_match(pending, queued));
     }
 
     // -------------------------------------------------------------------------

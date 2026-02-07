@@ -213,8 +213,8 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    let pane_count = snapshot
-        .get("pane_contents")
+    let health_count = snapshot
+        .get("headless_process_health")
         .and_then(|v| v.as_object())
         .map(|o| o.len())
         .unwrap_or(0);
@@ -238,7 +238,7 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
     println!();
     println!("Snapshot summary:");
     println!("  Active coworkers: {}", coworker_count);
-    println!("  Pane contents: {}", pane_count);
+    println!("  Process health: {}", health_count);
     println!("  Tasks: {}", task_count);
     println!("  Channel messages: {}", channel_message_count);
     println!("  Daemon log lines: {}", daemon_log_count);

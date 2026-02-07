@@ -100,42 +100,10 @@ pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(120);
 /// Prevents respawn loops if the zombie condition keeps recurring.
 pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
 
-/// Minimum age for a coworker before it can be flagged as a zombie (20 seconds).
-/// Avoids false positives during normal startup when the TUI hasn't rendered yet.
-pub(super) const ZOMBIE_MIN_AGE_SECS: i64 = 20;
-
-/// Maximum zombie respawn attempts before giving up (3 attempts).
-/// After this many failed respawns, the coworker is shut down and an alert
-/// is posted to the channel. Prevents infinite respawn loops when the
-/// underlying cause persists (e.g., broken worktree, bad prompt).
-pub(super) const MAX_ZOMBIE_RESPAWN_ATTEMPTS: u32 = 3;
-
-/// How long a coworker's pane can remain unchanged before considering it stuck (3 minutes).
-/// If the tmux pane content hash hasn't changed for this duration AND the coworker shows
-/// activity indicators (running subagent), it is killed and restarted with its current task.
-/// A frozen pane without activity indicators means the coworker is idle/waiting, not stuck.
+/// How long a coworker's process can go without events before considering it stuck (3 minutes).
+/// If the headless session hasn't emitted any events for this duration, the coworker
+/// is killed and restarted with its current task.
 pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(180);
-
-/// Minimum elapsed compaction time before we consider it stuck (5 minutes).
-/// Compaction is a normal, useful operation. Only interrupt if it has been
-/// running for an unusually long time with no progress. Better to leave a
-/// truly-stuck coworker for an extra few minutes than to interrupt legitimate
-/// compaction.
-pub(super) const MIN_COMPACTION_STUCK_DURATION: Duration = Duration::from_secs(300);
-
-/// Cooldown between compaction recovery attempts for the same coworker (3 minutes).
-/// Prevents spamming Escape if the detection fires repeatedly.
-pub(super) const COMPACTION_RECOVERY_COOLDOWN: Duration = Duration::from_secs(180);
-
-/// Cooldown between queued-prompt recovery attempts for the same coworker (60 seconds).
-/// Shorter than compaction because the fix (Escape) is lightweight and the state
-/// can recur quickly after nudges are delivered.
-pub(super) const QUEUED_PROMPT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(60);
-
-/// Minimum age in seconds before a coworker is eligible for queued nudge detection (60 seconds).
-/// During startup, the TUI structure is still forming and `has_queued_nudges` can produce
-/// false positives. This gives the TUI time to settle before we start detecting queued nudges.
-pub(super) const QUEUED_NUDGE_MIN_AGE_SECS: i64 = 60;
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.
