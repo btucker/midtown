@@ -95,6 +95,11 @@ pub struct WorldSnapshot {
     /// usage limits and API errors use structured flags set from stream events.
     pub headless_process_health: HashMap<String, ProcessHealth>,
 
+    // ── Attached coworkers ───────────────────────────────────────────
+    /// Coworkers currently in "attached" state (interactive tmux session).
+    /// Must be excluded from stuck detection and orphan recovery.
+    pub attached_coworkers: HashSet<String>,
+
     // ── Task state ──────────────────────────────────────────────────────
     /// In-progress tasks: `(task_id, subject, owner)`.
     pub in_progress_tasks: Vec<(String, String, String)>,
@@ -262,6 +267,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         health.clone()
     };
 
+    // ── Attached coworkers ──────────────────────────────────────────────
+    let attached_coworkers: HashSet<String> = {
+        let attached = state.attached_coworkers.lock().unwrap();
+        attached.clone()
+    };
+
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
     let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
@@ -396,6 +407,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         coworker_start_times,
         coworker_stop_times,
         headless_process_health,
+        attached_coworkers,
         in_progress_tasks,
         busy_coworkers,
         all_tasks,
@@ -492,6 +504,7 @@ mod tests {
             coworker_start_times: HashMap::new(),
             coworker_stop_times: stop_times.clone(),
             headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
             all_tasks: vec![],
@@ -569,6 +582,7 @@ mod tests {
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),
             headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
             all_tasks: vec![],

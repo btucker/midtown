@@ -104,8 +104,21 @@ fn handle_attach(target: &Option<AttachTarget>, client: &DaemonClient) -> Result
     );
 
     midtown::tmux::create_window(&tmux_session, &window_name, cwd, Some(&cmd)).map_err(|e| {
-        // If tmux window creation fails, tell daemon to resume headless
-        let _ = client.session_detach(name);
+        // If tmux window creation fails, tell daemon to resume headless.
+        // Log the detach result explicitly so a double failure is visible.
+        match client.session_detach(name) {
+            Ok(_) => eprintln!(
+                "Tmux window creation failed; headless session resumed for {}.",
+                name
+            ),
+            Err(detach_err) => eprintln!(
+                "ERROR: Tmux window creation failed AND detach RPC failed for {}.\n\
+                 Tmux error: {}\n\
+                 Detach error: {}\n\
+                 Manual recovery: run `midtown session detach {}`",
+                name, e, detach_err, name
+            ),
+        }
         format!("Failed to create tmux window: {}", e)
     })?;
 
@@ -117,6 +130,7 @@ fn handle_attach(target: &Option<AttachTarget>, client: &DaemonClient) -> Result
 
     // Step 3: Monitor tmux window — when it closes, send detach RPC.
     // Spawn a background thread that polls for window existence.
+    // Uses retry with exponential backoff to handle transient RPC failures.
     let name_owned = name.to_string();
     let session_clone = tmux_session.clone();
     let window_clone = window_name.clone();
@@ -125,14 +139,31 @@ fn handle_attach(target: &Option<AttachTarget>, client: &DaemonClient) -> Result
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
             if !midtown::tmux::window_exists(&session_clone, &window_clone).unwrap_or(false) {
-                // Window closed — send detach to resume headless
-                if let Ok(bg_client) = DaemonClient::connect() {
-                    match bg_client.session_detach(&name_owned) {
+                // Window closed — send detach with retry
+                let max_retries = 3;
+                let mut delay = std::time::Duration::from_secs(1);
+
+                for attempt in 1..=max_retries {
+                    match DaemonClient::connect().and_then(|c| c.session_detach(&name_owned)) {
                         Ok(_) => {
                             eprintln!("Detached {} — resuming headless session.", name_owned);
+                            return;
                         }
                         Err(e) => {
-                            eprintln!("Warning: Failed to detach {}: {}", name_owned, e);
+                            if attempt < max_retries {
+                                eprintln!(
+                                    "Warning: Detach attempt {}/{} failed for {}: {}. Retrying in {:?}...",
+                                    attempt, max_retries, name_owned, e, delay
+                                );
+                                std::thread::sleep(delay);
+                                delay *= 2;
+                            } else {
+                                eprintln!(
+                                    "ERROR: All {} detach attempts failed for {}. \
+                                     Last error: {}. Manual recovery: run `midtown session detach {}`",
+                                    max_retries, name_owned, e, name_owned
+                                );
+                            }
                         }
                     }
                 }

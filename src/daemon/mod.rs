@@ -450,6 +450,13 @@ pub(crate) struct DaemonState {
     /// and process status. Read by `collect_world_snapshot()` for the health decision
     /// functions in `rules.rs`.
     pub(crate) headless_health: std::sync::RwLock<HashMap<String, snapshot::ProcessHealth>>,
+    /// Coworkers currently in "attached" state (interactive tmux session).
+    ///
+    /// When the Lead attaches to a headless coworker via `midtown session attach`,
+    /// the headless process is killed and replaced with an interactive tmux window.
+    /// During this period, the coworker must be exempt from stuck detection and
+    /// orphan recovery. Entries are added on attach, removed on detach.
+    attached_coworkers: std::sync::Mutex<HashSet<String>>,
 }
 
 impl DaemonState {
@@ -609,6 +616,7 @@ impl DaemonState {
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             pending_task_creations: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
+            attached_coworkers: std::sync::Mutex::new(HashSet::new()),
         })
     }
 

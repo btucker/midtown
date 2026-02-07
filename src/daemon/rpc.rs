@@ -2531,6 +2531,17 @@ async fn handle_session_attach(id: RequestId, target: &str, state: &DaemonState)
         );
     }
 
+    // Guard against double-attach
+    {
+        let attached = state.attached_coworkers.lock().unwrap();
+        if attached.contains(&name.to_lowercase()) {
+            return Response::error(
+                id,
+                RpcError::new(-32602, format!("Coworker '{}' is already attached", name)),
+            );
+        }
+    }
+
     // Get the session ID from persistent state
     let session_id = {
         let persistent = state.persistent_state.lock().await;
@@ -2575,8 +2586,15 @@ async fn handle_session_attach(id: RequestId, target: &str, state: &DaemonState)
             ),
         );
     }
-    // Don't remove coworker records — the session is still logically active.
-    // Don't record stop time — this isn't a break, it's a mode switch.
+    // Record stop time to prevent false orphan recovery during the grace period
+    // (see #874). The attached_coworkers set provides the long-term exemption.
+    state.record_coworker_stop_time(&name);
+
+    // Mark as attached so stuck detection and orphan recovery skip this coworker
+    {
+        let mut attached = state.attached_coworkers.lock().unwrap();
+        attached.insert(name.to_lowercase());
+    }
 
     info!(
         "Paused headless coworker '{}' for attach (session={})",
@@ -2602,8 +2620,30 @@ async fn handle_session_attach(id: RequestId, target: &str, state: &DaemonState)
 /// Handle session.detach RPC method.
 ///
 /// Resumes headless execution for a coworker that was previously attached.
+/// Idempotent: if the coworker is already running (e.g., a previous detach
+/// succeeded), returns success without spawning a duplicate.
 async fn handle_session_detach(id: RequestId, name: &str, state: &DaemonState) -> Response {
     let name = name.to_lowercase();
+
+    // Clear attached state first (idempotent — safe to call even if not attached)
+    {
+        let mut attached = state.attached_coworkers.lock().unwrap();
+        attached.remove(&name);
+    }
+
+    // Idempotency guard: if the coworker is already running, skip re-spawn.
+    // This prevents the race between manual detach and background auto-detach
+    // from spawning duplicate processes.
+    if state.coworkers.get(&name).is_some() {
+        info!("Coworker '{}' already running — detach is a no-op", name);
+        return Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "message": format!("Coworker {} is already running", name),
+            }),
+        );
+    }
 
     // Get session ID from persistent state
     let session_id = {
@@ -2681,12 +2721,15 @@ async fn handle_session_list(id: RequestId, state: &DaemonState) -> Response {
         .iter()
         .map(|cw| cw.name.to_lowercase())
         .collect();
+    let attached = state.attached_coworkers.lock().unwrap().clone();
 
     let sessions: Vec<serde_json::Value> = persistent
         .headless_sessions
         .iter()
         .map(|(name, info)| {
-            let status = if running_coworkers.contains(&name.to_lowercase()) {
+            let status = if attached.contains(&name.to_lowercase()) {
+                "attached"
+            } else if running_coworkers.contains(&name.to_lowercase()) {
                 "running"
             } else {
                 "paused"

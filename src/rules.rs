@@ -603,6 +603,7 @@ pub(crate) fn decide_stuck_coworker_restarts(
     in_progress_tasks: &[(String, String, String)],
     usage_limited_coworkers: &HashSet<String>,
     api_error_coworkers: &HashSet<String>,
+    attached_coworkers: &HashSet<String>,
     now_utc: DateTime<Utc>,
     stuck_duration: Duration,
 ) -> Vec<StuckCoworkerRestart> {
@@ -620,6 +621,10 @@ pub(crate) fn decide_stuck_coworker_restarts(
         }
         // Skip coworkers with API errors — they're waiting but may recover
         if api_error_coworkers.contains(&name.to_lowercase()) {
+            continue;
+        }
+        // Skip attached coworkers — they're in interactive tmux mode
+        if attached_coworkers.contains(&name.to_lowercase()) {
             continue;
         }
         // Skip coworkers with running subagents — parent session goes quiet
@@ -1203,6 +1208,7 @@ pub(crate) fn decide_orphan_recovery(
     coworkers_with_open_prs: &HashSet<String>,
     review_feedback_pr_coworkers: &HashSet<String>,
     recently_stopped: &HashSet<String>,
+    attached_coworkers: &HashSet<String>,
 ) -> Option<OrphanRecovery> {
     if at_dev_limit {
         return None;
@@ -1220,6 +1226,10 @@ pub(crate) fn decide_orphan_recovery(
             continue;
         }
         if active_names.contains(&owner_lower) {
+            continue;
+        }
+        // Skip attached coworkers — they're in interactive tmux mode, not orphaned
+        if attached_coworkers.contains(&owner_lower) {
             continue;
         }
         // Skip coworkers that recently stopped (within grace period).
@@ -2727,7 +2737,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
         assert_eq!(
             result,
             Some(OrphanRecovery {
@@ -2743,7 +2753,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["york"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -2752,7 +2762,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, true, &empty, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -2761,7 +2771,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "lead".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
         assert!(result.is_none());
     }
 
@@ -2777,7 +2787,7 @@ mod tests {
         ];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
         assert_eq!(result.unwrap().task_id, "1");
     }
 
@@ -2788,7 +2798,7 @@ mod tests {
         let tasks = vec![("42".to_string(), "Fix bug".to_string(), "fix".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
         // Should be None because "fix" is not a valid coworker name
         assert!(result.is_none());
     }
@@ -2799,7 +2809,7 @@ mod tests {
         let tasks = vec![("1".to_string(), "Fix bug".to_string(), "YORK".to_string())];
         let active = set(&["amsterdam"]);
         let empty = HashSet::new();
-        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty);
+        let result = decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &empty);
         // Should return recovery because "YORK" maps to valid coworker "york"
         assert!(result.is_some());
         assert_eq!(result.unwrap().owner, "YORK");
@@ -2825,6 +2835,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
             &HashSet::new(),
         );
         // Should NOT recover — coworker is correctly waiting for review
@@ -2853,6 +2864,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
             &HashSet::new(),
         );
         // SHOULD recover — there's actionable review feedback
@@ -2883,6 +2895,7 @@ mod tests {
             &coworkers_with_open_prs,
             &review_feedback,
             &HashSet::new(),
+            &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR. CI failures
         // are handled by the webhook/PR poll pathway, not orphan recovery.
@@ -2910,6 +2923,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
             &HashSet::new(),
         );
         // SHOULD recover — no PR means work isn't done yet
@@ -2945,6 +2959,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
+            &HashSet::new(),
             &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR and no review feedback.
@@ -2986,6 +3001,7 @@ mod tests {
             &coworkers_with_open_prs,
             &review_feedback,
             &HashSet::new(),
+            &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR. Even though CI status
         // is unknown, the safe default is to wait for the PR poll to determine
@@ -3013,8 +3029,15 @@ mod tests {
         let empty = HashSet::new();
         let recently_stopped = set(&["york"]); // york stopped within grace period
 
-        let result =
-            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &empty,
+            &empty,
+            &recently_stopped,
+            &empty,
+        );
         assert!(
             result.is_none(),
             "Should not recover coworker that recently stopped (within grace period)"
@@ -3034,8 +3057,15 @@ mod tests {
         let empty = HashSet::new();
         let recently_stopped = set(&[]); // york NOT in recently_stopped (grace period expired)
 
-        let result =
-            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &empty,
+            &empty,
+            &recently_stopped,
+            &empty,
+        );
         assert!(
             result.is_some(),
             "Should recover coworker after grace period expires"
@@ -3073,8 +3103,15 @@ mod tests {
         let empty = HashSet::new();
         let recently_stopped = set(&["madison"]); // stop time was recorded by RPC handler
 
-        let result =
-            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &empty,
+            &empty,
+            &recently_stopped,
+            &empty,
+        );
         assert!(
             result.is_none(),
             "Should NOT recover coworker that just reported idle (recently stopped)"
@@ -3098,8 +3135,15 @@ mod tests {
         // BUG: recently_stopped is empty because RPC handler didn't record stop time
         let recently_stopped = set(&[]);
 
-        let result =
-            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &empty,
+            &empty,
+            &recently_stopped,
+            &empty,
+        );
         assert!(
             result.is_some(),
             "Without stop time recording, orphan recovery falsely triggers (the bug)"
@@ -3132,8 +3176,15 @@ mod tests {
         let empty = HashSet::new();
         let recently_stopped = set(&["madison", "park"]); // stop times recorded
 
-        let result =
-            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &recently_stopped);
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &empty,
+            &empty,
+            &recently_stopped,
+            &empty,
+        );
         assert!(
             result.is_none(),
             "Should NOT recover coworkers shut down by auth switch (recently stopped)"
@@ -3410,6 +3461,7 @@ mod tests {
             &tasks,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
             now,
             Duration::from_secs(180),
         );
@@ -3445,6 +3497,7 @@ mod tests {
         let restarts = decide_stuck_coworker_restarts(
             &health,
             &tasks,
+            &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
             now,
@@ -3484,6 +3537,7 @@ mod tests {
             &health,
             &tasks,
             &usage_limited,
+            &HashSet::new(),
             &HashSet::new(),
             now,
             Duration::from_secs(180),
@@ -3527,6 +3581,7 @@ mod tests {
             &tasks,
             &HashSet::new(),
             &api_error,
+            &HashSet::new(),
             now,
             Duration::from_secs(180),
         );
@@ -3559,6 +3614,7 @@ mod tests {
         let restarts = decide_stuck_coworker_restarts(
             &health,
             &tasks,
+            &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
             now,
@@ -3600,6 +3656,7 @@ mod tests {
             &tasks,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
             now,
             Duration::from_secs(180),
         );
@@ -3607,6 +3664,61 @@ mod tests {
         assert!(
             restarts.is_empty(),
             "dead processes are handled by check_and_respawn_dead_processes"
+        );
+    }
+
+    #[test]
+    fn stuck_detection_skips_attached_coworkers() {
+        use crate::daemon::snapshot::ProcessHealth;
+
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "park".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                exit_code: None,
+            },
+        );
+
+        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "park".to_string())];
+
+        let mut attached = HashSet::new();
+        attached.insert("park".to_string());
+
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
+            &tasks,
+            &HashSet::new(),
+            &HashSet::new(),
+            &attached,
+            now,
+            Duration::from_secs(180),
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "attached coworker should not be flagged as stuck"
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_skips_attached_coworkers() {
+        let tasks = vec![("1".to_string(), "Fix bug".to_string(), "york".to_string())];
+        let active = set(&["amsterdam"]);
+        let empty = HashSet::new();
+        let mut attached = HashSet::new();
+        attached.insert("york".to_string());
+
+        let result =
+            decide_orphan_recovery(&tasks, &active, false, &empty, &empty, &empty, &attached);
+        assert!(
+            result.is_none(),
+            "attached coworker should not be treated as orphan"
         );
     }
 

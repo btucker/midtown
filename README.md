@@ -111,6 +111,20 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown coworker view <name>` | View a coworker's terminal output |
 | `midtown coworker nudge <name> [--message <msg>]` | Nudge a coworker to check in |
 
+### Session Management (Attach/Detach)
+
+Attach to a headless coworker's session in an interactive tmux window for debugging or guidance, then detach to resume headless execution.
+
+| Command | Description |
+|---------|-------------|
+| `midtown session attach name <coworker>` | Attach to a coworker by name |
+| `midtown session attach task <id>` | Attach to the coworker working on a task |
+| `midtown session attach pr <number>` | Attach to the coworker working on a PR |
+| `midtown session detach <name>` | Detach and resume headless execution |
+| `midtown session list` | List headless sessions with status |
+
+**How it works:** Attach kills the headless process (the Claude session persists on disk), then opens an interactive tmux window with `claude --resume`. When the window closes (or you run `detach`), the daemon re-spawns the headless session, picking up where it left off.
+
 ### Task Management
 
 | Command | Description |
