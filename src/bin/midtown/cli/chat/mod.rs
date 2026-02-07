@@ -210,13 +210,19 @@ fn open_diagram_in_browser(app: &App, idx: usize) {
         return;
     }
 
-    // Open in browser using platform-appropriate command
+    // Open in browser using platform-appropriate command.
+    // Spawn a thread to wait on the child process so it doesn't become a zombie.
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&svg_path).spawn();
+    let child = std::process::Command::new("open").arg(&svg_path).spawn();
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open")
+    let child = std::process::Command::new("xdg-open")
         .arg(&svg_path)
         .spawn();
+    if let Ok(mut child) = child {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 /// Render hyperlinks using OSC 8 escape sequences
