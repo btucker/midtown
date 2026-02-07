@@ -37,15 +37,19 @@ export function hasMermaid(text) {
 
 /**
  * Render markdown formatting via snarkdown.
- * Pre-escapes < and & for XSS protection, preserves > for blockquotes.
+ * Pre-escapes <, >, and & for XSS protection.
+ * Restores > at line starts for blockquote support before markdown processing.
  * Auto-links bare URLs and ensures all links open in new tabs.
  */
 export function renderContent(text) {
-  // Escape & and < for XSS protection.
-  // Preserve > — it's harmless without < and needed for markdown blockquotes.
+  // Escape &, <, and > for XSS defense-in-depth.
   let safe = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  // Restore > at line starts for markdown blockquotes.
+  safe = safe.replace(/^(&gt;)+/gm, (m) => m.replace(/&gt;/g, '>'))
 
   // Auto-link bare URLs before markdown processing.
   // Protect existing markdown links and inline code from URL conversion.

@@ -12,6 +12,12 @@ describe('renderContent', () => {
     expect(renderContent('foo & bar')).toContain('foo &amp; bar')
   })
 
+  it('escapes > for XSS defense-in-depth', () => {
+    // Bare > in text should be escaped to &gt; even though it's harmless without <
+    expect(renderContent('a > b')).toContain('&gt;')
+    expect(renderContent('a > b')).not.toMatch(/[^&]>/)
+  })
+
   // Bold and italic
   it('renders bold text', () => {
     expect(renderContent('this is **bold** text')).toContain('<strong>bold</strong>')
