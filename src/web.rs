@@ -1278,6 +1278,15 @@ pub fn create_updates_channel() -> (broadcast::Sender<WebUpdate>, broadcast::Rec
     broadcast::channel(100)
 }
 
+/// Build a `WebUpdate` for a coworker status change.
+pub fn coworker_status_update(name: &str, status: &str, current_task: Option<&str>) -> WebUpdate {
+    WebUpdate::CoworkerStatus(CoworkerStatusData {
+        name: name.to_string(),
+        status: status.to_string(),
+        current_task: current_task.map(|s| s.to_string()),
+    })
+}
+
 /// Broadcast a coworker status change to all WebSocket clients
 pub fn broadcast_coworker_status(
     tx: &broadcast::Sender<WebUpdate>,
@@ -1285,13 +1294,7 @@ pub fn broadcast_coworker_status(
     status: &str,
     current_task: Option<&str>,
 ) {
-    let update = WebUpdate::CoworkerStatus(CoworkerStatusData {
-        name: name.to_string(),
-        status: status.to_string(),
-        current_task: current_task.map(|s| s.to_string()),
-    });
-
-    let _ = tx.send(update);
+    let _ = tx.send(coworker_status_update(name, status, current_task));
 }
 
 /// Broadcast lead typing/working status to all WebSocket clients
@@ -1300,16 +1303,19 @@ pub fn broadcast_lead_typing(tx: &broadcast::Sender<WebUpdate>, working: bool) {
     let _ = tx.send(update);
 }
 
-/// Broadcast a new channel message to all WebSocket clients
-pub fn broadcast_channel_message(tx: &broadcast::Sender<WebUpdate>, message: &Message) {
-    let update = WebUpdate::ChannelMessage(ChannelMessageData {
+/// Build a `WebUpdate` for a channel message.
+pub fn channel_message_update(message: &Message) -> WebUpdate {
+    WebUpdate::ChannelMessage(ChannelMessageData {
         from: message.from.clone(),
         content: message.content.clone(),
         timestamp: message.timestamp.to_rfc3339(),
         msg_type: format!("{:?}", message.message_type).to_lowercase(),
-    });
+    })
+}
 
-    let _ = tx.send(update);
+/// Broadcast a new channel message to all WebSocket clients
+pub fn broadcast_channel_message(tx: &broadcast::Sender<WebUpdate>, message: &Message) {
+    let _ = tx.send(channel_message_update(message));
 }
 
 #[cfg(test)]
