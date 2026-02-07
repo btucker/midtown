@@ -47,7 +47,7 @@ impl From<WorktreeError> for Error {
 }
 
 /// Manages git worktrees for coworker isolation
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorktreeManager {
     /// Root repository path (the main checkout)
     repo_root: PathBuf,
@@ -1100,6 +1100,7 @@ mod tests {
             repo_root: PathBuf::from("/tmp/repo"),
             repo_name: "myrepo".to_string(),
             worktrees_base: PathBuf::from("/home/user/.midtown/coworkers/myrepo"),
+            task_worktrees_base: PathBuf::from("/home/user/.midtown/worktrees/myrepo"),
         };
 
         assert_eq!(

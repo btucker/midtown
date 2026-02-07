@@ -12,6 +12,7 @@ use tracing::{debug, warn};
 use crate::ci_stats::CiCheckStats;
 use crate::github_state::GitHubState;
 use crate::reminders::ReminderState;
+use crate::worktree_registry::WorktreeRegistry;
 
 /// All persistent daemon state in one struct.
 ///
@@ -31,6 +32,12 @@ pub struct DaemonPersistentState {
     /// CI check duration statistics for auto-retry of stale checks.
     #[serde(default)]
     pub ci_stats: CiCheckStats,
+
+    /// Task-based worktree registry mapping tasks to worktrees by branch slug.
+    /// Enables build cache reuse across coworker reassignment and automatic
+    /// cleanup on PR merge.
+    #[serde(default)]
+    pub worktree_registry: WorktreeRegistry,
 }
 
 impl DaemonPersistentState {
@@ -43,15 +50,18 @@ impl DaemonPersistentState {
         let path = crate::paths::daemon_state_file_for_repo(repo);
         match fs::read_to_string(&path) {
             Ok(contents) => {
-                let state: Self = serde_json::from_str(&contents).map_err(|e| {
+                let mut state: Self = serde_json::from_str(&contents).map_err(|e| {
                     warn!("Failed to parse daemon-state.json: {}", e);
                     io::Error::new(ErrorKind::InvalidData, e)
                 })?;
+                // Rebuild reverse indexes that aren't serialized
+                state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
-                    state.ci_stats.summary()
+                    state.ci_stats.summary(),
+                    state.worktree_registry.len()
                 );
                 Ok(state)
             }
@@ -74,10 +84,11 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
-            self.ci_stats.summary()
+            self.ci_stats.summary(),
+            self.worktree_registry.len()
         );
         Ok(())
     }
@@ -113,6 +124,7 @@ impl DaemonPersistentState {
             github,
             reminders,
             ci_stats: CiCheckStats::default(),
+            worktree_registry: WorktreeRegistry::default(),
         };
 
         // Save the unified file

@@ -212,6 +212,11 @@ impl CoworkerManager {
         &self.session_name
     }
 
+    /// Get a reference to the primary worktree manager.
+    pub fn worktree_manager(&self) -> &WorktreeManager {
+        &self.worktree_manager
+    }
+
     /// Take the list of coworker names discovered from tmux on startup.
     ///
     /// This drains the list so it can only be consumed once. The daemon uses

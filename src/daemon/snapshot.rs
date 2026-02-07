@@ -135,6 +135,11 @@ pub struct WorldSnapshot {
     /// Includes the last N lines from the daemon.log file.
     pub daemon_logs: Vec<String>,
 
+    // ── Worktree registry ─────────────────────────────────────────────────
+    /// Task IDs that already have worktrees allocated in the registry.
+    /// Used by dispatch to decide whether to allocate a new worktree or reuse.
+    pub tasks_with_worktrees: HashSet<String>,
+
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the absolute coworker limit (max capacity).
     pub is_at_coworker_limit: bool,
@@ -387,6 +392,16 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let channel_messages = Vec::new();
     let daemon_logs = Vec::new();
 
+    // ── Worktree registry ────────────────────────────────────────────────
+    let tasks_with_worktrees: HashSet<String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .all_assignments()
+            .values()
+            .filter_map(|a| a.task_id.clone())
+            .collect()
+    };
+
     // ── Limits & timing ─────────────────────────────────────────────────
     let is_at_coworker_limit = state.is_at_coworker_limit();
     let is_at_dev_limit = state.is_at_dev_limit();
@@ -427,6 +442,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         api_error_coworkers,
         channel_messages,
         daemon_logs,
+        tasks_with_worktrees,
         is_at_coworker_limit,
         is_at_dev_limit,
         now,
@@ -552,6 +568,7 @@ mod tests {
             api_error_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now: Instant::now(),
@@ -705,6 +722,7 @@ mod tests {
             api_error_coworkers: HashSet::new(),
             channel_messages: vec![], // Empty by default
             daemon_logs: vec![],      // Empty by default
+            tasks_with_worktrees: HashSet::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now: Instant::now(),
