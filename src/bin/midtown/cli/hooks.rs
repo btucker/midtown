@@ -937,6 +937,26 @@ fn detect_git_repo() -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Retry a fallible operation with progressive backoff to handle transient
+    /// WouldBlock from try_lock_shared() under CI load.
+    /// Same pattern as channel.rs tests — 10 * (attempt + 1) ms sleep between retries.
+    fn retry_with_backoff<T, E: std::fmt::Debug>(
+        max_attempts: u32,
+        mut f: impl FnMut() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        for attempt in 0..max_attempts {
+            match f() {
+                Ok(val) => return Ok(val),
+                Err(e) if attempt < max_attempts - 1 => {
+                    std::thread::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1)));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
     #[test]
     fn test_extract_insights_single() {
         let text = r#"Some text before
@@ -1125,9 +1145,12 @@ Second insight
         let second = post_insight_to_channel(&repo, "coworker-b", insight);
         assert!(!second, "second fallback post should be blocked by dedup");
 
-        // Verify only one message was posted to the channel
+        // Verify only one message was posted to the channel.
+        // Retry read_all() with progressive backoff to handle transient WouldBlock
+        // from try_lock_shared() under CI load (mirrors channel.rs retry_with_backoff).
         let channel = midtown::Channel::for_repo(&repo).unwrap();
-        let messages = channel.read_all().unwrap();
+        let messages = retry_with_backoff(10, || channel.read_all())
+            .expect("channel read_all should succeed after retries");
         let insight_messages: Vec<_> = messages
             .iter()
             .filter(|m| m.content.contains(insight))
