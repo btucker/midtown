@@ -237,6 +237,41 @@ pub struct WebState {
     pub viewer_tracker: Mutex<ViewerTracker>,
 }
 
+impl WebState {
+    /// Get the GitHub full name (owner/repo) for a repo path, using cache.
+    ///
+    /// On first call for a given path, runs `gh repo view --json nameWithOwner`.
+    /// Subsequent calls return the cached value without any API call.
+    fn get_repo_full_name(&self, repo_path: &std::path::Path) -> String {
+        // Fast path: check cache
+        {
+            let cache = self.repo_name_cache.read().unwrap();
+            if let Some(name) = cache.get(repo_path) {
+                return name.clone();
+            }
+        }
+        // Slow path: fetch from GitHub CLI and cache
+        let name = std::process::Command::new("gh")
+            .current_dir(repo_path)
+            .args([
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".nameWithOwner",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let mut cache = self.repo_name_cache.write().unwrap();
+        cache.insert(repo_path.to_path_buf(), name.clone());
+        name
+    }
+}
+
 /// Types of real-time updates sent to clients
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
@@ -681,40 +716,13 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     .unwrap_or_default();
 
     // Resolve the primary repo's full name (owner/repo) for PR link generation.
-    // Uses repo_name_cache on WebState for permanent caching.
     let repo_full_name: String = state
         .all_repo_paths
         .first()
-        .map(|repo_path| {
-            let cached = {
-                let cache = state.repo_name_cache.read().unwrap();
-                cache.get(repo_path).cloned()
-            };
-            cached.unwrap_or_else(|| {
-                let name = std::process::Command::new("gh")
-                    .current_dir(repo_path)
-                    .args([
-                        "repo",
-                        "view",
-                        "--json",
-                        "nameWithOwner",
-                        "--jq",
-                        ".nameWithOwner",
-                    ])
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_default();
-                let mut cache = state.repo_name_cache.write().unwrap();
-                cache.insert(repo_path.clone(), name.clone());
-                name
-            })
-        })
+        .map(|repo_path| state.get_repo_full_name(repo_path))
         .unwrap_or_default();
 
     // Build repo metadata for multi-repo PR URL resolution
-    // Uses repo_name_cache on WebState for permanent repo name caching
     let repo_statuses: Vec<serde_json::Value> = if state.all_repo_paths.len() > 1 {
         state
             .all_repo_paths
@@ -725,34 +733,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown")
                     .to_string();
-
-                // Check cache first
-                let full_name = {
-                    let cache = state.repo_name_cache.read().unwrap();
-                    cache.get(repo_path).cloned()
-                };
-
-                let full_name = full_name.unwrap_or_else(|| {
-                    let name = std::process::Command::new("gh")
-                        .current_dir(repo_path)
-                        .args([
-                            "repo",
-                            "view",
-                            "--json",
-                            "nameWithOwner",
-                            "--jq",
-                            ".nameWithOwner",
-                        ])
-                        .output()
-                        .ok()
-                        .filter(|o| o.status.success())
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_default();
-                    let mut cache = state.repo_name_cache.write().unwrap();
-                    cache.insert(repo_path.clone(), name.clone());
-                    name
-                });
-
+                let full_name = state.get_repo_full_name(repo_path);
                 serde_json::json!({
                     "label": label,
                     "fullName": full_name,
