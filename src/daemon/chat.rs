@@ -167,10 +167,10 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
                 message: ref m,
             } => {
                 info!("Spawning mentioned coworker {} (not currently running)", n);
-                let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                let config = crate::launch::LaunchConfig::coworker(
                     n.clone(),
                     state.repo_name.clone(),
-                    crate::tmux::SessionMode::Resume,
+                    crate::launch::SessionMode::Resume,
                     Some(m.clone()),
                 );
                 match state.spawn_coworker(&config).await {

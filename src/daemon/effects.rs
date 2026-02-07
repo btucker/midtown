@@ -13,7 +13,7 @@ use crate::message::Message;
 #[derive(Debug)]
 pub enum Effect {
     /// Spawn a coworker using a typed launch configuration.
-    SpawnCoworker(crate::tmux::ClaudeLaunchConfig),
+    SpawnCoworker(crate::launch::LaunchConfig),
     /// Shut down a running coworker with a message.
     ShutdownCoworker { name: String, message: String },
     /// Nudge a coworker by sending a message to their tmux pane.
@@ -60,7 +60,7 @@ pub enum Effect {
     /// effects are executed. This allows decision functions to express
     /// spawn-dependent branching as data without calling spawn inline.
     SpawnCoworkerWithCallbacks {
-        config: crate::tmux::ClaudeLaunchConfig,
+        config: crate::launch::LaunchConfig,
         on_success: Vec<Effect>,
         on_failure: Vec<Effect>,
     },
@@ -83,7 +83,7 @@ pub enum Effect {
         owner: String,
         #[allow(dead_code)]
         repo_name: String,
-        config: crate::tmux::ClaudeLaunchConfig,
+        config: crate::launch::LaunchConfig,
         on_success: Vec<Effect>,
         on_failure: Vec<Effect>,
     },
@@ -492,10 +492,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Brief delay to let tmux clean up
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 // Respawn with --continue to resume the coworker's conversation
-                let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                let config = crate::launch::LaunchConfig::coworker(
                     name.clone(),
                     state.repo_name.clone(),
-                    crate::tmux::SessionMode::Resume,
+                    crate::launch::SessionMode::Resume,
                     None,
                 );
                 match state.spawn_coworker(&config).await {

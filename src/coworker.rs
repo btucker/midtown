@@ -1391,10 +1391,10 @@ mod tests {
         }
 
         // spawn_with_name should fail if coworker is already running
-        let config = crate::tmux::ClaudeLaunchConfig::coworker(
+        let config = crate::launch::LaunchConfig::coworker(
             "lexington",
             "test-repo",
-            crate::tmux::SessionMode::Fresh,
+            crate::launch::SessionMode::Fresh,
             None,
         );
         let result = manager.spawn_with_name(&config);
@@ -1402,10 +1402,10 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("already running"));
 
         // Also test with resume=true
-        let resume_config = crate::tmux::ClaudeLaunchConfig::coworker(
+        let resume_config = crate::launch::LaunchConfig::coworker(
             "lexington",
             "test-repo",
-            crate::tmux::SessionMode::Resume,
+            crate::launch::SessionMode::Resume,
             None,
         );
         let result = manager.spawn_with_name(&resume_config);

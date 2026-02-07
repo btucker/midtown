@@ -703,10 +703,10 @@ fn pr_action_to_effects(
                 sessions.get(&owner).cloned()
             };
             let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
+                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.repo_name.clone(),
                 session_mode,
@@ -1281,10 +1281,10 @@ fn comment_action_to_effects(
                 sessions.get(&owner).cloned()
             };
             let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
+                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.repo_name.clone(),
                 session_mode,
@@ -1399,7 +1399,7 @@ fn handoff_to_coworker_effects(
     issue_type: PrIssueType,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
+    let config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
         state.repo_name.clone(),
         session_id,
@@ -1640,7 +1640,7 @@ async fn collect_reviewer_effects_with_source(
 
         // reviewer() now takes the PR number and generates both the system prompt
         // (with merged reviewer.md instructions) and the launch prompt internally
-        let config = crate::tmux::ClaudeLaunchConfig::reviewer(reviewer_name.clone(), pr_number);
+        let config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
 
         let on_success = vec![
             Effect::BroadcastCoworkerUpdate {
@@ -1714,10 +1714,10 @@ fn review_complete_action_to_effects(
                 sessions.get(&owner).cloned()
             };
             let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
+                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.repo_name.clone(),
                 session_mode,
@@ -2074,7 +2074,7 @@ async fn execute_pr_handoff(
         pr_number, original_author, assignee, context_description
     );
 
-    let config = crate::tmux::ClaudeLaunchConfig::pr_handoff(
+    let config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
         state.repo_name.clone(),
         session_id.to_string(),
@@ -2221,10 +2221,10 @@ pub(super) async fn handle_pr_comment_nudge(
                 info!("Resuming saved PR break session for {}", o);
             }
             let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
+                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 o.clone(),
                 state.repo_name.clone(),
                 session_mode,
@@ -2459,10 +2459,10 @@ pub(super) async fn handle_webhook_review_state_change(
                 info!("Resuming saved PR break session for {}", o);
             }
             let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
+                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 o.clone(),
                 state.repo_name.clone(),
                 session_mode,
@@ -2644,10 +2644,10 @@ pub(super) async fn handle_webhook_ci_failure(
                 info!("Resuming saved PR break session for {}", o);
             }
             let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::tmux::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::tmux::SessionMode::Resume,
+                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
+                None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 o.clone(),
                 state.repo_name.clone(),
                 session_mode,

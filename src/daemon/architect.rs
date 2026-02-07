@@ -83,6 +83,13 @@ pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: 
         cwd: Some(cwd_str.clone()),
         max_budget_usd: Some(0.50),
         allow_tools: true,
+        persist_session: false,
+        resume_session_id: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        settings_path: None,
     };
 
     info!(

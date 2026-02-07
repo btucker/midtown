@@ -610,7 +610,7 @@ impl DaemonState {
     /// Wraps `CoworkerManager::spawn_with_name` and inserts a fresh
     /// `CoworkerRecord` on success, ensuring stale state from any
     /// previous incarnation is replaced.
-    async fn spawn_coworker(&self, config: &crate::tmux::ClaudeLaunchConfig) -> crate::Result<()> {
+    async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<()> {
         self.coworkers.spawn_with_name(config)?;
         let mut records = self.coworker_records.write().await;
         records.insert(
@@ -3351,10 +3351,10 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
                 task_id: "874".to_string(),
                 owner: "park".to_string(),
                 repo_name: "test-repo".to_string(),
-                config: crate::tmux::ClaudeLaunchConfig::coworker(
+                config: crate::launch::LaunchConfig::coworker(
                     "park".to_string(),
                     "test-repo".to_string(),
-                    crate::tmux::SessionMode::Fresh,
+                    crate::launch::SessionMode::Fresh,
                     None,
                 ),
                 on_success: vec![],
