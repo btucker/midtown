@@ -18,7 +18,7 @@ When you're working with Claude Code on a complex project, you might want to par
 
 Midtown provides two UIs:
 
-1. A tmux-based TUI with an IRC-style chat pane (includes mermaid diagram rendering and inline images)
+1. A tmux-based TUI with an IRC-style chat pane (includes mermaid diagram rendering with inline ASCII art)
 2. A web interface (meant to be run as a PWA) so you can collaborate with the lead (and the team) while on the go.
 
 Midtown makes extensive use of the new Claude Code Tasks system to manage the state of all work, create dependencies, and assign ownership.
@@ -412,7 +412,7 @@ The `midtown chat` command opens an IRC-style chat interface with:
 
 - Real-time channel message display
 - Mermaid diagram detection and rendering (via `selkie-rs` with content-hash caching)
-- Inline image display via the Kitty graphics protocol
+- Inline ASCII art for flowchart diagrams (press number keys to open SVG in browser)
 - Mouse support for scrolling and navigation
 - Clickable hyperlinks via OSC 8 escape sequences
 - Real-time token usage and cost tracking
