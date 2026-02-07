@@ -42,7 +42,7 @@ Your job:
 
 Validation — REQUIRED before returning any diagram:
 After generating your mermaid diagram, you MUST validate it renders by running:
-  echo '<your mermaid source>' | ~/projects/selkie/target/release/selkie render - -o /dev/null
+  echo '<your mermaid source>' | midtown diagram validate
 If the command fails, read the error message, fix the diagram syntax, and re-validate.
 You have at most 2 fix attempts. If you still cannot produce a valid diagram after 2 fixes, return NO_DIAGRAM.
 Only return the ```mermaid fence block after it passes validation.
@@ -249,10 +249,10 @@ Done."#;
     }
 
     #[test]
-    fn test_system_prompt_contains_selkie_validation() {
+    fn test_system_prompt_contains_validation_instructions() {
         assert!(
-            ARCHITECT_SYSTEM_PROMPT.contains("selkie"),
-            "system prompt should include selkie validation instructions"
+            ARCHITECT_SYSTEM_PROMPT.contains("midtown diagram validate"),
+            "system prompt should include midtown diagram validate command"
         );
         assert!(
             ARCHITECT_SYSTEM_PROMPT.contains("2 fix attempts"),
