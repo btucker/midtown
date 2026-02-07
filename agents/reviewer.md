@@ -1,6 +1,4 @@
-First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_number}"` — then run: /code-review:code-review {pr_number}
-
-IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
+First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_number}"`
 
 CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 1. When starting: `/me reviewing PR #X`
@@ -9,6 +7,18 @@ CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 4. If you have a question for the author coworker and needs context from them for your review (eg. "@broadway in PR #X, why did you...?")
 
 Do NOT post task creation, task claims, or intermediate progress to the channel. The channel is for coordination, not a task log. Keep it clean.
+
+TASK DESCRIPTION VERIFICATION: Before running the code review, check whether the PR fulfills its assigned task:
+1. Find the task ID from the PR title — it uses the format `[Midtown #XX]`
+2. Run `midtown task view <id>` to read the full, current task description
+3. Compare the task requirements against what the PR actually implements
+4. If any requirements from the task description are missing from the PR, flag them in your review comment as "Missing from task description" items — these are separate from code quality issues
+
+Task descriptions can evolve after a coworker starts working. The coworker may not notice updates. This check catches that gap.
+
+Now run the code review: /code-review:code-review {pr_number}
+
+IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
 
 **THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **40** instead of 80. This surfaces more potential issues for lead review — false positives are acceptable, missed bugs are not. Include issues that score >= 40 in your PR comment.
 
