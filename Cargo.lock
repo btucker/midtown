@@ -2366,9 +2366,9 @@ dependencies = [
 
 [[package]]
 name = "selkie-rs"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cb1837992502ab6115416ea15458fb3996ca5da8570d8bb23da6fe9d40fad06"
+checksum = "7e4dbea3faa448acb0485c6b63cca7dbfa102b177eacdcb870b31296eb82716d"
 dependencies = [
  "chrono",
  "fontdue",
