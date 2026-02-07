@@ -395,6 +395,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         &snap.in_progress_tasks,
         &snap.usage_limited_coworkers,
         &snap.api_error_coworkers,
+        &snap.attached_coworkers,
         snap.now_utc,
         COWORKER_STUCK_DURATION,
     );
@@ -856,6 +857,7 @@ mod tests {
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),
             headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
             all_tasks: vec![],

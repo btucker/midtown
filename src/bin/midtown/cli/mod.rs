@@ -9,6 +9,7 @@ mod hooks;
 mod lead;
 mod pr;
 mod response;
+mod session;
 mod task;
 
 pub use auth::AuthCommand;
@@ -20,6 +21,7 @@ pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
 pub use pr::PrCommand;
 pub use response::Response;
+pub use session::SessionCommand;
 pub use task::TaskCommand;
 
 use crate::client::DaemonClient;
@@ -30,6 +32,10 @@ pub fn handle_channel(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Res
 
 pub fn handle_coworker(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
     coworker::handle(cmd, client)
+}
+
+pub fn handle_session(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, String> {
+    session::handle(cmd, client)
 }
 
 pub fn handle_task(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, String> {

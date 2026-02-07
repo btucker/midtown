@@ -10,7 +10,7 @@ mod client;
 
 use cli::{
     AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HookCommand,
-    PrCommand, TaskCommand,
+    PrCommand, SessionCommand, TaskCommand,
 };
 use client::DaemonClient;
 
@@ -106,6 +106,11 @@ enum Commands {
     Coworker {
         #[command(subcommand)]
         command: CoworkerCommand,
+    },
+    /// Attach/detach headless coworker sessions
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
     /// Task management commands
     Task {
@@ -700,6 +705,7 @@ fn main() {
     let result = match &command {
         Commands::Channel { command } => cli::handle_channel(command, &client),
         Commands::Coworker { command } => cli::handle_coworker(command, &client),
+        Commands::Session { command } => cli::handle_session(command, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Status => cli::handle_status(&client),
         Commands::Pr { command } => cli::handle_pr(command, &client),

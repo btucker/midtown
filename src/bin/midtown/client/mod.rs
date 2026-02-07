@@ -321,6 +321,31 @@ impl DaemonClient {
         )
     }
 
+    // Session commands (attach/detach headless coworkers)
+
+    /// Request attaching to a headless coworker session.
+    ///
+    /// The daemon pauses the headless process and returns session info
+    /// (session_id, cwd, name) so the CLI can create a tmux window.
+    pub fn session_attach(&self, target: &str) -> Result<Value, String> {
+        self.send_raw(
+            "session.attach",
+            Some(serde_json::json!({ "target": target })),
+        )
+    }
+
+    /// Notify the daemon that an attached session has been detached.
+    ///
+    /// The daemon resumes headless execution for the coworker.
+    pub fn session_detach(&self, name: &str) -> Result<Response, String> {
+        self.send("session.detach", Some(serde_json::json!({ "name": name })))
+    }
+
+    /// List all attachable headless sessions.
+    pub fn session_list(&self) -> Result<Response, String> {
+        self.send("session.list", None)
+    }
+
     // Status command
 
     pub fn status(&self) -> Result<Response, String> {

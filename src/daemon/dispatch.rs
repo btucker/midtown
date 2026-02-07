@@ -65,6 +65,7 @@ pub(super) fn check_and_recover_orphans(
         &snap.coworkers_with_open_prs,
         &snap.review_feedback_pr_coworkers,
         &recently_stopped,
+        &snap.attached_coworkers,
     );
 
     let Some(recovery) = recovery else {
