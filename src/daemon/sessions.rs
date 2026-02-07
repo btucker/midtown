@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 
@@ -116,14 +116,20 @@ impl SessionManager {
             message: format!("Failed to spawn headless session for '{}': {}", name, e),
         })?;
 
-        // Send initial prompt if provided
+        // Send initial prompt if provided — this is "Here's your mission",
+        // so failure means the coworker has no task and would be non-functional.
         if let Some(prompt) = initial_prompt
             && let Err(e) = session.send_message(prompt).await
         {
-            warn!(
-                "Failed to send initial prompt to '{}': {} — session still running",
-                name, e
-            );
+            // Kill the orphaned session before returning the error
+            let _ = session.kill().await;
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "Failed to send initial prompt to '{}': {} — killed session",
+                    name, e
+                ),
+            });
         }
 
         let mut sessions = self.sessions.write().await;
@@ -201,10 +207,12 @@ impl SessionManager {
     ///
     /// Called periodically by the daemon tick. Reads available events from
     /// each session's stdout, updates session metadata (session_id, cost,
-    /// health flags), and returns events for further processing.
+    /// health flags), and returns events grouped by coworker name.
     ///
-    /// Also detects sessions that have exited and marks them as stopped.
-    pub async fn drain_events(&self) -> HashMap<String, Vec<StreamEvent>> {
+    /// Also detects sessions that have exited: returns their names in the
+    /// second tuple element so the caller can trigger cleanup (deregister,
+    /// stop time recording, etc.).
+    pub async fn drain_events(&self) -> (HashMap<String, Vec<StreamEvent>>, Vec<String>) {
         let mut sessions = self.sessions.write().await;
         let mut all_events: HashMap<String, Vec<StreamEvent>> = HashMap::new();
         let mut stopped = Vec::new();
@@ -296,7 +304,7 @@ impl SessionManager {
             }
         }
 
-        all_events
+        (all_events, stopped)
     }
 
     /// Get the session ID for a coworker (if known).
@@ -380,8 +388,9 @@ mod tests {
     #[tokio::test]
     async fn test_drain_events_empty() {
         let sm = SessionManager::new();
-        let events = sm.drain_events().await;
+        let (events, stopped) = sm.drain_events().await;
         assert!(events.is_empty());
+        assert!(stopped.is_empty());
     }
 
     #[tokio::test]

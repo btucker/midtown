@@ -391,12 +391,12 @@ The daemon handles:
 
 ### Coworkers
 
-Each coworker runs in:
+Each coworker runs as:
 
-- An isolated git worktree (no merge conflicts during development)
-- A tmux window within the project session
-- With a Stop hook that syncs the channel at natural pause points
+- A headless Claude Code process (`claude -p --output-format stream-json`) managed by the daemon's `SessionManager`
+- In an isolated git worktree (no merge conflicts during development)
 - With `--add-dir` worktrees for additional repos in multi-repo projects
+- Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
 Coworkers are named after Manhattan avenues: lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon.
 
