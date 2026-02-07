@@ -1,9 +1,7 @@
 <script>
   import { kanbanData, repoStatus, repoStatuses } from './store.js'
 
-  const defaultRepoUrl = 'https://github.com/btucker/midtown'
-
-  // Get repo URL for a PR (multi-repo aware)
+  // Get repo URL for a PR (multi-repo aware, falls back to primary repo)
   function prRepoUrl(pr) {
     if (pr.repo && $repoStatuses.length > 0) {
       const info = $repoStatuses.find(r => r.label === pr.repo)
@@ -11,7 +9,10 @@
         return `https://github.com/${info.fullName}`
       }
     }
-    return defaultRepoUrl
+    if ($repoStatus.fullName) {
+      return `https://github.com/${$repoStatus.fullName}`
+    }
+    return ''
   }
 
   let expanded = $state(false)

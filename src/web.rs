@@ -680,6 +680,39 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     .await
     .unwrap_or_default();
 
+    // Resolve the primary repo's full name (owner/repo) for PR link generation.
+    // Uses repo_name_cache on WebState for permanent caching.
+    let repo_full_name: String = state
+        .all_repo_paths
+        .first()
+        .map(|repo_path| {
+            let cached = {
+                let cache = state.repo_name_cache.read().unwrap();
+                cache.get(repo_path).cloned()
+            };
+            cached.unwrap_or_else(|| {
+                let name = std::process::Command::new("gh")
+                    .current_dir(repo_path)
+                    .args([
+                        "repo",
+                        "view",
+                        "--json",
+                        "nameWithOwner",
+                        "--jq",
+                        ".nameWithOwner",
+                    ])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                let mut cache = state.repo_name_cache.write().unwrap();
+                cache.insert(repo_path.clone(), name.clone());
+                name
+            })
+        })
+        .unwrap_or_default();
+
     // Build repo metadata for multi-repo PR URL resolution
     // Uses repo_name_cache on WebState for permanent repo name caching
     let repo_statuses: Vec<serde_json::Value> = if state.all_repo_paths.len() > 1 {
@@ -737,6 +770,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "pull_requests": pull_requests,
         "merged_prs": merged_prs,
         "repo_name": state.config.repo,
+        "repo_full_name": repo_full_name,
         "repo_status": repo_status,
         "repo_statuses": repo_statuses,
     });

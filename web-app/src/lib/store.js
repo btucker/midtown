@@ -26,6 +26,7 @@ export const kanbanData = writable({
 // Repository status (commit, CI, release) - primary repo
 export const repoStatus = writable({
   repoName: '',
+  fullName: '',
   commitHash: '',
   commitTime: null,
   ciStatus: null,
