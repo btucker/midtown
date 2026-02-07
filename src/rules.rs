@@ -594,8 +594,8 @@ pub(crate) struct StuckCoworkerRestart {
 /// 2. No stream events received for `stuck_duration`
 /// 3. Has an in-progress task (idle coworkers are handled elsewhere)
 ///
-/// Skips coworkers with usage limits or API errors — they are paused but
-/// not stuck.
+/// Skips coworkers with usage limits, API errors, or running subagents —
+/// they are paused/busy but not stuck.
 ///
 /// Pure function: takes ProcessHealth data and returns restart decisions.
 pub(crate) fn decide_stuck_coworker_restarts(
@@ -620,6 +620,11 @@ pub(crate) fn decide_stuck_coworker_restarts(
         }
         // Skip coworkers with API errors — they're waiting but may recover
         if api_error_coworkers.contains(&name.to_lowercase()) {
+            continue;
+        }
+        // Skip coworkers with running subagents — parent session goes quiet
+        // while Task tool subagents work, which can take several minutes
+        if health.has_running_subagent {
             continue;
         }
         // Check last_event_at — no events yet means just spawned, skip
@@ -3389,6 +3394,7 @@ mod tests {
                 last_event_at: Some(now - chrono::Duration::minutes(10)),
                 has_usage_limit: false,
                 has_api_error: false,
+                has_running_subagent: false,
                 exit_code: None,
             },
         );
@@ -3425,6 +3431,7 @@ mod tests {
                 last_event_at: Some(now - chrono::Duration::seconds(30)),
                 has_usage_limit: false,
                 has_api_error: false,
+                has_running_subagent: false,
                 exit_code: None,
             },
         );
@@ -3463,6 +3470,7 @@ mod tests {
                 last_event_at: Some(now - chrono::Duration::minutes(10)),
                 has_usage_limit: true,
                 has_api_error: false,
+                has_running_subagent: false,
                 exit_code: None,
             },
         );
@@ -3500,6 +3508,7 @@ mod tests {
                 last_event_at: Some(now - chrono::Duration::minutes(10)),
                 has_usage_limit: false,
                 has_api_error: true,
+                has_running_subagent: false,
                 exit_code: None,
             },
         );
@@ -3526,6 +3535,43 @@ mod tests {
     }
 
     #[test]
+    fn stuck_detection_skips_running_subagent() {
+        use crate::daemon::snapshot::ProcessHealth;
+
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "park".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                // Last parent event was 10 minutes ago — normally stuck
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                // But has a running subagent, so parent stream is expected to be quiet
+                has_running_subagent: true,
+                exit_code: None,
+            },
+        );
+
+        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "park".to_string())];
+
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
+            &tasks,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(180),
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "coworker with running subagent should not be flagged as stuck"
+        );
+    }
+
+    #[test]
     fn stuck_detection_skips_dead_processes() {
         use crate::daemon::snapshot::ProcessHealth;
 
@@ -3538,6 +3584,7 @@ mod tests {
                 last_event_at: Some(now - chrono::Duration::minutes(10)),
                 has_usage_limit: false,
                 has_api_error: false,
+                has_running_subagent: false,
                 exit_code: Some(1),
             },
         );

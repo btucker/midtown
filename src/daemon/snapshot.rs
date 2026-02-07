@@ -35,6 +35,10 @@ pub struct ProcessHealth {
     /// Whether the coworker is experiencing API errors (transient failures
     /// that may resolve on retry).
     pub has_api_error: bool,
+    /// Whether the coworker has a running Task tool subagent.
+    /// When true, the parent session may not emit events for several minutes
+    /// while the subagent works — stuck detection should skip these coworkers.
+    pub has_running_subagent: bool,
     /// Process exit code, if the process has terminated.
     pub exit_code: Option<i32>,
 }
@@ -46,6 +50,7 @@ impl Default for ProcessHealth {
             last_event_at: None,
             has_usage_limit: false,
             has_api_error: false,
+            has_running_subagent: false,
             exit_code: None,
         }
     }
