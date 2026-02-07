@@ -254,14 +254,20 @@ impl DaemonClient {
 
     // Task commands
 
-    pub fn task_create(&self, subject: &str, description: &str) -> Result<Response, String> {
-        self.send(
-            "task.create",
-            Some(serde_json::json!({
-                "subject": subject,
-                "description": description
-            })),
-        )
+    pub fn task_create(
+        &self,
+        subject: &str,
+        description: &str,
+        blocked_by: Option<&[String]>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({
+            "subject": subject,
+            "description": description
+        });
+        if let Some(bb) = blocked_by {
+            params["blocked_by"] = serde_json::json!(bb);
+        }
+        self.send("task.create", Some(params))
     }
 
     pub fn task_update(
