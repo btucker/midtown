@@ -3082,6 +3082,21 @@ mod tests {
             TIMESTAMP_GUTTER_WIDTH + 2,
         );
 
+        // Verify every ASCII art line (Cyan spans) has the correct indent
+        for line in &lines {
+            for span in &line.spans {
+                if span.style.fg == Some(Color::Cyan) {
+                    let text = span.content.as_ref();
+                    assert!(
+                        text.starts_with(&action_indent),
+                        "ASCII art line should have {} chars indent, got: {:?}",
+                        TIMESTAMP_GUTTER_WIDTH + 2,
+                        text
+                    );
+                }
+            }
+        }
+
         // Compare with normal text message indent
         let normal_msg = test_message("ignored");
         let mut normal_lines = Vec::new();
@@ -3115,11 +3130,26 @@ mod tests {
             "Normal message top separator should have {} chars indent",
             TIMESTAMP_GUTTER_WIDTH,
         );
-        // Verify action indent is wider: action separator should NOT appear in normal output
-        assert!(
-            !normal_text.contains(&format!("{}--- graph ---", action_indent)),
-            "Normal message should NOT have the wider action indent"
-        );
+        // Verify every normal ASCII art line has the narrower indent
+        for line in &normal_lines {
+            for span in &line.spans {
+                if span.style.fg == Some(Color::Cyan) {
+                    let text = span.content.as_ref();
+                    assert!(
+                        text.starts_with(&normal_indent),
+                        "Normal ASCII art line should have {} chars indent, got: {:?}",
+                        TIMESTAMP_GUTTER_WIDTH,
+                        text
+                    );
+                    // Should NOT have the wider action indent
+                    assert!(
+                        !text.starts_with(&action_indent),
+                        "Normal ASCII art line should NOT have action indent, got: {:?}",
+                        text
+                    );
+                }
+            }
+        }
     }
 
     #[test]
