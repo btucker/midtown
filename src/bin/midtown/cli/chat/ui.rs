@@ -1069,12 +1069,10 @@ fn render_message_with_mermaid(
                     )));
 
                     // ASCII art lines (cyan, indented, truncated to content_width)
+                    // Use chars().take() for safe truncation of multi-byte UTF-8
+                    // (box-drawing characters like ┌│└─ are 3 bytes each)
                     for art_line in diagram.ascii_art.lines() {
-                        let truncated = if art_line.len() > content_width {
-                            &art_line[..content_width]
-                        } else {
-                            art_line
-                        };
+                        let truncated: String = art_line.chars().take(content_width).collect();
                         lines.push(Line::from(Span::styled(
                             format!("{}{}", indent, truncated),
                             Style::default().fg(Color::Cyan),
@@ -3122,5 +3120,48 @@ mod tests {
             !normal_text.contains(&format!("{}--- graph ---", action_indent)),
             "Normal message should NOT have the wider action indent"
         );
+    }
+
+    #[test]
+    fn test_narrow_terminal_does_not_panic_on_unicode_ascii_art() {
+        // Box-drawing characters (┌, │, └, ─) are 3 bytes in UTF-8.
+        // Byte-indexing truncation can land mid-character and panic.
+        let source = "graph TD\n  A-->B";
+        let mut cache = MermaidCache::new();
+        cache.insert_cached(
+            source,
+            mermaid::RenderedDiagram {
+                ascii_art: "┌──────────────────┐\n│ A long box label │\n└──────────────────┘"
+                    .to_string(),
+                svg: "<svg>test</svg>".to_string(),
+            },
+        );
+
+        let msg = test_message("ignored");
+        let segments = vec![ContentSegment::Mermaid(source.to_string())];
+        let current_tasks = HashMap::new();
+
+        // Use a very narrow width that will force truncation mid-character
+        for width in [15, 18, 20, 25] {
+            let mut lines = Vec::new();
+            let mut diagram_sources = Vec::new();
+            let mut mermaid_to_render = Vec::new();
+
+            render_message_with_mermaid(
+                &msg,
+                &segments,
+                width,
+                None,
+                &current_tasks,
+                None,
+                &cache,
+                &mut lines,
+                &mut diagram_sources,
+                &mut mermaid_to_render,
+            );
+
+            // Should not panic — just verify we got some output
+            assert!(!lines.is_empty(), "Should produce lines at width {}", width);
+        }
     }
 }
