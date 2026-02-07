@@ -635,6 +635,17 @@ impl DaemonState {
     async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<()> {
         let name = config.name.clone();
 
+        // Idempotent: if this coworker is already running, skip silently.
+        // Multiple code paths (orphan recovery, task dispatch, PR call-in) can
+        // independently decide to spawn the same coworker in the same tick.
+        if self.session_manager.is_alive(&name).await {
+            tracing::debug!(
+                "Coworker {} already has a running session, skipping spawn",
+                name
+            );
+            return Ok(());
+        }
+
         // Prepare worktree and augment config with additional dirs
         let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
 

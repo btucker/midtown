@@ -151,63 +151,9 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
             &nudge_text,
         );
 
-        match action {
-            crate::rules::MentionAction::Nudge {
-                name: ref n,
-                message: ref m,
-            } => {
-                if let Err(e) = state.session_manager.send_message(n, m).await {
-                    warn!("Failed to nudge {} about @mention: {}", n, e);
-                } else {
-                    info!("Nudged {} about @mention from {}", n, msg.from);
-                }
-            }
-            crate::rules::MentionAction::Spawn {
-                name: ref n,
-                message: ref m,
-            } => {
-                info!("Spawning mentioned coworker {} (not currently running)", n);
-                let config = crate::launch::LaunchConfig::coworker(
-                    n.clone(),
-                    state.repo_name.clone(),
-                    crate::launch::SessionMode::Resume,
-                    Some(m.clone()),
-                );
-                match state.spawn_coworker(&config).await {
-                    Ok(_) => {
-                        info!("Spawned coworker {} via @mention", n);
-                        let spawn_msg = Message::text(
-                            "midtown",
-                            format!("🚀 Called in {} in response to @mention", n),
-                        );
-                        if let Err(e) = state.send_and_broadcast(&spawn_msg) {
-                            warn!("Failed to post call-in message: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to spawn coworker {}: {}", n, e);
-                        let err_msg = Message::text(
-                            "midtown",
-                            format!("⚠️ Failed to call in {} for @mention: {}", n, e),
-                        );
-                        let _ = state.send_and_broadcast(&err_msg);
-                    }
-                }
-            }
-            crate::rules::MentionAction::Skip { ref reason } => {
-                debug!("{}", reason);
-                if reason.contains("dev limit") {
-                    let err_msg = Message::text(
-                        "midtown",
-                        format!(
-                            "⚠️ Cannot call in {} for @mention: dev coworkers limit reached",
-                            name
-                        ),
-                    );
-                    let _ = state.send_and_broadcast(&err_msg);
-                }
-            }
-        }
+        // Convert MentionAction → Effects, execute via the standard pipeline.
+        let effects = mention_action_to_effects(action, &name, &state.repo_name);
+        super::effects::execute_effects(effects, state).await;
     }
 }
 
@@ -246,6 +192,140 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
             warn!("Failed to nudge {} for @all: {}", coworker.name, e);
         } else {
             info!("Nudged {} for @all from {}", coworker.name, msg.from);
+        }
+    }
+}
+
+/// Convert a `MentionAction` decision into executable effects.
+///
+/// Pure conversion: takes the decision from `decide_mention_action` and maps
+/// it to `Effect` variants that the standard `execute_effects` pipeline handles.
+fn mention_action_to_effects(
+    action: crate::rules::MentionAction,
+    coworker_name: &str,
+    repo_name: &str,
+) -> Vec<super::effects::Effect> {
+    use super::effects::Effect;
+
+    match action {
+        crate::rules::MentionAction::Nudge { name, message } => {
+            vec![Effect::NudgeCoworker { name, message }]
+        }
+        crate::rules::MentionAction::Spawn { name, message } => {
+            let config = crate::launch::LaunchConfig::coworker(
+                name.clone(),
+                repo_name.to_string(),
+                crate::launch::SessionMode::Resume,
+                Some(message),
+            );
+            vec![Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success: vec![Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!("Called in {} in response to @mention", name),
+                }],
+                on_failure: vec![Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!("Failed to call in {} for @mention", name),
+                }],
+            }]
+        }
+        crate::rules::MentionAction::Skip { ref reason } => {
+            debug!("{}", reason);
+            if reason.contains("dev limit") {
+                vec![Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "Cannot call in {} for @mention: dev coworkers limit reached",
+                        coworker_name
+                    ),
+                }]
+            } else {
+                vec![]
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::effects::Effect;
+    use super::*;
+    use crate::rules::MentionAction;
+
+    #[test]
+    fn mention_nudge_produces_nudge_effect() {
+        let action = MentionAction::Nudge {
+            name: "lexington".to_string(),
+            message: "lead said: @lexington check this".to_string(),
+        };
+        let effects = mention_action_to_effects(action, "lexington", "test-repo");
+
+        assert_eq!(effects.len(), 1);
+        assert!(
+            matches!(&effects[0], Effect::NudgeCoworker { name, .. } if name == "lexington"),
+            "Expected NudgeCoworker for lexington"
+        );
+    }
+
+    #[test]
+    fn mention_spawn_produces_spawn_with_callbacks() {
+        let action = MentionAction::Spawn {
+            name: "park".to_string(),
+            message: "lead said: @park fix the bug".to_string(),
+        };
+        let effects = mention_action_to_effects(action, "park", "test-repo");
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success,
+                on_failure,
+            } => {
+                assert_eq!(config.name, "park");
+                assert!(!on_success.is_empty(), "Should have success callback");
+                assert!(!on_failure.is_empty(), "Should have failure callback");
+                // Success callback should post to channel
+                assert!(
+                    matches!(&on_success[0], Effect::PostToChannel { message, .. }
+                        if message.contains("park") && message.contains("@mention")),
+                    "Success callback should mention park and @mention"
+                );
+            }
+            _ => panic!("Expected SpawnCoworkerWithCallbacks, got {:?}", effects[0]),
+        }
+    }
+
+    #[test]
+    fn mention_skip_produces_no_effects() {
+        let action = MentionAction::Skip {
+            reason: "lexington is already active, no need to spawn".to_string(),
+        };
+        let effects = mention_action_to_effects(action, "lexington", "test-repo");
+        assert!(
+            effects.is_empty(),
+            "Skip (non dev-limit) should produce no effects"
+        );
+    }
+
+    #[test]
+    fn mention_skip_dev_limit_posts_to_channel() {
+        let action = MentionAction::Skip {
+            reason: "Cannot spawn amsterdam: dev limit reached".to_string(),
+        };
+        let effects = mention_action_to_effects(action, "amsterdam", "test-repo");
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::PostToChannel { message, .. } => {
+                assert!(message.contains("amsterdam"), "Should mention the coworker");
+                assert!(
+                    message.contains("dev coworkers limit"),
+                    "Should explain the limit"
+                );
+            }
+            _ => panic!("Expected PostToChannel for dev limit, got {:?}", effects[0]),
         }
     }
 }

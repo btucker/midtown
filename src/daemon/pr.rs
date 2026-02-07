@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use crate::message::{Message, MessageType};
 use crate::{config, daemon_messages};
 
 use super::DaemonState;
@@ -2053,61 +2052,6 @@ async fn get_pr_session_context(
         })
 }
 
-/// Execute a PR handoff — spawn a coworker to take over another's PR.
-///
-/// This is a shared helper for the async webhook handlers to reduce duplication.
-/// It spawns the assignee with the original author's session context, broadcasts
-/// a status update, and posts a channel message.
-///
-/// Returns `true` if the handoff was successful.
-async fn execute_pr_handoff(
-    state: &DaemonState,
-    assignee: &str,
-    original_author: &str,
-    pr_number: u64,
-    branch: &str,
-    session_id: &str,
-    context_description: &str,
-) -> bool {
-    info!(
-        "Handing off PR #{} from {} to {} with session resume ({})",
-        pr_number, original_author, assignee, context_description
-    );
-
-    let config = crate::launch::LaunchConfig::pr_handoff(
-        assignee.to_string(),
-        state.repo_name.clone(),
-        session_id.to_string(),
-        pr_number,
-        branch,
-        original_author,
-    );
-
-    match state.spawn_coworker(&config).await {
-        Ok(_) => {
-            state.broadcast_coworker_update(assignee, "running", None);
-            let handoff_msg = Message::text(
-                "midtown",
-                format!(
-                    "{} is taking over PR #{} from {} {}",
-                    assignee, pr_number, original_author, context_description
-                ),
-            );
-            if let Err(e) = state.send_and_broadcast(&handoff_msg) {
-                warn!("Failed to post handoff message: {}", e);
-            }
-            true
-        }
-        Err(e) => {
-            warn!(
-                "Failed to hand off PR #{} to {}: {}",
-                pr_number, assignee, e
-            );
-            false
-        }
-    }
-}
-
 /// Handle nudging a PR owner when a comment/review is posted on their PR.
 ///
 /// This is called from the webhook event loop when a `PrActivity` is present.
@@ -2188,120 +2132,15 @@ pub(super) async fn handle_pr_comment_nudge(
         &nudge_msg,
     );
 
-    let success = match action {
-        crate::rules::PrAction::NudgeOwner {
-            owner: ref o,
-            message: ref msg,
-        } => match state.session_manager.send_message(o, msg).await {
-            Ok(()) => {
-                info!(
-                    "Nudged {} about review comment on PR #{} from {}",
-                    o, pr_number, activity.actor
-                );
-                true
-            }
-            Err(e) => {
-                warn!("Failed to nudge {} about PR #{}: {}", o, pr_number, e);
-                false
-            }
-        },
-        crate::rules::PrAction::SpawnOwner {
-            owner: ref o,
-            message: ref msg,
-        } => {
-            info!(
-                "PR #{} owner {} is not active, spawning to address review feedback",
-                pr_number, o
-            );
-            let saved_session = {
-                let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(o).cloned()
-            };
-            if saved_session.is_some() {
-                info!("Resuming saved PR break session for {}", o);
-            }
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::launch::SessionMode::Resume,
-            };
-            let config = crate::launch::LaunchConfig::coworker(
-                o.clone(),
-                state.repo_name.clone(),
-                session_mode,
-                Some(msg.clone()),
-            );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    if saved_session.is_some() {
-                        let mut sessions = state.pr_break_sessions.write().unwrap();
-                        sessions.remove(o);
-                    }
-                    info!(
-                        "Spawned {} to address review feedback on PR #{}",
-                        o, pr_number
-                    );
-                    let call_msg = Message::text(
-                        "daemon",
-                        format!(
-                            "Called in {} to address review feedback on PR #{}",
-                            o, pr_number
-                        ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&call_msg) {
-                        warn!("Failed to post call-in message: {}", e);
-                    }
-                    true
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to spawn {} for PR #{} review feedback: {}",
-                        o, pr_number, e
-                    );
-                    false
-                }
-            }
-        }
-        crate::rules::PrAction::PostToChannel { message: ref msg } => {
-            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
-            if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                warn!("Failed to post PR comment to channel: {}", e);
-            }
-            true
-        }
-        crate::rules::PrAction::Skip { ref reason } => {
-            debug!("{}", reason);
-            false
-        }
-        crate::rules::PrAction::HandoffToCoworker {
-            ref assignee,
-            ref original_author,
-            pr_number: pr_num,
-            ref branch,
-            ref session_id,
-            message: ref _msg,
-        } => {
-            execute_pr_handoff(
-                state,
-                assignee,
-                original_author,
-                pr_num,
-                branch,
-                session_id,
-                "to address review feedback",
-            )
-            .await
-        }
-    };
-
-    // Record the nudge to prevent spamming
-    if success {
-        let mut tracker = state.pr_issue_tracker.lock().await;
-        tracker.record_nudge(pr_number, PrIssueType::ReviewComment);
-    }
+    // Convert PrAction → Effects using the same pure converter as polling,
+    // then execute via the standard effect pipeline.
+    let is_actionable = !matches!(action, crate::rules::PrAction::Skip { .. });
+    let effects = comment_action_to_effects(action, pr_number, "", state);
+    super::effects::execute_effects(effects, state).await;
 
     // Create a review feedback task directly. In-memory deduplication prevents
     // repeated creation while the same review cycle is active.
-    if success {
+    if is_actionable {
         let key = super::DaemonState::task_creation_key(pr_number, &owner);
         if state.is_task_creation_pending(&key) {
             debug!(
@@ -2343,7 +2182,7 @@ pub(super) async fn handle_pr_comment_nudge(
     }
 
     // Add eyes reaction to the comment to provide visual feedback that it was received
-    if success
+    if is_actionable
         && let (Some(ref node), Some(ref repo)) = (activity.comment_node, activity.repo_full_name)
     {
         add_eyes_reaction(repo, node).await;
@@ -2424,121 +2263,10 @@ pub(super) async fn handle_webhook_review_state_change(
         &nudge_msg,
     );
 
-    let nudged = match action {
-        crate::rules::PrAction::NudgeOwner {
-            owner: ref o,
-            message: ref msg,
-        } => match state.session_manager.send_message(o, msg).await {
-            Ok(()) => {
-                info!(
-                    "Webhook: nudged {} about {} on PR #{}",
-                    o, issue_type, pr_number
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    "Webhook: failed to nudge {} about {} on PR #{}: {}",
-                    o, issue_type, pr_number, e
-                );
-                false
-            }
-        },
-        crate::rules::PrAction::SpawnOwner {
-            owner: ref o,
-            message: ref msg,
-        } => {
-            info!(
-                "Webhook: PR #{} owner {} is not active, spawning to address {}",
-                pr_number, o, issue_type
-            );
-            let saved_session = {
-                let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(o).cloned()
-            };
-            if saved_session.is_some() {
-                info!("Resuming saved PR break session for {}", o);
-            }
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::launch::SessionMode::Resume,
-            };
-            let config = crate::launch::LaunchConfig::coworker(
-                o.clone(),
-                state.repo_name.clone(),
-                session_mode,
-                Some(msg.clone()),
-            );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    if saved_session.is_some() {
-                        let mut sessions = state.pr_break_sessions.write().unwrap();
-                        sessions.remove(o);
-                    }
-                    info!(
-                        "Webhook: spawned {} to address {} on PR #{}",
-                        o, issue_type, pr_number
-                    );
-                    state.broadcast_coworker_update(o, "running", None);
-                    let call_msg = Message::text(
-                        "midtown",
-                        crate::daemon_messages::called_in_pr_issue(
-                            o,
-                            &issue_type.to_string(),
-                            pr_number,
-                            crate::config::get_personality(),
-                        ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&call_msg) {
-                        warn!("Failed to post call-in message: {}", e);
-                    }
-                    true
-                }
-                Err(e) => {
-                    warn!(
-                        "Webhook: failed to spawn {} for PR #{} {}: {}",
-                        o, pr_number, issue_type, e
-                    );
-                    false
-                }
-            }
-        }
-        crate::rules::PrAction::PostToChannel { message: ref msg } => {
-            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
-            if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                warn!("Failed to post PR issue to channel: {}", e);
-            }
-            true
-        }
-        crate::rules::PrAction::Skip { ref reason } => {
-            debug!("Webhook: {}", reason);
-            false
-        }
-        crate::rules::PrAction::HandoffToCoworker {
-            ref assignee,
-            ref original_author,
-            pr_number: pr_num,
-            ref branch,
-            ref session_id,
-            message: ref _msg,
-        } => {
-            execute_pr_handoff(
-                state,
-                assignee,
-                original_author,
-                pr_num,
-                branch,
-                session_id,
-                &format!("to address {}", issue_type),
-            )
-            .await
-        }
-    };
-
-    if nudged {
-        let mut tracker = state.pr_issue_tracker.lock().await;
-        tracker.record_nudge(pr_number, issue_type);
-    }
+    // Convert PrAction → Effects using the same pure converter as polling,
+    // then execute via the standard effect pipeline.
+    let effects = pr_action_to_effects(action, pr_number, "", issue_type, state);
+    super::effects::execute_effects(effects, state).await;
 }
 
 /// Handle a CI check failure on a PR branch from a webhook.
@@ -2609,121 +2337,10 @@ pub(super) async fn handle_webhook_ci_failure(
         &nudge_msg,
     );
 
-    let nudged = match action {
-        crate::rules::PrAction::NudgeOwner {
-            owner: ref o,
-            message: ref msg,
-        } => match state.session_manager.send_message(o, msg).await {
-            Ok(()) => {
-                info!(
-                    "Webhook: nudged {} about CI failure on PR #{}",
-                    o, pr_number
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    "Webhook: failed to nudge {} about CI failure on PR #{}: {}",
-                    o, pr_number, e
-                );
-                false
-            }
-        },
-        crate::rules::PrAction::SpawnOwner {
-            owner: ref o,
-            message: ref msg,
-        } => {
-            info!(
-                "Webhook: PR #{} owner {} is not active, spawning to address CI failure",
-                pr_number, o
-            );
-            let saved_session = {
-                let sessions = state.pr_break_sessions.read().unwrap();
-                sessions.get(o).cloned()
-            };
-            if saved_session.is_some() {
-                info!("Resuming saved PR break session for {}", o);
-            }
-            let session_mode = match saved_session.as_deref() {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
-                None => crate::launch::SessionMode::Resume,
-            };
-            let config = crate::launch::LaunchConfig::coworker(
-                o.clone(),
-                state.repo_name.clone(),
-                session_mode,
-                Some(msg.clone()),
-            );
-            match state.spawn_coworker(&config).await {
-                Ok(_) => {
-                    if saved_session.is_some() {
-                        let mut sessions = state.pr_break_sessions.write().unwrap();
-                        sessions.remove(o);
-                    }
-                    info!(
-                        "Webhook: spawned {} to address CI failure on PR #{}",
-                        o, pr_number
-                    );
-                    state.broadcast_coworker_update(o, "running", None);
-                    let call_msg = Message::text(
-                        "midtown",
-                        crate::daemon_messages::called_in_pr_issue(
-                            o,
-                            "CI failed",
-                            pr_number,
-                            crate::config::get_personality(),
-                        ),
-                    );
-                    if let Err(e) = state.send_and_broadcast(&call_msg) {
-                        warn!("Failed to post call-in message: {}", e);
-                    }
-                    true
-                }
-                Err(e) => {
-                    warn!(
-                        "Webhook: failed to spawn {} for PR #{} CI failure: {}",
-                        o, pr_number, e
-                    );
-                    false
-                }
-            }
-        }
-        crate::rules::PrAction::PostToChannel { message: ref msg } => {
-            let channel_msg = Message::new("midtown", msg.clone(), MessageType::Text);
-            if let Err(e) = state.send_and_broadcast(&channel_msg) {
-                warn!("Failed to post PR CI failure to channel: {}", e);
-            }
-            true
-        }
-        crate::rules::PrAction::Skip { ref reason } => {
-            debug!("Webhook: {}", reason);
-            false
-        }
-        crate::rules::PrAction::HandoffToCoworker {
-            ref assignee,
-            ref original_author,
-            pr_number: pr_num,
-            ref branch,
-            ref session_id,
-            message: ref _msg,
-        } => {
-            execute_pr_handoff(
-                state,
-                assignee,
-                original_author,
-                pr_num,
-                branch,
-                session_id,
-                "to fix CI failure",
-            )
-            .await
-        }
-    };
-
-    if nudged {
-        let mut tracker = state.pr_issue_tracker.lock().await;
-        tracker.record_nudge(pr_number, PrIssueType::CiFailed);
-    }
+    // Convert PrAction → Effects using the same pure converter as polling,
+    // then execute via the standard effect pipeline.
+    let effects = pr_action_to_effects(action, pr_number, "", PrIssueType::CiFailed, state);
+    super::effects::execute_effects(effects, state).await;
 }
 
 /// Detect stale CI checks and collect re-run effects.
@@ -3753,5 +3370,205 @@ mod tests {
             hash_58, hash_59,
             "Within same bucket (58→59), hash should be stable"
         );
+    }
+
+    /// Create a minimal DaemonState for testing action-to-effects converters.
+    fn make_test_state() -> DaemonState {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        // Init git repo (CoworkerManager/WorktreeManager need one)
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+        let channel_dir = temp_dir.path().join("channel");
+        std::fs::create_dir_all(&channel_dir).expect("channel dir");
+        let channel = crate::channel::Channel::new(&channel_dir).expect("channel");
+
+        // Leak temp_dir so it survives the test (DaemonState doesn't own it)
+        std::mem::forget(temp_dir);
+
+        DaemonState::new(
+            "/tmp/test.sock".into(),
+            cm,
+            "test-repo".to_string(),
+            vec![],
+            channel,
+            None,
+            10,
+            None,
+            "main".to_string(),
+        )
+        .expect("daemon state")
+    }
+
+    #[test]
+    fn pr_action_nudge_produces_nudge_with_callbacks() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::NudgeOwner {
+            owner: "lexington".to_string(),
+            message: "PR #42 needs attention".to_string(),
+        };
+
+        let effects = pr_action_to_effects(action, 42, "Fix bug", PrIssueType::CiFailed, &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::NudgeCoworkerWithCallbacks {
+                name, on_success, ..
+            } => {
+                assert_eq!(name, "lexington");
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 42, .. })),
+                    "Should record PR nudge on success"
+                );
+            }
+            _ => panic!("Expected NudgeCoworkerWithCallbacks, got {:?}", effects[0]),
+        }
+    }
+
+    #[test]
+    fn pr_action_spawn_produces_spawn_with_callbacks() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::SpawnOwner {
+            owner: "park".to_string(),
+            message: "PR #99 CI failed".to_string(),
+        };
+
+        let effects = pr_action_to_effects(action, 99, "Fix CI", PrIssueType::CiFailed, &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success,
+                on_failure,
+            } => {
+                assert_eq!(config.name, "park");
+                // on_success should include broadcast, channel post, and pr nudge record
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 99, .. })),
+                    "on_success should record PR nudge"
+                );
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::BroadcastCoworkerUpdate { .. })),
+                    "on_success should broadcast status"
+                );
+                // on_failure should also record PR nudge (for cooldown tracking)
+                assert!(
+                    on_failure
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 99, .. })),
+                    "on_failure should also record PR nudge"
+                );
+            }
+            _ => panic!("Expected SpawnCoworkerWithCallbacks, got {:?}", effects[0]),
+        }
+    }
+
+    #[test]
+    fn pr_action_skip_produces_no_effects() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::Skip {
+            reason: "Owner not found".to_string(),
+        };
+
+        let effects = pr_action_to_effects(action, 42, "Fix bug", PrIssueType::CiFailed, &state);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn comment_action_spawn_produces_spawn_with_callbacks() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::SpawnOwner {
+            owner: "amsterdam".to_string(),
+            message: "PR #55 has review feedback".to_string(),
+        };
+
+        let effects = comment_action_to_effects(action, 55, "Add feature", &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::SpawnCoworkerWithCallbacks {
+                config, on_success, ..
+            } => {
+                assert_eq!(config.name, "amsterdam");
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 55, .. })),
+                    "on_success should record PR nudge for comment"
+                );
+            }
+            _ => panic!("Expected SpawnCoworkerWithCallbacks, got {:?}", effects[0]),
+        }
+    }
+
+    #[test]
+    fn pr_action_spawn_with_break_session_includes_clear_effect() {
+        let state = make_test_state();
+        // Simulate a saved break session for the coworker
+        {
+            let mut sessions = state.pr_break_sessions.write().unwrap();
+            sessions.insert("york".to_string(), "session-abc-123".to_string());
+        }
+
+        let action = crate::rules::PrAction::SpawnOwner {
+            owner: "york".to_string(),
+            message: "PR #77 needs review".to_string(),
+        };
+
+        let effects =
+            pr_action_to_effects(action, 77, "Review PR", PrIssueType::ReviewComment, &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::SpawnCoworkerWithCallbacks {
+                config, on_success, ..
+            } => {
+                // Should use ResumeSession mode since we have a saved session
+                assert!(
+                    matches!(config.session_mode, crate::launch::SessionMode::ResumeSession(ref id) if id == "session-abc-123"),
+                    "Should resume saved session, got {:?}",
+                    config.session_mode
+                );
+                // on_success should include ClearPrBreakSession
+                assert!(
+                    on_success.iter().any(
+                        |e| matches!(e, Effect::ClearPrBreakSession { name } if name == "york")
+                    ),
+                    "on_success should clear break session"
+                );
+            }
+            _ => panic!("Expected SpawnCoworkerWithCallbacks"),
+        }
     }
 }
