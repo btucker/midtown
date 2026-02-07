@@ -3,6 +3,7 @@ mod channel;
 mod chat;
 mod coworker;
 mod daemon;
+mod diagram;
 pub mod e2e;
 mod hooks;
 mod lead;
@@ -13,6 +14,7 @@ mod task;
 pub use auth::AuthCommand;
 pub use channel::ChannelCommand;
 pub use coworker::CoworkerCommand;
+pub use diagram::DiagramCommand;
 pub use e2e::E2eCommand;
 pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
@@ -117,6 +119,11 @@ pub fn handle_state(
 /// Handle hook commands (insight, idle, task, ask) - no daemon required
 pub fn handle_hook(cmd: &HookCommand) -> Result<Response, String> {
     hooks::handle(cmd)
+}
+
+/// Handle diagram commands (validate) - no daemon required
+pub fn handle_diagram(cmd: &DiagramCommand) -> Result<Response, String> {
+    diagram::handle(cmd)
 }
 
 /// Handle E2E test commands (auth, run) - no daemon required

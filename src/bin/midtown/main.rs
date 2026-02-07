@@ -9,7 +9,8 @@ mod cli;
 mod client;
 
 use cli::{
-    AuthCommand, ChannelCommand, CoworkerCommand, E2eCommand, HookCommand, PrCommand, TaskCommand,
+    AuthCommand, ChannelCommand, CoworkerCommand, DiagramCommand, E2eCommand, HookCommand,
+    PrCommand, TaskCommand,
 };
 use client::DaemonClient;
 
@@ -149,6 +150,11 @@ enum Commands {
     Hook {
         #[command(subcommand)]
         command: HookCommand,
+    },
+    /// Diagram utilities (validation, rendering)
+    Diagram {
+        #[command(subcommand)]
+        command: DiagramCommand,
     },
     /// View daemon or hook logs
     Log {
@@ -497,6 +503,13 @@ fn main() {
         return;
     }
 
+    // Diagram commands (no daemon required - uses selkie library directly)
+    if let Commands::Diagram { command } = &command {
+        let result = cli::handle_diagram(command);
+        handle_result(format, result);
+        return;
+    }
+
     // Log command (no daemon required - just tails log files)
     if let Commands::Log {
         hooks,
@@ -719,6 +732,7 @@ fn main() {
         | Commands::Auth { .. }
         | Commands::State { .. }
         | Commands::Hook { .. }
+        | Commands::Diagram { .. }
         | Commands::Log { .. }
         | Commands::Webserver { .. } => unreachable!(),
     };
