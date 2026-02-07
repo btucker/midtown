@@ -323,6 +323,63 @@
     text-decoration: underline;
   }
 
+  /* Inline code */
+  .message-text :global(code),
+  .action-text :global(code) {
+    background: #2a2a2a;
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    font-size: 0.9em;
+  }
+
+  /* Code blocks */
+  .message-text :global(pre),
+  .action-text :global(pre) {
+    background: #2a2a2a;
+    padding: 8px 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 4px 0;
+  }
+
+  .message-text :global(pre code),
+  .action-text :global(pre code) {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: 0.85em;
+  }
+
+  /* Headings - scaled down for chat context */
+  .message-text :global(h1),
+  .message-text :global(h2),
+  .message-text :global(h3),
+  .action-text :global(h1),
+  .action-text :global(h2),
+  .action-text :global(h3) {
+    font-size: 1em;
+    font-weight: 700;
+    margin: 4px 0 2px;
+  }
+
+  /* Lists */
+  .message-text :global(ul),
+  .message-text :global(ol),
+  .action-text :global(ul),
+  .action-text :global(ol) {
+    margin: 2px 0;
+    padding-left: 1.5em;
+  }
+
+  /* Blockquotes */
+  .message-text :global(blockquote),
+  .action-text :global(blockquote) {
+    border-left: 2px solid #4a4a4a;
+    margin: 2px 0;
+    padding-left: 8px;
+    color: #888;
+  }
+
   /* Action messages (in sender's color) */
   .action-star {
     flex-shrink: 0;

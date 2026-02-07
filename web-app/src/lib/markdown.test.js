@@ -2,62 +2,114 @@ import { describe, it, expect } from 'vitest'
 import { parseSegments, hasMermaid, renderContent } from './markdown.js'
 
 describe('renderContent', () => {
+  // XSS protection
   it('escapes HTML angle brackets', () => {
-    expect(renderContent('<script>alert("xss")</script>')).toBe(
-      '&lt;script&gt;alert("xss")&lt;/script&gt;'
-    )
+    expect(renderContent('<script>alert("xss")</script>')).toContain('&lt;script')
+    expect(renderContent('<script>alert("xss")</script>')).not.toContain('<script')
   })
 
   it('escapes ampersands', () => {
-    expect(renderContent('foo & bar')).toBe('foo &amp; bar')
+    expect(renderContent('foo & bar')).toContain('foo &amp; bar')
   })
 
+  // Bold and italic
   it('renders bold text', () => {
-    expect(renderContent('this is **bold** text')).toBe(
-      'this is <strong>bold</strong> text'
-    )
+    expect(renderContent('this is **bold** text')).toContain('<strong>bold</strong>')
   })
 
   it('renders multiple bold segments', () => {
-    expect(renderContent('**a** and **b**')).toBe(
-      '<strong>a</strong> and <strong>b</strong>'
-    )
+    const result = renderContent('**a** and **b**')
+    expect(result).toContain('<strong>a</strong>')
+    expect(result).toContain('<strong>b</strong>')
   })
 
+  it('renders italic text', () => {
+    expect(renderContent('this is *italic* text')).toContain('<em>italic</em>')
+  })
+
+  it('renders strikethrough', () => {
+    expect(renderContent('this is ~~removed~~ text')).toContain('<s>removed</s>')
+  })
+
+  // Code
+  it('renders inline code', () => {
+    expect(renderContent('use `npm install` here')).toContain('<code>npm install</code>')
+  })
+
+  it('renders fenced code blocks', () => {
+    const result = renderContent('```js\nconst x = 1\n```')
+    expect(result).toContain('<code')
+    expect(result).toContain('const x = 1')
+  })
+
+  // Links
   it('renders markdown links', () => {
-    expect(renderContent('see [docs](https://example.com)')).toBe(
-      'see <a href="https://example.com" target="_blank" rel="noopener">docs</a>'
-    )
+    const result = renderContent('see [docs](https://example.com)')
+    expect(result).toContain('href="https://example.com"')
+    expect(result).toContain('>docs</a>')
   })
 
-  it('renders bare URLs', () => {
-    expect(renderContent('visit https://example.com now')).toBe(
-      'visit <a href="https://example.com" target="_blank" rel="noopener">https://example.com</a> now'
-    )
+  it('adds target="_blank" and rel="noopener" to links', () => {
+    const result = renderContent('see [docs](https://example.com)')
+    expect(result).toContain('target="_blank"')
+    expect(result).toContain('rel="noopener"')
+  })
+
+  it('renders bare URLs as links', () => {
+    const result = renderContent('visit https://example.com now')
+    expect(result).toContain('href="https://example.com"')
+    expect(result).toContain('target="_blank"')
   })
 
   it('renders bare URL at start of text', () => {
-    expect(renderContent('https://example.com is the link')).toBe(
-      '<a href="https://example.com" target="_blank" rel="noopener">https://example.com</a> is the link'
-    )
+    const result = renderContent('https://example.com is the link')
+    expect(result).toContain('href="https://example.com"')
   })
 
   it('renders bare URL after parenthesis', () => {
-    expect(renderContent('(https://example.com)')).toBe(
-      '(<a href="https://example.com" target="_blank" rel="noopener">https://example.com</a>)'
-    )
+    const result = renderContent('(https://example.com)')
+    expect(result).toContain('href="https://example.com"')
   })
 
   it('does not double-link markdown links as bare URLs', () => {
     const result = renderContent('[text](https://example.com)')
-    // Should produce exactly one <a> tag, not nested
-    expect(result).toBe('<a href="https://example.com" target="_blank" rel="noopener">text</a>')
+    // Should have exactly one link
+    const linkCount = (result.match(/<a /g) || []).length
+    expect(linkCount).toBe(1)
+    expect(result).toContain('>text</a>')
   })
 
+  it('does not convert URLs inside inline code', () => {
+    const result = renderContent('run `curl https://example.com`')
+    // URL inside code should not be wrapped in <a>
+    expect(result).toContain('<code>')
+    // The code element should contain the raw URL text, not a nested link
+    expect(result).not.toMatch(/<code>.*<a .*<\/code>/)
+  })
+
+  // Lists
+  it('renders unordered lists', () => {
+    const result = renderContent('- item1\n- item2')
+    expect(result).toContain('<ul>')
+    expect(result).toContain('<li>item1</li>')
+    expect(result).toContain('<li>item2</li>')
+  })
+
+  // Headings
+  it('renders headings', () => {
+    expect(renderContent('# Title')).toContain('<h1>Title</h1>')
+  })
+
+  // Blockquotes
+  it('renders blockquotes', () => {
+    expect(renderContent('> quoted text')).toContain('<blockquote>')
+  })
+
+  // Combined
   it('handles combined bold and links', () => {
     const result = renderContent('**bold** and [link](https://example.com)')
     expect(result).toContain('<strong>bold</strong>')
-    expect(result).toContain('<a href="https://example.com"')
+    expect(result).toContain('href="https://example.com"')
   })
 
   it('returns plain text unchanged (no special chars)', () => {

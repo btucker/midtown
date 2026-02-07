@@ -1,5 +1,7 @@
-// Pure utility functions for markdown-like rendering and mermaid detection.
+// Pure utility functions for markdown rendering and mermaid detection.
 // Extracted from Channel.svelte for testability.
+
+import snarkdown from 'snarkdown'
 
 /**
  * Split text into segments of plain text and mermaid code blocks.
@@ -34,20 +36,36 @@ export function hasMermaid(text) {
 }
 
 /**
- * Render markdown-like formatting (bold, links, bare URLs).
- * HTML-escapes first, then applies formatting.
+ * Render markdown formatting via snarkdown.
+ * Pre-escapes < and & for XSS protection, preserves > for blockquotes.
+ * Auto-links bare URLs and ensures all links open in new tabs.
  */
 export function renderContent(text) {
-  // Escape HTML first
-  let html = text
+  // Escape & and < for XSS protection.
+  // Preserve > — it's harmless without < and needed for markdown blockquotes.
+  let safe = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-  // Bold: **text**
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  // Links: [text](url)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-  // Bare URLs
-  html = html.replace(/(^|[\s(])(https?:\/\/[^\s)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+
+  // Auto-link bare URLs before markdown processing.
+  // Protect existing markdown links and inline code from URL conversion.
+  const preserved = []
+  safe = safe.replace(/`[^`]+`/g, (m) => {
+    preserved.push(m)
+    return `\x00${preserved.length - 1}\x00`
+  })
+  safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m) => {
+    preserved.push(m)
+    return `\x00${preserved.length - 1}\x00`
+  })
+  safe = safe.replace(/(^|[\s(])(https?:\/\/[^\s)]+)/gm, '$1[$2]($2)')
+  safe = safe.replace(/\x00(\d+)\x00/g, (_, i) => preserved[i])
+
+  // Render markdown
+  let html = snarkdown(safe)
+
+  // Ensure all links open in new tabs
+  html = html.replace(/<a /g, '<a target="_blank" rel="noopener" ')
+
   return html
 }
