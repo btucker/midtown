@@ -2323,6 +2323,7 @@ pub(super) async fn handle_pr_comment_nudge(
                 &format!("Addressing review feedback on PR #{}", pr_number),
                 &owner,
                 &state.repo_name,
+                None,
             ) {
                 Ok(task_id) => {
                     info!(

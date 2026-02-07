@@ -13,6 +13,9 @@ pub enum TaskCommand {
         /// Task description
         #[arg(long)]
         description: String,
+        /// Set blocked-by task IDs (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        blocked_by: Option<Vec<String>>,
     },
     /// Claim a task
     Claim {
@@ -74,7 +77,8 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
         TaskCommand::Create {
             subject,
             description,
-        } => client.task_create(subject, description),
+            blocked_by,
+        } => client.task_create(subject, description, blocked_by.as_deref()),
         TaskCommand::Update {
             id,
             owner,

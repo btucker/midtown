@@ -273,9 +273,26 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|p| p.get("description"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let blocked_by: Option<Vec<String>> = params
+                .and_then(|p| p.get("blocked_by"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                });
 
             match subject {
-                Some(subject) => handle_task_create(request.id, subject, description, state).await,
+                Some(subject) => {
+                    handle_task_create(
+                        request.id,
+                        subject,
+                        description,
+                        blocked_by.as_deref(),
+                        state,
+                    )
+                    .await
+                }
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -1213,6 +1230,7 @@ async fn handle_task_create(
     id: RequestId,
     subject: &str,
     description: &str,
+    blocked_by: Option<&[String]>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -1220,7 +1238,14 @@ async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
-    match crate::tasks::create_task_for_repo(subject, description, &active_form, "", &repo_name) {
+    match crate::tasks::create_task_for_repo(
+        subject,
+        description,
+        &active_form,
+        "",
+        &repo_name,
+        blocked_by,
+    ) {
         Ok(task_id) => {
             // Post to channel so team is aware
             let msg = Message::text("lead", format!("created task: {}", subject));
