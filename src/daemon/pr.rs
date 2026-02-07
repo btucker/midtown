@@ -3371,4 +3371,204 @@ mod tests {
             "Within same bucket (58→59), hash should be stable"
         );
     }
+
+    /// Create a minimal DaemonState for testing action-to-effects converters.
+    fn make_test_state() -> DaemonState {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        // Init git repo (CoworkerManager/WorktreeManager need one)
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+        let channel_dir = temp_dir.path().join("channel");
+        std::fs::create_dir_all(&channel_dir).expect("channel dir");
+        let channel = crate::channel::Channel::new(&channel_dir).expect("channel");
+
+        // Leak temp_dir so it survives the test (DaemonState doesn't own it)
+        std::mem::forget(temp_dir);
+
+        DaemonState::new(
+            "/tmp/test.sock".into(),
+            cm,
+            "test-repo".to_string(),
+            vec![],
+            channel,
+            None,
+            10,
+            None,
+            "main".to_string(),
+        )
+        .expect("daemon state")
+    }
+
+    #[test]
+    fn pr_action_nudge_produces_nudge_with_callbacks() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::NudgeOwner {
+            owner: "lexington".to_string(),
+            message: "PR #42 needs attention".to_string(),
+        };
+
+        let effects = pr_action_to_effects(action, 42, "Fix bug", PrIssueType::CiFailed, &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::NudgeCoworkerWithCallbacks {
+                name, on_success, ..
+            } => {
+                assert_eq!(name, "lexington");
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 42, .. })),
+                    "Should record PR nudge on success"
+                );
+            }
+            _ => panic!("Expected NudgeCoworkerWithCallbacks, got {:?}", effects[0]),
+        }
+    }
+
+    #[test]
+    fn pr_action_spawn_produces_spawn_with_callbacks() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::SpawnOwner {
+            owner: "park".to_string(),
+            message: "PR #99 CI failed".to_string(),
+        };
+
+        let effects = pr_action_to_effects(action, 99, "Fix CI", PrIssueType::CiFailed, &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success,
+                on_failure,
+            } => {
+                assert_eq!(config.name, "park");
+                // on_success should include broadcast, channel post, and pr nudge record
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 99, .. })),
+                    "on_success should record PR nudge"
+                );
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::BroadcastCoworkerUpdate { .. })),
+                    "on_success should broadcast status"
+                );
+                // on_failure should also record PR nudge (for cooldown tracking)
+                assert!(
+                    on_failure
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 99, .. })),
+                    "on_failure should also record PR nudge"
+                );
+            }
+            _ => panic!("Expected SpawnCoworkerWithCallbacks, got {:?}", effects[0]),
+        }
+    }
+
+    #[test]
+    fn pr_action_skip_produces_no_effects() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::Skip {
+            reason: "Owner not found".to_string(),
+        };
+
+        let effects = pr_action_to_effects(action, 42, "Fix bug", PrIssueType::CiFailed, &state);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn comment_action_spawn_produces_spawn_with_callbacks() {
+        let state = make_test_state();
+        let action = crate::rules::PrAction::SpawnOwner {
+            owner: "amsterdam".to_string(),
+            message: "PR #55 has review feedback".to_string(),
+        };
+
+        let effects = comment_action_to_effects(action, 55, "Add feature", &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::SpawnCoworkerWithCallbacks {
+                config, on_success, ..
+            } => {
+                assert_eq!(config.name, "amsterdam");
+                assert!(
+                    on_success
+                        .iter()
+                        .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 55, .. })),
+                    "on_success should record PR nudge for comment"
+                );
+            }
+            _ => panic!("Expected SpawnCoworkerWithCallbacks, got {:?}", effects[0]),
+        }
+    }
+
+    #[test]
+    fn pr_action_spawn_with_break_session_includes_clear_effect() {
+        let state = make_test_state();
+        // Simulate a saved break session for the coworker
+        {
+            let mut sessions = state.pr_break_sessions.write().unwrap();
+            sessions.insert("york".to_string(), "session-abc-123".to_string());
+        }
+
+        let action = crate::rules::PrAction::SpawnOwner {
+            owner: "york".to_string(),
+            message: "PR #77 needs review".to_string(),
+        };
+
+        let effects =
+            pr_action_to_effects(action, 77, "Review PR", PrIssueType::ReviewComment, &state);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::SpawnCoworkerWithCallbacks {
+                config, on_success, ..
+            } => {
+                // Should use ResumeSession mode since we have a saved session
+                assert!(
+                    matches!(config.session_mode, crate::launch::SessionMode::ResumeSession(ref id) if id == "session-abc-123"),
+                    "Should resume saved session, got {:?}",
+                    config.session_mode
+                );
+                // on_success should include ClearPrBreakSession
+                assert!(
+                    on_success.iter().any(
+                        |e| matches!(e, Effect::ClearPrBreakSession { name } if name == "york")
+                    ),
+                    "on_success should clear break session"
+                );
+            }
+            _ => panic!("Expected SpawnCoworkerWithCallbacks"),
+        }
+    }
 }
