@@ -209,15 +209,11 @@ pub const REQUIRED_PLUGINS: &[&str] = &[
     "code-simplifier@claude-plugins-official",
 ];
 
-/// Ensure required Claude Code plugins are installed.
+/// Check that required Claude Code plugins are installed.
 ///
-/// Checks the hardcoded list of required plugins and installs any missing ones.
-/// Failures are logged as warnings but don't block daemon startup.
-///
-/// Note: Marketplace configuration and plugin installation are now handled by
-/// `midtown start` (in the CLI) for better user experience. This function remains
-/// as a fallback check but typically does nothing if the CLI already set things up.
-async fn ensure_plugins_installed() {
+/// Logs warnings for any missing plugins but doesn't block daemon startup.
+/// Actual installation is handled by `midtown start` (in the CLI).
+async fn check_required_plugins() {
     if REQUIRED_PLUGINS.is_empty() {
         debug!("No required plugins configured");
         return;
@@ -284,6 +280,7 @@ async fn get_installed_plugins() -> Result<HashSet<String>, String> {
 /// Replaces the previous separate fields (`cached_open_pr_branches`,
 /// `cached_merged_pr_coworkers`) with a single struct. Merged refresh timing
 /// uses the shared `CooldownTracker` rather than a standalone timestamp.
+#[derive(Default)]
 struct PrCoworkerCache {
     /// Coworker names extracted from open PR branch names.
     /// Updated every PR poll tick (~30s).
@@ -312,21 +309,6 @@ struct PrCoworkerCache {
     /// flagging until we have PR data - otherwise we'd incorrectly flag worktrees
     /// with open PRs during startup when the cache is empty.
     pr_poll_initialized: bool,
-}
-
-impl PrCoworkerCache {
-    fn new() -> Self {
-        Self {
-            open_pr_owners: HashSet::new(),
-            merged_pr_owners: HashSet::new(),
-            merged_pr_branches: HashSet::new(),
-            merged_pr_numbers: HashSet::new(),
-            ci_passed_pr_owners: HashSet::new(),
-            review_feedback_pr_owners: HashSet::new(),
-            prs_needing_review: 0,
-            pr_poll_initialized: false,
-        }
-    }
 }
 
 /// Shared daemon state.
@@ -432,13 +414,6 @@ pub(crate) struct DaemonState {
     /// non-owner comments and nudge PR owners. Uses the same cooldown as webhooks
     /// (`PrIssueType::ReviewComment`) to avoid duplicate notifications.
     comment_tracker: Mutex<trackers::CommentTracker>,
-    /// GitHub username for token refresh. When set, enables automatic token refresh
-    /// when `gh` CLI commands fail with authentication errors.
-    ///
-    /// Infrastructure for future auto-refresh. Currently unused - callers should
-    /// invoke `refresh_gh_token()` when auth errors are detected.
-    #[allow(dead_code)]
-    github_user: Option<String>,
     /// In-memory deduplication of reported insights.
     ///
     /// Stores hashes of normalized insight content to prevent the same insight
@@ -584,7 +559,6 @@ impl DaemonState {
         max_coworkers: usize,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
-        github_user: Option<String>,
     ) -> crate::Result<Self> {
         // Load unified persistent state (migrates from legacy files if needed)
         let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
@@ -613,7 +587,7 @@ impl DaemonState {
             usage_limit_nudge_at: Mutex::new(None),
             lead_typing: std::sync::Mutex::new(trackers::LeadTypingState::default()),
             last_pr_poll_hash: Mutex::new(0),
-            pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::new()),
+            pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::default()),
             pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
             coworker_stop_times: std::sync::RwLock::new(HashMap::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
@@ -625,7 +599,6 @@ impl DaemonState {
             coworker_task_assignments: std::sync::Mutex::new(HashMap::new()),
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
-            github_user,
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             pending_task_creations: std::sync::Mutex::new(HashMap::new()),
@@ -877,12 +850,17 @@ impl DaemonState {
         }
     }
 
+    /// Send a WebUpdate to all connected WebSocket clients (no-op if web is disabled).
+    fn broadcast_web_update(&self, update: WebUpdate) {
+        if let Some(ref tx) = self.web_updates_tx {
+            let _ = tx.send(update);
+        }
+    }
+
     /// Send a message to the channel and broadcast it to WebSocket clients.
     fn send_and_broadcast(&self, message: &Message) -> crate::Result<()> {
         self.channel.send(message)?;
-        if let Some(ref tx) = self.web_updates_tx {
-            web::broadcast_channel_message(tx, message);
-        }
+        self.broadcast_web_update(web::channel_message_update(message));
         Ok(())
     }
 
@@ -908,9 +886,7 @@ impl DaemonState {
             }
         }
 
-        if let Some(ref tx) = self.web_updates_tx {
-            web::broadcast_channel_message(tx, message);
-        }
+        self.broadcast_web_update(web::channel_message_update(message));
         Ok(())
     }
 
@@ -939,87 +915,19 @@ impl DaemonState {
 
     /// Broadcast a coworker status change to WebSocket clients.
     fn broadcast_coworker_update(&self, name: &str, status: &str, current_task: Option<&str>) {
-        if let Some(ref tx) = self.web_updates_tx {
-            web::broadcast_coworker_status(tx, name, status, current_task);
-        }
-    }
-
-    /// Refresh the GitHub auth token and update GH_TOKEN env var.
-    ///
-    /// Called when `gh` CLI commands fail with authentication errors (401, "Bad credentials").
-    /// Runs `gh auth refresh` to get a fresh OAuth token, then updates the process
-    /// environment so subsequent `gh` calls use the new token.
-    ///
-    /// Returns Ok(()) if refresh succeeded, Err with message if it failed.
-    ///
-    /// Infrastructure for future auto-refresh. Callers should detect auth errors using
-    /// `helpers::is_gh_auth_error()` and invoke this method to recover.
-    #[allow(dead_code)]
-    pub(crate) fn refresh_gh_token(&self) -> Result<(), String> {
-        let github_user = match &self.github_user {
-            Some(u) => u,
-            None => return Err("No github_user configured for token refresh".to_string()),
-        };
-
-        info!("Refreshing GitHub auth token for user: {}", github_user);
-
-        // Step 1: Refresh the OAuth token
-        let refresh_status = std::process::Command::new("gh")
-            .args(["auth", "refresh", "--hostname", "github.com"])
-            .status()
-            .map_err(|e| format!("Failed to run gh auth refresh: {}", e))?;
-
-        if !refresh_status.success() {
-            return Err(format!(
-                "gh auth refresh failed (exit code: {})",
-                refresh_status.code().unwrap_or(-1)
-            ));
-        }
-
-        // Step 2: Get the new token
-        let output = std::process::Command::new("gh")
-            .args(["auth", "token", "--user", github_user])
-            .output()
-            .map_err(|e| format!("Failed to run gh auth token: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("gh auth token failed: {}", stderr.trim()));
-        }
-
-        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if token.is_empty() {
-            return Err("gh auth token returned empty token".to_string());
-        }
-
-        // Step 3: Update GH_TOKEN env var
-        // SAFETY: Called from single-threaded context (RPC handler via spawn_blocking)
-        unsafe {
-            std::env::set_var("GH_TOKEN", &token);
-        }
-
-        info!(
-            "Refreshed GH_TOKEN for user: {} (token length: {})",
-            github_user,
-            token.len()
-        );
-        Ok(())
+        self.broadcast_web_update(web::coworker_status_update(name, status, current_task));
     }
 }
 
-/// Acquire an exclusive lock on the PID file.
-///
-/// This enforces singleton behavior - only one daemon can run per repository.
 /// Load additional WorktreeManagers for multi-repo projects.
 ///
-/// Reads the project config to find additional repos (beyond the primary/workdir)
-/// and creates a WorktreeManager for each. Failures are logged but don't prevent
-/// the daemon from starting - the primary repo always works.
+/// Creates a WorktreeManager for each additional repo (beyond the primary/workdir).
+/// Failures are logged but don't prevent the daemon from starting.
 fn load_additional_worktree_managers(
-    project_name: &str,
+    full_config: Option<&crate::config::FullProjectConfig>,
     config: &DaemonConfig,
 ) -> Vec<WorktreeManager> {
-    let full_config = match crate::config::load_full_project_config(project_name) {
+    let full_config = match full_config {
         Some(c) => c,
         None => return vec![],
     };
@@ -1204,6 +1112,23 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
     }
 }
 
+/// Run the full snapshot→evaluate→execute pipeline for a daemon event.
+async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
+    let snap = snapshot::collect_world_snapshot(state).await;
+    let tick_effects = events::evaluate_tick(event, &snap, state).await;
+    effects::execute_effects(tick_effects, state).await;
+}
+
+/// Run snapshot→evaluate without executing. Returns effects for the caller
+/// to inspect or extend before calling `execute_effects`.
+async fn collect_and_evaluate(
+    event: &events::DaemonEvent,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
+    let snap = snapshot::collect_world_snapshot(state).await;
+    events::evaluate_tick(event, &snap, state).await
+}
+
 /// Run the daemon server with the given configuration.
 ///
 /// This function will block until the daemon receives a shutdown signal
@@ -1240,7 +1165,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         .init();
 
     // Ensure required plugins are installed (non-blocking, logs warnings on failure)
-    ensure_plugins_installed().await;
+    check_required_plugins().await;
 
     // Get token for configured GitHub user and set GH_TOKEN env var.
     // This is faster and more reliable than `gh auth switch`:
@@ -1317,6 +1242,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             .unwrap_or_else(|| "default".to_string())
     });
 
+    // Load project config once — used for project name, repo paths, and worktree managers.
+    let full_project_config = crate::config::load_full_project_config(&repo_name);
+
     // Derive project name: explicit --project flag > config.toml [project].name > repo name.
     // This must match what the CLI uses (resolve_project_name) so the Lead session
     // and daemon agree on the task list ID and tmux session name.
@@ -1324,7 +1252,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         .project_name
         .clone()
         .or_else(|| {
-            crate::config::load_full_project_config(&repo_name)
+            full_project_config
+                .as_ref()
                 .and_then(|c| c.project.name().map(|s| s.to_string()))
         })
         .unwrap_or_else(|| repo_name.clone());
@@ -1346,24 +1275,31 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // shared with the web server (for the /api/status endpoint)
     let session_name = format!("midtown-{}", project_name);
 
+    // Build list of all repo paths for multi-repo PR fetching.
+    // Built early because it's needed by the web server, daemon state, and lead health checks.
+    let all_repo_paths: Vec<PathBuf> = {
+        let mut paths = vec![config.workdir.clone()];
+        if let Some(ref full_config) = full_project_config {
+            for repo in full_config.project.repos() {
+                let path = PathBuf::from(repo);
+                if path != config.workdir {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
+    };
+
     // Capture lead-specific values for health monitoring in the main loop.
     // These are cloned here because session_name is moved into CoworkerManager.
     let lead_session_name = session_name.clone();
     let lead_workdir = config.workdir.clone();
     let lead_project_name = project_name.clone();
-    let lead_additional_dirs: Vec<PathBuf> = {
-        if let Some(full_config) = crate::config::load_full_project_config(&project_name) {
-            full_config
-                .project
-                .repos()
-                .into_iter()
-                .map(PathBuf::from)
-                .filter(|p| *p != config.workdir)
-                .collect()
-        } else {
-            Vec::new()
-        }
-    };
+    let lead_additional_dirs: Vec<PathBuf> = all_repo_paths
+        .iter()
+        .filter(|p| **p != config.workdir)
+        .cloned()
+        .collect();
 
     let worktree_manager =
         WorktreeManager::new(config.workdir.clone()).map_err(|e| crate::Error::Rpc {
@@ -1372,7 +1308,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         })?;
 
     // For multi-repo projects, create worktree managers for additional repos
-    let additional_worktree_managers = load_additional_worktree_managers(&project_name, &config);
+    let additional_worktree_managers =
+        load_additional_worktree_managers(full_project_config.as_ref(), &config);
     let coworker_manager = CoworkerManager::with_additional_repos(
         session_name,
         worktree_manager,
@@ -1385,21 +1322,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let mut mobile_rx: Option<tokio::sync::mpsc::Receiver<crate::web::MobileChannelPost>> = None;
     let mut shared_push_manager: Option<std::sync::Arc<crate::push::PushManager>> = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
-
-    // Build list of all repo paths for multi-repo PR fetching
-    // (needed by both the web server and daemon state)
-    let all_repo_paths = {
-        let mut paths = vec![config.workdir.clone()];
-        if let Some(full_config) = crate::config::load_full_project_config(&project_name) {
-            for repo in full_config.project.repos() {
-                let path = PathBuf::from(repo);
-                if path != config.workdir {
-                    paths.push(path);
-                }
-            }
-        }
-        paths
-    };
 
     // Detect the default branch early so it's available for both the webhook server and daemon state
     let default_branch = all_repo_paths
@@ -1457,7 +1379,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         config.max_coworkers,
         shared_push_manager,
         default_branch,
-        config.github_user.clone(),
     )?);
     info!(
         "Max coworkers limit: {} (dev: {}, reserving {} for reviewers)",
@@ -1761,15 +1682,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 if let Err(e) = state.coworkers.sync_with_tmux() {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }
-                // event → snapshot → evaluate → execute
-                let snap = snapshot::collect_world_snapshot(&state).await;
-                let tick_effects = events::evaluate_tick(
-                    &events::DaemonEvent::SessionMonitorTick,
-                    &snap,
-                    &state,
-                ).await;
-                effects::execute_effects(tick_effects, &state).await;
-
+                run_tick(&events::DaemonEvent::SessionMonitorTick, &state).await;
             }
 
             // Check lead pane activity for typing indicator
@@ -1800,13 +1713,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodic task dispatch: orphan recovery, duplicate detection, spawning, cleanup
             _ = orphan_check_interval.tick() => {
-                // event → snapshot → evaluate → execute
-                let snap = snapshot::collect_world_snapshot(&state).await;
-                let tick_effects = events::evaluate_tick(
-                    &events::DaemonEvent::TaskDispatchTick,
-                    &snap,
-                    &state,
-                ).await;
+                let tick_effects =
+                    collect_and_evaluate(&events::DaemonEvent::TaskDispatchTick, &state).await;
                 // Mark in-flight tasks BEFORE executing effects to prevent race conditions.
                 // If the next tick fires while effects are executing, it will skip these tasks.
                 state.mark_in_flight_spawns_from_effects(&tick_effects);
@@ -1875,13 +1783,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             // Integrated into main loop (not a separate task) to prevent spawn
             // races with TaskDispatchTick - both now share the same snapshot.
             _ = pr_poll_interval.tick() => {
-                let snap = snapshot::collect_world_snapshot(&state).await;
-                let tick_effects = events::evaluate_tick(
-                    &events::DaemonEvent::PrPollTick,
-                    &snap,
-                    &state,
-                ).await;
-                effects::execute_effects(tick_effects, &state).await;
+                run_tick(&events::DaemonEvent::PrPollTick, &state).await;
             }
 
             // Handle SIGTERM
