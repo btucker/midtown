@@ -1439,7 +1439,7 @@ pub fn kill_all_windows_by_name(session: &str, name: &str) -> crate::Result<usiz
 /// is still alive at the end. This catches commands that fail shortly after
 /// launch (e.g., `claude --continue` with no session to resume, which can
 /// take 1-2 seconds to exit).
-fn wait_for_window_stable(session: &str, name: &str) -> bool {
+pub fn wait_for_window_stable(session: &str, name: &str) -> bool {
     for _ in 0..6 {
         std::thread::sleep(std::time::Duration::from_millis(500));
         match window_exists(session, name) {

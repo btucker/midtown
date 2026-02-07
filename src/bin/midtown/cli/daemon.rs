@@ -579,6 +579,15 @@ pub fn handle_start(
             return Err(format!("Failed to create session '{}'", session));
         }
 
+        // Verify the lead window survives for a few seconds (guards against
+        // immediate Claude failure due to missing auth, misconfiguration, etc.)
+        if !midtown::tmux::wait_for_window_stable(&session, "lead") {
+            return Err(format!(
+                "Lead window {}:lead was created but immediately closed (command likely failed)",
+                session
+            ));
+        }
+
         // Enable Kitty graphics protocol passthrough for terminals that support it (e.g., Ghostty)
         let _ = Command::new("tmux")
             .args(["set-option", "-t", &session, "allow-passthrough", "on"])
