@@ -1,9 +1,8 @@
 <script>
   import { kanbanData, repoStatus, repoStatuses } from './store.js'
 
-  const defaultRepoUrl = 'https://github.com/btucker/midtown'
-
-  // Get repo URL for a PR (multi-repo aware)
+  // Get repo URL for a PR (multi-repo aware, falls back to primary repo).
+  // Returns null when the repo full name is unavailable.
   function prRepoUrl(pr) {
     if (pr.repo && $repoStatuses.length > 0) {
       const info = $repoStatuses.find(r => r.label === pr.repo)
@@ -11,7 +10,10 @@
         return `https://github.com/${info.fullName}`
       }
     }
-    return defaultRepoUrl
+    if ($repoStatus.fullName) {
+      return `https://github.com/${$repoStatus.fullName}`
+    }
+    return null
   }
 
   let expanded = $state(false)
@@ -190,6 +192,7 @@
       <div class="column-items">
         {#each $kanbanData.review as pr}
           {@const dot = ciDot(pr.status)}
+          {@const repoUrl = prRepoUrl(pr)}
           <button class="kanban-card clickable" onclick={() => selectPr(pr)}>
             <div class="card-line">
               <span class="ci-dot" style="color: {dot.color}">{'\u25CF'}</span>
@@ -205,13 +208,17 @@
             </div>
             <div class="card-detail">
               <span class="tree-branch">└</span>
-              <a
-                href="{prRepoUrl(pr)}/pull/{pr.number}"
-                class="pr-link"
-                target="_blank"
-                rel="noopener"
-                onclick={(e) => e.stopPropagation()}
-              >PR #{pr.number}</a>{#if pr.created_at} <span class="pr-age">({formatRelativeTime(pr.created_at)})</span>{/if}
+              {#if repoUrl}
+                <a
+                  href="{repoUrl}/pull/{pr.number}"
+                  class="pr-link"
+                  target="_blank"
+                  rel="noopener"
+                  onclick={(e) => e.stopPropagation()}
+                >PR #{pr.number}</a>
+              {:else}
+                <span class="pr-link-text">PR #{pr.number}</span>
+              {/if}{#if pr.created_at} <span class="pr-age">({formatRelativeTime(pr.created_at)})</span>{/if}
             </div>
             {#if pr.reviewer}
               <div class="card-detail">
@@ -234,18 +241,23 @@
       </h3>
       <div class="column-items">
         {#each $kanbanData.done as pr}
+          {@const repoUrl = prRepoUrl(pr)}
           <button class="kanban-card clickable" onclick={() => selectPr(pr)}>
             <div class="pr-number-line">
               {#if pr.repo}
                 <span class="repo-badge">[{pr.repo}]</span>
               {/if}
-              <a
-                href="{prRepoUrl(pr)}/pull/{pr.number}"
-                class="pr-link"
-                target="_blank"
-                rel="noopener"
-                onclick={(e) => e.stopPropagation()}
-              >PR#{pr.number}</a>
+              {#if repoUrl}
+                <a
+                  href="{repoUrl}/pull/{pr.number}"
+                  class="pr-link"
+                  target="_blank"
+                  rel="noopener"
+                  onclick={(e) => e.stopPropagation()}
+                >PR#{pr.number}</a>
+              {:else}
+                <span class="pr-link-text">PR#{pr.number}</span>
+              {/if}
             </div>
             <span class="pr-title">{pr.title}</span>
           </button>
@@ -549,6 +561,11 @@
 
   .pr-link:hover {
     text-decoration: underline;
+  }
+
+  .pr-link-text {
+    color: #888;
+    flex-shrink: 0;
   }
 
   .pr-age {

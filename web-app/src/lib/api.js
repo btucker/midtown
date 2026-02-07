@@ -63,6 +63,7 @@ export function switchProject(projectName, webhookPort) {
   kanbanData.set({ backlog: [], inProgress: [], review: [], done: [] })
   repoStatus.set({
     repoName: '',
+    fullName: '',
     commitHash: '',
     commitTime: null,
     ciStatus: null,
@@ -158,6 +159,7 @@ function updateRepoStatus(data) {
   const rs = data.repo_status || {}
   repoStatus.set({
     repoName: data.repo_name || '',
+    fullName: data.repo_full_name || '',
     commitHash: rs.commit_hash || '',
     commitTime: rs.commit_time || null,
     ciStatus: rs.ci_status || null,
