@@ -67,6 +67,35 @@ pub fn read_tasks_for_session(session_id: &str) -> Vec<Task> {
     read_tasks_from_dir(&tasks_dir)
 }
 
+/// Read the `.highwatermark` file from a tasks directory, returning the stored value or 0.
+fn read_highwatermark(tasks_dir: &std::path::Path) -> u64 {
+    let path = tasks_dir.join(".highwatermark");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Write the `.highwatermark` file in a tasks directory.
+fn write_highwatermark(tasks_dir: &std::path::Path, value: u64) {
+    let path = tasks_dir.join(".highwatermark");
+    let _ = std::fs::write(&path, value.to_string());
+}
+
+/// Compute the next task ID from existing tasks and the `.highwatermark` file,
+/// then update the highwatermark. Must be called while holding the directory lock.
+fn next_task_id(tasks_dir: &std::path::Path, existing: &[Task]) -> u64 {
+    let max_existing = existing
+        .iter()
+        .filter_map(|t| t.id.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    let hwm = read_highwatermark(tasks_dir);
+    let next_id = max_existing.max(hwm) + 1;
+    write_highwatermark(tasks_dir, next_id);
+    next_id
+}
+
 /// Read all tasks from a directory containing task JSON files.
 fn read_tasks_from_dir(tasks_dir: &PathBuf) -> Vec<Task> {
     let Ok(entries) = std::fs::read_dir(tasks_dir) else {
@@ -785,13 +814,8 @@ pub fn ensure_task_in_shared_dir(
         }
     }
 
-    // Create new task with next sequential ID
-    let next_id = existing
-        .iter()
-        .filter_map(|t| t.id.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0)
-        + 1;
+    // Create new task with next sequential ID (respects .highwatermark)
+    let next_id = next_task_id(&tasks_dir_buf, &existing);
 
     let task_id = next_id.to_string();
     let task = serde_json::json!({
@@ -988,13 +1012,8 @@ fn create_task_in_dir(
         }
     }
 
-    // Determine next ID from existing tasks
-    let next_id = existing
-        .iter()
-        .filter_map(|t| t.id.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0)
-        + 1;
+    // Determine next ID from existing tasks (respects .highwatermark)
+    let next_id = next_task_id(&tasks_dir_buf, &existing);
 
     let task_id = next_id.to_string();
     let task = serde_json::json!({
@@ -2259,5 +2278,88 @@ mod tests {
         // Verify 10 task files exist on disk
         let tasks = read_tasks_from_dir(&tasks_dir);
         assert_eq!(tasks.len(), 10);
+    }
+
+    #[test]
+    fn test_highwatermark_prevents_id_reset_after_purge() {
+        // Reproduces the bug: when all task files are purged, IDs reset to 1.
+        // With .highwatermark support, IDs should continue from the watermark.
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Simulate: tasks 885 and 886 existed, then .highwatermark was written
+        std::fs::write(tasks_dir.join(".highwatermark"), "886").unwrap();
+        // All task files are gone (purged)
+
+        // Create a new task — should get ID 887, not 1
+        let id = create_task_in_dir(
+            tasks_dir,
+            "New task after purge",
+            "desc",
+            "Working",
+            "madison",
+        )
+        .unwrap();
+
+        assert_eq!(
+            id, "887",
+            "should continue from highwatermark, not reset to 1"
+        );
+    }
+
+    #[test]
+    fn test_highwatermark_updates_after_task_creation() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // No highwatermark file initially
+        assert_eq!(read_highwatermark(tasks_dir), 0);
+
+        // Create first task
+        let id1 = create_task_in_dir(tasks_dir, "Task one", "desc", "Working", "alice").unwrap();
+        assert_eq!(id1, "1");
+
+        // Highwatermark should now be 1
+        assert_eq!(read_highwatermark(tasks_dir), 1);
+
+        // Create second task
+        let id2 = create_task_in_dir(tasks_dir, "Task two", "desc", "Working", "bob").unwrap();
+        assert_eq!(id2, "2");
+        assert_eq!(read_highwatermark(tasks_dir), 2);
+    }
+
+    #[test]
+    fn test_highwatermark_with_ensure_task_in_shared_dir() {
+        // Same bug, but via the ensure_task_in_shared_dir path
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        std::fs::write(tasks_dir.join(".highwatermark"), "500").unwrap();
+
+        let (id, was_created) =
+            ensure_task_in_shared_dir(tasks_dir, "New task", "Description").unwrap();
+
+        assert!(was_created);
+        assert_eq!(id, "501", "should continue from highwatermark");
+
+        // Highwatermark should be updated
+        assert_eq!(read_highwatermark(tasks_dir), 501);
+    }
+
+    #[test]
+    fn test_highwatermark_max_of_files_and_watermark() {
+        // If existing files have higher IDs than the watermark, use the files
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Stale watermark (lower than actual files)
+        std::fs::write(tasks_dir.join(".highwatermark"), "50").unwrap();
+        create_task_file(tasks_dir, "100", "pending", Some("alice"));
+
+        let id = create_task_in_dir(tasks_dir, "New task", "desc", "Working", "bob").unwrap();
+        assert_eq!(id, "101", "should use max(files, watermark) + 1");
+
+        // Watermark updated to new value
+        assert_eq!(read_highwatermark(tasks_dir), 101);
     }
 }
