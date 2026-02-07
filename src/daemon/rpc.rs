@@ -414,6 +414,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                             .all_repo_paths
                             .first()
                             .map(|p| p.to_string_lossy().to_string()),
+                        persist_session: false,
+                        resume_session_id: None,
+                        inactivity_timeout: None,
+                        team_name: None,
+                        agent_id: None,
+                        agent_name: None,
+                        settings_path: None,
                     };
                     handle_headless_execute(request.id, prompt, &config).await
                 }
@@ -473,15 +480,15 @@ fn handle_coworker_spawn(
     // Pass prompt to spawn() - it handles waiting and nudging internally
     // Coworkers use isolated task lists (don't share the lead's task list)
     let team = crate::mailbox::team_name_for_repo(&state.repo_name);
-    let config = crate::tmux::ClaudeLaunchConfig {
+    let config = crate::launch::LaunchConfig {
         name: String::new(), // spawn() picks a name
         session_mode: if resume {
-            crate::tmux::SessionMode::Resume
+            crate::launch::SessionMode::Resume
         } else {
-            crate::tmux::SessionMode::Fresh
+            crate::launch::SessionMode::Fresh
         },
-        task_mode: crate::tmux::TaskMode::Isolated,
-        role: crate::tmux::CoworkerRole::Coworker,
+        task_mode: crate::launch::TaskMode::Isolated,
+        role: crate::launch::CoworkerRole::Coworker,
         initial_prompt: prompt,
         additional_dirs: vec![],
         restrict_setting_sources: true,

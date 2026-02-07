@@ -4,15 +4,34 @@
 //! (github-state.json, reminders.json) into a single daemon-state.json.
 //! Loaded once at startup, saved after any mutation.
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, ErrorKind};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::ci_stats::CiCheckStats;
 use crate::github_state::GitHubState;
 use crate::reminders::ReminderState;
 use crate::worktree_registry::WorktreeRegistry;
+
+/// Persisted info about a headless Claude Code session.
+///
+/// Stored in `DaemonPersistentState` to survive daemon restarts. The daemon
+/// uses these session IDs to resume coworker sessions after restart, and to
+/// support `midtown attach` (which pauses headless execution and resumes it
+/// in an interactive terminal).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadlessSessionInfo {
+    /// Claude Code session ID (used with `--resume <id>`).
+    pub session_id: String,
+    /// Last time this session was active (event received or message sent).
+    pub last_active: DateTime<Utc>,
+    /// Human-readable purpose (e.g., "task #5: Add auth endpoint", "reviewer for PR #42").
+    pub purpose: String,
+}
 
 /// All persistent daemon state in one struct.
 ///
@@ -38,6 +57,11 @@ pub struct DaemonPersistentState {
     /// cleanup on PR merge.
     #[serde(default)]
     pub worktree_registry: WorktreeRegistry,
+
+    /// Headless session IDs for coworkers, keyed by coworker name.
+    /// Persisted so the daemon can resume sessions after restart.
+    #[serde(default)]
+    pub headless_sessions: HashMap<String, HeadlessSessionInfo>,
 }
 
 impl DaemonPersistentState {
@@ -125,6 +149,7 @@ impl DaemonPersistentState {
             reminders,
             ci_stats: CiCheckStats::default(),
             worktree_registry: WorktreeRegistry::default(),
+            headless_sessions: HashMap::new(),
         };
 
         // Save the unified file
@@ -206,6 +231,47 @@ mod tests {
         let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
         assert!(state.github.pr_reviewers.is_empty());
         assert!(state.reminders.reminders.is_empty());
+    }
+
+    #[test]
+    fn test_headless_session_info_roundtrip() {
+        let info = HeadlessSessionInfo {
+            session_id: "abc-123-def".to_string(),
+            last_active: Utc::now(),
+            purpose: "task #5: Add auth endpoint".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.session_id, "abc-123-def");
+        assert_eq!(parsed.purpose, "task #5: Add auth endpoint");
+    }
+
+    #[test]
+    fn test_headless_sessions_in_persistent_state() {
+        let mut state = DaemonPersistentState::default();
+        state.headless_sessions.insert(
+            "park".to_string(),
+            HeadlessSessionInfo {
+                session_id: "session-42".to_string(),
+                last_active: Utc::now(),
+                purpose: "task #3: Fix login bug".to_string(),
+            },
+        );
+
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.headless_sessions.len(), 1);
+        let park = loaded.headless_sessions.get("park").unwrap();
+        assert_eq!(park.session_id, "session-42");
+        assert_eq!(park.purpose, "task #3: Fix login bug");
+    }
+
+    #[test]
+    fn test_headless_sessions_default_empty() {
+        // Existing state without headless_sessions should deserialize fine
+        let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
+        let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+        assert!(state.headless_sessions.is_empty());
     }
 
     #[test]

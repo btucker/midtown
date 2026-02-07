@@ -453,10 +453,10 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             message: String::new(),
         });
         effects.push(Effect::SpawnCoworker(
-            crate::tmux::ClaudeLaunchConfig::coworker(
+            crate::launch::LaunchConfig::coworker(
                 restart.name.clone(),
                 state.repo_name.clone(),
-                crate::tmux::SessionMode::Fresh,
+                crate::launch::SessionMode::Fresh,
                 Some(prompt),
             ),
         ));

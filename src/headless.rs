@@ -24,6 +24,12 @@ use tokio::process::{Child, Command};
 use tracing::{debug, info, warn};
 
 /// Configuration for launching a headless Claude Code session.
+///
+/// Supports two modes:
+/// - **One-shot**: `persist_session: false` (default) — session is not persisted,
+///   suitable for structured queries via `execute()`.
+/// - **Long-running**: `persist_session: true` — session is persisted on disk,
+///   suitable for coworker sessions that may be resumed later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadlessConfig {
     /// Model to use (e.g., "sonnet", "opus", "haiku").
@@ -39,6 +45,56 @@ pub struct HeadlessConfig {
     /// Whether to allow tool use. When false, uses `--tools ""` to disable all tools.
     /// Defaults to false (no tools).
     pub allow_tools: bool,
+    /// Whether to persist the session on disk. When false, passes
+    /// `--no-session-persistence`. Defaults to false (one-shot mode).
+    #[serde(default)]
+    pub persist_session: bool,
+    /// Resume a specific saved session instead of starting fresh.
+    /// When set, uses `claude --resume <id>` and omits `--system-prompt`/`--json-schema`.
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
+    /// Auto-break after N seconds of no output from the session.
+    /// Monitored externally by the caller (not enforced within HeadlessSession).
+    #[serde(default)]
+    #[serde(with = "optional_duration_secs")]
+    pub inactivity_timeout: Option<Duration>,
+    /// Agent teams team name. When set, adds `--team-name` CLI flag and sets
+    /// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var.
+    #[serde(default)]
+    pub team_name: Option<String>,
+    /// Agent teams agent ID. When set, adds `--agent-id` CLI flag.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Agent teams agent name. When set, adds `--agent-name` CLI flag.
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    /// Path to a Claude Code settings JSON file. When set, adds `--settings` flag.
+    #[serde(default)]
+    pub settings_path: Option<String>,
+}
+
+/// Custom serde module for `Option<Duration>` as seconds (f64).
+mod optional_duration_secs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(d) => d.as_secs_f64().serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<f64> = Option::deserialize(deserializer)?;
+        Ok(opt.map(Duration::from_secs_f64))
+    }
 }
 
 /// Events emitted by a headless Claude Code session.
@@ -99,28 +155,45 @@ pub struct HeadlessSession {
 impl HeadlessSession {
     /// Spawn a new headless Claude Code session.
     ///
-    /// Launches `claude -p --verbose --output-format stream-json` with the
-    /// provided configuration. The process is spawned with piped stdin/stdout
-    /// for bidirectional JSON streaming.
+    /// Launches `claude` with the provided configuration. The process is spawned
+    /// with piped stdin/stdout for bidirectional JSON streaming.
+    ///
+    /// Two modes:
+    /// - **Fresh session** (`resume_session_id: None`): Uses `-p --system-prompt ...`
+    /// - **Resume session** (`resume_session_id: Some(id)`): Uses `--resume <id>`,
+    ///   omits `--system-prompt` and `--json-schema`.
     pub fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
         let mut cmd = Command::new("claude");
 
-        cmd.arg("-p")
-            .arg("--verbose")
+        let is_resume = config.resume_session_id.is_some();
+
+        if is_resume {
+            // Resume mode: --resume <id>, no -p flag
+            cmd.arg("--resume")
+                .arg(config.resume_session_id.as_ref().unwrap());
+        } else {
+            // Fresh mode: -p with system prompt
+            cmd.arg("-p");
+            cmd.arg("--system-prompt").arg(&config.system_prompt);
+
+            if let Some(ref schema) = config.json_schema {
+                let schema_str = serde_json::to_string(schema)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+                cmd.arg("--json-schema").arg(schema_str);
+            }
+        }
+
+        cmd.arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--input-format")
             .arg("stream-json")
-            .arg("--no-session-persistence")
             .arg("--model")
-            .arg(&config.model)
-            .arg("--system-prompt")
-            .arg(&config.system_prompt);
+            .arg(&config.model);
 
-        if let Some(ref schema) = config.json_schema {
-            let schema_str = serde_json::to_string(schema)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-            cmd.arg("--json-schema").arg(schema_str);
+        // Session persistence: only add --no-session-persistence when explicitly disabled
+        if !config.persist_session {
+            cmd.arg("--no-session-persistence");
         }
 
         if let Some(budget) = config.max_budget_usd {
@@ -134,6 +207,22 @@ impl HeadlessSession {
         // Skip permissions since the daemon manages trust
         cmd.arg("--dangerously-skip-permissions");
 
+        // Agent teams flags
+        if let Some(ref team) = config.team_name {
+            cmd.arg("--team-name").arg(team);
+        }
+        if let Some(ref agent_id) = config.agent_id {
+            cmd.arg("--agent-id").arg(agent_id);
+        }
+        if let Some(ref agent_name) = config.agent_name {
+            cmd.arg("--agent-name").arg(agent_name);
+        }
+
+        // Settings file
+        if let Some(ref settings) = config.settings_path {
+            cmd.arg("--settings").arg(settings);
+        }
+
         if let Some(ref cwd) = config.cwd {
             cmd.current_dir(cwd);
         }
@@ -142,6 +231,11 @@ impl HeadlessSession {
         cmd.env_remove("MIDTOWN_AGENT");
         cmd.env_remove("CLAUDE_CODE_TASK_LIST_ID");
         cmd.env("DISABLE_AUTOUPDATER", "1");
+
+        // Agent teams requires this env var
+        if config.team_name.is_some() {
+            cmd.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
+        }
 
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -156,7 +250,10 @@ impl HeadlessSession {
         let stdin = child.stdin.take();
         let stdout_reader = BufReader::new(stdout);
 
-        info!("Spawned headless Claude session (model={})", config.model);
+        info!(
+            "Spawned headless Claude session (model={}, resume={})",
+            config.model, is_resume
+        );
 
         Ok(Self {
             child,
@@ -164,6 +261,21 @@ impl HeadlessSession {
             stdin,
             session_id: None,
         })
+    }
+
+    /// Convenience method to spawn a session that resumes a previous session.
+    ///
+    /// Creates a config with `resume_session_id` set and `persist_session: true`,
+    /// clears `system_prompt` and `json_schema` (not used in resume mode).
+    pub fn resume(session_id: &str, base_config: &HeadlessConfig) -> std::io::Result<Self> {
+        let config = HeadlessConfig {
+            resume_session_id: Some(session_id.to_string()),
+            persist_session: true,
+            system_prompt: String::new(), // Not used in resume mode
+            json_schema: None,            // Not used in resume mode
+            ..base_config.clone()
+        };
+        Self::spawn(&config)
     }
 
     /// Read the next streaming event from the session.
@@ -385,11 +497,28 @@ pub struct HeadlessResult {
 mod tests {
     use super::*;
 
+    /// Helper to create a minimal HeadlessConfig for testing.
+    fn test_config() -> HeadlessConfig {
+        HeadlessConfig {
+            model: "haiku".to_string(),
+            system_prompt: "You are a test assistant.".to_string(),
+            json_schema: None,
+            cwd: None,
+            max_budget_usd: None,
+            allow_tools: false,
+            persist_session: false,
+            resume_session_id: None,
+            inactivity_timeout: None,
+            team_name: None,
+            agent_id: None,
+            agent_name: None,
+            settings_path: None,
+        }
+    }
+
     #[test]
     fn test_headless_config_serialization() {
         let config = HeadlessConfig {
-            model: "haiku".to_string(),
-            system_prompt: "You are a test assistant.".to_string(),
             json_schema: Some(serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -397,15 +526,105 @@ mod tests {
                 },
                 "required": ["answer"]
             })),
-            cwd: None,
             max_budget_usd: Some(0.10),
-            allow_tools: false,
+            ..test_config()
         };
 
         let json = serde_json::to_string(&config).unwrap();
         let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.model, "haiku");
         assert!(parsed.json_schema.is_some());
+        assert!(!parsed.persist_session);
+        assert!(parsed.resume_session_id.is_none());
+    }
+
+    #[test]
+    fn test_headless_config_persist_session_default_false() {
+        // Default (from JSON without persist_session) should be false
+        let json = r#"{"model":"haiku","system_prompt":"test","allow_tools":false}"#;
+        let config: HeadlessConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.persist_session);
+    }
+
+    #[test]
+    fn test_headless_config_persist_session_true_roundtrip() {
+        let config = HeadlessConfig {
+            persist_session: true,
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert!(parsed.persist_session);
+    }
+
+    #[test]
+    fn test_headless_config_resume_session_roundtrip() {
+        let config = HeadlessConfig {
+            resume_session_id: Some("abc-123".to_string()),
+            persist_session: true,
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.resume_session_id, Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_headless_config_inactivity_timeout_roundtrip() {
+        let config = HeadlessConfig {
+            inactivity_timeout: Some(Duration::from_secs(300)),
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.inactivity_timeout, Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn test_headless_config_agent_teams_roundtrip() {
+        let config = HeadlessConfig {
+            team_name: Some("midtown-myrepo".to_string()),
+            agent_id: Some("park@midtown-myrepo".to_string()),
+            agent_name: Some("park".to_string()),
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.team_name, Some("midtown-myrepo".to_string()));
+        assert_eq!(parsed.agent_id, Some("park@midtown-myrepo".to_string()));
+        assert_eq!(parsed.agent_name, Some("park".to_string()));
+    }
+
+    #[test]
+    fn test_headless_config_settings_path_roundtrip() {
+        let config = HeadlessConfig {
+            settings_path: Some("/tmp/settings.json".to_string()),
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.settings_path, Some("/tmp/settings.json".to_string()));
+    }
+
+    #[test]
+    fn test_headless_config_backward_compat_missing_new_fields() {
+        // Existing configs without new fields should deserialize with defaults
+        let json = r#"{
+            "model": "haiku",
+            "system_prompt": "test",
+            "json_schema": null,
+            "cwd": null,
+            "max_budget_usd": null,
+            "allow_tools": false
+        }"#;
+        let config: HeadlessConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.persist_session);
+        assert!(config.resume_session_id.is_none());
+        assert!(config.inactivity_timeout.is_none());
+        assert!(config.team_name.is_none());
+        assert!(config.agent_id.is_none());
+        assert!(config.agent_name.is_none());
+        assert!(config.settings_path.is_none());
     }
 
     #[test]

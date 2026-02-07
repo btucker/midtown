@@ -99,10 +99,10 @@ pub(super) fn check_and_recover_orphans(
     // Spawn fresh (no --continue) — the coworker keeps the same name so they
     // retain their worktree and branch. This is the same path as normal task
     // assignment, just reusing the previous coworker name.
-    let config = crate::tmux::ClaudeLaunchConfig::coworker(
+    let config = crate::launch::LaunchConfig::coworker(
         recovery.owner.clone(),
         state.repo_name.clone(),
-        crate::tmux::SessionMode::Fresh,
+        crate::launch::SessionMode::Fresh,
         Some(prompt),
     );
 
@@ -833,10 +833,10 @@ pub(super) fn spawn_for_pending_tasks(
                     tid,
                     &format!("You've been assigned task #{}: {}. Get started!", tid, subj),
                 );
-                let config = crate::tmux::ClaudeLaunchConfig::coworker(
+                let config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
                     state.repo_name.clone(),
-                    crate::tmux::SessionMode::Resume,
+                    crate::launch::SessionMode::Resume,
                     Some(prompt),
                 );
                 effects.push(Effect::SpawnCoworkerWithCallbacks {
@@ -1119,10 +1119,10 @@ pub(super) fn spawn_for_pending_tasks(
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
-            let config = crate::tmux::ClaudeLaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 coworker_name.clone(),
                 state.repo_name.clone(),
-                crate::tmux::SessionMode::Fresh,
+                crate::launch::SessionMode::Fresh,
                 Some(prompt.clone()),
             );
             let channel_msg = daemon_messages::called_in_assigned_task(

@@ -110,6 +110,9 @@ pub mod daemon_messages;
 // Headless Claude Code executor (JSON streaming, no tmux)
 pub mod headless;
 
+// Unified launch configuration for Claude Code sessions (tmux + headless)
+pub mod launch;
+
 // Agent teams mailbox writer (filesystem-based message delivery)
 pub mod mailbox;
 

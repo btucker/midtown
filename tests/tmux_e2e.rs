@@ -1078,11 +1078,11 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
     let dir = temp.path().to_string_lossy().to_string();
 
     // Spawn a real claude process
-    let config = midtown::tmux::ClaudeLaunchConfig {
+    let config = midtown::launch::LaunchConfig {
         name: "test-claude".to_string(),
-        session_mode: midtown::tmux::SessionMode::Fresh,
-        task_mode: midtown::tmux::TaskMode::Isolated,
-        role: midtown::tmux::CoworkerRole::default(),
+        session_mode: midtown::launch::SessionMode::Fresh,
+        task_mode: midtown::launch::TaskMode::Isolated,
+        role: midtown::launch::CoworkerRole::default(),
         initial_prompt: Some("Say 'ready' and wait.".to_string()),
         additional_dirs: vec![],
         restrict_setting_sources: true,
@@ -1367,11 +1367,11 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
 
     // Spawn claude with an initial prompt — this is the code path that was
     // broken when -p (--print mode) was used instead of a positional arg.
-    let config = midtown::tmux::ClaudeLaunchConfig {
+    let config = midtown::launch::LaunchConfig {
         name: "test-coworker".to_string(),
-        session_mode: midtown::tmux::SessionMode::Fresh,
-        task_mode: midtown::tmux::TaskMode::Isolated,
-        role: midtown::tmux::CoworkerRole::default(),
+        session_mode: midtown::launch::SessionMode::Fresh,
+        task_mode: midtown::launch::TaskMode::Isolated,
+        role: midtown::launch::CoworkerRole::default(),
         initial_prompt: Some("Say hello and wait for instructions.".to_string()),
         additional_dirs: vec![],
         restrict_setting_sources: true,
@@ -1680,11 +1680,11 @@ fn test_kill_orphaned_claude_processes_real() {
     let dir = temp.path().to_string_lossy().to_string();
 
     // Spawn a real claude process
-    let config = midtown::tmux::ClaudeLaunchConfig {
+    let config = midtown::launch::LaunchConfig {
         name: "orphan-test".to_string(),
-        session_mode: midtown::tmux::SessionMode::Fresh,
-        task_mode: midtown::tmux::TaskMode::Isolated,
-        role: midtown::tmux::CoworkerRole::default(),
+        session_mode: midtown::launch::SessionMode::Fresh,
+        task_mode: midtown::launch::TaskMode::Isolated,
+        role: midtown::launch::CoworkerRole::default(),
         initial_prompt: Some("Say 'ready' and wait.".to_string()),
         additional_dirs: vec![],
         restrict_setting_sources: true,
@@ -2503,7 +2503,7 @@ fn test_spawn_reviewer_sets_window_name_to_review_format() {
     let dir = temp.path().to_string_lossy().to_string();
 
     // Spawn a reviewer for PR #42
-    let config = midtown::tmux::ClaudeLaunchConfig::reviewer("test-reviewer", 42);
+    let config = midtown::launch::LaunchConfig::reviewer("test-reviewer", 42);
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
 
@@ -2593,10 +2593,10 @@ fn test_spawn_claude_cleans_up_duplicate_windows() {
     // the orphaned windows before creating its own
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_string_lossy().to_string();
-    let config = midtown::tmux::ClaudeLaunchConfig::coworker(
+    let config = midtown::launch::LaunchConfig::coworker(
         coworker_name,
         "test-repo",
-        midtown::tmux::SessionMode::Fresh,
+        midtown::launch::SessionMode::Fresh,
         None,
     );
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
