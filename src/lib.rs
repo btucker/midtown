@@ -92,6 +92,9 @@ pub mod auth;
 // Persistent GitHub state (PR reviewer assignments)
 pub mod github_state;
 
+// Task-based worktree registry
+pub mod worktree_registry;
+
 // CI check duration statistics (for auto-retry of stale checks)
 pub mod ci_stats;
 
