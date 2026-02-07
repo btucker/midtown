@@ -151,63 +151,56 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
             &nudge_text,
         );
 
-        match action {
+        // Convert MentionAction → Effects, execute via the standard pipeline.
+        use super::effects::Effect;
+        let effects = match action {
             crate::rules::MentionAction::Nudge {
-                name: ref n,
-                message: ref m,
+                name: n,
+                message: m,
             } => {
-                if let Err(e) = state.session_manager.send_message(n, m).await {
-                    warn!("Failed to nudge {} about @mention: {}", n, e);
-                } else {
-                    info!("Nudged {} about @mention from {}", n, msg.from);
-                }
+                vec![Effect::NudgeCoworker {
+                    name: n,
+                    message: m,
+                }]
             }
             crate::rules::MentionAction::Spawn {
-                name: ref n,
-                message: ref m,
+                name: n,
+                message: m,
             } => {
-                info!("Spawning mentioned coworker {} (not currently running)", n);
                 let config = crate::launch::LaunchConfig::coworker(
                     n.clone(),
                     state.repo_name.clone(),
                     crate::launch::SessionMode::Resume,
-                    Some(m.clone()),
+                    Some(m),
                 );
-                match state.spawn_coworker(&config).await {
-                    Ok(_) => {
-                        info!("Spawned coworker {} via @mention", n);
-                        let spawn_msg = Message::text(
-                            "midtown",
-                            format!("🚀 Called in {} in response to @mention", n),
-                        );
-                        if let Err(e) = state.send_and_broadcast(&spawn_msg) {
-                            warn!("Failed to post call-in message: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to spawn coworker {}: {}", n, e);
-                        let err_msg = Message::text(
-                            "midtown",
-                            format!("⚠️ Failed to call in {} for @mention: {}", n, e),
-                        );
-                        let _ = state.send_and_broadcast(&err_msg);
-                    }
-                }
+                vec![Effect::SpawnCoworkerWithCallbacks {
+                    config,
+                    on_success: vec![Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: format!("Called in {} in response to @mention", n),
+                    }],
+                    on_failure: vec![Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: format!("Failed to call in {} for @mention", n),
+                    }],
+                }]
             }
             crate::rules::MentionAction::Skip { ref reason } => {
                 debug!("{}", reason);
                 if reason.contains("dev limit") {
-                    let err_msg = Message::text(
-                        "midtown",
-                        format!(
-                            "⚠️ Cannot call in {} for @mention: dev coworkers limit reached",
+                    vec![Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: format!(
+                            "Cannot call in {} for @mention: dev coworkers limit reached",
                             name
                         ),
-                    );
-                    let _ = state.send_and_broadcast(&err_msg);
+                    }]
+                } else {
+                    vec![]
                 }
             }
-        }
+        };
+        super::effects::execute_effects(effects, state).await;
     }
 }
 
