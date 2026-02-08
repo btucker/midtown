@@ -4,7 +4,7 @@
 //! (github-state.json, reminders.json) into a single daemon-state.json.
 //! Loaded once at startup, saved after any mutation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, ErrorKind};
 
@@ -31,6 +31,35 @@ pub struct HeadlessSessionInfo {
     pub last_active: DateTime<Utc>,
     /// Human-readable purpose (e.g., "task !5: Add auth endpoint", "reviewer for PR #42").
     pub purpose: String,
+}
+
+/// State for the AI channel clusterer.
+///
+/// Tracks the resumable session ID so the clusterer accumulates context
+/// across invocations (remembers past channel creation decisions, themes, etc.).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClustererState {
+    /// Session ID for the resumable clusterer session.
+    /// When `Some`, the clusterer is resumed with `--resume <id>`.
+    /// When `None`, a fresh session is started on first invocation.
+    pub session_id: Option<String>,
+    /// Last time the clusterer was invoked.
+    pub last_invoked: Option<DateTime<Utc>>,
+}
+
+/// Channel organization state.
+///
+/// Tracks active channels, task-to-channel assignments, and archived channels.
+/// Used by the clusterer to make decisions and by the daemon to route messages.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelState {
+    /// Active channel names (not including #midtown, which always exists).
+    pub active_channels: HashSet<String>,
+    /// Task ID → channel name mapping.
+    /// Used by message routing to determine which channel receives task-related messages.
+    pub task_assignments: HashMap<String, String>,
+    /// Archived channel names (for filtering in UI, history preservation).
+    pub archived_channels: HashSet<String>,
 }
 
 /// All persistent daemon state in one struct.
@@ -62,6 +91,14 @@ pub struct DaemonPersistentState {
     /// Persisted so the daemon can resume sessions after restart.
     #[serde(default)]
     pub headless_sessions: HashMap<String, HeadlessSessionInfo>,
+
+    /// AI channel clusterer state (session ID, last invocation time).
+    #[serde(default)]
+    pub clusterer: ClustererState,
+
+    /// Channel organization state (active channels, task assignments, archived channels).
+    #[serde(default)]
+    pub channels: ChannelState,
 }
 
 impl DaemonPersistentState {
@@ -150,6 +187,8 @@ impl DaemonPersistentState {
             ci_stats: CiCheckStats::default(),
             worktree_registry: WorktreeRegistry::default(),
             headless_sessions: HashMap::new(),
+            clusterer: ClustererState::default(),
+            channels: ChannelState::default(),
         };
 
         // Save the unified file
