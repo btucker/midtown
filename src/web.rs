@@ -1495,6 +1495,7 @@ mod tests {
             name: "lexington".to_string(),
             status: "running".to_string(),
             current_task: Some("Fix auth bug".to_string()),
+            model: "sonnet".to_string(),
         });
 
         let json = serde_json::to_string(&update).unwrap();
@@ -1704,6 +1705,7 @@ mod tests {
             name: "park".to_string(),
             status: "stopped".to_string(),
             current_task: None,
+            model: "sonnet".to_string(),
         });
 
         let json = serde_json::to_string(&update).unwrap();

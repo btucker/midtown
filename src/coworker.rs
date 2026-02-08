@@ -1461,6 +1461,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
         }
@@ -1492,6 +1493,7 @@ mod tests {
                         current_task: None,
                         session_id: None,
                         isolated_tasks: false,
+                        model: "sonnet".to_string(),
                     },
                 );
             }
@@ -1521,6 +1523,7 @@ mod tests {
                         current_task: None,
                         session_id: None,
                         isolated_tasks: false,
+                        model: "sonnet".to_string(),
                     },
                 );
             }
@@ -1568,6 +1571,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
         }
@@ -1842,6 +1846,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
             coworkers.insert(
@@ -1854,6 +1859,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
             coworkers.insert(
@@ -1866,6 +1872,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
         }
@@ -1899,6 +1906,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
         }
@@ -1948,6 +1956,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
         }
@@ -2056,6 +2065,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     isolated_tasks: false,
+                    model: "sonnet".to_string(),
                 },
             );
         }
@@ -2116,6 +2126,7 @@ mod tests {
             "/tmp/worktree".to_string(),
             Some("session-id-123".to_string()),
             true,
+            "sonnet".to_string(),
         );
 
         assert!(

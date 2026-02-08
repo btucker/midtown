@@ -836,6 +836,7 @@ mod tests {
             current_task: None,
             session_id: None,
             isolated_tasks: false,
+            model: "sonnet".to_string(),
         };
         let stopping = Coworker {
             name: "park".to_string(),
@@ -845,6 +846,7 @@ mod tests {
             current_task: None,
             session_id: None,
             isolated_tasks: false,
+            model: "sonnet".to_string(),
         };
 
         // Build a snapshot where the nudge should fire
