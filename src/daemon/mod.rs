@@ -1613,12 +1613,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         }
                     }
 
-                    // Auto-complete task when PR title contains [Midtown #XX]
-                    pr_effects.extend(dispatch::build_task_completion_effects(
-                        &pr_opened.title,
-                        pr_opened.pr_number,
-                        &state.repo_name,
-                    ));
+                    // NOTE: Task auto-completion has been moved to the PR merged handler
+                    // to avoid completing tasks before review feedback is addressed and CI passes.
 
                     if !pr_effects.is_empty() {
                         effects::execute_effects(pr_effects, &state).await;
@@ -1646,6 +1642,18 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         warn!("Failed to nudge lead for PR #{} merge: {}", pr_number, e);
                     } else {
                         info!("Nudged lead about PR #{} merge", pr_number);
+                    }
+
+                    // Auto-complete task when PR title contains [Midtown #XX]
+                    if let Some(pr_merged_info) = webhook_event.pr_merged_info {
+                        let completion_effects = dispatch::build_task_completion_effects(
+                            &pr_merged_info.title,
+                            pr_merged_info.pr_number,
+                            &state.repo_name,
+                        );
+                        if !completion_effects.is_empty() {
+                            effects::execute_effects(completion_effects, &state).await;
+                        }
                     }
                 }
 

@@ -50,6 +50,8 @@ pub struct WebhookEvent {
     pub needs_review: Option<u64>,
     /// PR number that was just merged (set on "closed" with merged=true)
     pub merged_pr: Option<u64>,
+    /// PR merged info (title + number) for task auto-completion
+    pub pr_merged_info: Option<PrMergedInfo>,
     /// If set, a CI check failed on the default branch — nudge the lead with this message
     pub ci_failed_on_default_branch: Option<String>,
     /// PR number that received a Claude review comment (for caching review status).
@@ -86,6 +88,7 @@ impl WebhookEvent {
             pr_activity: None,
             needs_review: None,
             merged_pr: None,
+            pr_merged_info: None,
             ci_failed_on_default_branch: None,
             reviewed_pr: None,
             review_state_change: None,
@@ -188,6 +191,16 @@ pub struct PrOpenedInfo {
     pub branch: String,
     /// The coworker who opened the PR (from branch prefix or body frontmatter)
     pub author_coworker: Option<String>,
+    /// The PR title (no longer used for task completion - see PrMergedInfo)
+    pub title: String,
+}
+
+/// Populated by the `pull_request` webhook handler when a PR is merged,
+/// allowing the daemon to auto-complete tasks when implementation is done.
+#[derive(Debug, Clone)]
+pub struct PrMergedInfo {
+    /// PR number
+    pub pr_number: u64,
     /// The PR title (for extracting task ID from "[Midtown #XX]" format)
     pub title: String,
 }
@@ -740,7 +753,16 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         _ => None,
     };
 
-    // Capture PR author info when a PR is opened (for session handoff and task completion)
+    // Capture PR title when merged (for task auto-completion)
+    let pr_merged_info = match event.action.as_str() {
+        "closed" if event.pull_request.merged.unwrap_or(false) => Some(PrMergedInfo {
+            pr_number: event.number,
+            title: event.pull_request.title.clone(),
+        }),
+        _ => None,
+    };
+
+    // Capture PR author info when a PR is opened (for session handoff)
     let pr_opened = match event.action.as_str() {
         "opened" | "ready_for_review" => branch.map(|b| PrOpenedInfo {
             pr_number: event.number,
@@ -755,6 +777,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
     Ok(Some(WebhookEvent {
         needs_review,
         merged_pr,
+        pr_merged_info,
         pr_opened,
         ..WebhookEvent::github(content)
     }))
