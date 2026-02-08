@@ -4,6 +4,7 @@
   let scale = $state(1)
   let translateX = $state(0)
   let translateY = $state(0)
+  let initialized = $state(false)
 
   // Drag state
   let dragging = false
@@ -121,14 +122,22 @@
 
       if (lastPinchDist > 0) {
         const rect = containerEl.getBoundingClientRect()
-        const pinchCenterX = midX - rect.left
-        const pinchCenterY = midY - rect.top
+        // Convert pinch center from viewport to container coordinates
+        const viewportPinchX = midX - rect.left
+        const viewportPinchY = midY - rect.top
+
+        // Convert to diagram space (inverse of current transform)
+        // diagram_point = (viewport_point - translate) / scale
+        const diagramPinchX = (viewportPinchX - translateX) / scale
+        const diagramPinchY = (viewportPinchY - translateY) / scale
 
         const newScale = clampScale(scale * (dist / lastPinchDist))
-        const ratio = newScale / scale
 
-        translateX = pinchCenterX - ratio * (pinchCenterX - translateX) + (midX - lastPinchMidX)
-        translateY = pinchCenterY - ratio * (pinchCenterY - translateY) + (midY - lastPinchMidY)
+        // Apply zoom centered on the pinch point in diagram space
+        // viewport_point = diagram_point * new_scale + new_translate
+        // So: new_translate = viewport_point - diagram_point * new_scale
+        translateX = viewportPinchX - diagramPinchX * newScale
+        translateY = viewportPinchY - diagramPinchY * newScale
         scale = newScale
       }
 
@@ -173,10 +182,41 @@
   }
 
   function resetZoom() {
-    scale = 1
-    translateX = 0
-    translateY = 0
+    fitToWidth()
   }
+
+  function fitToWidth() {
+    if (!containerEl) return
+
+    const svg = containerEl.querySelector('svg')
+    if (!svg) return
+
+    const containerRect = containerEl.getBoundingClientRect()
+    const svgRect = svg.getBoundingClientRect()
+
+    // Calculate scale to fit full width with 5% padding
+    const targetWidth = containerRect.width * 0.95
+    const initialScale = targetWidth / svgRect.width
+
+    scale = clampScale(initialScale)
+
+    // Center the diagram
+    const scaledWidth = svgRect.width * scale
+    const scaledHeight = svgRect.height * scale
+    translateX = (containerRect.width - scaledWidth) / 2
+    translateY = (containerRect.height - scaledHeight) / 2
+  }
+
+  // Initialize fit-to-width when modal opens
+  $effect(() => {
+    if (containerEl && !initialized) {
+      // Wait for next tick to ensure SVG is rendered
+      requestAnimationFrame(() => {
+        fitToWidth()
+        initialized = true
+      })
+    }
+  })
 
   function handleBackdropClick(e) {
     // Close only when clicking the backdrop itself, not the diagram
