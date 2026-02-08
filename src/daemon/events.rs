@@ -72,14 +72,16 @@ pub async fn evaluate_tick(
             dedup_spawn_effects(effects)
         }
         DaemonEvent::PrPollTick => {
-            // PR polling: check open PRs for issues, spawn reviewers.
+            // PR polling: check open PRs for issues, spawn reviewers, clean up merged worktrees.
+            let mut effects = Vec::new();
             match super::pr::poll_prs_for_issues(snap, state).await {
-                Ok(effects) => dedup_spawn_effects(effects),
+                Ok(pr_effects) => effects.extend(pr_effects),
                 Err(e) => {
                     tracing::warn!("PR poll error: {}", e);
-                    Vec::new()
                 }
             }
+            effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
+            dedup_spawn_effects(effects)
         }
     }
 }

@@ -183,7 +183,6 @@ pub enum Effect {
     ///
     /// Looks up the worktree in the registry by PR number or branch name,
     /// removes it from the registry, and deletes the worktree directory.
-    #[allow(dead_code)]
     CleanupMergedWorktree { pr_number: u64, branch: String },
     /// Ensure a task-based worktree exists at the specified path.
     ///

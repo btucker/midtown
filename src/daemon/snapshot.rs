@@ -185,6 +185,12 @@ pub struct WorldSnapshot {
     /// Used by dispatch to reuse existing worktrees when reassigning tasks to
     /// different coworkers (preserves build cache and partial work).
     pub task_worktree_map: HashMap<String, String>,
+    /// Branch name → coworker name mapping from the worktree registry.
+    /// Used by `coworker_from_branch()` to look up task-based branches (task-*, review-pr-*).
+    pub worktree_branch_owners: HashMap<String, String>,
+    /// PR number → branch name mapping from the worktree registry for merged PRs.
+    /// Used by `collect_merged_pr_cleanup_effects()` to generate cleanup effects without I/O.
+    pub merged_pr_branches: HashMap<u64, String>,
 
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the absolute coworker limit (max capacity).
@@ -385,17 +391,38 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let daemon_logs = Vec::new();
 
     // ── Worktree registry ────────────────────────────────────────────────
-    let (tasks_with_worktrees, task_worktree_map): (HashSet<String>, HashMap<String, String>) = {
+    #[allow(clippy::type_complexity)]
+    let (tasks_with_worktrees, task_worktree_map, worktree_branch_owners, merged_pr_branches): (
+        HashSet<String>,
+        HashMap<String, String>,
+        HashMap<String, String>,
+        HashMap<u64, String>,
+    ) = {
         let ps = state.persistent_state.lock().await;
         let mut task_ids = HashSet::new();
         let mut wt_map = HashMap::new();
-        for assignment in ps.worktree_registry.all_assignments().values() {
+        let mut branch_owners = HashMap::new();
+        let mut pr_branches = HashMap::new();
+
+        for (_, assignment) in ps.worktree_registry.all_assignments().iter() {
+            // Collect task IDs and task→worktree mapping
             if let Some(ref task_id) = assignment.task_id {
                 task_ids.insert(task_id.clone());
                 wt_map.insert(task_id.clone(), assignment.worktree_id.clone());
             }
+
+            // Collect branch→coworker mapping for task-based branches
+            if let Some(ref coworker) = assignment.current_coworker {
+                branch_owners.insert(assignment.branch_name.clone(), coworker.clone());
+            }
+
+            // Build PR → branch mapping for merged PRs (used by cleanup effects)
+            if let Some(pr_num) = assignment.pr_number {
+                pr_branches.insert(pr_num, assignment.branch_name.clone());
+            }
         }
-        (task_ids, wt_map)
+
+        (task_ids, wt_map, branch_owners, pr_branches)
     };
 
     // ── Limits & timing ─────────────────────────────────────────────────
@@ -438,6 +465,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         daemon_logs,
         tasks_with_worktrees,
         task_worktree_map,
+        worktree_branch_owners,
+        merged_pr_branches,
         is_at_coworker_limit,
         is_at_dev_limit,
         now_utc,
@@ -536,6 +565,8 @@ mod tests {
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),
@@ -615,6 +646,8 @@ mod tests {
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),

@@ -345,7 +345,9 @@ pub(super) async fn poll_prs_for_issues(
             .filter_map(|pr| {
                 pr.get("headRefName")
                     .and_then(|r| r.as_str())
-                    .and_then(coworker_from_branch)
+                    .and_then(|branch| {
+                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
+                    })
             })
             .collect();
         let mut cache = state.pr_coworker_cache.write().unwrap();
@@ -360,7 +362,9 @@ pub(super) async fn poll_prs_for_issues(
             .filter_map(|pr| {
                 pr.get("headRefName")
                     .and_then(|r| r.as_str())
-                    .and_then(coworker_from_branch)
+                    .and_then(|branch| {
+                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
+                    })
             })
             .collect();
         let mut cache = state.pr_coworker_cache.write().unwrap();
@@ -378,7 +382,9 @@ pub(super) async fn poll_prs_for_issues(
             .filter_map(|pr| {
                 pr.get("headRefName")
                     .and_then(|r| r.as_str())
-                    .and_then(coworker_from_branch)
+                    .and_then(|branch| {
+                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
+                    })
             })
             .collect();
         let mut sessions = state.pr_break_sessions.write().unwrap();
@@ -414,10 +420,11 @@ pub(super) async fn poll_prs_for_issues(
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
         // Only process coworker-owned PRs (validates branch prefix against known names)
-        let owner = match coworker_from_branch(head_ref) {
-            Some(o) => o,
-            None => continue, // Not a coworker PR (e.g., dependabot, feature branches)
-        };
+        let owner =
+            match coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)) {
+                Some(o) => o,
+                None => continue, // Not a coworker PR (e.g., dependabot, feature branches)
+            };
 
         // Check for actionable issues
         let issues = detect_pr_issues(pr);
@@ -478,7 +485,8 @@ pub(super) async fn poll_prs_for_issues(
 
     // Polling fallback for review comment notifications (when webhooks are degraded)
     effects.extend(
-        collect_comment_notification_effects(state, &prs, &active_coworkers, &idle_coworkers).await,
+        collect_comment_notification_effects(snap, state, &prs, &active_coworkers, &idle_coworkers)
+            .await,
     );
 
     // Auto-spawn reviewers for PRs that need review
@@ -548,6 +556,7 @@ pub(super) async fn poll_prs_for_issues(
     // This covers the case where a coworker is waiting for CI while feedback awaits.
     effects.extend(
         collect_green_with_feedback_effects(
+            snap,
             state,
             &prs,
             &reviewed_prs,
@@ -574,6 +583,7 @@ pub(super) async fn poll_prs_for_issues(
 /// nudge them to address any feedback and merge. This covers the case where
 /// a coworker is waiting for CI to pass while feedback awaits.
 async fn collect_green_with_feedback_effects(
+    snap: &WorldSnapshot,
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
@@ -620,10 +630,11 @@ async fn collect_green_with_feedback_effects(
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
         // Only process coworker-owned PRs (validates branch prefix against known names)
-        let owner = match coworker_from_branch(head_ref) {
-            Some(o) => o,
-            None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
-        };
+        let owner =
+            match coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)) {
+                Some(o) => o,
+                None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
+            };
 
         let message = format!(
             "PR #{} ({}) - {}: {}",
@@ -1127,6 +1138,7 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
 /// Both paths create tasks so the Lead sees consistent formatting, while preserving
 /// handoff-to-idle-coworker and session resume capabilities.
 async fn collect_comment_notification_effects(
+    snap: &WorldSnapshot,
     state: &DaemonState,
     prs: &[serde_json::Value],
     active_coworkers: &[String],
@@ -1203,10 +1215,11 @@ async fn collect_comment_notification_effects(
         }
 
         // Only check coworker-owned PRs beyond this point
-        let owner = match coworker_from_branch(head_ref) {
-            Some(o) => o,
-            None => continue, // Not a coworker PR
-        };
+        let owner =
+            match coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)) {
+                Some(o) => o,
+                None => continue, // Not a coworker PR
+            };
 
         // Count non-owner comments
         let non_owner_count = count_non_owner_comments(pr, Some(&owner));
@@ -1490,7 +1503,7 @@ async fn collect_reviewer_effects(
     prs: &[serde_json::Value],
 ) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
-        snap,
+        Some(&snap.worktree_branch_owners),
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
@@ -1499,7 +1512,7 @@ async fn collect_reviewer_effects(
 }
 
 async fn collect_reviewer_effects_with_source(
-    snap: &WorldSnapshot,
+    branch_owners_map: Option<&std::collections::HashMap<String, String>>,
     state: &DaemonState,
     prs: &[serde_json::Value],
     source: crate::github_state::AssignmentSource,
@@ -1595,7 +1608,7 @@ async fn collect_reviewer_effects_with_source(
             let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
             // Only nudge coworker-owned PRs (validates branch prefix against known names)
-            if let Some(owner) = coworker_from_branch(head_ref) {
+            if let Some(owner) = coworker_from_branch_with_map(head_ref, branch_owners_map) {
                 let should_nudge = {
                     let tracker = state.pr_issue_tracker.lock().await;
                     tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
@@ -1646,10 +1659,32 @@ async fn collect_reviewer_effects_with_source(
             if ps.github.is_assigned(pr_number) {
                 // Check if the assigned reviewer is still alive using pure decision logic
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
+                    // Get active coworker names for liveness check
+                    let active_names: HashSet<String> = state
+                        .coworkers
+                        .list()
+                        .into_iter()
+                        .map(|cw| cw.name.to_lowercase())
+                        .collect();
+                    // Get usage limited coworkers from headless_health
+                    let usage_limited_coworkers: HashSet<String> = {
+                        let health = state.headless_health.read().unwrap();
+                        health
+                            .iter()
+                            .filter_map(|(name, h)| {
+                                if h.has_usage_limit {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    };
+
                     let liveness = crate::rules::decide_reviewer_liveness(
                         reviewer_name,
-                        &snap.active_names,
-                        &snap.usage_limited_coworkers,
+                        &active_names,
+                        &usage_limited_coworkers,
                     );
 
                     match liveness {
@@ -1921,10 +1956,24 @@ fn review_complete_action_to_effects(
 ///
 /// Returns effects to be executed by the caller (following the evaluate-execute pattern).
 pub(super) async fn process_pending_review_spawns(
-    snap: &WorldSnapshot,
+    _snap: &WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
     let mut all_effects = Vec::new();
+
+    // Build branch → coworker map from the worktree registry for task-based branch lookup
+    let branch_owners: std::collections::HashMap<String, String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, a)| {
+                a.current_coworker
+                    .as_ref()
+                    .map(|coworker| (a.branch_name.clone(), coworker.clone()))
+            })
+            .collect()
+    };
 
     // Drain ready spawns from persistent state
     let ready_prs = {
@@ -1995,7 +2044,7 @@ pub(super) async fn process_pending_review_spawns(
         // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
         // Use Webhook source since this was triggered by a webhook event.
         let effects = collect_reviewer_effects_with_source(
-            snap,
+            Some(&branch_owners),
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
@@ -2683,6 +2732,34 @@ fn collect_stale_check_effects_with_time(
                 run_id,
                 check_name: check_name.to_string(),
                 pr_number,
+            });
+        }
+    }
+
+    effects
+}
+
+/// Generate cleanup effects for recently merged PRs.
+///
+/// Uses the pre-computed `merged_pr_branches` map from WorldSnapshot to avoid I/O.
+/// Generates CleanupMergedWorktree effects to remove the worktree directory and
+/// registry entry after the PR is merged.
+///
+/// Called during polling ticks to clean up task-based worktrees after
+/// their PRs are merged.
+pub(super) fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    // Use pre-computed PR → branch mapping from snapshot
+    for &pr_num in &snap.merged_pr_numbers {
+        if let Some(branch) = snap.merged_pr_branches.get(&pr_num) {
+            debug!(
+                "PR #{} merged, scheduling worktree cleanup for branch {}",
+                pr_num, branch
+            );
+            effects.push(Effect::CleanupMergedWorktree {
+                pr_number: pr_num,
+                branch: branch.clone(),
             });
         }
     }
@@ -3730,4 +3807,118 @@ mod tests {
     // unit testing difficult. The implementation at lines 1651-1665 clearly shows
     // RegisterWorktreeAssignment and BindCoworkerToWorktree are generated in the
     // on_success callbacks of SpawnCoworkerWithCallbacks, matching the dispatch path.
+
+    #[test]
+    fn coworker_from_branch_with_map_supports_task_branches() {
+        use std::collections::HashMap;
+
+        // Build a branch → coworker map like WorldSnapshot does
+        let mut map = HashMap::new();
+        map.insert("task-42-fix-auth".to_string(), "lexington".to_string());
+        map.insert("review-pr-123".to_string(), "madison".to_string());
+
+        // Task-based branches should resolve via the map
+        assert_eq!(
+            coworker_from_branch_with_map("task-42-fix-auth", Some(&map)),
+            Some("lexington".to_string()),
+            "task-based branch should resolve via map"
+        );
+        assert_eq!(
+            coworker_from_branch_with_map("review-pr-123", Some(&map)),
+            Some("madison".to_string()),
+            "review-pr branch should resolve via map"
+        );
+
+        // Legacy branches should still work
+        assert_eq!(
+            coworker_from_branch_with_map("york/fix-bug", Some(&map)),
+            Some("york".to_string()),
+            "legacy branch should resolve without map"
+        );
+
+        // Without the map, task-based branches should return None
+        assert!(
+            coworker_from_branch_with_map("task-42-fix-auth", None).is_none(),
+            "task-based branch without map should return None"
+        );
+    }
+
+    #[test]
+    fn collect_merged_pr_cleanup_effects_generates_cleanup_for_merged_prs() {
+        use std::collections::{HashMap, HashSet};
+
+        // Build a minimal snapshot with merged PRs and their branch mappings
+        let merged_pr_numbers: HashSet<u64> = [42, 123].into_iter().collect();
+        let mut merged_pr_branches: HashMap<u64, String> = HashMap::new();
+        merged_pr_branches.insert(42, "task-42-fix-auth".to_string());
+        merged_pr_branches.insert(123, "review-pr-123".to_string());
+
+        let snap = crate::daemon::snapshot::WorldSnapshot {
+            merged_pr_numbers,
+            merged_pr_branches,
+            // All other fields use defaults from test helpers
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            session_name: "test".to_string(),
+            repo_name: "test-repo".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+        };
+
+        let effects = collect_merged_pr_cleanup_effects(&snap);
+
+        // Should generate cleanup effects for both merged PRs
+        assert_eq!(effects.len(), 2, "should generate 2 cleanup effects");
+        assert!(
+            effects.iter().any(|e| {
+                if let Effect::CleanupMergedWorktree { pr_number, branch } = e {
+                    *pr_number == 42 && branch == "task-42-fix-auth"
+                } else {
+                    false
+                }
+            }),
+            "should cleanup PR #42"
+        );
+        assert!(
+            effects.iter().any(|e| {
+                if let Effect::CleanupMergedWorktree { pr_number, branch } = e {
+                    *pr_number == 123 && branch == "review-pr-123"
+                } else {
+                    false
+                }
+            }),
+            "should cleanup PR #123"
+        );
+    }
 }
