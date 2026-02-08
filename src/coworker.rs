@@ -2088,7 +2088,7 @@ mod tests {
         assert_eq!(manager.count(), 1);
         let entry = manager.get("lexington").unwrap();
         assert_eq!(entry.name, "lexington");
-        assert_eq!(entry.isolated_tasks, false); // hardcoded by recovery
+        assert!(!entry.isolated_tasks); // hardcoded by recovery
 
         // The spawn flow now tries to register. This should NOT fail.
         // In the current buggy code, this will return an error because
@@ -2108,8 +2108,8 @@ mod tests {
 
         // Verify the entry was updated with the correct isolated_tasks value
         let entry = manager.get("lexington").unwrap();
-        assert_eq!(
-            entry.isolated_tasks, true,
+        assert!(
+            entry.isolated_tasks,
             "isolated_tasks should be updated to true (from register call)"
         );
         assert_eq!(
