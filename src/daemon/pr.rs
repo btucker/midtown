@@ -1644,9 +1644,14 @@ async fn collect_reviewer_effects_with_source(
         // reviewer() now takes the PR number and generates both the system prompt
         // (with merged reviewer.md instructions) and the launch prompt internally
         let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
-        config.working_dir = Some(wt_path);
+        config.working_dir = Some(wt_path.clone());
 
         let on_success = vec![
+            // Ensure the worktree exists BEFORE spawning (fixes effect pattern violation)
+            Effect::EnsureWorktree {
+                worktree_id: worktree_id.clone(),
+                path: wt_path.clone(),
+            },
             // Register the review worktree assignment
             Effect::RegisterWorktreeAssignment {
                 assignment: crate::worktree_registry::WorktreeAssignment {

@@ -846,12 +846,18 @@ pub(super) fn spawn_for_pending_tasks(
                     crate::launch::SessionMode::Resume,
                     Some(prompt),
                 );
-                config.working_dir = Some(wt_path);
+                config.working_dir = Some(wt_path.clone());
 
                 // Check if task already has a worktree registered (recovery/reassignment case)
                 let needs_registration = !snap.tasks_with_worktrees.contains(tid);
 
                 let mut spawn_effects = Vec::new();
+
+                // Ensure the worktree exists BEFORE spawning (fixes effect pattern violation)
+                spawn_effects.push(Effect::EnsureWorktree {
+                    worktree_id: worktree_id.clone(),
+                    path: wt_path.clone(),
+                });
 
                 // Register the task → worktree mapping if this is the first time
                 if needs_registration {
@@ -1164,7 +1170,7 @@ pub(super) fn spawn_for_pending_tasks(
                 crate::launch::SessionMode::Fresh,
                 Some(prompt.clone()),
             );
-            config.working_dir = Some(wt_path);
+            config.working_dir = Some(wt_path.clone());
 
             // Check if task already has a worktree registered (unlikely for unowned, but handles recovery)
             let needs_registration = !snap.tasks_with_worktrees.contains(&task.id);
@@ -1177,6 +1183,12 @@ pub(super) fn spawn_for_pending_tasks(
             );
 
             let mut spawn_effects = Vec::new();
+
+            // Ensure the worktree exists BEFORE spawning (fixes effect pattern violation)
+            spawn_effects.push(Effect::EnsureWorktree {
+                worktree_id: worktree_id.clone(),
+                path: wt_path.clone(),
+            });
 
             // Register the task → worktree mapping if this is the first time
             if needs_registration {

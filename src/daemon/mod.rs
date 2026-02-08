@@ -646,36 +646,10 @@ impl DaemonState {
             return Ok(());
         }
 
-        // If working_dir is set (task-based worktree), create it if it doesn't exist
-        if let Some(ref wt_path) = config.working_dir {
-            if !wt_path.exists() {
-                // Extract worktree_id from the path (last component)
-                let worktree_id =
-                    wt_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .ok_or_else(|| crate::Error::Rpc {
-                            code: -32603,
-                            message: format!(
-                                "Invalid working_dir path (no filename): {}",
-                                wt_path.display()
-                            ),
-                        })?;
-
-                tracing::info!("Creating task worktree: {}", worktree_id);
-                self.coworkers
-                    .worktree_manager()
-                    .create_task_worktree(worktree_id)
-                    .map_err(|e| crate::Error::Rpc {
-                        code: -32603,
-                        message: format!("Failed to create task worktree {}: {}", worktree_id, e),
-                    })?;
-            } else {
-                tracing::info!("Reusing existing task worktree: {}", wt_path.display());
-            }
-        }
-
         // Prepare worktree and augment config with additional dirs
+        // Note: Worktree creation now happens via Effect::EnsureWorktree in the
+        // decision layer (rules.rs), not inline here. This follows the effect-based
+        // architecture: I/O goes through the Effect pipeline.
         let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
 
         // Build headless config from the unified launch config
