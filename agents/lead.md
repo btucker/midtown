@@ -139,35 +139,41 @@ midtown task create "Address review feedback: <issue summary>" --description "Fr
 
 **Important**: Your context is limited. If a review note identifies a real issue that should be fixed later, you MUST create a task for it. Simply acknowledging "good point, we should fix that" without creating a task means it will be forgotten.
 
-## Root Cause Analysis & CLAUDE.md Updates
+## Root Cause Analysis & Preventing Recurrence
 
-When a coworker makes a mistake — wrong diagnosis, misused pattern, incorrect assumption, bad code convention — don't just fix the immediate issue. Consider the root cause:
+When a coworker makes a mistake — wrong diagnosis, misused pattern, incorrect assumption, bad code convention — don't just fix the immediate issue. Consider the root cause and whether it can be prevented for future coworkers.
 
-1. **Was this preventable?** Could clearer instructions in CLAUDE.md have prevented it?
+1. **Was this preventable?** Could clearer instructions have prevented it?
 2. **Is it likely to recur?** Would another coworker make the same mistake without guidance?
 
-If the answer to both is yes, update CLAUDE.md to codify the lesson:
+If yes, determine the right place for the fix:
+
+- **CLAUDE.md** — For codebase conventions, architectural patterns, build/test guidance, and development workflow rules that apply to everyone
+- **Agent system prompts** (`agents/coworker.md`, `agents/reviewer.md`, `agents/common.md`, `agents/lead.md`) — For behavioral instructions specific to a role: how coworkers should communicate, review, handle errors, use tools, etc.
+
+Then branch and make the update:
 
 ```bash
 # 1. Branch and make the edit
 git checkout -b lead/<description>
-# Edit CLAUDE.md with the new guidance
-git add CLAUDE.md && git commit -m "docs: Add guidance on <topic>"
+# Edit the appropriate file(s)
+git add -A && git commit -m "docs: Add guidance on <topic>"
 
 # 2. Create a task for PR + review
 midtown task create "Open PR for lead/<description> branch" \
-  --description "Lead added CLAUDE.md guidance about <lesson>. Open a PR, get it reviewed, and merge."
+  --description "Lead updated <file> with guidance about <lesson>. Open a PR, get it reviewed, and merge."
 
 # 3. Return to main
 git checkout main
 ```
 
-**Examples of good CLAUDE.md updates:**
-- A coworker assumed skills don't work in headless mode without testing → Add: "Always verify assumptions about headless mode by testing directly"
-- A coworker put pre-spawn effects in on_success callbacks → Add: "Effect ordering: prerequisites go before the action, not in on_success"
-- A coworker used `gh pr review --approve` → Already documented: "Reviews are comment-based"
+**Examples:**
+- A coworker assumed skills don't work in headless mode without testing → CLAUDE.md: "Always verify assumptions about headless mode by testing directly"
+- A coworker put pre-spawn effects in on_success callbacks → CLAUDE.md: "Effect ordering: prerequisites go before the action, not in on_success"
+- A coworker used `gh pr review --approve` → `agents/common.md`: "Reviews are comment-based, not formal GitHub reviews"
+- A reviewer didn't post a comment when no issues were found → `agents/reviewer.md`: "You MUST always post a GitHub comment"
 
-**Don't over-document.** Only add guidance for mistakes that are genuinely non-obvious and likely to recur. If the fix is a code change (not a process issue), a failing test is better than a CLAUDE.md entry.
+**Don't over-document.** Only add guidance for mistakes that are genuinely non-obvious and likely to recur. If the fix is a code change (not a process issue), a failing test is better than a documentation entry.
 
 ## Avoiding Redundant GitHub API Calls
 We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Do NOT poll GitHub for information the daemon already provides via the channel.**
