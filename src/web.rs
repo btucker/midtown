@@ -1275,20 +1275,23 @@ async fn handle_client_message(
                 return Err("Empty nudge message".to_string());
             }
 
+            // Web UI only supports nudging the lead, not coworkers
+            if target != "lead" {
+                return Err(format!(
+                    "Cannot nudge coworker {} via web UI - only lead nudges are supported",
+                    target
+                ));
+            }
+
             let coworkers = state
                 .coworkers
                 .as_ref()
                 .ok_or_else(|| "Coworker manager not available".to_string())?;
 
-            if target == "lead" {
-                coworkers
-                    .nudge_lead(&message)
-                    .map_err(|e| format!("Failed to nudge lead: {}", e))?;
-            } else {
-                coworkers
-                    .nudge(&target, &message)
-                    .map_err(|e| format!("Failed to nudge {}: {}", target, e))?;
-            }
+            coworkers
+                .nudge_lead(&message)
+                .map_err(|e| format!("Failed to nudge lead: {}", e))?;
+
             info!("Nudge sent to {} via web UI: {}", target, message);
         }
         ClientMessage::SendKey { target, key } => {
@@ -1661,8 +1664,7 @@ mod tests {
     #[tokio::test]
     async fn test_coworker_nudge_returns_error() {
         // Verify that attempting to nudge a coworker returns an error.
-        // Note: We can't easily test with a real CoworkerManager in a unit test,
-        // so we test the case where coworkers is None (which also returns an error).
+        // Coworker nudges are not supported via the web UI - only lead nudges are allowed.
         let (updates_tx, _) = broadcast::channel(10);
         let (channel_post_tx, _) = mpsc::channel(10);
 
@@ -1681,10 +1683,11 @@ mod tests {
         let json = r#"{"type": "nudge", "target": "lexington", "message": "test nudge"}"#;
         let result = handle_client_message(json, &state, 1).await;
 
-        // Should return an error since coworker manager is not available
+        // Should return an error since coworker nudges are not supported via web UI
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
-        assert!(err_msg.contains("not available"));
+        assert!(err_msg.contains("Cannot nudge coworker"));
+        assert!(err_msg.contains("lexington"));
     }
 
     #[tokio::test]
