@@ -1,7 +1,7 @@
 <script>
-  import { messages, coworkers, leadTyping } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData } from './store.js'
   import { sendMessage } from './api.js'
-  import { tick } from 'svelte'
+  import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
 
@@ -9,8 +9,48 @@
   let messagesContainer = $state(null)
   let autoScroll = $state(true)
 
+  // Filter messages by active channel
+  let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
+
   // Cache current tasks to avoid recalculating on every render
   let currentTasks = $derived(getCurrentTasks($coworkers))
+
+  // Get PR status from kanban data
+  function getPrStatus(prNum) {
+    const pr = $kanbanData.review.find((p) => p.number === parseInt(prNum))
+    return pr ? pr.status : null
+  }
+
+  // Handle clicks on channel links, task links, and PR links
+  onMount(() => {
+    function handleLinkClick(e) {
+      const target = e.target
+      if (target.classList.contains('channel-link')) {
+        e.preventDefault()
+        const channelName = target.dataset.channel
+        if ($channels.some((ch) => ch.name === channelName)) {
+          activeChannel.set(channelName)
+        }
+      } else if (target.classList.contains('task-link')) {
+        e.preventDefault()
+        const taskId = target.dataset.task
+        // TODO: Show task detail panel/modal
+        console.log('Task link clicked:', taskId)
+      } else if (target.classList.contains('pr-link')) {
+        e.preventDefault()
+        const prNum = target.dataset.pr
+        // Open GitHub PR in new tab (assuming GitHub URL structure)
+        // In real implementation, this should use the actual repo URL from config
+        console.log('PR link clicked:', prNum)
+        // window.open(`https://github.com/owner/repo/pull/${prNum}`, '_blank')
+      }
+    }
+
+    if (messagesContainer) {
+      messagesContainer.addEventListener('click', handleLinkClick)
+      return () => messagesContainer.removeEventListener('click', handleLinkClick)
+    }
+  })
 
   // Muted avenue colors matching terminal TUI palette (AVENUE_COLORS from ui.rs)
   const AVENUE_COLORS = {
@@ -51,6 +91,14 @@
     return msg.msg_type === 'action' || msg.content?.startsWith('/me ')
   }
 
+  function isInsight(msg) {
+    return msg.msg_type === 'insight' || msg.type === 'insight'
+  }
+
+  function isCrossPost(msg) {
+    return msg.source_channel && msg.source_channel !== msg.channel
+  }
+
   function formatTime(timestamp) {
     try {
       const date = new Date(timestamp)
@@ -89,7 +137,7 @@
 
   // Auto-scroll to bottom when new messages arrive
   $effect(() => {
-    if ($messages.length > 0 && autoScroll && messagesContainer) {
+    if (channelMessages.length > 0 && autoScroll && messagesContainer) {
       tick().then(() => {
         messagesContainer.scrollTop = messagesContainer.scrollHeight
       })
@@ -126,21 +174,29 @@
 </script>
 
 <div class="channel-container">
+  <div class="channel-header">
+    <h2>#{$activeChannel}</h2>
+  </div>
   <div class="messages" bind:this={messagesContainer} onscroll={handleScroll}>
-    {#if $messages.length === 0}
+    {#if channelMessages.length === 0}
       <div class="empty-state">
-        <p>No messages yet</p>
-        <p class="hint">Messages from the team channel will appear here</p>
+        <p>No messages in #{$activeChannel}</p>
+        <p class="hint">Messages posted to this channel will appear here</p>
       </div>
     {:else}
-      {#each $messages as msg, i}
-        {#if needsBlankLine($messages, i)}
+      {#each channelMessages as msg, i}
+        {#if needsBlankLine(channelMessages, i)}
           <div class="blank-line"></div>
         {/if}
 
-        {#if senderChanged($messages, i)}
-          <!-- Author line: bold name + current task -->
-          <div class="sender-line">
+        {#if senderChanged(channelMessages, i)}
+          <!-- Author line: bold name + current task + cross-post indicator -->
+          <div class="sender-line" class:cross-post={isInsight(msg) && isCrossPost(msg)}>
+            {#if isInsight(msg) && isCrossPost(msg)}
+              <span class="insight-star">★</span>
+              <span class="cross-post-source">from #{msg.source_channel}</span>
+              <span class="sender-divider">|</span>
+            {/if}
             <span class="sender-name" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
             {#if currentTasks[msg.from.toLowerCase()]}
               <span class="sender-task"> - {currentTasks[msg.from.toLowerCase()]}</span>
@@ -224,7 +280,7 @@
   <form class="input-area" onsubmit={handleSubmit}>
     <textarea
       bind:value={inputText}
-      placeholder="Message to lead..."
+      placeholder="Message to #{$activeChannel}..."
       rows="1"
       onkeydown={handleKeyDown}
     ></textarea>
@@ -238,6 +294,19 @@
     flex-direction: column;
     height: 100%;
     position: relative;
+  }
+
+  .channel-header {
+    padding: 12px 16px;
+    background: #262626;
+    border-bottom: 1px solid #3a3a3a;
+  }
+
+  .channel-header h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #5fafaf;
+    margin: 0;
   }
 
   .messages {
@@ -271,6 +340,32 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .sender-line.cross-post {
+    padding: 4px 8px;
+    margin: -4px -8px 4px;
+    border-left: 3px solid #af5faf;
+    background: rgba(175, 95, 175, 0.1);
+    border-radius: 4px;
+  }
+
+  .insight-star {
+    color: #ffaf5f;
+    font-size: 1rem;
+  }
+
+  .cross-post-source {
+    color: #5fafaf;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .sender-divider {
+    color: #585858;
   }
 
   .sender-name {
@@ -321,6 +416,27 @@
   .message-text :global(a:hover),
   .action-text :global(a:hover) {
     text-decoration: underline;
+  }
+
+  .message-text :global(a.channel-link),
+  .action-text :global(a.channel-link) {
+    color: #5fafaf;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .message-text :global(a.task-link),
+  .action-text :global(a.task-link) {
+    color: #af5faf;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .message-text :global(a.pr-link),
+  .action-text :global(a.pr-link) {
+    color: #5f87af;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   /* Inline code */
