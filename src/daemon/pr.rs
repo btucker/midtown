@@ -1284,6 +1284,18 @@ async fn collect_comment_notification_effects(
         );
 
         effects.extend(comment_action_to_effects(action, pr_number, title, state));
+
+        // If this is a lead/* branch, also nudge the lead so they see review feedback
+        if is_lead_branch(head_ref) {
+            let lead_nudge_msg = format!(
+                "Your PR #{} ({}) has new review comments — please address feedback.",
+                pr_number,
+                truncate_str(title, 40)
+            );
+            effects.push(Effect::NudgeLead {
+                message: lead_nudge_msg,
+            });
+        }
     }
 
     effects
