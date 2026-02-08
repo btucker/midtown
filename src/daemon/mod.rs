@@ -1768,8 +1768,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodically monitor coworker sessions: idle shutdown, nudges, stuck detection
             _ = idle_check_interval.tick() => {
-                // Sync internal state with actual tmux windows first
-                if let Err(e) = state.coworkers.sync_with_tmux() {
+                // Sync internal state with actual tmux windows first.
+                // Preserve headless session names so they don't get removed
+                // (headless coworkers have no tmux windows).
+                let headless_names: std::collections::HashSet<String> =
+                    state.session_manager.list_names().await.into_iter().collect();
+                if let Err(e) = state.coworkers.sync_with_tmux(&headless_names) {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }
                 run_tick(&events::DaemonEvent::SessionMonitorTick, &state).await;
