@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 /// use midtown::{Channel, Message};
 ///
 /// # let temp_dir = TempDir::new().unwrap();
-/// # let channel = Channel::new(temp_dir.path()).unwrap();
+/// # let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 /// // Send messages to the channel
 /// channel.send(&Message::text("alice", "Hello!")).unwrap();
 /// channel.send(&Message::text("bob", "Hi there!")).unwrap();
@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 /// use midtown::{Channel, Message};
 ///
 /// # let temp_dir = TempDir::new().unwrap();
-/// # let channel = Channel::new(temp_dir.path()).unwrap();
+/// # let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 /// // Send initial messages
 /// channel.send(&Message::text("alice", "First")).unwrap();
 /// channel.send(&Message::text("bob", "Second")).unwrap();
@@ -61,22 +61,51 @@ use std::path::{Path, PathBuf};
 pub struct Channel {
     /// Base directory for this channel (~/.midtown/projects/<repo>/)
     base_dir: PathBuf,
+    /// Channel name (e.g., "midtown", "pr-discussion")
+    channel_name: String,
     /// Path to the channel.jsonl file
     channel_file: PathBuf,
 }
 
 impl Channel {
-    /// Create a new channel at the specified base directory
+    /// Create a new channel with the specified name at the base directory
     ///
     /// Creates the directory structure and channel file if they don't exist.
     /// The channel file is created eagerly so that file watchers (tailf) can
     /// immediately start monitoring it.
-    pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self> {
+    ///
+    /// # Channel File Layout
+    ///
+    /// - "midtown" channel: Uses `channel.jsonl` (legacy) or `channels/midtown.jsonl`
+    /// - Other channels: Use `channels/<name>.jsonl`
+    ///
+    /// For backward compatibility, if `channel.jsonl` exists, it's treated as the
+    /// "midtown" channel. New channels always use the `channels/` directory.
+    pub fn new(base_dir: impl Into<PathBuf>, channel_name: impl Into<String>) -> Result<Self> {
         let base_dir = base_dir.into();
+        let channel_name = channel_name.into();
+
         fs::create_dir_all(&base_dir)?;
         fs::create_dir_all(base_dir.join("cursors"))?;
 
-        let channel_file = base_dir.join("channel.jsonl");
+        // Determine channel file path
+        let channel_file = if channel_name == "midtown" {
+            // For "midtown" channel, prefer legacy channel.jsonl if it exists,
+            // otherwise use channels/midtown.jsonl
+            let legacy = base_dir.join("channel.jsonl");
+            if legacy.exists() {
+                legacy
+            } else {
+                fs::create_dir_all(base_dir.join("channels"))?;
+                base_dir.join("channels").join("midtown.jsonl")
+            }
+        } else {
+            // All other channels use channels/<name>.jsonl
+            fs::create_dir_all(base_dir.join("channels"))?;
+            base_dir
+                .join("channels")
+                .join(format!("{}.jsonl", channel_name))
+        };
 
         // Create the channel file if it doesn't exist.
         // This enables file watchers like tailf to start monitoring immediately.
@@ -87,16 +116,25 @@ impl Channel {
 
         Ok(Self {
             base_dir,
+            channel_name,
             channel_file,
         })
     }
 
-    /// Open a channel for a specific repository
+    /// Open the default "midtown" channel for a specific repository
     ///
     /// Uses ~/.midtown/projects/<repo>/ as the base directory.
     pub fn for_repo(repo: &str) -> Result<Self> {
         let base_dir = crate::paths::projects_dir_for_repo(repo);
-        Self::new(base_dir)
+        Self::new(base_dir, "midtown")
+    }
+
+    /// Open a named channel for a specific repository
+    ///
+    /// Uses ~/.midtown/projects/<repo>/ as the base directory.
+    pub fn for_repo_named(repo: &str, channel_name: impl Into<String>) -> Result<Self> {
+        let base_dir = crate::paths::projects_dir_for_repo(repo);
+        Self::new(base_dir, channel_name)
     }
 
     /// Get the base directory path
@@ -104,9 +142,76 @@ impl Channel {
         &self.base_dir
     }
 
+    /// Get the channel name
+    pub fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
     /// Get the path to the channel.jsonl file
     pub fn channel_file_path(&self) -> &Path {
         &self.channel_file
+    }
+
+    /// List all available channels in the base directory
+    ///
+    /// Returns channel names (without .jsonl extension).
+    /// Includes both legacy channel.jsonl (as "midtown") and channels/*.jsonl files.
+    pub fn list(base_dir: impl Into<PathBuf>) -> Result<Vec<String>> {
+        let base_dir = base_dir.into();
+        let mut channels = Vec::new();
+
+        // Check for legacy channel.jsonl
+        if base_dir.join("channel.jsonl").exists() {
+            channels.push("midtown".to_string());
+        }
+
+        // Check channels/ directory
+        let channels_dir = base_dir.join("channels");
+        if channels_dir.exists() {
+            for entry in fs::read_dir(channels_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "jsonl")
+                    && let Some(name) = path.file_stem().and_then(|s| s.to_str())
+                {
+                    // Don't duplicate "midtown" if we already found channel.jsonl
+                    if name != "midtown" || !channels.contains(&"midtown".to_string()) {
+                        channels.push(name.to_string());
+                    }
+                }
+            }
+        }
+
+        channels.sort();
+        Ok(channels)
+    }
+
+    /// Create a new channel
+    ///
+    /// This is a convenience method that creates the channel and returns it.
+    /// If the channel already exists, this just opens it.
+    pub fn create(base_dir: impl Into<PathBuf>, channel_name: impl Into<String>) -> Result<Self> {
+        Self::new(base_dir, channel_name)
+    }
+
+    /// Mark a channel as archived
+    ///
+    /// Renames the channel file from `channels/<name>.jsonl` to `channels/<name>.archived.jsonl`.
+    /// Archived channels are excluded from the list() results.
+    ///
+    /// Returns an error if trying to archive the "midtown" channel (not allowed).
+    pub fn archive(&self) -> Result<()> {
+        if self.channel_name == "midtown" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot archive the 'midtown' channel",
+            )
+            .into());
+        }
+
+        let archived_path = self.channel_file.with_extension("archived.jsonl");
+        crate::paths::atomic_rename(&self.channel_file, &archived_path)?;
+        Ok(())
     }
 
     /// Append a message to the channel
@@ -213,7 +318,7 @@ impl Channel {
             return Ok(Vec::new());
         }
 
-        let mut cursor = Cursor::load_or_create(&self.base_dir, agent)?;
+        let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
 
         let file = File::open(&self.channel_file)?;
         // Try to acquire shared lock without blocking
@@ -260,21 +365,21 @@ impl Channel {
 
         // Update cursor position
         cursor.update(current_position, last_id);
-        cursor.save(&self.base_dir)?;
+        cursor.save(&self.base_dir, &self.channel_name)?;
 
         Ok(messages)
     }
 
     /// Get the current cursor for an agent
     pub fn get_cursor(&self, agent: &str) -> Result<Cursor> {
-        Cursor::load_or_create(&self.base_dir, agent)
+        Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)
     }
 
     /// Reset an agent's cursor to the beginning
     pub fn reset_cursor(&self, agent: &str) -> Result<()> {
-        let mut cursor = Cursor::load_or_create(&self.base_dir, agent)?;
+        let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
         cursor.reset();
-        cursor.save(&self.base_dir)?;
+        cursor.save(&self.base_dir, &self.channel_name)?;
         Ok(())
     }
 
@@ -283,9 +388,9 @@ impl Channel {
     /// This is useful after initial load to ensure subsequent reads
     /// only pick up new messages.
     pub fn set_cursor_to_end(&self, agent: &str) -> Result<()> {
-        let mut cursor = Cursor::load_or_create(&self.base_dir, agent)?;
+        let mut cursor = Cursor::load_or_create(&self.base_dir, &self.channel_name, agent)?;
         cursor.update(self.file_size(), None);
-        cursor.save(&self.base_dir)?;
+        cursor.save(&self.base_dir, &self.channel_name)?;
         Ok(())
     }
 
@@ -546,20 +651,49 @@ impl Channel {
         // Note: on Unix, rename is atomic within the same filesystem.
         crate::paths::atomic_rename(&temp_path, &self.channel_file)?;
 
-        // Reset all cursor files since byte positions have changed
+        // Reset all cursor files for this channel since byte positions have changed
+        // Check both legacy (cursors/<agent>.json) and new (cursors/<channel>/<agent>.json) paths
         let cursors_dir = self.base_dir.join("cursors");
-        if cursors_dir.exists()
+
+        // For "midtown" channel, reset legacy cursors if they exist
+        if self.channel_name == "midtown"
+            && cursors_dir.exists()
             && let Ok(entries) = fs::read_dir(&cursors_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && path.extension().is_some_and(|e| e == "json")
+                    && let Some(agent) = path.file_stem().and_then(|s| s.to_str())
+                    && let Ok(mut cursor) = crate::cursor::Cursor::load_or_create(
+                        &self.base_dir,
+                        &self.channel_name,
+                        agent,
+                    )
+                {
+                    cursor.reset();
+                    let _ = cursor.save(&self.base_dir, &self.channel_name);
+                }
+            }
+        }
+
+        // Reset cursors in the channel-specific directory
+        let channel_cursors_dir = cursors_dir.join(&self.channel_name);
+        if channel_cursors_dir.exists()
+            && let Ok(entries) = fs::read_dir(&channel_cursors_dir)
         {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "json")
                     && let Some(agent) = path.file_stem().and_then(|s| s.to_str())
-                    && let Ok(mut cursor) =
-                        crate::cursor::Cursor::load_or_create(&self.base_dir, agent)
+                    && let Ok(mut cursor) = crate::cursor::Cursor::load_or_create(
+                        &self.base_dir,
+                        &self.channel_name,
+                        agent,
+                    )
                 {
                     cursor.reset();
-                    let _ = cursor.save(&self.base_dir);
+                    let _ = cursor.save(&self.base_dir, &self.channel_name);
                 }
             }
         }
@@ -671,7 +805,7 @@ mod tests {
     #[test]
     fn test_channel_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
         assert!(temp_dir.path().join("cursors").exists());
         // Channel file should exist (for tailf) but be empty (no messages)
         assert!(channel.exists());
@@ -683,7 +817,7 @@ mod tests {
         // The channel.jsonl file must exist after Channel::new() for tailf to work.
         // tailf wraps `tail -f` which fails on non-existent files.
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // The channel file should exist (even if empty) so tailf can watch it
         assert!(
@@ -695,7 +829,7 @@ mod tests {
     #[test]
     fn test_send_and_read() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         let msg1 = Message::text("agent1", "Hello");
         let msg2 = Message::text("agent2", "World");
@@ -713,7 +847,7 @@ mod tests {
     #[test]
     fn test_cursor_based_reading() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Send first batch
         channel.send(&Message::text("agent1", "Message 1")).unwrap();
@@ -739,7 +873,7 @@ mod tests {
     #[test]
     fn test_cursor_reset() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         channel.send(&Message::text("agent1", "Message")).unwrap();
 
@@ -757,7 +891,7 @@ mod tests {
     #[test]
     fn test_message_count() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Use retry helper to handle transient lock contention in CI
         assert_eq!(message_count_with_retry(&channel, 5).unwrap(), 0);
@@ -772,7 +906,7 @@ mod tests {
     #[test]
     fn test_file_size_increases_with_messages() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Empty channel has size 0
         assert_eq!(channel.file_size(), 0);
@@ -794,7 +928,7 @@ mod tests {
     #[test]
     fn test_different_message_types() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         channel.send(&Message::text("agent1", "text")).unwrap();
         channel
@@ -819,7 +953,7 @@ mod tests {
     #[test]
     fn test_empty_channel_read() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Reading from empty channel should return empty vec
         let messages = read_all_with_retry(&channel, 5).unwrap();
@@ -835,15 +969,20 @@ mod tests {
         use std::io::Write;
 
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
 
         // Create messages with out-of-order timestamps
         // Simulate: msg written at T+40min has timestamp T (old message arrived late)
         let now = Utc::now();
         let old_time = now - Duration::minutes(40);
 
-        // Write messages directly to file in wrong order (simulating delayed write)
+        // Create legacy channel.jsonl (so Channel picks it up for midtown)
         let channel_file = temp_dir.path().join("channel.jsonl");
+        File::create(&channel_file).unwrap();
+
+        // Now create the channel - it will use the legacy file
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        // Write messages directly to file in wrong order (simulating delayed write)
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -892,7 +1031,7 @@ mod tests {
     #[test]
     fn test_read_last_n_messages_small_channel() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Send 5 messages
         for i in 1..=5 {
@@ -912,7 +1051,7 @@ mod tests {
     #[test]
     fn test_read_last_n_messages_large_channel() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Send 50 messages
         for i in 1..=50 {
@@ -932,7 +1071,7 @@ mod tests {
     #[test]
     fn test_read_last_n_messages_empty_channel() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         let (messages, start_pos) = read_last_n_with_retry(&channel, 10, 5).unwrap();
         assert!(messages.is_empty());
@@ -942,7 +1081,7 @@ mod tests {
     #[test]
     fn test_read_messages_before_position() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Send 30 messages
         for i in 1..=30 {
@@ -977,7 +1116,7 @@ mod tests {
     #[test]
     fn test_read_messages_before_position_zero() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         channel.send(&Message::text("agent1", "Message 1")).unwrap();
 
@@ -990,7 +1129,7 @@ mod tests {
     #[test]
     fn test_rotate_empty_channel() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Rotating an empty channel should be a no-op
         let archived = channel.rotate(60).unwrap();
@@ -1000,7 +1139,7 @@ mod tests {
     #[test]
     fn test_rotate_all_recent_messages() {
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Send messages that are all very recent (within last 60 min)
         channel.send(&Message::text("agent1", "Recent 1")).unwrap();
@@ -1020,12 +1159,16 @@ mod tests {
         use std::io::Write;
 
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Create legacy channel.jsonl first so Channel uses it
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        File::create(&channel_file).unwrap();
+
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write old messages directly with timestamps > 60 min ago
         let now = Utc::now();
         let old_time = now - Duration::hours(3);
-        let channel_file = temp_dir.path().join("channel.jsonl");
 
         {
             let mut file = std::fs::OpenOptions::new()
@@ -1095,12 +1238,16 @@ mod tests {
         use std::io::Write;
 
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Create legacy channel.jsonl first
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        File::create(&channel_file).unwrap();
+
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write old + recent messages
         let now = Utc::now();
         let old_time = now - Duration::hours(3);
-        let channel_file = temp_dir.path().join("channel.jsonl");
 
         {
             let mut file = std::fs::OpenOptions::new()
@@ -1147,7 +1294,12 @@ mod tests {
         use std::io::Write;
 
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Create legacy channel.jsonl first
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        File::create(&channel_file).unwrap();
+
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Empty channel doesn't need rotation
         assert!(!channel.needs_rotation(24));
@@ -1157,7 +1309,6 @@ mod tests {
         assert!(!channel.needs_rotation(24));
 
         // Channel with old messages needs rotation
-        let channel_file = temp_dir.path().join("channel.jsonl");
         let old_time = Utc::now() - Duration::hours(25);
         {
             // Prepend an old message by rewriting the file
@@ -1202,7 +1353,12 @@ mod tests {
         use std::io::Write;
 
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Create legacy channel.jsonl first
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        File::create(&channel_file).unwrap();
+
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write some valid messages
         channel
@@ -1214,7 +1370,6 @@ mod tests {
 
         // Manually inject a malformed line (raw text, not JSON)
         // This simulates the corruption observed in production
-        let channel_file = temp_dir.path().join("channel.jsonl");
         {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
@@ -1247,7 +1402,12 @@ mod tests {
         use std::io::Write;
 
         let temp_dir = TempDir::new().unwrap();
-        let channel = Channel::new(temp_dir.path()).unwrap();
+
+        // Create legacy channel.jsonl first
+        let channel_file = temp_dir.path().join("channel.jsonl");
+        File::create(&channel_file).unwrap();
+
+        let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
         // Write initial messages and read to set cursor position
         channel
@@ -1261,7 +1421,6 @@ mod tests {
             .unwrap();
 
         // Inject a malformed line
-        let channel_file = temp_dir.path().join("channel.jsonl");
         {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)

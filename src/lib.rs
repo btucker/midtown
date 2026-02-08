@@ -24,7 +24,7 @@
 //!
 //! # let temp_dir = TempDir::new().unwrap();
 //! // Create a channel for agent communication
-//! let channel = Channel::new(temp_dir.path()).unwrap();
+//! let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 //!
 //! // Agents send messages to the channel
 //! channel.send(&Message::text("lead", "Starting build")).unwrap();
