@@ -804,9 +804,9 @@ fn test_worktree_isolation() {
         .join(coworker_name);
 
     // Poll for worktree existence (worktree creation is async in CI environments)
-    // Max wait time: 30s, checking every 500ms
+    // Max wait time: 60s (matching other E2E tests), checking every 500ms
     let mut waited = 0;
-    let max_wait = Duration::from_secs(30);
+    let max_wait = Duration::from_secs(60);
     let poll_interval = Duration::from_millis(500);
 
     while !worktree_path.exists() && waited < max_wait.as_millis() as u64 {
