@@ -1041,3 +1041,74 @@ fn test_webhook_health_endpoint() {
     assert_eq!(response.status().as_u16(), 200);
     assert_eq!(response.text().unwrap_or_default(), "ok");
 }
+
+/// Test that tasks are NOT auto-completed when PR is opened, only when merged.
+/// This verifies the fix for task #936.
+#[test]
+#[ignore]
+#[timeout(60000)]
+fn test_task_completion_on_pr_merge_not_pr_open() {
+    let mut fixture = WebhookFixture::new(47120).expect("Failed to create fixture");
+    assert!(fixture.start_daemon(), "Failed to start daemon");
+
+    // Step 1: PR opened with [Midtown #42] in title
+    let pr_opened_payload = r#"{
+        "action": "opened",
+        "number": 42,
+        "pull_request": {
+            "title": "feat: Add auth endpoint [Midtown #42]",
+            "user": {"login": "testuser"},
+            "merged": false,
+            "head": {"ref": "madison/add-auth"}
+        },
+        "repository": {"full_name": "test/repo"}
+    }"#;
+
+    let status = fixture
+        .send_webhook("pull_request", pr_opened_payload)
+        .expect("Failed to send webhook");
+    assert_eq!(status, 200);
+
+    // Verify PR opened message appears
+    assert!(
+        fixture.wait_for_channel_message("opened PR #42", 5000),
+        "PR opened message should appear"
+    );
+
+    // CRITICAL: Task should NOT be completed when PR opens
+    thread::sleep(Duration::from_millis(500)); // Give daemon time to process
+    assert!(
+        !fixture.channel_contains("Auto-completed task !42"),
+        "Task should NOT be auto-completed when PR is opened (before the fix, this would fail)"
+    );
+
+    // Step 2: PR merged with same task number in title
+    let pr_merged_payload = r#"{
+        "action": "closed",
+        "number": 42,
+        "pull_request": {
+            "title": "feat: Add auth endpoint [Midtown #42]",
+            "user": {"login": "testuser"},
+            "merged": true,
+            "head": {"ref": "madison/add-auth"}
+        },
+        "repository": {"full_name": "test/repo"}
+    }"#;
+
+    let status = fixture
+        .send_webhook("pull_request", pr_merged_payload)
+        .expect("Failed to send webhook");
+    assert_eq!(status, 200);
+
+    // Verify PR merged message appears
+    assert!(
+        fixture.wait_for_channel_message("merged PR #42", 5000),
+        "PR merged message should appear"
+    );
+
+    // NOW task should be auto-completed (after merge, not open)
+    assert!(
+        fixture.wait_for_channel_message("Auto-completed task !42", 5000),
+        "Task should be auto-completed when PR is merged"
+    );
+}

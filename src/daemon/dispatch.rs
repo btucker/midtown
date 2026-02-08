@@ -1266,7 +1266,7 @@ pub(super) fn build_task_completion_effects(
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "✅ Auto-completed task !{} (PR #{} opened)",
+                "✅ Auto-completed task !{} (PR #{} merged)",
                 task_id, pr_number
             ),
         },
@@ -1565,6 +1565,30 @@ mod tests {
             effects.is_empty(),
             "Should return empty vec when no task ID in title"
         );
+    }
+
+    #[test]
+    fn test_build_task_completion_effects_message_says_merged() {
+        let effects =
+            build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo");
+
+        // Verify the channel message says "merged" not "opened"
+        match &effects[2] {
+            Effect::PostToChannel { sender, message } => {
+                assert_eq!(sender, "midtown");
+                assert!(
+                    message.contains("merged"),
+                    "Message should say 'merged', got: {}",
+                    message
+                );
+                assert!(
+                    !message.contains("opened"),
+                    "Message should not say 'opened', got: {}",
+                    message
+                );
+            }
+            _ => panic!("Third effect should be PostToChannel"),
+        }
     }
 
     // ======================================================================
