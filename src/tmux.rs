@@ -1292,6 +1292,8 @@ pub fn list_windows(session: &str) -> crate::Result<Vec<String>> {
         if stderr.contains("no server running")
             || stderr.contains("session not found")
             || stderr.contains("can't find session")
+            || stderr.contains("error connecting")
+            || stderr.contains("No such file or directory")
         {
             return Ok(Vec::new());
         }
