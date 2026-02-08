@@ -29,8 +29,21 @@ describe('renderContent', () => {
     expect(result).toContain('<strong>b</strong>')
   })
 
-  it('renders italic text', () => {
+  it('renders italic text with asterisks', () => {
     expect(renderContent('this is *italic* text')).toContain('<em>italic</em>')
+  })
+
+  it('does not render underscores as italics', () => {
+    // Underscores in function names, file names, etc. should not be italic
+    const result = renderContent('_foo_bar_baz_')
+    expect(result).not.toContain('<em>')
+    expect(result).toContain('_foo_bar_baz_')
+  })
+
+  it('preserves underscores in code context', () => {
+    const result = renderContent('the function_name_with_underscores works')
+    expect(result).not.toContain('<em>')
+    expect(result).toContain('function_name_with_underscores')
   })
 
   it('renders strikethrough', () => {

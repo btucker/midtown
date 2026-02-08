@@ -40,6 +40,7 @@ export function hasMermaid(text) {
  * Pre-escapes <, >, and & for XSS protection.
  * Restores > at line starts for blockquote support before markdown processing.
  * Auto-links bare URLs and ensures all links open in new tabs.
+ * Disables underscore-based italic rendering (keeps asterisk-based italics).
  */
 export function renderContent(text) {
   // Escape &, <, and > for XSS defense-in-depth.
@@ -50,6 +51,10 @@ export function renderContent(text) {
 
   // Restore > at line starts for markdown blockquotes.
   safe = safe.replace(/^(&gt;)+/gm, (m) => m.replace(/&gt;/g, '>'))
+
+  // Escape underscores to prevent them from being interpreted as italic markers.
+  // Use a placeholder that won't conflict with markdown syntax.
+  safe = safe.replace(/_/g, '\x01UNDERSCORE\x01')
 
   // Auto-link bare URLs before markdown processing.
   // Protect existing markdown links and inline code from URL conversion.
@@ -67,6 +72,9 @@ export function renderContent(text) {
 
   // Render markdown
   let html = snarkdown(safe)
+
+  // Restore underscores after markdown processing
+  html = html.replace(/\x01UNDERSCORE\x01/g, '_')
 
   // Ensure all links open in new tabs
   html = html.replace(/<a /g, '<a target="_blank" rel="noopener" ')

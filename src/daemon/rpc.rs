@@ -554,6 +554,7 @@ fn handle_coworker_spawn(
         pr_number: None,
         team_name: Some(team),
         working_dir: None,
+        model: "sonnet".to_string(),
     };
     match state.coworkers.spawn(&config) {
         Ok(name) => {

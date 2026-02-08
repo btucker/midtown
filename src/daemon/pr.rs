@@ -1309,12 +1309,14 @@ fn comment_action_to_effects(
                 Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
                 None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.repo_name.clone(),
                 session_mode,
                 Some(message),
             );
+            // Use Opus for review feedback responses (higher quality needed to understand feedback)
+            config.model = "opus".to_string();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -1769,12 +1771,14 @@ fn review_complete_action_to_effects(
                 Some(sid) => crate::launch::SessionMode::ResumeSession(sid.to_string()),
                 None => crate::launch::SessionMode::Resume,
             };
-            let config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.repo_name.clone(),
                 session_mode,
                 Some(message),
             );
+            // Use Opus for review feedback responses (higher quality needed to understand feedback)
+            config.model = "opus".to_string();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
