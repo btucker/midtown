@@ -870,8 +870,8 @@ fn test_worktree_isolation() {
         .and_then(|cw| cw["name"].as_str())
         .unwrap_or("unknown");
 
-    // Give the daemon a moment to create the worktree
-    thread::sleep(Duration::from_secs(5));
+    // Give the daemon a moment to create the worktree (increased from 5s to 10s for CI)
+    thread::sleep(Duration::from_secs(10));
 
     // Verify the worktree directory exists
     let worktree_path = dirs::home_dir()
