@@ -1492,6 +1492,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Skip the first tick (which fires immediately)
     orphan_process_interval.tick().await;
 
+    // Timer for draining headless session events (every 2 seconds).
+    // Must be fast to prevent stdout pipe buffer (64KB) from filling up,
+    // which would block coworker processes and cause silent hangs.
+    let mut session_drain_interval = interval(std::time::Duration::from_secs(2));
+    session_drain_interval.tick().await;
+
     // Timer for flushing batched CI notifications (check every 5 seconds).
     // The actual flush delay is 15 seconds from the oldest buffered item.
     let mut ci_notification_flush_interval = interval(std::time::Duration::from_secs(5));
@@ -1717,6 +1723,47 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     content,
                     &state,
                 ).await;
+            }
+
+            // Drain events from headless sessions to prevent stdout buffer filling up.
+            // Also detects process exits and updates health state for the snapshot.
+            _ = session_drain_interval.tick() => {
+                let (events, stopped) = state.session_manager.drain_events().await;
+
+                // Update health state from SessionManager (used by snapshot for decision functions)
+                let health = state.session_manager.collect_health().await;
+                {
+                    let mut hh = state.headless_health.write().unwrap();
+                    *hh = health;
+                }
+
+                // Log received events at debug level for diagnostics
+                for (name, session_events) in &events {
+                    for event in session_events {
+                        debug!(coworker = %name, event = ?event, "headless session event");
+                    }
+                }
+
+                // Handle stopped sessions: deregister, record stop time, post to channel
+                for name in stopped {
+                    warn!("Headless session '{}' exited unexpectedly", name);
+                    state.coworkers.deregister(&name);
+                    state.record_coworker_stop_time(&name);
+                    // Remove from session manager tracking
+                    state.session_manager.remove(&name).await;
+                    // Clean up coworker record
+                    {
+                        let mut records = state.coworker_records.write().await;
+                        records.remove(&name);
+                    }
+                    let msg = crate::message::Message::text(
+                        "system",
+                        format!("⚠️ Coworker {} session exited unexpectedly", name),
+                    );
+                    if let Err(e) = state.send_and_broadcast(&msg) {
+                        warn!("Failed to post session exit message for {}: {}", name, e);
+                    }
+                }
             }
 
             // Periodically monitor coworker sessions: idle shutdown, nudges, stuck detection
