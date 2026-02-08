@@ -217,3 +217,86 @@ describe('parseSegments', () => {
     ])
   })
 })
+
+describe('renderContent - special links', () => {
+  // Channel links
+  it('converts #channel references to clickable links', () => {
+    const result = renderContent('See #midtown for updates')
+    expect(result).toContain('class="channel-link"')
+    expect(result).toContain('data-channel="midtown"')
+    expect(result).toContain('#midtown</a>')
+  })
+
+  it('handles multiple #channel references', () => {
+    const result = renderContent('Check #midtown and #brooklyn')
+    expect(result).toMatch(/class="channel-link".*class="channel-link"/)
+    expect(result).toContain('data-channel="midtown"')
+    expect(result).toContain('data-channel="brooklyn"')
+  })
+
+  it('does not create nested <a> tags when #channel is in markdown link', () => {
+    const result = renderContent('[See #midtown](https://example.com)')
+    // Should not have nested <a> tags
+    expect(result).not.toMatch(/<a[^>]*><a/)
+    expect(result).not.toMatch(/<\/a><\/a>/)
+  })
+
+  it('does not create nested <a> tags when #channel is in inline code', () => {
+    const result = renderContent('Use `#midtown` channel')
+    // Should not have <a> inside <code>
+    expect(result).not.toMatch(/<code[^>]*>.*<a/)
+  })
+
+  // Task links
+  it('converts !N task references to clickable links', () => {
+    const result = renderContent('Working on !42')
+    expect(result).toContain('class="task-link"')
+    expect(result).toContain('data-task="42"')
+    expect(result).toContain('!42</a>')
+  })
+
+  it('handles multiple !N task references', () => {
+    const result = renderContent('Tasks !1, !2, and !3')
+    expect(result).toMatch(/class="task-link".*class="task-link".*class="task-link"/)
+    expect(result).toContain('data-task="1"')
+    expect(result).toContain('data-task="2"')
+    expect(result).toContain('data-task="3"')
+  })
+
+  it('does not create nested <a> tags when !task is in markdown link', () => {
+    const result = renderContent('[Task !42](https://example.com)')
+    // Should not have nested <a> tags
+    expect(result).not.toMatch(/<a[^>]*><a/)
+    expect(result).not.toMatch(/<\/a><\/a>/)
+  })
+
+  // PR links
+  it('converts PR #N references to clickable links', () => {
+    const result = renderContent('See PR #123')
+    expect(result).toContain('class="pr-link"')
+    expect(result).toContain('data-pr="123"')
+    expect(result).toContain('PR #123</a>')
+  })
+
+  it('converts bare #N references to PR links', () => {
+    const result = renderContent('Merged #456')
+    expect(result).toContain('class="pr-link"')
+    expect(result).toContain('data-pr="456"')
+    expect(result).toContain('#456</a>')
+  })
+
+  it('does not create nested <a> tags when PR reference is in markdown link', () => {
+    const result = renderContent('[PR #123](https://github.com/org/repo/pull/123)')
+    // Should not have nested <a> tags
+    expect(result).not.toMatch(/<a[^>]*><a/)
+    expect(result).not.toMatch(/<\/a><\/a>/)
+  })
+
+  // Combined scenarios
+  it('handles mixed special links in same message', () => {
+    const result = renderContent('Working on !42 in #midtown, see PR #123')
+    expect(result).toContain('class="task-link"')
+    expect(result).toContain('class="channel-link"')
+    expect(result).toContain('class="pr-link"')
+  })
+})

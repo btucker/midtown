@@ -72,29 +72,81 @@ export function renderContent(text) {
   safe = safe.replace(/(^|[\s(])(https?:\/\/[^\s)]+)/gm, '$1[$2]($2)')
   safe = safe.replace(/\x00(\d+)\x00/g, (_, i) => preserved[i])
 
+  // Protect existing markdown links and inline code before converting special references
+  // This prevents conflicts when special references appear inside markdown syntax
+  const preservedItems = []
+
+  // Preserve inline code spans first
+  safe = safe.replace(/`[^`]+`/g, (m) => {
+    preservedItems.push(m)
+    return `\x02PRESERVE${preservedItems.length - 1}\x02`
+  })
+
+  // Preserve markdown links
+  safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m) => {
+    preservedItems.push(m)
+    return `\x02PRESERVE${preservedItems.length - 1}\x02`
+  })
+
+  // Now convert special references to markdown-style links (processed BEFORE snarkdown)
+  // Order matters: we must protect already-converted links from being re-matched
+
+  // Helper function to preserve and restore conversions between each pattern
+  function preserveAndReplace(text, pattern, replacement) {
+    const tempPreserved = []
+    // First, protect already-converted markdown links (our special URL schemes)
+    text = text.replace(/\[([^\]]+)\]\((channel|task|pr):[^)]+\)/g, (m) => {
+      tempPreserved.push(m)
+      return `\x03TEMP${tempPreserved.length - 1}\x03`
+    })
+    // Apply the new pattern
+    text = text.replace(pattern, replacement)
+    // Restore protected links
+    text = text.replace(/\x03TEMP(\d+)\x03/g, (_, i) => tempPreserved[i])
+    return text
+  }
+
+  // PR #N references (must come before bare #N to avoid conflicts)
+  safe = preserveAndReplace(safe, /\b(PR|pull request)\s+#(\d+)\b/gi, (match, prefix, prNum) => {
+    return `[${prefix} #${prNum}](pr:${prNum})`
+  })
+
+  // Bare #N PR references (numbers only, not letters = PR not channel)
+  safe = preserveAndReplace(safe, /\B#(\d+)\b/g, (match, prNum) => {
+    return `[#${prNum}](pr:${prNum})`
+  })
+
+  // #channel references (letters/hyphens = channel not PR)
+  safe = preserveAndReplace(safe, /#([a-z][a-z0-9-]*)\b/gi, (match, channelName) => {
+    return `[#${channelName}](channel:${channelName})`
+  })
+
+  // !N task references
+  safe = preserveAndReplace(safe, /!(\d+)\b/g, (match, taskId) => {
+    return `[!${taskId}](task:${taskId})`
+  })
+
+  // Restore preserved user-written markdown links and code blocks
+  safe = safe.replace(/\x02PRESERVE(\d+)\x02/g, (_, i) => preservedItems[i])
+
   // Render markdown
   let html = snarkdown(safe)
 
   // Restore underscores after markdown processing
   html = html.replace(/\x01UNDERSCORE\x01/g, '_')
 
-  // Make #channel references clickable (exclude if inside code/pre tags)
-  html = html.replace(/#([a-z0-9-]+)\b/gi, (match, channelName) => {
-    return `<a href="#" class="channel-link" data-channel="${channelName}">#${channelName}</a>`
+  // Convert our special URL schemes to proper links with classes and data attributes
+  // Use [^<]* instead of [^<]+ to handle empty link text
+  html = html.replace(/<a href="channel:([^"]+)">([^<]*)<\/a>/g, (match, channelName, text) => {
+    return `<a href="#" class="channel-link" data-channel="${channelName}">${text}</a>`
   })
 
-  // Make !N task references clickable (exclude if inside code/pre tags)
-  html = html.replace(/!(\d+)\b/g, (match, taskId) => {
-    return `<a href="#" class="task-link" data-task="${taskId}">!${taskId}</a>`
+  html = html.replace(/<a href="task:([^"]+)">([^<]*)<\/a>/g, (match, taskId, text) => {
+    return `<a href="#" class="task-link" data-task="${taskId}">${text}</a>`
   })
 
-  // Make PR #N references clickable with GitHub links
-  // Match patterns: PR #123, #123, pull request #123
-  html = html.replace(/\b(PR|pull request)\s+#(\d+)\b/gi, (match, prefix, prNum) => {
-    return `<a href="#" class="pr-link" data-pr="${prNum}">${prefix} #${prNum}</a>`
-  })
-  html = html.replace(/\B#(\d+)\b/g, (match, prNum) => {
-    return `<a href="#" class="pr-link" data-pr="${prNum}">#${prNum}</a>`
+  html = html.replace(/<a href="pr:([^"]+)">(.*?)<\/a>/g, (match, prNum, text) => {
+    return `<a href="#" class="pr-link" data-pr="${prNum}">${text}</a>`
   })
 
   // Ensure all links open in new tabs
