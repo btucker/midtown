@@ -272,6 +272,13 @@ When your changes affect anything documented in README.md, update the README as 
 
 The README is the first thing new users and contributors see. If your PR changes user-facing behavior, the README should reflect it.
 
+## Web App (PWA) Guidelines
+
+The web app runs as a PWA on mobile devices. When modifying layout or adding new UI sections:
+
+- **Always account for `safe-area-inset-*`** — iOS PWAs have a status bar/notch that overlaps content. Use `env(safe-area-inset-top)`, `env(safe-area-inset-bottom)`, etc. for any element positioned at the edges of the viewport. Forgetting this causes content to be cut off on mobile.
+- **Test vertical space** — Mobile viewports are constrained. Avoid adding headings, padding, or chrome that pushes primary content (chat, status) off-screen.
+
 ## Pull Requests
 
 - When a PR includes visual changes to the web UI (`web-app/` or `web/`), include before/after screenshots in the PR description.
