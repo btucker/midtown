@@ -107,53 +107,68 @@ pub(super) fn check_and_recover_orphans(
         Some(prompt),
     );
 
-    // Reuse existing worktree if registered for this task
-    let existing_worktree_id = snap.task_worktree_map.get(&recovery.task_id).cloned();
-    if let Some(ref wt_id) = existing_worktree_id {
-        let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(wt_id);
-        config.working_dir = Some(wt_path);
+    // Reuse existing worktree if one is registered for this task (reassignment case).
+    // Otherwise, compute a new worktree_id from the task subject.
+    let (worktree_id, needs_registration) =
+        if let Some(existing_wt_id) = snap.task_worktree_map.get(&recovery.task_id) {
+            (existing_wt_id.clone(), false)
+        } else {
+            (
+                crate::worktree_registry::branch_slug_for_task(
+                    &recovery.task_id,
+                    &recovery.task_subject,
+                ),
+                true,
+            )
+        };
+    let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+    config.working_dir = Some(wt_path.clone());
+
+    // Build success effects — worktree setup prepended, then standard spawn effects
+    let mut on_success = vec![];
+
+    // Ensure the worktree exists BEFORE spawning
+    on_success.push(Effect::EnsureWorktree {
+        worktree_id: worktree_id.clone(),
+        path: wt_path.clone(),
+    });
+
+    // Register the task → worktree mapping if this is the first time
+    if needs_registration {
+        on_success.push(Effect::RegisterWorktreeAssignment {
+            assignment: crate::worktree_registry::WorktreeAssignment {
+                worktree_id: worktree_id.clone(),
+                branch_name: worktree_id.clone(), // Branch name matches worktree_id for task worktrees
+                task_id: Some(recovery.task_id.clone()),
+                current_coworker: None, // Will be set by BindCoworkerToWorktree
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+            },
+        });
     }
 
-    // Build success effects — always bind coworker to worktree if one exists
-    let mut on_success = vec![
-        Effect::BroadcastCoworkerUpdate {
-            name: recovery.owner.clone(),
-            status: "running".to_string(),
-            current_task: None,
-        },
-        Effect::RecordCooldown {
-            category: "orphan_spawn".to_string(),
-            key: "global".to_string(),
-        },
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "♻️ Recovered coworker {} for orphaned task !{}",
-                recovery.owner, recovery.task_id
-            ),
-        },
-    ];
+    // Always bind the coworker to the worktree when spawning
+    on_success.push(Effect::BindCoworkerToWorktree {
+        worktree_id: worktree_id.clone(),
+        coworker: recovery.owner.clone(),
+    });
 
-    // If a worktree exists for this task, ensure it's created and bind the coworker
-    if let Some(ref wt_id) = existing_worktree_id {
-        let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(wt_id);
-        // Prepend EnsureWorktree + BindCoworkerToWorktree before other effects
-        // so the worktree is ready before the coworker starts
-        on_success.insert(
-            0,
-            Effect::BindCoworkerToWorktree {
-                worktree_id: wt_id.clone(),
-                coworker: recovery.owner.clone(),
-            },
-        );
-        on_success.insert(
-            0,
-            Effect::EnsureWorktree {
-                worktree_id: wt_id.clone(),
-                path: wt_path,
-            },
-        );
-    }
+    on_success.push(Effect::BroadcastCoworkerUpdate {
+        name: recovery.owner.clone(),
+        status: "running".to_string(),
+        current_task: None,
+    });
+    on_success.push(Effect::RecordCooldown {
+        category: "orphan_spawn".to_string(),
+        key: "global".to_string(),
+    });
+    on_success.push(Effect::PostToChannel {
+        sender: "midtown".to_string(),
+        message: format!(
+            "♻️ Recovered coworker {} for orphaned task !{}",
+            recovery.owner, recovery.task_id
+        ),
+    });
 
     // Return spawn effect with success/failure callbacks
     vec![Effect::SpawnCoworkerWithCallbacks {
@@ -2237,10 +2252,11 @@ mod tests {
     }
 
     #[test]
-    fn test_orphan_recovery_without_worktree_has_no_working_dir() {
+    fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         // Scenario: Task !42 was owned by "lexington" who died, but the task
         // has NO worktree registered (legacy/pre-registry task). The spawn
-        // should not set working_dir (falls back to name-based worktree).
+        // should compute a new worktree_id, set working_dir, and emit
+        // EnsureWorktree + RegisterWorktreeAssignment + BindCoworkerToWorktree.
         let snap = snapshot::WorldSnapshot {
             in_progress_tasks: vec![(
                 "42".to_string(),
@@ -2306,24 +2322,60 @@ mod tests {
 
         let (config, on_success) = spawn;
 
-        // Working dir should NOT be set (no registered worktree)
+        // Working dir SHOULD be set to computed worktree path
         assert!(
-            config.working_dir.is_none(),
-            "Should not set working_dir when no worktree is registered"
+            config.working_dir.is_some(),
+            "Should set working_dir to computed worktree path"
+        );
+        let working_dir = config.working_dir.as_ref().unwrap();
+        assert!(
+            working_dir
+                .to_string_lossy()
+                .contains("task-42-add-auth-endpoint"),
+            "Working dir should be computed from task subject: {:?}",
+            working_dir
         );
 
-        // on_success should NOT include EnsureWorktree or BindCoworkerToWorktree
+        // on_success should include EnsureWorktree, RegisterWorktreeAssignment, and BindCoworkerToWorktree
         let ensure_count = on_success
             .iter()
             .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
+            .count();
+        let register_count = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
             .count();
         let bind_count = on_success
             .iter()
             .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
             .count();
 
-        assert_eq!(ensure_count, 0, "Should not have EnsureWorktree");
-        assert_eq!(bind_count, 0, "Should not have BindCoworkerToWorktree");
+        assert_eq!(ensure_count, 1, "Should have EnsureWorktree");
+        assert_eq!(
+            register_count, 1,
+            "Should have RegisterWorktreeAssignment for new worktree"
+        );
+        assert_eq!(bind_count, 1, "Should have BindCoworkerToWorktree");
+
+        // Verify the RegisterWorktreeAssignment effect has correct data
+        let register_effect = on_success
+            .iter()
+            .find_map(|e| {
+                if let Effect::RegisterWorktreeAssignment { assignment } = e {
+                    Some(assignment)
+                } else {
+                    None
+                }
+            })
+            .expect("Should have RegisterWorktreeAssignment");
+
+        assert_eq!(register_effect.task_id, Some("42".to_string()));
+        assert!(
+            register_effect
+                .worktree_id
+                .contains("task-42-add-auth-endpoint")
+        );
+        assert_eq!(register_effect.current_coworker, None); // Set by BindCoworkerToWorktree
     }
 
     #[test]
