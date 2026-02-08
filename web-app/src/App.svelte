@@ -20,6 +20,7 @@
 
   let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
   let sidebarOpen = $state(false)
+  let projectDropdownOpen = $state(false)
 
   function toggleSidebar() {
     sidebarOpen = !sidebarOpen
@@ -28,6 +29,23 @@
   function closeSidebar() {
     sidebarOpen = false
   }
+
+  function toggleProjectDropdown() {
+    projectDropdownOpen = !projectDropdownOpen
+  }
+
+  function handleProjectClickOutside(event) {
+    if (projectDropdownOpen && !event.target.closest('.project-selector')) {
+      projectDropdownOpen = false
+    }
+  }
+
+  $effect(() => {
+    if (projectDropdownOpen) {
+      document.addEventListener('click', handleProjectClickOutside, true)
+      return () => document.removeEventListener('click', handleProjectClickOutside, true)
+    }
+  })
 
   onMount(async () => {
     // Always in multi-project mode — served from shared gateway on port 47022
@@ -46,6 +64,7 @@
   function selectProject(project) {
     if (project.status === 'running' && project.webhook_port) {
       switchProject(project.name, project.webhook_port)
+      projectDropdownOpen = false
     }
   }
 
@@ -60,9 +79,39 @@
 
 <main>
   <header>
-    <div class="header-title">
+    <div class="header-left">
       <img src="/logo.png" alt="Midtown" class="header-logo" />
-      <h1>Midtown</h1>
+      {#if $projects.length > 0}
+        <div class="project-selector">
+          <button class="project-trigger" onclick={toggleProjectDropdown}>
+            <span class="project-status-dot" class:running={$projects.find(p => p.name === $activeProject)?.status === 'running'}></span>
+            <span class="project-name">{$activeProject || 'Select project'}</span>
+            <span class="dropdown-arrow">{projectDropdownOpen ? '\u25B4' : '\u25BE'}</span>
+          </button>
+          {#if projectDropdownOpen}
+            <div class="project-dropdown">
+              {#each $projects as project}
+                <button
+                  class="project-option"
+                  class:active={$activeProject === project.name}
+                  class:stopped={project.status !== 'running'}
+                  onclick={() => selectProject(project)}
+                  disabled={project.status !== 'running'}
+                  title={project.status === 'running' ? `Port ${project.webhook_port || 'N/A'}` : 'Stopped'}
+                >
+                  <span class="project-status-dot" class:running={project.status === 'running'}></span>
+                  <span class="option-name">{project.name}</span>
+                  {#if $activeProject === project.name}
+                    <span class="active-check">\u2713</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <h1>Midtown</h1>
+      {/if}
     </div>
     <div class="header-controls">
       <AuthSwitcher />
@@ -82,28 +131,13 @@
           {$pushSubscribed ? '\u{1F514}' : '\u{1F515}'}
         </button>
       {/if}
-      <span class="connection-status" class:connected={$connected}>
-        {$connected ? 'Connected' : 'Disconnected'}
-      </span>
+      <span
+        class="connection-dot"
+        class:connected={$connected}
+        title={$connected ? 'Connected' : 'Disconnected'}
+      ></span>
     </div>
   </header>
-
-  {#if $projects.length > 0}
-    <div class="project-tabs">
-      {#each $projects as project}
-        <button
-          class="project-tab"
-          class:active={$activeProject === project.name}
-          class:stopped={project.status !== 'running'}
-          onclick={() => selectProject(project)}
-          title={project.status === 'running' ? `Port ${project.webhook_port || 'N/A'}` : 'Stopped'}
-        >
-          <span class="project-status-dot" class:running={project.status === 'running'}></span>
-          {project.name}
-        </button>
-      {/each}
-    </div>
-  {/if}
 
   {#if $activeProject}
     <nav>
@@ -199,7 +233,7 @@
     border-bottom: 1px solid #3a3a3a;
   }
 
-  .header-title {
+  .header-left {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -245,58 +279,108 @@
     color: #5fafaf;
   }
 
-  .connection-status {
-    font-size: 0.75rem;
-    padding: 4px 8px;
-    border-radius: 12px;
+  /* Connection indicator: compact colored dot */
+  .connection-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
     background: #af5f5f;
-    color: #1c1c1c;
+    flex-shrink: 0;
   }
 
-  .connection-status.connected {
+  .connection-dot.connected {
     background: #5faf5f;
-    color: #1c1c1c;
   }
 
-  .project-tabs {
-    display: flex;
-    gap: 2px;
-    padding: 6px 8px;
-    background: #1c1c1c;
-    border-bottom: 1px solid #3a3a3a;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+  /* Project selector dropdown */
+  .project-selector {
+    position: relative;
   }
 
-  .project-tab {
+  .project-trigger {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: #5fafaf;
+    font-size: 1.1rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+
+  .project-trigger:hover {
+    background: #303030;
+  }
+
+  .project-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dropdown-arrow {
+    font-size: 0.7rem;
+    color: #585858;
+  }
+
+  .project-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: #262626;
     border: 1px solid #3a3a3a;
     border-radius: 6px;
-    background: #262626;
+    min-width: 180px;
+    z-index: 100;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+
+  .project-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    background: transparent;
     color: #a8a8a8;
     font-size: 0.8rem;
     cursor: pointer;
-    white-space: nowrap;
-    transition: all 0.15s;
+    text-align: left;
+    transition: background 0.1s;
   }
 
-  .project-tab:hover:not(.active) {
+  .project-option:hover:not(:disabled) {
     background: #303030;
     color: #d0d0d0;
   }
 
-  .project-tab.active {
-    background: #303030;
+  .project-option.active {
     color: #5fafaf;
-    border-color: #5fafaf;
   }
 
-  .project-tab.stopped {
+  .project-option.stopped {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .project-option .option-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .active-check {
+    color: #5fafaf;
+    font-size: 0.75rem;
   }
 
   .project-status-dot {
@@ -304,6 +388,7 @@
     height: 6px;
     border-radius: 50%;
     background: #585858;
+    flex-shrink: 0;
   }
 
   .project-status-dot.running {

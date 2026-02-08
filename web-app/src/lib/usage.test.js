@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
 import { usageData } from './store.js'
 import { fetchUsage } from './api.js'
+import { estimateTimeToFull, formatDurationEstimate } from './usage-utils.js'
 
 describe('fetchUsage', () => {
   let originalFetch
@@ -27,6 +28,7 @@ describe('fetchUsage', () => {
 
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
+      status: 200,
       json: () => Promise.resolve(mockData),
     })
 
@@ -71,14 +73,84 @@ describe('fetchUsage', () => {
     expect(get(usageData)).toEqual(previousData)
   })
 
-  it('leaves store as null on 204 No Content (no credentials)', async () => {
+  it('clears store on 204 No Content (no credentials)', async () => {
+    // Real Fetch API: 204 is a 2xx status, so ok is true and body is empty.
+    // fetchUsage must check for 204 before calling res.json().
     globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
+      ok: true,
       status: 204,
+      json: () => { throw new SyntaxError('Unexpected end of JSON input') },
     })
 
     await fetchUsage()
-    // No previous data, 204 response — store stays null
     expect(get(usageData)).toBeNull()
+  })
+
+  it('clears cached data on 204 No Content when store has previous data', async () => {
+    const previousData = {
+      session_util: 50.0,
+      session_resets: '2026-02-08T21:00:00Z',
+      week_util: 20.0,
+      week_resets: '2026-02-14T00:00:00Z',
+      account_email: 'test@example.com',
+    }
+    usageData.set(previousData)
+
+    // 204 means credentials are gone — must clear the store, not retain stale data
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      json: () => { throw new SyntaxError('Unexpected end of JSON input') },
+    })
+
+    await fetchUsage()
+    expect(get(usageData)).toBeNull()
+  })
+})
+
+describe('estimateTimeToFull', () => {
+  it('returns null for invalid date strings (NaN guard)', () => {
+    // Invalid date causes new Date().getTime() to return NaN.
+    // NaN <= 0 is false in JavaScript, so without an explicit guard
+    // NaN propagates through the calculation.
+    const result = estimateTimeToFull(50, 'not-a-date', true)
+    expect(result).toBeNull()
+  })
+
+  it('returns null when utilization is 0 or 100', () => {
+    const futureDate = new Date(Date.now() + 3600 * 1000).toISOString()
+    expect(estimateTimeToFull(0, futureDate, true)).toBeNull()
+    expect(estimateTimeToFull(100, futureDate, true)).toBeNull()
+  })
+
+  it('returns null when reset time is in the past', () => {
+    const pastDate = new Date(Date.now() - 3600 * 1000).toISOString()
+    expect(estimateTimeToFull(50, pastDate, true)).toBeNull()
+  })
+
+  it('returns a duration string for valid inputs', () => {
+    // Set reset time to 2 hours from now (session window is 5h)
+    const resetDate = new Date(Date.now() + 2 * 3600 * 1000).toISOString()
+    const result = estimateTimeToFull(50, resetDate, true)
+    expect(result).not.toBeNull()
+    expect(result).toMatch(/^~\d+[hm]/)
+  })
+})
+
+describe('formatDurationEstimate', () => {
+  it('formats seconds less than 1 minute', () => {
+    expect(formatDurationEstimate(10)).toBe('~<1m left')
+  })
+
+  it('formats minutes', () => {
+    expect(formatDurationEstimate(300)).toBe('~5m left')
+  })
+
+  it('formats exact hours', () => {
+    expect(formatDurationEstimate(7200)).toBe('~2h left')
+  })
+
+  it('formats hours and minutes', () => {
+    expect(formatDurationEstimate(5400)).toBe('~1h30m left')
   })
 })

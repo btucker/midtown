@@ -176,11 +176,16 @@ export async function fetchStatus() {
 export async function fetchUsage() {
   try {
     const res = await fetch(`${getApiBase()}/usage`)
+    if (res.status === 204) {
+      // 204 No Content means no credentials available — clear the store
+      // so the UI shows the loading/empty state instead of stale data.
+      usageData.set(null)
+      return
+    }
     if (res.ok) {
       const data = await res.json()
       usageData.set(data)
     }
-    // 204 No Content means no credentials available — leave store as null
   } catch (err) {
     // Retain last-known-good data on transient network errors so the
     // UsageBars component doesn't disappear and reappear. Data will
