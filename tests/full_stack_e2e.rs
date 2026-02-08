@@ -827,15 +827,9 @@ fn test_worktree_isolation() {
     }
 
     if worktree_path.exists() && waited > 0 {
-        eprintln!(
-            "Worktree appeared after {}ms",
-            waited
-        );
+        eprintln!("Worktree appeared after {}ms", waited);
     } else if !worktree_path.exists() {
-        eprintln!(
-            "Worktree did NOT appear after {}ms",
-            waited
-        );
+        eprintln!("Worktree did NOT appear after {}ms", waited);
 
         // Debug: check what worktrees actually exist
         eprintln!("Debug: Checking for alternative worktree locations...");
