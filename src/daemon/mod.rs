@@ -1797,7 +1797,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     effects::execute_effects(orphan_effects, &state).await;
                 }
                 // Process any pending webhook review spawns whose delay has expired
-                let review_effects = pr::process_pending_review_spawns(&state).await;
+                let review_snap = snapshot::collect_world_snapshot(&state).await;
+                let review_effects = pr::process_pending_review_spawns(&review_snap, &state).await;
                 effects::execute_effects(review_effects, &state).await;
             }
 

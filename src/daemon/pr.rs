@@ -482,7 +482,7 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Auto-spawn reviewers for PRs that need review
-    effects.extend(collect_reviewer_effects(state, &prs).await);
+    effects.extend(collect_reviewer_effects(snap, state, &prs).await);
 
     // Pre-collect review status for all PRs before stuck detection (pure decision logic
     // should not make async API calls). Coworkers can't submit formal GitHub reviews
@@ -1482,8 +1482,13 @@ fn handoff_to_coworker_effects(
 /// not already assigned) and returns effects to spawn reviewer coworkers.
 /// Uses `SpawnCoworkerWithCallbacks` so that reviewer assignment and channel
 /// messages only happen on successful spawn.
-async fn collect_reviewer_effects(state: &DaemonState, prs: &[serde_json::Value]) -> Vec<Effect> {
+async fn collect_reviewer_effects(
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
+        snap,
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
@@ -1492,6 +1497,7 @@ async fn collect_reviewer_effects(state: &DaemonState, prs: &[serde_json::Value]
 }
 
 async fn collect_reviewer_effects_with_source(
+    snap: &WorldSnapshot,
     state: &DaemonState,
     prs: &[serde_json::Value],
     source: crate::github_state::AssignmentSource,
@@ -1638,15 +1644,12 @@ async fn collect_reviewer_effects_with_source(
             if ps.github.is_assigned(pr_number) {
                 // Check if the assigned reviewer is still alive
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    let running_coworkers = state.coworkers.list_running();
-                    let active_names: std::collections::HashSet<String> = running_coworkers
-                        .iter()
-                        .map(|cw| cw.name.to_lowercase())
-                        .collect();
-
-                    // Also check headless sessions (fixes dead reviewer detection for headless coworkers)
-                    let is_active = active_names.contains(reviewer_name)
-                        || state.session_manager.is_alive(reviewer_name).await;
+                    // Use snapshot data (pure, no I/O) to check if reviewer is active.
+                    // snap.active_names includes both tmux and headless coworkers.
+                    // Filter out usage-limited coworkers: they're running but can't complete
+                    // reviews (fixes #860 regression).
+                    let is_active = snap.active_names.contains(reviewer_name)
+                        && !snap.usage_limited_coworkers.contains(reviewer_name);
 
                     if is_active {
                         debug!(
@@ -1656,13 +1659,12 @@ async fn collect_reviewer_effects_with_source(
                         continue;
                     } else {
                         debug!(
-                            "PR #{} assigned to {} but reviewer is dead, clearing assignment and spawning replacement",
+                            "PR #{} assigned to {} but reviewer is dead/usage-limited, will spawn replacement (assignment will be replaced)",
                             pr_number, reviewer_name
                         );
-                        // Drop the lock before calling mutable method
-                        drop(ps);
-                        let mut ps = state.persistent_state.lock().await;
-                        ps.github.remove_assignment(pr_number);
+                        // Don't clear assignment here - just proceed to spawn.
+                        // The spawn callback will replace the stale assignment when
+                        // the new reviewer is successfully spawned.
                     }
                 } else {
                     // Assignment exists but no reviewer name - shouldn't happen, but skip anyway
@@ -1903,7 +1905,10 @@ fn review_complete_action_to_effects(
 /// Unlike the previous `tokio::time::sleep` approach, these survive daemon restarts.
 ///
 /// Returns effects to be executed by the caller (following the evaluate-execute pattern).
-pub(super) async fn process_pending_review_spawns(state: &DaemonState) -> Vec<Effect> {
+pub(super) async fn process_pending_review_spawns(
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<Effect> {
     let mut all_effects = Vec::new();
 
     // Drain ready spawns from persistent state
@@ -1975,6 +1980,7 @@ pub(super) async fn process_pending_review_spawns(state: &DaemonState) -> Vec<Ef
         // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
         // Use Webhook source since this was triggered by a webhook event.
         let effects = collect_reviewer_effects_with_source(
+            snap,
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
