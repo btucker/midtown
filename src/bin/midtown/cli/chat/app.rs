@@ -91,7 +91,7 @@ pub struct KanbanPr {
     pub review_posted: bool,
     /// Repository name (for multi-repo projects)
     pub repo: Option<String>,
-    /// Task ID extracted from PR title (from `[Midtown #XX]` format)
+    /// Task ID extracted from PR title (from `[Midtown !XX]` format)
     pub task_id: Option<u64>,
     /// Task name/subject looked up from task list
     pub task_name: Option<String>,

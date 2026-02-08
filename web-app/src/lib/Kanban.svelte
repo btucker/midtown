@@ -151,7 +151,7 @@
       <div class="column-items">
         {#each $kanbanData.backlog as task}
           <button class="kanban-card clickable" onclick={() => selectTask(task)}>
-            <span class="task-id">#{task.id}</span>
+            <span class="task-id">!{task.id}</span>
             <span class="task-subject">{task.subject}</span>
           </button>
         {/each}
@@ -170,7 +170,7 @@
         {#each $kanbanData.inProgress as task}
           <button class="kanban-card clickable" onclick={() => selectTask(task)}>
             <div class="card-line">
-              <span class="task-id">#{task.id}</span>
+              <span class="task-id">!{task.id}</span>
               <span class="task-subject">{task.subject}</span>
             </div>
             {#if task.owner}
@@ -200,11 +200,9 @@
                 <span class="repo-badge">[{pr.repo}]</span>
               {/if}
               {#if pr.task_id}
-                <span class="task-id">#{pr.task_id}</span>
-                <span class="task-subject">{pr.task_name || 'Unknown task'}</span>
-              {:else}
-                <span class="pr-title">{pr.title}</span>
+                <span class="task-id">!{pr.task_id}</span>
               {/if}
+              <span class="task-subject">{pr.task_name || pr.title}</span>
             </div>
             <div class="card-detail">
               <span class="tree-branch">└</span>
@@ -280,7 +278,7 @@
 
       {#if selectedItem.type === 'task'}
         <div class="modal-header">
-          <span class="modal-id">#{selectedItem.data.id}</span>
+          <span class="modal-id">!{selectedItem.data.id}</span>
           <span class="modal-status">{selectedItem.data.status}</span>
         </div>
         <h4 class="modal-title">{selectedItem.data.subject}</h4>
