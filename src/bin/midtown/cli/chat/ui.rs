@@ -941,10 +941,18 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
 
     // Show input text with cursor
     let prompt = "> ";
-    let text_with_cursor = if is_focused && app.input_cursor == app.input_text.len() {
+    let char_count = app.input_text.chars().count();
+    let text_with_cursor = if is_focused && app.input_cursor == char_count {
         format!("{}{}_", prompt, app.input_text)
     } else if is_focused {
-        let (before, after) = app.input_text.split_at(app.input_cursor);
+        // Convert character index to byte index for split_at
+        let byte_idx = app
+            .input_text
+            .char_indices()
+            .nth(app.input_cursor)
+            .map(|(idx, _)| idx)
+            .unwrap_or(app.input_text.len());
+        let (before, after) = app.input_text.split_at(byte_idx);
         format!("{}{}_{}", prompt, before, after)
     } else {
         format!("{}{}", prompt, app.input_text)

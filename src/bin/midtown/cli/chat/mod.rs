@@ -32,6 +32,17 @@ use app::App;
 use ratatui::style::Color as RatatuiColor;
 use ui::Hyperlink;
 
+/// Convert a character index to a byte index in a UTF-8 string.
+///
+/// Returns the byte offset where the nth character starts.
+/// If char_idx exceeds the character count, returns the string's byte length.
+fn char_index_to_byte_index(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(s.len())
+}
+
 /// Run the chat TUI
 pub fn run() -> Result<(), String> {
     // Setup terminal
@@ -406,7 +417,8 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             // Character input when in InputBar
             KeyCode::Char(c) => {
                 if app.focused_pane == FocusedPane::InputBar {
-                    app.input_text.insert(app.input_cursor, c);
+                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                    app.input_text.insert(byte_idx, c);
                     app.input_cursor += 1;
                 }
                 EventResult::Continue
@@ -415,16 +427,18 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             KeyCode::Backspace => {
                 if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
                     app.input_cursor -= 1;
-                    app.input_text.remove(app.input_cursor);
+                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                    app.input_text.remove(byte_idx);
                 }
                 EventResult::Continue
             }
             // Delete in InputBar
             KeyCode::Delete => {
                 if app.focused_pane == FocusedPane::InputBar
-                    && app.input_cursor < app.input_text.len()
+                    && app.input_cursor < app.input_text.chars().count()
                 {
-                    app.input_text.remove(app.input_cursor);
+                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                    app.input_text.remove(byte_idx);
                 }
                 EventResult::Continue
             }
@@ -437,7 +451,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             }
             KeyCode::Right => {
                 if app.focused_pane == FocusedPane::InputBar
-                    && app.input_cursor < app.input_text.len()
+                    && app.input_cursor < app.input_text.chars().count()
                 {
                     app.input_cursor += 1;
                 }

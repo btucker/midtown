@@ -27,10 +27,10 @@ pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
 
-/// Minimum age in seconds before a PR is eligible for auto-review (30 seconds).
+/// Minimum age in seconds before a PR is eligible for auto-review (60 seconds).
 /// Tradeoff: Faster reviewer spawn (biggest throughput win) vs. potential duplicate
 /// assignment if PR hash bucket changes quickly. Hash bucket dedup should still work.
-pub const PR_REVIEW_DELAY_SECS: u64 = 30;
+pub const PR_REVIEW_DELAY_SECS: u64 = 60;
 
 /// Maximum number of concurrent PR reviews the daemon will run.
 pub const MAX_CONCURRENT_REVIEWS: usize = 4;
