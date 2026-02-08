@@ -324,6 +324,25 @@ impl WorktreeManager {
         false
     }
 
+    /// Get the current branch name for a worktree.
+    ///
+    /// Returns None if the worktree is in detached HEAD state or on an error.
+    fn get_worktree_branch(&self, worktree_path: &Path) -> Option<String> {
+        let output = Command::new("git")
+            .current_dir(worktree_path)
+            .args(["branch", "--show-current"])
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !branch.is_empty() {
+                return Some(branch);
+            }
+        }
+        None
+    }
+
     /// Get the repository root path.
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
@@ -746,6 +765,14 @@ impl WorktreeManager {
 
         // Check if worktree already exists and is valid (idempotent)
         if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
+            // Validate that the existing worktree is on the expected branch
+            let actual_branch = self.get_worktree_branch(&worktree_path);
+            if actual_branch.as_deref() != Some(worktree_id) {
+                return Err(WorktreeError::GitError(format!(
+                    "Worktree exists but branch mismatch: expected '{}', got {:?}",
+                    worktree_id, actual_branch
+                )));
+            }
             return Ok(worktree_path);
         }
 
@@ -835,6 +862,17 @@ impl WorktreeManager {
             } else {
                 return Err(WorktreeError::GitError(stderr));
             }
+        }
+
+        // Validate that the worktree is on the expected branch
+        // This ensures registry data matches actual git state even if error recovery
+        // paths checked out a different branch
+        let actual_branch = self.get_worktree_branch(&worktree_path);
+        if actual_branch.as_deref() != Some(worktree_id) {
+            return Err(WorktreeError::GitError(format!(
+                "Worktree created but branch mismatch: expected '{}', got {:?}",
+                worktree_id, actual_branch
+            )));
         }
 
         Ok(worktree_path)
