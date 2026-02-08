@@ -152,9 +152,10 @@ export function renderContent(text) {
   // Ensure all links open in new tabs
   html = html.replace(/<a /g, '<a target="_blank" rel="noopener" ')
 
-  // Restore target for internal channel/task links (they shouldn't open new tabs)
+  // Restore target for internal channel/task/pr links (they shouldn't open new tabs)
   html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="channel-link")/g, '<a $1')
   html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="task-link")/g, '<a $1')
+  html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="pr-link")/g, '<a $1')
 
   return html
 }
