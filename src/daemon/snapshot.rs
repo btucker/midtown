@@ -39,6 +39,10 @@ pub struct ProcessHealth {
     /// When true, the parent session may not emit events for several minutes
     /// while the subagent works — stuck detection should skip these coworkers.
     pub has_running_subagent: bool,
+    /// Whether the coworker has a pending tool execution (saw tool_use but no tool_result yet).
+    /// When true, the session is waiting for a tool to complete (e.g., long-running Bash command)
+    /// and shouldn't be considered stuck even if no events are emitted during execution.
+    pub has_pending_tool: bool,
     /// Process exit code, if the process has terminated.
     pub exit_code: Option<i32>,
 }
@@ -51,6 +55,7 @@ impl Default for ProcessHealth {
             has_usage_limit: false,
             has_api_error: false,
             has_running_subagent: false,
+            has_pending_tool: false,
             exit_code: None,
         }
     }
@@ -630,6 +635,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -641,6 +647,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -652,6 +659,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: Some(0),
             },
         );

@@ -102,7 +102,9 @@ pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// How long a coworker's process can go without events before considering it stuck (3 minutes).
 /// If the headless session hasn't emitted any events for this duration, the coworker
-/// is killed and restarted with its current task.
+/// is killed and restarted with its current task. The pending tool detection (has_pending_tool)
+/// and running subagent detection (has_running_subagent) provide precise stuck detection,
+/// allowing a shorter timeout without false positives.
 pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(180);
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
