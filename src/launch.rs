@@ -76,7 +76,8 @@ pub struct LaunchConfig {
     /// task-based worktrees at ~/.midtown/worktrees/<repo>/task-<id>-<slug>/.
     pub working_dir: Option<PathBuf>,
     /// The Claude model to use for this session (e.g., "sonnet", "opus", "haiku").
-    /// Defaults to "sonnet" for standard coworkers, "opus" for reviewers.
+    /// Defaults to "sonnet" for standard coworkers, "opus" for reviewers, PR handoff
+    /// coworkers, and review feedback responders.
     pub model: String,
 }
 
@@ -368,6 +369,7 @@ mod tests {
         assert_eq!(headless.agent_id, Some("park@midtown-myrepo".to_string()));
         assert_eq!(headless.agent_name, Some("park".to_string()));
         assert!(!headless.system_prompt.is_empty());
+        assert_eq!(headless.model, "sonnet");
     }
 
     #[test]
@@ -390,6 +392,7 @@ mod tests {
         assert!(headless.team_name.is_none());
         assert!(headless.agent_id.is_none());
         assert!(headless.agent_name.is_none());
+        assert_eq!(headless.model, "opus");
     }
 
     #[test]
@@ -415,6 +418,7 @@ mod tests {
         assert!(config.restrict_setting_sources);
         assert!(config.pr_number.is_none());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
+        assert_eq!(config.model, "sonnet");
     }
 
     #[test]
@@ -424,6 +428,7 @@ mod tests {
         assert_eq!(config.pr_number, Some(42));
         assert_eq!(config.role, CoworkerRole::Reviewer);
         assert!(config.team_name.is_none());
+        assert_eq!(config.model, "opus");
     }
 
     #[test]
@@ -444,6 +449,7 @@ mod tests {
         assert!(config.initial_prompt.is_some());
         assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert!(config.pr_number.is_none()); // Handoff is not a reviewer
+        assert_eq!(config.model, "opus");
     }
 
     #[test]
