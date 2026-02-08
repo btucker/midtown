@@ -76,6 +76,11 @@
       return
     }
 
+    if (name.toLowerCase() === 'midtown') {
+      createError = 'Channel name "midtown" is reserved'
+      return
+    }
+
     isCreating = true
     try {
       const project = $activeProject || 'default'

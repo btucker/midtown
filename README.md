@@ -447,6 +447,7 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Kanban board for task visualization
 - Multi-channel support with split-panel layout (channel list sidebar + message pane)
 - Channel list with task counts (in progress, pending) and CI status badges
+- Create new channels directly from the sidebar (+ button) with inline validation
 - Clickable channel (`#name`), task (`!N`), and PR (`#N`) references in messages
 - Insight cross-post highlighting with source channel attribution
 - Mermaid diagram rendering in chat messages
