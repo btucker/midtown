@@ -1271,17 +1271,6 @@ async fn collect_comment_notification_effects(
         );
 
         effects.extend(comment_action_to_effects(action, pr_number, title, state));
-
-        // Also create a review feedback task for consistent "task !X" formatting.
-        // Skip if a creation is already in flight (nudged to Lead, awaiting confirmation).
-        let key = super::DaemonState::task_creation_key(pr_number, &owner);
-        if !state.is_task_creation_pending(&key) {
-            effects.push(Effect::CreateReviewFeedbackTask {
-                pr_number,
-                pr_title: title.to_string(),
-                owner: owner.clone(),
-            });
-        }
     }
 
     effects
