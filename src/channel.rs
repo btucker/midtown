@@ -110,9 +110,14 @@ impl Channel {
         // Create the channel file if it doesn't exist.
         // This enables file watchers like tailf to start monitoring immediately.
         // (tailf wraps `tail -f` which requires the file to exist)
-        if !channel_file.exists() {
-            File::create(&channel_file)?;
-        }
+        //
+        // Use OpenOptions with create(true) + append(true) to avoid TOCTOU race.
+        // File::create() would truncate if another process created the file between
+        // the exists() check and the create() call.
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&channel_file)?;
 
         Ok(Self {
             base_dir,
@@ -171,12 +176,17 @@ impl Channel {
             for entry in fs::read_dir(channels_dir)? {
                 let entry = entry?;
                 let path = entry.path();
+                // Filter for .jsonl files, excluding .archived.jsonl
+                // Note: path.extension() returns the part after the *last* dot, so
+                // "foo.archived.jsonl" has extension "jsonl". We need to check the
+                // file_stem to exclude ".archived" suffix.
                 if path.extension().is_some_and(|e| e == "jsonl")
-                    && let Some(name) = path.file_stem().and_then(|s| s.to_str())
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    && !stem.ends_with(".archived")
                 {
                     // Don't duplicate "midtown" if we already found channel.jsonl
-                    if name != "midtown" || !channels.contains(&"midtown".to_string()) {
-                        channels.push(name.to_string());
+                    if stem != "midtown" || !channels.contains(&"midtown".to_string()) {
+                        channels.push(stem.to_string());
                     }
                 }
             }
@@ -1443,5 +1453,50 @@ mod tests {
         );
         assert_eq!(messages[0].content, "Second message");
         assert_eq!(messages[1].content, "Third message");
+    }
+
+    #[test]
+    fn test_archived_channels_excluded_from_list() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create two channels: "test1" and "test2"
+        let channel1 = Channel::new(temp_dir.path(), "test1").unwrap();
+        let _channel2 = Channel::new(temp_dir.path(), "test2").unwrap();
+
+        // Both should appear in the list
+        let channels = Channel::list(temp_dir.path()).unwrap();
+        assert!(
+            channels.contains(&"test1".to_string()),
+            "test1 should be in the list"
+        );
+        assert!(
+            channels.contains(&"test2".to_string()),
+            "test2 should be in the list"
+        );
+
+        // Archive test1
+        channel1.archive().unwrap();
+
+        // Now only test2 should appear in the list
+        let channels = Channel::list(temp_dir.path()).unwrap();
+        assert!(
+            !channels.contains(&"test1".to_string()),
+            "Archived channel test1 should not be in the list"
+        );
+        assert!(
+            channels.contains(&"test2".to_string()),
+            "test2 should still be in the list"
+        );
+
+        // Verify the archived file exists with correct name
+        let archived_path = temp_dir
+            .path()
+            .join("channels")
+            .join("test1.archived.jsonl");
+        assert!(
+            archived_path.exists(),
+            "Archived file should exist at {:?}",
+            archived_path
+        );
     }
 }
