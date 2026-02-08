@@ -652,18 +652,6 @@ async fn collect_green_with_feedback_effects(
             PrIssueType::GreenWithFeedback,
             state,
         ));
-
-        // Create a task for the author to address review feedback if they don't have one.
-        // This prevents the spawn→idle→break loop by giving the author concrete work.
-        // Skip if a creation is already in flight (nudged to Lead, awaiting confirmation).
-        let key = super::DaemonState::task_creation_key(pr_number, &owner);
-        if !state.is_task_creation_pending(&key) {
-            effects.push(Effect::CreateReviewFeedbackTask {
-                pr_number,
-                pr_title: title.to_string(),
-                owner: owner.clone(),
-            });
-        }
     }
 
     effects
@@ -1234,17 +1222,6 @@ async fn collect_comment_notification_effects(
         );
 
         effects.extend(comment_action_to_effects(action, pr_number, title, state));
-
-        // Also create a review feedback task for consistent "task !X" formatting.
-        // Skip if a creation is already in flight (nudged to Lead, awaiting confirmation).
-        let key = super::DaemonState::task_creation_key(pr_number, &owner);
-        if !state.is_task_creation_pending(&key) {
-            effects.push(Effect::CreateReviewFeedbackTask {
-                pr_number,
-                pr_title: title.to_string(),
-                owner: owner.clone(),
-            });
-        }
     }
 
     effects
@@ -2164,49 +2141,6 @@ pub(super) async fn handle_pr_comment_nudge(
     let is_actionable = !matches!(action, crate::rules::PrAction::Skip { .. });
     let effects = comment_action_to_effects(action, pr_number, "", state);
     super::effects::execute_effects(effects, state).await;
-
-    // Create a review feedback task directly. In-memory deduplication prevents
-    // repeated creation while the same review cycle is active.
-    if is_actionable {
-        let key = super::DaemonState::task_creation_key(pr_number, &owner);
-        if state.is_task_creation_pending(&key) {
-            debug!(
-                "Skipping duplicate webhook task creation for {} (PR #{}): already pending",
-                owner, pr_number
-            );
-        } else {
-            state.mark_task_creation_pending(&key);
-            let subject = format!("Address review feedback on PR #{}", pr_number);
-            let description = format!(
-                "PR #{} has review feedback that needs to be addressed. \
-                 Please review the comments, make the requested changes, and push updates. \
-                 Once feedback is addressed, the reviewer will re-check and approve.",
-                pr_number
-            );
-            match crate::tasks::create_task_for_repo(
-                &subject,
-                &description,
-                &format!("Addressing review feedback on PR #{}", pr_number),
-                &owner,
-                &state.repo_name,
-                None,
-            ) {
-                Ok(task_id) => {
-                    info!(
-                        "Created review feedback task !{} for {} (PR #{}) via webhook",
-                        task_id, owner, pr_number
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to create review feedback task for {} (PR #{}): {}",
-                        owner, pr_number, e
-                    );
-                    state.clear_task_creation_pending(&key);
-                }
-            }
-        }
-    }
 
     // Add eyes reaction to the comment to provide visual feedback that it was received
     if is_actionable

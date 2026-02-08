@@ -432,19 +432,6 @@ pub(crate) struct DaemonState {
     /// fresh for each review session — a restart mid-review would re-spawn the
     /// reviewer, who would post new notes from scratch.
     review_note_tracker: std::sync::Mutex<HashMap<(String, u64), std::time::Instant>>,
-    /// In-memory deduplication for task creation nudges sent to the Lead.
-    ///
-    /// When the daemon needs to create a task (e.g., review feedback), it nudges the
-    /// Lead to call TaskCreate instead of writing task files directly. This prevents
-    /// TOCTTOU races when concurrent webhook + polling paths try to create the same task.
-    ///
-    /// Key format: "review-feedback-PR#<number>-<owner>". Value is the timestamp when
-    /// the marker was set. Entries are:
-    /// - Added when a nudge is sent to the Lead
-    /// - Cleared when a non-completed matching task appears in the shared task list
-    /// - Pre-populated for existing pending/in_progress tasks (prevents re-nudges after restart)
-    /// - Auto-expired after 5 minutes (handles Lead not acting on the nudge)
-    pending_task_creations: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     /// Process health state for headless coworkers, keyed by coworker name.
     ///
     /// Populated by the session management layer from `HeadlessSession` stream events
@@ -623,7 +610,6 @@ impl DaemonState {
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
-            pending_task_creations: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
@@ -824,51 +810,6 @@ impl DaemonState {
     pub(crate) fn clear_pending_nudge(&self, name: &str) {
         let mut pending = self.pending_nudges.lock().unwrap();
         pending.remove(&name.to_lowercase());
-    }
-
-    /// Build the deduplication key for a pending task creation.
-    ///
-    /// Matches the subject pattern used in task creation so that once the
-    /// Lead creates the task, the key can be cleared via `clear_task_creation_pending`.
-    pub(crate) fn task_creation_key(pr_number: u64, owner: &str) -> String {
-        format!("review-feedback-PR#{}-{}", pr_number, owner)
-    }
-
-    /// Check if a task creation nudge has already been sent to the Lead.
-    ///
-    /// Returns false if the marker has expired (> 5 minutes), clearing it
-    /// to allow a retry nudge.
-    pub(crate) fn is_task_creation_pending(&self, key: &str) -> bool {
-        const STALE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
-
-        let mut pending = self.pending_task_creations.lock().unwrap();
-        if let Some(created_at) = pending.get(key) {
-            if std::time::Instant::now().duration_since(*created_at) > STALE_THRESHOLD {
-                // Expired — clear and allow retry
-                pending.remove(key);
-                false
-            } else {
-                true
-            }
-        } else {
-            false
-        }
-    }
-
-    /// Mark a task creation as pending (nudge sent to Lead).
-    pub(crate) fn mark_task_creation_pending(&self, key: &str) {
-        self.pending_task_creations
-            .lock()
-            .unwrap()
-            .insert(key.to_string(), std::time::Instant::now());
-    }
-
-    /// Clear a pending task creation marker.
-    ///
-    /// Called when a non-completed matching task appears in the shared task list,
-    /// confirming the Lead created it successfully.
-    pub(crate) fn clear_task_creation_pending(&self, key: &str) {
-        self.pending_task_creations.lock().unwrap().remove(key);
     }
 }
 
@@ -3311,29 +3252,5 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
             in_flight_tasks.contains("874"),
             "AssignAndSpawn should be tracked"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // Task creation dedup tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_task_creation_key_format() {
-        let key = DaemonState::task_creation_key(42, "broadway");
-        assert_eq!(key, "review-feedback-PR#42-broadway");
-    }
-
-    #[test]
-    fn test_task_creation_key_different_prs() {
-        let key1 = DaemonState::task_creation_key(42, "broadway");
-        let key2 = DaemonState::task_creation_key(99, "broadway");
-        assert_ne!(key1, key2);
-    }
-
-    #[test]
-    fn test_task_creation_key_different_owners() {
-        let key1 = DaemonState::task_creation_key(42, "broadway");
-        let key2 = DaemonState::task_creation_key(42, "park");
-        assert_ne!(key1, key2);
     }
 }
