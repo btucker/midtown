@@ -63,3 +63,7 @@ export const authProfiles = writable([])
 
 // Whether an auth switch is in progress
 export const authSwitching = writable(false)
+
+// API usage data (session + weekly utilization)
+// Format: { session_util, session_resets, week_util, week_resets, account_email }
+export const usageData = writable(null)

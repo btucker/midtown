@@ -116,6 +116,9 @@ pub mod launch;
 // Agent teams mailbox writer (filesystem-based message delivery)
 pub mod mailbox;
 
+// API usage data (session + weekly utilization from Anthropic OAuth API)
+pub mod usage;
+
 pub use channel::Channel;
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;

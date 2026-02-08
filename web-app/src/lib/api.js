@@ -14,11 +14,13 @@ import {
   repoStatuses,
   authProfiles,
   authSwitching,
+  usageData,
 } from './store.js'
 
 let ws = null
 let reconnectTimeout = null
 let statusPollInterval = null
+let usagePollInterval = null
 let leadTypingTimeout = null
 
 // Base URL for the current project's daemon API.
@@ -57,6 +59,10 @@ export function switchProject(projectName, webhookPort) {
     clearInterval(statusPollInterval)
     statusPollInterval = null
   }
+  if (usagePollInterval) {
+    clearInterval(usagePollInterval)
+    usagePollInterval = null
+  }
 
   // Clear current state
   messages.set([])
@@ -76,6 +82,7 @@ export function switchProject(projectName, webhookPort) {
     releaseTag: null,
     releaseTime: null,
   })
+  usageData.set(null)
   connected.set(false)
 
   // Set the new active project
@@ -93,9 +100,12 @@ export function switchProject(projectName, webhookPort) {
   if (projectApiBase) {
     fetchHistory()
     fetchStatus()
+    fetchUsage()
     connectWebSocket()
     // Poll status every 10s to keep kanban board current
     statusPollInterval = setInterval(fetchStatus, 10000)
+    // Poll usage every 2 minutes (matching TUI refresh interval)
+    usagePollInterval = setInterval(fetchUsage, 120000)
   }
 }
 
@@ -159,6 +169,20 @@ export async function fetchStatus() {
     }
   } catch (err) {
     console.error('Failed to fetch status:', err)
+  }
+}
+
+// Fetch API usage data (session + weekly utilization)
+export async function fetchUsage() {
+  try {
+    const res = await fetch(`${getApiBase()}/usage`)
+    if (res.ok) {
+      const data = await res.json()
+      usageData.set(data)
+    }
+    // 204 No Content means no credentials available — leave store as null
+  } catch (err) {
+    console.error('Failed to fetch usage:', err)
   }
 }
 
