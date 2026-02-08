@@ -147,6 +147,8 @@ Don't nudge for information that can wait for the next channel read.
 
 Functions in `rules.rs` take immutable data and return decisions. No mutation, no I/O, no async. Phase transitions are returned as data, applied by the caller. If a decision depends on a side effect (spawn success, API call), split into two decisions with an effect in between. The `evaluate_tick()` → `Vec<Effect>` → `execute_effects()` pipeline is the canonical path.
 
+**This constraint applies to ALL functions called from `evaluate_tick()`**, not just those in `rules.rs`. Domain modules like `pr.rs`, `dispatch.rs`, and `health.rs` contain `collect_*_effects()` functions that are called during the decision phase — these must also be pure. Specifically: no `.await`, no `state.persistent_state.lock()`, no `session_manager.is_alive()`, no direct state queries. If data is needed for a decision, add it to `WorldSnapshot` during `collect_snapshot()` so it's available as immutable input.
+
 ### Daemon Is the Single Authority for State
 
 The daemon owns all coordination state. Coworkers report workflow state via RPC (`midtown` CLI). Pane scraping is a safety net for health checks (stuck, zombie, crash) — not the primary source of workflow information. If RPC and pane scraping disagree, pane scraping wins for health decisions.
