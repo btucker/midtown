@@ -438,7 +438,7 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Installable as a PWA for mobile use
 - Real-time updates via WebSocket
 - Split-panel layout: board sidebar (kanban + channel list) on the left, channel chat on the right
-- Multi-channel support with per-channel message routing and unread counts
+- Multi-channel support with per-channel message routing
 - Channel list with task counts (in progress, pending) and CI status badges
 - Clickable `#channel` references to switch channels, `!N` task references, and `PR #N` links in messages
 - Insight cross-post highlighting with source channel attribution
