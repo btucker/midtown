@@ -2410,7 +2410,7 @@ fn test_daemon_rpc_channel_post_me_action() {
 
     let params = serde_json::json!({
         "from": "york",
-        "message": "/me is working on task #42"
+        "message": "/me is working on task !42"
     });
 
     let response = fixture.rpc_call("channel.post", Some(params));

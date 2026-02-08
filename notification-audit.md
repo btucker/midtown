@@ -120,12 +120,12 @@ for channel messages, and share a `format_review_comment_nudge()` helper for nud
 
 **`daemon_messages.rs:77-88`** — `called_in_pending_task()` does NOT accept a subject:
 ```rust
-"🚀 Called in coworker {name} for pending task #{task}"
+"🚀 Called in coworker {name} for pending task !{task}"
 ```
 
 **`daemon_messages.rs:91-108`** — `called_in_assigned_task()` DOES accept a subject:
 ```rust
-"🚀 Called in coworker {name} for assigned task #{task}: {subject}"
+"🚀 Called in coworker {name} for assigned task !{task}: {subject}"
 ```
 
 **Impact**: When the daemon spawns a coworker for a pending task with an existing
@@ -147,10 +147,10 @@ from the team-visible channel message:
 
 | Path | Coworker prompt | Channel message |
 |------|----------------|-----------------|
-| Orphan recovery (`dispatch.rs:76-78`) | `"task #{id}: {subject}"` | `"♻️ Recovered coworker {name} for orphaned task #{id}"` (line 106-108) |
-| Discovered coworker (`dispatch.rs:187-189`) | `"Resume task #{id}: {subject}"` | `"♻️ Nudged discovered coworker {name} to resume task #{id}"` (line 204-206) |
-| Stuck restart (`health.rs:442-444`) | `"task #{id}: {subject}"` | `"🔄 Restarted stuck coworker {name} ... resuming task #{id}"` (line 462-465) |
-| Pending task spawn (`dispatch.rs:679-681`) | `"task #{id}: {subject}"` | `called_in_pending_task(name, id)` — no subject (line 699-702) |
+| Orphan recovery (`dispatch.rs:76-78`) | `"task !{id}: {subject}"` | `"♻️ Recovered coworker {name} for orphaned task !{id}"` (line 106-108) |
+| Discovered coworker (`dispatch.rs:187-189`) | `"Resume task !{id}: {subject}"` | `"♻️ Nudged discovered coworker {name} to resume task !{id}"` (line 204-206) |
+| Stuck restart (`health.rs:442-444`) | `"task !{id}: {subject}"` | `"🔄 Restarted stuck coworker {name} ... resuming task !{id}"` (line 462-465) |
+| Pending task spawn (`dispatch.rs:679-681`) | `"task !{id}: {subject}"` | `called_in_pending_task(name, id)` — no subject (line 699-702) |
 
 **Recommendation**: Include `{subject}` in all recovery/restart channel messages
 for consistency with `called_in_assigned_task()`.

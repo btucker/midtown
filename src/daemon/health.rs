@@ -403,7 +403,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
     let mut effects = Vec::new();
     for restart in restarts {
         info!(
-            "Coworker {} no events for {}s — restarting for task #{}",
+            "Coworker {} no events for {}s — restarting for task !{}",
             restart.name,
             COWORKER_STUCK_DURATION.as_secs(),
             restart.task_id
@@ -412,7 +412,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         let prompt = format_task_prompt(
             &restart.task_id,
             &format!(
-                "You've been assigned task #{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.",
+                "You've been assigned task !{}: {}. Your previous session appeared stuck so you were restarted. Check your git status and continue where you left off.",
                 restart.task_id, restart.task_subject
             ),
         );
@@ -432,7 +432,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "🔄 Restarted stuck coworker {} (no events for {}s) — resuming task #{}",
+                "🔄 Restarted stuck coworker {} (no events for {}s) — resuming task !{}",
                 restart.name,
                 COWORKER_STUCK_DURATION.as_secs(),
                 restart.task_id
@@ -662,14 +662,14 @@ pub(super) async fn check_and_respawn_dead_processes(
 
         let exit_code = health.exit_code.unwrap_or(-1);
         warn!(
-            "Coworker {} process died (exit code {}) — restarting for task #{}",
+            "Coworker {} process died (exit code {}) — restarting for task !{}",
             name, exit_code, task_id
         );
 
         let prompt = format_task_prompt(
             task_id,
             &format!(
-                "You've been assigned task #{}: {}. Your previous session crashed (exit code {}). Check your git status and continue where you left off.",
+                "You've been assigned task !{}: {}. Your previous session crashed (exit code {}). Check your git status and continue where you left off.",
                 task_id, task_subject, exit_code
             ),
         );
@@ -693,7 +693,7 @@ pub(super) async fn check_and_respawn_dead_processes(
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "💀 Coworker {} process died (exit {}) — restarting for task #{}",
+                "💀 Coworker {} process died (exit {}) — restarting for task !{}",
                 name, exit_code, task_id
             ),
         });

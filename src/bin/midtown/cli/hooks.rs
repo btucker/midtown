@@ -752,7 +752,7 @@ fn ensure_lead_task_persistence(
 ///
 /// Claude Code's tool_result for TaskCreate may be:
 /// - A JSON object with an "id" field
-/// - A string containing "task N" or "task #N"
+/// - A string containing "task N" or "task !N"
 /// - A string containing "id: N" or "id N"
 fn extract_internal_task_id(context: &serde_json::Value) -> Option<String> {
     let result = &context["tool_result"];
@@ -767,7 +767,7 @@ fn extract_internal_task_id(context: &serde_json::Value) -> Option<String> {
 
     // Try as string containing a task ID pattern
     if let Some(s) = result.as_str() {
-        // Look for patterns like "task 1", "task #1", "Task #1:", "id: 1"
+        // Look for patterns like "task 1", "task !1", "Task !1:", "id: 1"
         let lower = s.to_lowercase();
         if let Some(pos) = lower.find("task") {
             let rest = &s[pos + 4..];
@@ -1184,7 +1184,7 @@ Second insight
     #[test]
     fn test_extract_internal_task_id_string_task_hash() {
         let context = serde_json::json!({
-            "tool_result": "Task #42 created successfully"
+            "tool_result": "Task !42 created successfully"
         });
         assert_eq!(extract_internal_task_id(&context), Some("42".to_string()));
     }

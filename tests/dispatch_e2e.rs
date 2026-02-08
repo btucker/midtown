@@ -379,7 +379,7 @@ fn lead_owned_tasks_skipped() {
     for (task_id, subject, owner) in &snap.pending_tasks_with_owners {
         assert!(
             owner.to_lowercase() != "lead",
-            "pending_tasks_with_owners should not include lead-owned task #{}: {}",
+            "pending_tasks_with_owners should not include lead-owned task !{}: {}",
             task_id,
             subject
         );
@@ -438,7 +438,7 @@ fn orphan_detection_finds_inactive_owners() {
     } else {
         for (task_id, subject, owner) in orphans {
             println!(
-                "Orphan detected: Task #{} ({}) owned by inactive {}",
+                "Orphan detected: Task !{} ({}) owned by inactive {}",
                 task_id, subject, owner
             );
         }
@@ -462,7 +462,7 @@ fn active_owners_not_orphaned() {
             .collect();
 
         for (task_id, _, _) in york_tasks {
-            println!("Task #{} owned by active york - NOT orphaned", task_id);
+            println!("Task !{} owned by active york - NOT orphaned", task_id);
         }
     }
 }
@@ -560,7 +560,7 @@ fn blocked_tasks_excluded_from_pending_unowned() {
         let blocked = is_task_blocked(task, &snap.all_tasks);
         assert!(
             !blocked,
-            "pending_tasks_without_owners should not include blocked task #{}: {}",
+            "pending_tasks_without_owners should not include blocked task !{}: {}",
             task.id, task.subject
         );
     }
@@ -735,7 +735,7 @@ fn duplicate_task_detection_data_available() {
     for (task_id, owners) in &task_owners {
         if owners.len() > 1 {
             println!(
-                "Duplicate detected: Task #{} has {} owners: {:?}",
+                "Duplicate detected: Task !{} has {} owners: {:?}",
                 task_id,
                 owners.len(),
                 owners
@@ -852,7 +852,7 @@ fn pending_unowned_tasks_are_unblocked() {
                 if let Some(b) = blocker {
                     assert_eq!(
                         b.status, "completed",
-                        "pending_tasks_without_owners task #{} is blocked by incomplete #{} ({})",
+                        "pending_tasks_without_owners task !{} is blocked by incomplete #{} ({})",
                         task.id, b.id, b.status
                     );
                 }
@@ -875,7 +875,7 @@ fn task_owner_validation() {
             let is_valid = owner_lower == "lead" || is_valid_coworker_name(&owner_lower);
             assert!(
                 is_valid,
-                "Task #{} has invalid owner '{}' - must be an avenue name or 'lead'",
+                "Task !{} has invalid owner '{}' - must be an avenue name or 'lead'",
                 task.id, owner
             );
         }
@@ -917,7 +917,7 @@ fn dispatch_scenario_analysis() {
         let is_active = snap.active_names.contains(&owner_lower);
         let action = if is_active { "nudge" } else { "spawn" };
         println!(
-            "Task #{} ({}) owned by {} -> would {}",
+            "Task !{} ({}) owned by {} -> would {}",
             task_id, task_subject, owner, action
         );
     }
@@ -1225,13 +1225,13 @@ fn dispatch_not_deferred_when_all_prs_have_reviewers() {
 ///
 /// Captured snapshot shows:
 /// - Tasks #873 and #875 are both pending+unowned, both reference PR #708
-/// - Pleasant is the PR #708 owner (has pending task #872 for that PR)
+/// - Pleasant is the PR #708 owner (has pending task !872 for that PR)
 /// - PR grouping logic assigns both #873 and #875 to pleasant
 /// - Without the fix, each tick re-generates nudges for both tasks because:
 ///   (a) grouped tasks bypassed the `assigned_this_tick` guard (within-tick)
 ///   (b) `NudgeCoworkerWithCallbacks` effects weren't tracked as in-flight (cross-tick)
 ///
-/// The daemon logs showed 4+ pairs of "Called in pleasant for task #873/#875"
+/// The daemon logs showed 4+ pairs of "Called in pleasant for task !873/#875"
 /// — the same two assignments repeated across consecutive ticks.
 #[test]
 fn no_duplicate_spawn_notifications_for_same_coworker_and_task() {
@@ -1257,11 +1257,11 @@ fn no_duplicate_spawn_notifications_for_same_coworker_and_task() {
         .collect();
     assert!(
         unowned_ids.contains(&"873"),
-        "task #873 should be pending without owner"
+        "task !873 should be pending without owner"
     );
     assert!(
         unowned_ids.contains(&"875"),
-        "task #875 should be pending without owner"
+        "task !875 should be pending without owner"
     );
 
     // Precondition: pleasant already has a pending owned task (#872) for PR #708
@@ -1326,7 +1326,7 @@ fn no_duplicate_spawn_notifications_for_same_coworker_and_task() {
 ///
 /// Before the fix, nudge effects were not tracked, so the next tick would
 /// re-evaluate the same task and produce another nudge — causing the repeated
-/// "Called in pleasant for task #875" channel messages seen in the snapshot.
+/// "Called in pleasant for task !875" channel messages seen in the snapshot.
 #[test]
 fn no_cross_tick_duplicate_spawn_for_in_flight_task() {
     let fixture =
@@ -1404,7 +1404,7 @@ fn no_cross_tick_duplicate_spawn_for_in_flight_task() {
     for (task_id, _) in &tick2_assignments {
         assert!(
             !in_flight_tasks.contains(*task_id),
-            "tick 2 should not re-assign in-flight task #{} — \
+            "tick 2 should not re-assign in-flight task !{} — \
              this was the cross-tick duplicate bug",
             task_id
         );
@@ -1523,7 +1523,7 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
 
 /// Regression test: tasks referencing a merged PR should be skipped by dispatch.
 ///
-/// Bug: The daemon kept nudging york for task #3 ("Address review feedback on
+/// Bug: The daemon kept nudging york for task !3 ("Address review feedback on
 /// PR #709") even though PR #709 was merged hours ago. The dispatch logic
 /// never checked whether a task's referenced PR was already merged.
 ///
@@ -1578,20 +1578,20 @@ fn tasks_referencing_merged_pr_are_skipped() {
         skipped_tasks
             .iter()
             .any(|(id, pr)| *id == "3" && *pr == 709),
-        "task #3 (PR #709) should be skipped"
+        "task !3 (PR #709) should be skipped"
     );
     assert!(
         skipped_tasks
             .iter()
             .any(|(id, pr)| *id == "7" && *pr == 714),
-        "task #7 (PR #714) should be skipped"
+        "task !7 (PR #714) should be skipped"
     );
 
     // Task without PR reference should proceed normally
     assert_eq!(
         dispatched_tasks,
         vec!["5"],
-        "task #5 (no PR reference) should be dispatched"
+        "task !5 (no PR reference) should be dispatched"
     );
 }
 

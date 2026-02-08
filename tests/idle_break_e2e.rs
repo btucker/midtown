@@ -120,7 +120,7 @@ struct SnapshotData {
 
 /// Test that lexington should be sent on break in the captured snapshot.
 ///
-/// Snapshot context: lexington completed task #22, posted idle status, and has
+/// Snapshot context: lexington completed task !22, posted idle status, and has
 /// been at the prompt for >2 minutes. The daemon should detect this and return
 /// a shutdown decision.
 #[test]
@@ -207,13 +207,13 @@ fn coworker_with_open_pr_not_sent_on_break() {
     }
 }
 
-/// Test that busy coworkers (york with task #27) are not sent on break.
+/// Test that busy coworkers (york with task !27) are not sent on break.
 #[test]
 fn busy_coworker_not_sent_on_break() {
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
     let (coworkers, data) = load_snapshot(fixture);
 
-    // York is busy with task #27 in this snapshot
+    // York is busy with task !27 in this snapshot
     assert!(data.busy_coworkers.contains("york"), "york should be busy");
 
     let _york = coworkers.iter().find(|c| c.name == "york").unwrap();
@@ -222,7 +222,7 @@ fn busy_coworker_not_sent_on_break() {
     let pane = data.pane_contents.get("york").unwrap();
     assert!(
         pane.contains("Fixing false idle detection"),
-        "york should be actively working on task #27"
+        "york should be actively working on task !27"
     );
 }
 

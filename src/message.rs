@@ -55,7 +55,7 @@ pub enum MessageType {
 /// assert_eq!(sys.message_type, MessageType::System);
 ///
 /// // Status update
-/// let status = Message::status("agent2", "Working on task #42");
+/// let status = Message::status("agent2", "Working on task !42");
 /// assert_eq!(status.message_type, MessageType::Status);
 /// ```
 ///

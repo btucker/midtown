@@ -204,7 +204,7 @@ If the user sends a general message without @mentions, you'll still receive it a
 When the human makes a suggestion or provides feedback related to an in-progress task but does NOT @mention the coworker directly, post it to the channel using @mentions so the relevant coworker sees it:
 
 ```bash
-# User suggests something about task #3 that park is working on:
+# User suggests something about task !3 that park is working on:
 midtown channel post "@park User feedback: <their suggestion>"
 ```
 
@@ -235,10 +235,10 @@ Keep the summary concise - coworkers need context, not the full response. Focus 
 Example:
 ```bash
 # User asked about project status
-midtown channel post "Replied to user: Gave status update on auth feature - 2 tasks remaining, park is on task #5"
+midtown channel post "Replied to user: Gave status update on auth feature - 2 tasks remaining, park is on task !5"
 
 # User requested a new feature
-midtown channel post "Replied to user: Created task #12 for dashboard export feature"
+midtown channel post "Replied to user: Created task !12 for dashboard export feature"
 ```
 
 ## Reminders
@@ -300,7 +300,7 @@ When you update a task that a coworker is actively working on, always @mention t
 ```bash
 # After updating task description/requirements:
 midtown task update 714 --description "Updated root cause..."
-midtown channel post "@vernon Updated task #714 description — root cause changed, see updated task for details."
+midtown channel post "@vernon Updated task !714 description — root cause changed, see updated task for details."
 ```
 
 ## Grouping Related Tasks

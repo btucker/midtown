@@ -29,7 +29,7 @@ pub struct HeadlessSessionInfo {
     pub session_id: String,
     /// Last time this session was active (event received or message sent).
     pub last_active: DateTime<Utc>,
-    /// Human-readable purpose (e.g., "task #5: Add auth endpoint", "reviewer for PR #42").
+    /// Human-readable purpose (e.g., "task !5: Add auth endpoint", "reviewer for PR #42").
     pub purpose: String,
 }
 
@@ -238,12 +238,12 @@ mod tests {
         let info = HeadlessSessionInfo {
             session_id: "abc-123-def".to_string(),
             last_active: Utc::now(),
-            purpose: "task #5: Add auth endpoint".to_string(),
+            purpose: "task !5: Add auth endpoint".to_string(),
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.session_id, "abc-123-def");
-        assert_eq!(parsed.purpose, "task #5: Add auth endpoint");
+        assert_eq!(parsed.purpose, "task !5: Add auth endpoint");
     }
 
     #[test]
@@ -254,7 +254,7 @@ mod tests {
             HeadlessSessionInfo {
                 session_id: "session-42".to_string(),
                 last_active: Utc::now(),
-                purpose: "task #3: Fix login bug".to_string(),
+                purpose: "task !3: Fix login bug".to_string(),
             },
         );
 
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(loaded.headless_sessions.len(), 1);
         let park = loaded.headless_sessions.get("park").unwrap();
         assert_eq!(park.session_id, "session-42");
-        assert_eq!(park.purpose, "task #3: Fix login bug");
+        assert_eq!(park.purpose, "task !3: Fix login bug");
     }
 
     #[test]

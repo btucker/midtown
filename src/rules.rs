@@ -1114,7 +1114,7 @@ pub(crate) fn decide_pending_task_action(
     // Skip empty or lead-owned tasks
     if owner.is_empty() || owner.eq_ignore_ascii_case("lead") {
         return PendingTaskAction::Skip {
-            reason: format!("task #{} owner is lead or empty", task_id),
+            reason: format!("task !{} owner is lead or empty", task_id),
         };
     }
 
@@ -1122,7 +1122,7 @@ pub(crate) fn decide_pending_task_action(
     if !crate::coworker::is_coworker_name(&owner.to_lowercase()) {
         return PendingTaskAction::Skip {
             reason: format!(
-                "task #{} owner '{}' is not a valid coworker name",
+                "task !{} owner '{}' is not a valid coworker name",
                 task_id, owner
             ),
         };
@@ -1135,7 +1135,7 @@ pub(crate) fn decide_pending_task_action(
     if has_in_progress_task {
         return PendingTaskAction::Skip {
             reason: format!(
-                "task #{} owner '{}' already has an in_progress task",
+                "task !{} owner '{}' already has an in_progress task",
                 task_id, owner
             ),
         };
@@ -1146,7 +1146,7 @@ pub(crate) fn decide_pending_task_action(
     if is_owner_reviewer {
         return PendingTaskAction::Skip {
             reason: format!(
-                "task #{} owner '{}' is an active reviewer (has review assignment)",
+                "task !{} owner '{}' is an active reviewer (has review assignment)",
                 task_id, owner
             ),
         };
@@ -1156,7 +1156,7 @@ pub(crate) fn decide_pending_task_action(
     if active_names.contains(&owner.to_lowercase()) {
         if on_nudge_cooldown {
             return PendingTaskAction::Skip {
-                reason: format!("task #{} nudge on cooldown for {}", task_id, owner),
+                reason: format!("task !{} nudge on cooldown for {}", task_id, owner),
             };
         }
         return PendingTaskAction::NudgeOwner {
@@ -1170,7 +1170,7 @@ pub(crate) fn decide_pending_task_action(
     if at_dev_limit {
         return PendingTaskAction::Skip {
             reason: format!(
-                "dev limit reached, deferring spawn for task #{} owned by {}",
+                "dev limit reached, deferring spawn for task !{} owned by {}",
                 task_id, owner
             ),
         };
@@ -2939,7 +2939,7 @@ mod tests {
         // (only populated by PR poll). The skip check fails because it requires
         // BOTH has_open_pr AND ci_passed, creating a recovery loop.
         //
-        // This is the root cause of the lexington recovery loop (task #810):
+        // This is the root cause of the lexington recovery loop (task !810):
         // - lexington opened PR #682, went idle, shut down
         // - orphan check fires every 10s, PR poll every 30s
         // - In the window before PR poll caches CI status, recovery fires
@@ -3091,7 +3091,7 @@ mod tests {
     #[test]
     fn orphan_recovery_skips_coworker_that_just_reported_idle() {
         // Scenario: madison reports idle via RPC. She still has in_progress
-        // task #861 (task completion is async). The RPC handler shuts her down
+        // task !861 (task completion is async). The RPC handler shuts her down
         // and records her stop time. On the next TaskDispatchTick, orphan
         // recovery must skip her because she's in recently_stopped.
         let tasks = vec![(
@@ -3945,7 +3945,7 @@ Now implementing the fix.
         // Active reviewers should NOT be nudged about main task list updates.
         let active_names: HashSet<String> = ["madison".to_string()].into_iter().collect();
 
-        // Main task #6 has owner="madison", but madison is an active reviewer
+        // Main task !6 has owner="madison", but madison is an active reviewer
         let action = decide_pending_task_action(
             "6",
             "Prevent coworkers from checking out default branch",

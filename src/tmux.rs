@@ -48,16 +48,16 @@ fn load_settings(role_settings: &str) -> serde_json::Value {
 /// Extracts status keywords and task numbers to create concise tab names.
 ///
 /// # Examples
-/// - "claiming task #1" → "claim#1"
-/// - "developing task #1" → "dev#1"
+/// - "claiming task !1" → "claim#1"
+/// - "developing task !1" → "dev#1"
 /// - "running tests" → "test"
-/// - "opening PR for task #1" → "PR#1"
+/// - "opening PR for task !1" → "PR#1"
 /// - "waiting for review" → "idle"
 /// - "investigating the auth bug" → "investigating the au..."
 pub fn parse_status(status: &str) -> String {
     let status_lower = status.to_lowercase();
 
-    // Extract task number if present (matches "#1", "task 1", "task #1", etc.)
+    // Extract task number if present (matches "#1", "task 1", "task !1", etc.)
     let task_num = extract_task_number(status);
 
     // Match status keywords and map to abbreviations
@@ -107,9 +107,18 @@ pub fn parse_status(status: &str) -> String {
 
 /// Extract task number from status text.
 ///
-/// Matches patterns like "#1", "task 1", "task #1", "#42"
+/// Matches patterns like "!1", "#1", "task 1", "task !1", "#42"
 fn extract_task_number(status: &str) -> Option<u32> {
-    // Try to find "#N" pattern first
+    // Try to find "!N" pattern first (new convention)
+    if let Some(pos) = status.find('!') {
+        let rest = &status[pos + 1..];
+        let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse::<u32>() {
+            return Some(num);
+        }
+    }
+
+    // Try to find "#N" pattern (backward compatibility)
     if let Some(pos) = status.find('#') {
         let rest = &status[pos + 1..];
         let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -122,8 +131,11 @@ fn extract_task_number(status: &str) -> Option<u32> {
     let lower = status.to_lowercase();
     if let Some(pos) = lower.find("task ") {
         let rest = &status[pos + 5..];
-        // Skip optional '#' after "task "
-        let rest = rest.strip_prefix('#').unwrap_or(rest);
+        // Skip optional '!' or '#' after "task "
+        let rest = rest
+            .strip_prefix('!')
+            .or_else(|| rest.strip_prefix('#'))
+            .unwrap_or(rest);
         let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(num) = num_str.parse::<u32>() {
             return Some(num);
@@ -2290,15 +2302,15 @@ mod tests {
 
     #[test]
     fn test_parse_status_claiming() {
-        assert_eq!(parse_status("claiming task #1"), "claim#1");
+        assert_eq!(parse_status("claiming task !1"), "claim#1");
         assert_eq!(parse_status("Claiming task 5"), "claim#5");
         assert_eq!(parse_status("just claimed #3"), "claim#3");
     }
 
     #[test]
     fn test_parse_status_developing() {
-        assert_eq!(parse_status("developing task #1"), "dev#1");
-        assert_eq!(parse_status("working on task #2"), "dev#2");
+        assert_eq!(parse_status("developing task !1"), "dev#1");
+        assert_eq!(parse_status("working on task !2"), "dev#2");
         assert_eq!(parse_status("coding the feature"), "dev");
         assert_eq!(parse_status("implementing auth #5"), "dev#5");
     }
@@ -2312,7 +2324,7 @@ mod tests {
 
     #[test]
     fn test_parse_status_pr() {
-        assert_eq!(parse_status("opening PR for task #1"), "PR#1");
+        assert_eq!(parse_status("opening PR for task !1"), "PR#1");
         assert_eq!(parse_status("PR ready"), "PR");
         assert_eq!(parse_status("creating pull request #4"), "PR#4");
         assert_eq!(parse_status("requesting review #2"), "PR#2");
@@ -2335,12 +2347,12 @@ mod tests {
     fn test_parse_status_idle() {
         assert_eq!(parse_status("idle"), "idle");
         assert_eq!(parse_status("waiting for review"), "idle");
-        assert_eq!(parse_status("blocked on task #3"), "idle#3");
+        assert_eq!(parse_status("blocked on task !3"), "idle#3");
     }
 
     #[test]
     fn test_parse_status_done() {
-        assert_eq!(parse_status("completed task #1"), "done#1");
+        assert_eq!(parse_status("completed task !1"), "done#1");
         assert_eq!(parse_status("finished implementation"), "done");
     }
 
@@ -2355,7 +2367,7 @@ mod tests {
 
     #[test]
     fn test_extract_task_number_hash_format() {
-        assert_eq!(extract_task_number("task #1"), Some(1));
+        assert_eq!(extract_task_number("task !1"), Some(1));
         assert_eq!(extract_task_number("#42 is the answer"), Some(42));
         assert_eq!(extract_task_number("working on #5"), Some(5));
     }
@@ -2410,20 +2422,20 @@ mod tests {
         let pane_content = r#"
 Some previous output
 More output
-❯ You've been assigned task #36: Chat TUI still showing...
+❯ You've been assigned task !36: Chat TUI still showing...
 "#;
-        let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
+        let nudge_text = "You've been assigned task !36: Chat TUI still showing old messages";
         assert!(is_nudge_stuck(pane_content, nudge_text));
     }
 
     #[test]
     fn test_is_nudge_stuck_no_match_when_submitted() {
         let pane_content = r#"
-You've been assigned task #36: Chat TUI still showing...
+You've been assigned task !36: Chat TUI still showing...
 Claude is now processing the request
 ❯
 "#;
-        let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
+        let nudge_text = "You've been assigned task !36: Chat TUI still showing old messages";
         // The nudge text appears earlier but NOT after the prompt
         assert!(!is_nudge_stuck(pane_content, nudge_text));
     }
@@ -2446,7 +2458,7 @@ Claude is now processing the request
     fn test_is_nudge_stuck_partial_match() {
         // Tests that we match on first 20 chars of long messages
         let pane_content = "❯ You've been assigned";
-        let nudge_text = "You've been assigned task #36: Chat TUI still showing old messages";
+        let nudge_text = "You've been assigned task !36: Chat TUI still showing old messages";
         assert!(is_nudge_stuck(pane_content, nudge_text));
     }
 

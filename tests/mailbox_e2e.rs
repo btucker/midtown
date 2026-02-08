@@ -640,11 +640,11 @@ fn test_mailbox_write_creates_valid_inbox_file() {
 
     // Write a message
     let msg = midtown::mailbox::MailboxMessage::new(
-        "You have pending task #42: Fix auth bug. Get started!",
+        "You have pending task !42: Fix auth bug. Get started!",
         "midtown",
     )
     .with_color("yellow")
-    .with_summary("Task #42 assignment");
+    .with_summary("Task !42 assignment");
 
     midtown::mailbox::write_to_inbox(&team_name, agent_name, msg)
         .expect("write_to_inbox should succeed");
@@ -660,11 +660,11 @@ fn test_mailbox_write_creates_valid_inbox_file() {
     assert_eq!(messages.len(), 1, "Should have exactly one message");
     assert_eq!(
         messages[0].text,
-        "You have pending task #42: Fix auth bug. Get started!"
+        "You have pending task !42: Fix auth bug. Get started!"
     );
     assert_eq!(messages[0].from, "midtown");
     assert_eq!(messages[0].color.as_deref(), Some("yellow"));
-    assert_eq!(messages[0].summary.as_deref(), Some("Task #42 assignment"));
+    assert_eq!(messages[0].summary.as_deref(), Some("Task !42 assignment"));
     assert!(!messages[0].read, "New messages should be unread");
     assert!(!messages[0].timestamp.is_empty(), "Timestamp should be set");
 

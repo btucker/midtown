@@ -1175,7 +1175,7 @@ fn test_channel_write_read_roundtrip() {
         ))
         .unwrap();
     channel
-        .send(&midtown::Message::text("lexington", "working on task #42"))
+        .send(&midtown::Message::text("lexington", "working on task !42"))
         .unwrap();
     channel
         .send(&midtown::Message::text(

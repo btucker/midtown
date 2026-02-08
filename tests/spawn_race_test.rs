@@ -11,8 +11,8 @@
 //! ```text
 //! 17:13:00.938629Z  INFO Spawned coworker madison (isolated=true, session_mode=Fresh)
 //! 17:13:00.938875Z  INFO Spawned coworker madison successfully
-//! 17:13:05.921367Z  INFO Proposing task #739 for madison (already_running=false)
-//! 17:13:05.941025Z  INFO Assigned task #739 to madison on disk
+//! 17:13:05.921367Z  INFO Proposing task !739 for madison (already_running=false)
+//! 17:13:05.941025Z  INFO Assigned task !739 to madison on disk
 //! 17:13:10.035109Z  INFO Channel post from madison: /me reviewing PR #496
 //! 17:13:11.625229Z  INFO Spawned coworker madison (isolated=false, session_mode=Fresh)
 //! 17:13:11.625257Z  INFO Spawned coworker madison successfully
