@@ -97,37 +97,68 @@ pub(super) fn check_and_recover_orphans(
         ),
     );
 
-    // Spawn fresh (no --continue) — the coworker keeps the same name so they
-    // retain their worktree and branch. This is the same path as normal task
-    // assignment, just reusing the previous coworker name.
-    let config = crate::launch::LaunchConfig::coworker(
+    // Look up existing task worktree from the registry (via snapshot).
+    // If the task already has a worktree, reuse it — this preserves build cache
+    // and partial work even when a different coworker is assigned.
+    let mut config = crate::launch::LaunchConfig::coworker(
         recovery.owner.clone(),
         state.repo_name.clone(),
         crate::launch::SessionMode::Fresh,
         Some(prompt),
     );
 
+    // Reuse existing worktree if registered for this task
+    let existing_worktree_id = snap.task_worktree_map.get(&recovery.task_id).cloned();
+    if let Some(ref wt_id) = existing_worktree_id {
+        let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(wt_id);
+        config.working_dir = Some(wt_path);
+    }
+
+    // Build success effects — always bind coworker to worktree if one exists
+    let mut on_success = vec![
+        Effect::BroadcastCoworkerUpdate {
+            name: recovery.owner.clone(),
+            status: "running".to_string(),
+            current_task: None,
+        },
+        Effect::RecordCooldown {
+            category: "orphan_spawn".to_string(),
+            key: "global".to_string(),
+        },
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "♻️ Recovered coworker {} for orphaned task !{}",
+                recovery.owner, recovery.task_id
+            ),
+        },
+    ];
+
+    // If a worktree exists for this task, ensure it's created and bind the coworker
+    if let Some(ref wt_id) = existing_worktree_id {
+        let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(wt_id);
+        // Prepend EnsureWorktree + BindCoworkerToWorktree before other effects
+        // so the worktree is ready before the coworker starts
+        on_success.insert(
+            0,
+            Effect::BindCoworkerToWorktree {
+                worktree_id: wt_id.clone(),
+                coworker: recovery.owner.clone(),
+            },
+        );
+        on_success.insert(
+            0,
+            Effect::EnsureWorktree {
+                worktree_id: wt_id.clone(),
+                path: wt_path,
+            },
+        );
+    }
+
     // Return spawn effect with success/failure callbacks
     vec![Effect::SpawnCoworkerWithCallbacks {
         config,
-        on_success: vec![
-            Effect::BroadcastCoworkerUpdate {
-                name: recovery.owner.clone(),
-                status: "running".to_string(),
-                current_task: None,
-            },
-            Effect::RecordCooldown {
-                category: "orphan_spawn".to_string(),
-                key: "global".to_string(),
-            },
-            Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: format!(
-                    "♻️ Recovered coworker {} for orphaned task !{}",
-                    recovery.owner, recovery.task_id
-                ),
-            },
-        ],
+        on_success,
         on_failure: vec![
             Effect::RecordCooldown {
                 category: "spawn_failure".to_string(),
@@ -835,8 +866,17 @@ pub(super) fn spawn_for_pending_tasks(
                     &format!("You've been assigned task !{}: {}. Get started!", tid, subj),
                 );
 
-                // Compute worktree details for task-based worktree
-                let worktree_id = crate::worktree_registry::branch_slug_for_task(tid, subj);
+                // Reuse existing worktree if one is registered for this task (reassignment case).
+                // Otherwise, compute a new worktree_id from the task subject.
+                let (worktree_id, needs_registration) =
+                    if let Some(existing_wt_id) = snap.task_worktree_map.get(tid.as_str()) {
+                        (existing_wt_id.clone(), false)
+                    } else {
+                        (
+                            crate::worktree_registry::branch_slug_for_task(tid, subj),
+                            true,
+                        )
+                    };
                 let wt_path =
                     crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
 
@@ -847,9 +887,6 @@ pub(super) fn spawn_for_pending_tasks(
                     Some(prompt),
                 );
                 config.working_dir = Some(wt_path.clone());
-
-                // Check if task already has a worktree registered (recovery/reassignment case)
-                let needs_registration = !snap.tasks_with_worktrees.contains(tid);
 
                 let mut spawn_effects = Vec::new();
 
@@ -1156,9 +1193,17 @@ pub(super) fn spawn_for_pending_tasks(
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
-            // Compute worktree details for task-based worktree
-            let worktree_id =
-                crate::worktree_registry::branch_slug_for_task(&task.id, &task.subject);
+            // Reuse existing worktree if one is registered for this task (reassignment case).
+            // Otherwise, compute a new worktree_id from the task subject.
+            let (worktree_id, needs_registration) =
+                if let Some(existing_wt_id) = snap.task_worktree_map.get(&task.id) {
+                    (existing_wt_id.clone(), false)
+                } else {
+                    (
+                        crate::worktree_registry::branch_slug_for_task(&task.id, &task.subject),
+                        true,
+                    )
+                };
             let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
 
             let mut config = crate::launch::LaunchConfig::coworker(
@@ -1168,9 +1213,6 @@ pub(super) fn spawn_for_pending_tasks(
                 Some(prompt.clone()),
             );
             config.working_dir = Some(wt_path.clone());
-
-            // Check if task already has a worktree registered (unlikely for unowned, but handles recovery)
-            let needs_registration = !snap.tasks_with_worktrees.contains(&task.id);
 
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
@@ -1882,6 +1924,7 @@ mod tests {
                 created_at: Some(SystemTime::now()),
             }],
             tasks_with_worktrees: HashSet::new(), // Task not in registry yet
+            task_worktree_map: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
             running_coworkers: vec![],
@@ -1997,6 +2040,9 @@ mod tests {
                 "lexington".to_string(),
             )],
             tasks_with_worktrees: ["42".to_string()].into_iter().collect(), // Task already has worktree
+            task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
+                .into_iter()
+                .collect(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
             active_reviewers: HashSet::new(),
@@ -2068,6 +2114,351 @@ mod tests {
             bind_count, 1,
             "Should generate BindCoworkerToWorktree to rebind"
         );
+    }
+
+    // ======================================================================
+    // Worktree reuse on reassignment tests
+    // ======================================================================
+
+    #[test]
+    fn test_orphan_recovery_reuses_existing_task_worktree() {
+        // Scenario: Task !42 was owned by "lexington" who died. The task has
+        // an existing worktree "task-42-add-auth-endpoint" registered. When
+        // recovering, the spawn should reuse that worktree and bind the coworker.
+        let snap = snapshot::WorldSnapshot {
+            in_progress_tasks: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "lexington".to_string(),
+            )],
+            active_names: HashSet::new(), // lexington is NOT active (orphaned)
+            coworkers_with_open_prs: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
+            task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
+                .into_iter()
+                .collect(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        let state = make_test_state();
+        let effects = check_and_recover_orphans(&snap, &state);
+
+        assert_eq!(
+            effects.len(),
+            1,
+            "Should generate exactly one top-level effect"
+        );
+
+        // Verify SpawnCoworkerWithCallbacks has working_dir set to the existing worktree
+        let spawn = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::SpawnCoworkerWithCallbacks {
+                    config, on_success, ..
+                } = e
+                {
+                    Some((config, on_success))
+                } else {
+                    None
+                }
+            })
+            .expect("Should have SpawnCoworkerWithCallbacks");
+
+        let (config, on_success) = spawn;
+
+        // Working dir should point to the existing worktree
+        let expected_path =
+            crate::paths::worktrees_dir_for_repo("test-repo").join("task-42-add-auth-endpoint");
+        assert_eq!(
+            config.working_dir,
+            Some(expected_path),
+            "Should set working_dir to the existing task worktree"
+        );
+
+        // on_success should include EnsureWorktree and BindCoworkerToWorktree
+        let ensure_count = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::EnsureWorktree { worktree_id, .. } if worktree_id == "task-42-add-auth-endpoint"))
+            .count();
+        let bind_count = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { worktree_id, coworker } if worktree_id == "task-42-add-auth-endpoint" && coworker == "lexington"))
+            .count();
+
+        assert_eq!(
+            ensure_count, 1,
+            "Should have EnsureWorktree for existing worktree"
+        );
+        assert_eq!(
+            bind_count, 1,
+            "Should have BindCoworkerToWorktree to rebind"
+        );
+
+        // Should NOT have RegisterWorktreeAssignment (worktree already registered)
+        let register_count = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+            .count();
+        assert_eq!(
+            register_count, 0,
+            "Should NOT register worktree again (already exists)"
+        );
+    }
+
+    #[test]
+    fn test_orphan_recovery_without_worktree_has_no_working_dir() {
+        // Scenario: Task !42 was owned by "lexington" who died, but the task
+        // has NO worktree registered (legacy/pre-registry task). The spawn
+        // should not set working_dir (falls back to name-based worktree).
+        let snap = snapshot::WorldSnapshot {
+            in_progress_tasks: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "lexington".to_string(),
+            )],
+            active_names: HashSet::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            tasks_with_worktrees: HashSet::new(), // No worktree registered
+            task_worktree_map: HashMap::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        let state = make_test_state();
+        let effects = check_and_recover_orphans(&snap, &state);
+
+        assert_eq!(effects.len(), 1);
+
+        let spawn = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::SpawnCoworkerWithCallbacks {
+                    config, on_success, ..
+                } = e
+                {
+                    Some((config, on_success))
+                } else {
+                    None
+                }
+            })
+            .expect("Should have SpawnCoworkerWithCallbacks");
+
+        let (config, on_success) = spawn;
+
+        // Working dir should NOT be set (no registered worktree)
+        assert!(
+            config.working_dir.is_none(),
+            "Should not set working_dir when no worktree is registered"
+        );
+
+        // on_success should NOT include EnsureWorktree or BindCoworkerToWorktree
+        let ensure_count = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
+            .count();
+        let bind_count = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
+            .count();
+
+        assert_eq!(ensure_count, 0, "Should not have EnsureWorktree");
+        assert_eq!(bind_count, 0, "Should not have BindCoworkerToWorktree");
+    }
+
+    #[test]
+    fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
+        // Scenario: Task !42 was previously owned by another coworker who died.
+        // The task was reset to pending (no owner). It already has a worktree
+        // "task-42-add-auth-endpoint" registered. A new coworker should reuse it.
+        use crate::tasks::{Task, TaskStatus};
+        use std::time::SystemTime;
+
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_without_owners: vec![Task {
+                id: "42".to_string(),
+                subject: "Add auth endpoint".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                blocked_by: vec![],
+                description: None,
+                created_at: Some(SystemTime::now()),
+            }],
+            tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
+            task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
+                .into_iter()
+                .collect(),
+            is_at_dev_limit: false,
+            active_names: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        let state = make_test_state();
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        assert_eq!(effects.len(), 1);
+
+        let assign_and_spawn = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::AssignAndSpawn {
+                    config, on_success, ..
+                } = e
+                {
+                    Some((config, on_success))
+                } else {
+                    None
+                }
+            })
+            .expect("Should have AssignAndSpawn");
+
+        let (config, on_success) = assign_and_spawn;
+
+        // Working dir should point to the EXISTING worktree (not a freshly computed one)
+        let expected_path =
+            crate::paths::worktrees_dir_for_repo("test-repo").join("task-42-add-auth-endpoint");
+        assert_eq!(
+            config.working_dir,
+            Some(expected_path),
+            "Should reuse existing worktree path"
+        );
+
+        // Should NOT generate RegisterWorktreeAssignment (worktree already exists)
+        let register_count = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+            .count();
+        assert_eq!(
+            register_count, 0,
+            "Should NOT re-register existing worktree"
+        );
+
+        // SHOULD generate BindCoworkerToWorktree with the existing worktree_id
+        let bind_effects: Vec<_> = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
+            .collect();
+        assert_eq!(
+            bind_effects.len(),
+            1,
+            "Should bind coworker to existing worktree"
+        );
+
+        if let Effect::BindCoworkerToWorktree { worktree_id, .. } = bind_effects[0] {
+            assert_eq!(
+                worktree_id, "task-42-add-auth-endpoint",
+                "Should bind to the existing worktree, not a new one"
+            );
+        }
+
+        // SHOULD generate EnsureWorktree with the existing worktree_id
+        let ensure_effects: Vec<_> = on_success
+            .iter()
+            .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
+            .collect();
+        assert_eq!(
+            ensure_effects.len(),
+            1,
+            "Should ensure existing worktree exists"
+        );
+
+        if let Effect::EnsureWorktree { worktree_id, .. } = ensure_effects[0] {
+            assert_eq!(
+                worktree_id, "task-42-add-auth-endpoint",
+                "Should ensure the existing worktree, not a new one"
+            );
+        }
     }
 
     /// Helper to create minimal DaemonState for testing
