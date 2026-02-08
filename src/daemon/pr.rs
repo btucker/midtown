@@ -2690,6 +2690,44 @@ fn collect_stale_check_effects_with_time(
     effects
 }
 
+/// Generate cleanup effects for recently merged PRs.
+///
+/// Looks up worktrees by PR number in the registry and generates
+/// CleanupMergedWorktree effects to remove the worktree directory and
+/// registry entry after the PR is merged.
+///
+/// Called during polling ticks to clean up task-based worktrees after
+/// their PRs are merged.
+pub(super) async fn collect_merged_pr_cleanup_effects(
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    // Get branch names for merged PRs from the registry
+    let worktrees_to_cleanup: Vec<(u64, String)> = {
+        let ps = state.persistent_state.lock().await;
+        snap.merged_pr_numbers
+            .iter()
+            .filter_map(|&pr_num| {
+                ps.worktree_registry
+                    .get_by_pr(pr_num)
+                    .map(|assignment| (pr_num, assignment.branch_name.clone()))
+            })
+            .collect()
+    };
+
+    for (pr_number, branch) in worktrees_to_cleanup {
+        debug!(
+            "PR #{} merged, scheduling worktree cleanup for branch {}",
+            pr_number, branch
+        );
+        effects.push(Effect::CleanupMergedWorktree { pr_number, branch });
+    }
+
+    effects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
