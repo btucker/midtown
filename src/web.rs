@@ -318,6 +318,7 @@ pub struct CoworkerStatusData {
     pub name: String,
     pub status: String,
     pub current_task: Option<String>,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -725,6 +726,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                         "status": cw.status.to_string(),
                         "current_task": current_task,
                         "started_at": cw.started_at.to_rfc3339(),
+                        "model": cw.model,
                     })
                 })
                 .collect()
@@ -1380,11 +1382,17 @@ pub fn create_updates_channel() -> (broadcast::Sender<WebUpdate>, broadcast::Rec
 }
 
 /// Build a `WebUpdate` for a coworker status change.
-pub fn coworker_status_update(name: &str, status: &str, current_task: Option<&str>) -> WebUpdate {
+pub fn coworker_status_update(
+    name: &str,
+    status: &str,
+    current_task: Option<&str>,
+    model: &str,
+) -> WebUpdate {
     WebUpdate::CoworkerStatus(CoworkerStatusData {
         name: name.to_string(),
         status: status.to_string(),
         current_task: current_task.map(|s| s.to_string()),
+        model: model.to_string(),
     })
 }
 
@@ -1394,8 +1402,9 @@ pub fn broadcast_coworker_status(
     name: &str,
     status: &str,
     current_task: Option<&str>,
+    model: &str,
 ) {
-    let _ = tx.send(coworker_status_update(name, status, current_task));
+    let _ = tx.send(coworker_status_update(name, status, current_task, model));
 }
 
 /// Broadcast lead typing/working status to all WebSocket clients

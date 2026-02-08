@@ -673,10 +673,13 @@ impl DaemonState {
         // Register in the CoworkerManager tracking map
         // session_id is None initially — it arrives later via the init StreamEvent
         let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
-        if let Err(e) = self
-            .coworkers
-            .register(&name, working_dir, None, isolated_tasks)
-        {
+        if let Err(e) = self.coworkers.register(
+            &name,
+            working_dir,
+            None,
+            isolated_tasks,
+            config.model.clone(),
+        ) {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
             tracing::warn!(
@@ -905,7 +908,18 @@ impl DaemonState {
 
     /// Broadcast a coworker status change to WebSocket clients.
     fn broadcast_coworker_update(&self, name: &str, status: &str, current_task: Option<&str>) {
-        self.broadcast_web_update(web::coworker_status_update(name, status, current_task));
+        // Look up the model from the coworker manager, defaulting to "sonnet" if not found
+        let model = self
+            .coworkers
+            .get(name)
+            .map(|cw| cw.model.clone())
+            .unwrap_or_else(|| "sonnet".to_string());
+        self.broadcast_web_update(web::coworker_status_update(
+            name,
+            status,
+            current_task,
+            &model,
+        ));
     }
 }
 

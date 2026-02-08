@@ -94,6 +94,13 @@ pub struct Coworker {
     /// Isolated coworkers are sent on a break immediately when they go idle.
     #[serde(default)]
     pub isolated_tasks: bool,
+    /// The Claude model this coworker is using (e.g., "sonnet", "opus", "haiku")
+    #[serde(default = "default_model")]
+    pub model: String,
+}
+
+fn default_model() -> String {
+    "sonnet".to_string()
 }
 
 impl Coworker {
@@ -111,6 +118,7 @@ impl Coworker {
             current_task: None,             // Will be discovered via task tracking
             session_id: None,               // Will be set when coworker registers
             isolated_tasks: false,          // Assume shared task list (conservative default)
+            model: default_model(),         // Default to sonnet for recovered sessions
         }
     }
 }
@@ -301,6 +309,7 @@ impl CoworkerManager {
                 current_task: None,     // Will be discovered via task tracking
                 session_id: None,       // Will be set when coworker registers
                 isolated_tasks: false,
+                model: default_model(), // Unknown for discovered sessions, assume sonnet
             };
 
             coworkers.insert(window_name.clone(), coworker);
@@ -1096,6 +1105,7 @@ impl CoworkerManager {
         working_dir: String,
         session_id: Option<String>,
         isolated_tasks: bool,
+        model: String,
     ) -> crate::Result<()> {
         let mut coworkers = self.coworkers.write().unwrap();
 
@@ -1129,6 +1139,7 @@ impl CoworkerManager {
             current_task: None,
             session_id,
             isolated_tasks,
+            model,
         };
         coworkers.insert(name.to_string(), coworker);
 
@@ -1157,7 +1168,13 @@ impl CoworkerManager {
         let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
 
         // Register with TOCTTOU race check
-        if let Err(e) = self.register(name, working_dir, Some(session_id), isolated_tasks) {
+        if let Err(e) = self.register(
+            name,
+            working_dir,
+            Some(session_id),
+            isolated_tasks,
+            config.model.clone(),
+        ) {
             // Race condition: another spawn beat us to it. Clean up the tmux
             // window we just created and return an error.
             tracing::warn!(
@@ -1288,6 +1305,7 @@ impl CoworkerManager {
                 current_task: None,             // Will be discovered via task tracking
                 session_id: None,               // PROVISIONAL - signals register() can update
                 isolated_tasks: false,          // PROVISIONAL - will be updated by register()
+                model: default_model(),         // PROVISIONAL - unknown for recovered sessions
             };
             coworkers.insert(headless_name.clone(), coworker);
             tracing::info!(
