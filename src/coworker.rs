@@ -271,9 +271,10 @@ impl CoworkerManager {
                 .to_string_lossy()
                 .to_string();
 
-            // Create a coworker entry
-            // Assume not isolated (shared task list) for discovered coworkers - they were
-            // likely regular coworkers. Isolated review coworkers go on a break when idle anyway.
+            // Create a coworker entry.
+            // Default to isolated (private task list) since all spawned coworkers
+            // use TaskMode::Isolated. Only the Lead uses shared mode, and it's
+            // never discovered through this path.
             let coworker = Coworker {
                 name: window_name.clone(),
                 status: CoworkerStatus::Running,
@@ -281,7 +282,7 @@ impl CoworkerManager {
                 started_at: Utc::now(), // Unknown, use now as approximation
                 current_task: None,     // Will be discovered via task tracking
                 session_id: None,       // Will be set when coworker registers
-                isolated_tasks: false,
+                isolated_tasks: true,
             };
 
             coworkers.insert(window_name.clone(), coworker);
@@ -1050,14 +1051,26 @@ impl CoworkerManager {
     ) -> crate::Result<()> {
         let mut coworkers = self.coworkers.write().unwrap();
 
-        if coworkers.contains_key(name) {
-            return Err(crate::Error::Rpc {
-                code: -32603,
-                message: format!(
-                    "Coworker {} was registered by another concurrent request",
-                    name
-                ),
-            });
+        if let Some(existing) = coworkers.get(name) {
+            if existing.session_id.is_some() {
+                // Fully registered coworker — this is a true duplicate spawn race.
+                // Reject so the caller can clean up the orphaned session.
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!(
+                        "Coworker {} was registered by another concurrent request",
+                        name
+                    ),
+                });
+            }
+            // Provisional entry from sync_with_tmux() recovery (session_id: None).
+            // Replace it with the real registration data. This resolves the race
+            // where sync_with_tmux() discovers a headless session between
+            // SessionManager::spawn() and register().
+            tracing::info!(
+                "Replacing provisional recovery entry for {} with real registration",
+                name
+            );
         }
 
         let coworker = Coworker {
@@ -1178,7 +1191,8 @@ impl CoworkerManager {
 
             let working_dir = worktree_path.to_string_lossy().to_string();
 
-            // Create a coworker entry for this undiscovered coworker
+            // Create a coworker entry for this undiscovered coworker.
+            // Default to isolated since all spawned coworkers use TaskMode::Isolated.
             let coworker = Coworker {
                 name: window_name.clone(),
                 status: CoworkerStatus::Running,
@@ -1186,7 +1200,7 @@ impl CoworkerManager {
                 started_at: chrono::Utc::now(), // Unknown, use now as approximation
                 current_task: None,             // Will be discovered via task tracking
                 session_id: None,               // Will be set when coworker registers
-                isolated_tasks: false,          // Assume shared task list (conservative default)
+                isolated_tasks: true,           // All coworkers use isolated task lists
             };
 
             coworkers.insert(window_name.clone(), coworker);
@@ -1810,6 +1824,80 @@ mod tests {
         assert!(
             result.is_err(),
             "shutdown should error for untracked coworker"
+        );
+    }
+
+    #[test]
+    fn test_register_replaces_recovered_entry() {
+        // Reproduces the recovery-registration race:
+        // 1. sync_with_tmux() creates a recovered entry (session_id: None)
+        // 2. spawn_coworker() calls register() with the real session info
+        // Expected: register() should replace the recovered entry, not reject it
+        let (manager, _temp_dir) = test_manager();
+
+        // Simulate sync_with_tmux() creating a recovered entry
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "madison".to_string(),
+                Coworker {
+                    name: "madison".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp/old".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None, // Recovered entry — no session_id yet
+                    isolated_tasks: false,
+                },
+            );
+        }
+
+        // Now register() should succeed by replacing the recovered entry
+        let result = manager.register("madison", "/tmp/real".to_string(), None, true);
+        assert!(
+            result.is_ok(),
+            "register() should replace a recovered entry (session_id: None), got: {:?}",
+            result.err()
+        );
+
+        // Verify the entry was replaced with the correct values
+        let coworkers = manager.coworkers.read().unwrap();
+        let madison = coworkers.get("madison").unwrap();
+        assert_eq!(madison.working_dir, "/tmp/real");
+        assert!(
+            madison.isolated_tasks,
+            "isolated_tasks should be true (from register), not false (from recovery)"
+        );
+    }
+
+    #[test]
+    fn test_register_rejects_already_registered_entry() {
+        // When a coworker has a real session_id, it's fully registered.
+        // A second register() call should be rejected (true duplicate).
+        let (manager, _temp_dir) = test_manager();
+
+        // Insert a fully registered coworker (has session_id)
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "park".to_string(),
+                Coworker {
+                    name: "park".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp/real".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: Some("abc-123".to_string()),
+                    isolated_tasks: true,
+                },
+            );
+        }
+
+        // register() should reject this — it's a real duplicate, not a recovered entry
+        let result = manager.register("park", "/tmp/other".to_string(), None, false);
+        assert!(
+            result.is_err(),
+            "register() should reject when coworker already has a session_id"
         );
     }
 }
