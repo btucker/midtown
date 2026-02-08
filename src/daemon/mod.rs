@@ -588,6 +588,9 @@ impl DaemonState {
 
         let user_display_name = config::get_user_display_name_for_project(&repo_name);
 
+        // Clone repo_name for session_manager before moving it into Self
+        let session_manager_repo_name = repo_name.clone();
+
         Ok(Self {
             coworkers,
             channel,
@@ -623,7 +626,7 @@ impl DaemonState {
             pending_task_creations: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
-            session_manager: sessions::SessionManager::new(),
+            session_manager: sessions::SessionManager::new(session_manager_repo_name),
         })
     }
 

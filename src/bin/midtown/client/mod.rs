@@ -222,6 +222,10 @@ impl DaemonClient {
         self.send("coworker.list", None)
     }
 
+    pub fn coworker_view(&self, name: &str) -> Result<Response, String> {
+        self.send("coworker.view", Some(serde_json::json!({ "name": name })))
+    }
+
     pub fn coworker_nudge(&self, name: &str, message: Option<&str>) -> Result<Response, String> {
         // Use MIDTOWN_AGENT env var for sender, defaulting to "lead"
         let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());

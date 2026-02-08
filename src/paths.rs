@@ -167,6 +167,21 @@ pub fn coworkers_dir_for_repo(repo: &str) -> PathBuf {
     midtown_base_dir().join("coworkers").join(repo)
 }
 
+/// Get the headless session output log file for a coworker.
+///
+/// Returns `~/.midtown/projects/<repo>/headless-<name>.jsonl`.
+///
+/// This file stores all StreamEvents from a headless coworker session,
+/// enabling `midtown coworker view` to read recent output and providing
+/// persistent debug logs.
+pub fn headless_output_file(repo: &str, coworker_name: &str) -> PathBuf {
+    auto_migrate(repo);
+    midtown_base_dir()
+        .join("projects")
+        .join(repo)
+        .join(format!("headless-{}.jsonl", coworker_name))
+}
+
 /// Get the task-based worktrees directory for a specific repository.
 ///
 /// Returns `~/.midtown/worktrees/<repo>/`.

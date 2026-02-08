@@ -108,7 +108,7 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown coworker call-in [--resume] [--prompt <msg>]` | Call in a new coworker |
 | `midtown coworker break <name>` | Send a coworker on a break |
 | `midtown coworker list` | List all coworkers |
-| `midtown coworker view <name>` | View a coworker's terminal output |
+| `midtown coworker view <name>` | View a coworker's terminal output (supports both tmux and headless sessions) |
 | `midtown coworker nudge <name> [--message <msg>]` | Nudge a coworker to check in |
 
 ### Session Management (Attach/Detach)

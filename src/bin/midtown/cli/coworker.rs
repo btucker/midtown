@@ -44,22 +44,22 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
         }
         CoworkerCommand::Break { name } => client.coworker_break(name),
         CoworkerCommand::List => client.coworker_list(),
-        CoworkerCommand::View { name } => handle_view(name),
+        CoworkerCommand::View { name } => handle_view(name, client),
         CoworkerCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),
     }
 }
 
-fn handle_view(name: &str) -> Result<Response, String> {
+fn handle_view(name: &str, client: &DaemonClient) -> Result<Response, String> {
     let repo_name =
         midtown::paths::detect_repo_name().ok_or_else(|| "Not in a git repository".to_string())?;
     let session = format!("{}{}", midtown::tmux::SESSION_PREFIX, repo_name);
     let target = format!("{}:{}", session, name);
 
-    match midtown::tmux::capture_pane(&target) {
-        Some(content) => Ok(Response::message(content)),
-        None => Err(format!(
-            "Could not capture pane for coworker '{}'. Is the coworker running?",
-            name
-        )),
+    // Try tmux pane capture first (for headed coworkers)
+    if let Some(content) = midtown::tmux::capture_pane(&target) {
+        return Ok(Response::message(content));
     }
+
+    // Fall back to headless session output via RPC
+    client.coworker_view(name)
 }

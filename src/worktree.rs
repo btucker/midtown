@@ -106,9 +106,14 @@ impl WorktreeManager {
     pub fn create(&self, coworker_name: &str) -> WorktreeResult<PathBuf> {
         let worktree_path = self.worktree_path(coworker_name);
 
-        // Check if worktree already exists
+        // Check if worktree already exists and is valid (idempotent)
+        if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
+            return Ok(worktree_path);
+        }
+
+        // Path exists but not registered with git - remove it first
         if worktree_path.exists() {
-            return Err(WorktreeError::AlreadyExists(worktree_path));
+            let _ = std::fs::remove_dir_all(&worktree_path);
         }
 
         // Ensure the base directory exists
@@ -292,6 +297,50 @@ impl WorktreeManager {
         let worktrees = parse_worktree_list(&stdout, &self.worktrees_base);
 
         Ok(worktrees)
+    }
+
+    /// Check if a worktree path is registered with git and valid.
+    ///
+    /// Returns true if the path exists in `git worktree list`, false otherwise.
+    fn is_worktree_registered(&self, path: &Path) -> bool {
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(["worktree", "list", "--porcelain"])
+            .output();
+
+        if let Ok(output) = output
+            && output.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.starts_with("worktree ")
+                    && let Some(worktree_path) = line.strip_prefix("worktree ")
+                    && Path::new(worktree_path) == path
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the current branch name for a worktree.
+    ///
+    /// Returns None if the worktree is in detached HEAD state or on an error.
+    fn get_worktree_branch(&self, worktree_path: &Path) -> Option<String> {
+        let output = Command::new("git")
+            .current_dir(worktree_path)
+            .args(["branch", "--show-current"])
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !branch.is_empty() {
+                return Some(branch);
+            }
+        }
+        None
     }
 
     /// Get the repository root path.
@@ -714,8 +763,22 @@ impl WorktreeManager {
     pub fn create_task_worktree(&self, worktree_id: &str) -> WorktreeResult<PathBuf> {
         let worktree_path = self.task_worktree_path(worktree_id);
 
+        // Check if worktree already exists and is valid (idempotent)
+        if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
+            // Validate that the existing worktree is on the expected branch
+            let actual_branch = self.get_worktree_branch(&worktree_path);
+            if actual_branch.as_deref() != Some(worktree_id) {
+                return Err(WorktreeError::GitError(format!(
+                    "Worktree exists but branch mismatch: expected '{}', got {:?}",
+                    worktree_id, actual_branch
+                )));
+            }
+            return Ok(worktree_path);
+        }
+
+        // Path exists but not registered with git - remove it first
         if worktree_path.exists() {
-            return Err(WorktreeError::AlreadyExists(worktree_path));
+            let _ = std::fs::remove_dir_all(&worktree_path);
         }
 
         if let Some(parent) = worktree_path.parent() {
@@ -799,6 +862,17 @@ impl WorktreeManager {
             } else {
                 return Err(WorktreeError::GitError(stderr));
             }
+        }
+
+        // Validate that the worktree is on the expected branch
+        // This ensures registry data matches actual git state even if error recovery
+        // paths checked out a different branch
+        let actual_branch = self.get_worktree_branch(&worktree_path);
+        if actual_branch.as_deref() != Some(worktree_id) {
+            return Err(WorktreeError::GitError(format!(
+                "Worktree created but branch mismatch: expected '{}', got {:?}",
+                worktree_id, actual_branch
+            )));
         }
 
         Ok(worktree_path)
