@@ -1288,11 +1288,12 @@ async fn handle_client_message(
                 .as_ref()
                 .ok_or_else(|| "Coworker manager not available".to_string())?;
 
+            // Use immediate nudge for web UI - user expects instant delivery
             coworkers
-                .nudge_lead(&message)
+                .nudge_lead_immediate(&message)
                 .map_err(|e| format!("Failed to nudge lead: {}", e))?;
 
-            info!("Nudge sent to {} via web UI: {}", target, message);
+            info!("Immediate nudge sent to {} via web UI: {}", target, message);
         }
         ClientMessage::SendKey { target, key } => {
             // Validate target name

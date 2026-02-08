@@ -753,6 +753,29 @@ impl CoworkerManager {
             })
     }
 
+    /// Send an immediate nudge to the lead, bypassing the wait-for-empty queue.
+    ///
+    /// Unlike `nudge_lead()`, this sends the nudge immediately via tmux send-keys
+    /// without waiting for the lead's input prompt to be empty. This is intended
+    /// for user-initiated nudges from the web UI where immediate delivery is expected.
+    ///
+    /// The daemon's automatic nudges should use `nudge_lead()` to avoid interrupting
+    /// the user mid-typing.
+    pub fn nudge_lead_immediate(&self, message: &str) -> crate::Result<()> {
+        // Check if lead window exists
+        if !tmux::window_exists(&self.session_name, "lead")? {
+            return Err(crate::Error::Rpc {
+                code: -32602,
+                message: "Lead session not found".to_string(),
+            });
+        }
+
+        // Send keys to the lead's Claude Code pane (pane .0), NOT the chat pane (.1).
+        tmux::send_keys(&self.session_name, "lead.0", message)?;
+
+        Ok(())
+    }
+
     /// Send a special key (like Escape) to a coworker or the lead.
     ///
     /// Unlike nudge, this sends a raw key without text, useful for canceling
