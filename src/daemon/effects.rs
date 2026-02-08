@@ -194,11 +194,23 @@ pub enum Effect {
     /// removes it from the registry, and deletes the worktree directory.
     #[allow(dead_code)]
     CleanupMergedWorktree { pr_number: u64, branch: String },
+    /// Ensure a task-based worktree exists at the specified path.
+    ///
+    /// Creates the worktree if it doesn't exist, or succeeds idempotently
+    /// if it already exists. Must be executed BEFORE SpawnCoworker effects
+    /// that depend on the worktree.
+    ///
+    /// This follows the effect-based architecture: worktree creation is a
+    /// side effect that must go through the Effect pipeline, not happen
+    /// inline in spawn_coworker().
+    EnsureWorktree {
+        worktree_id: String,
+        path: std::path::PathBuf,
+    },
     /// Bind a coworker to a worktree in the registry.
     ///
     /// Called when a coworker is assigned to work in an existing task-based
     /// worktree. Updates the registry's reverse indexes.
-    #[allow(dead_code)]
     BindCoworkerToWorktree {
         worktree_id: String,
         coworker: String,
@@ -212,7 +224,6 @@ pub enum Effect {
     /// Register a new task-based worktree assignment in the registry.
     ///
     /// Called during task dispatch when a new worktree is allocated for a task.
-    #[allow(dead_code)]
     RegisterWorktreeAssignment {
         assignment: crate::worktree_registry::WorktreeAssignment,
     },
@@ -893,6 +904,24 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Failed to save daemon state after unbinding coworker: {}",
                         e
                     );
+                }
+            }
+            Effect::EnsureWorktree { worktree_id, path } => {
+                if path.exists() {
+                    debug!(
+                        "Worktree {} already exists at {}, reusing",
+                        worktree_id,
+                        path.display()
+                    );
+                } else {
+                    info!("Creating worktree {} at {}", worktree_id, path.display());
+                    if let Err(e) = state
+                        .coworkers
+                        .worktree_manager()
+                        .create_task_worktree(&worktree_id)
+                    {
+                        warn!("Failed to create worktree {}: {}", worktree_id, e);
+                    }
                 }
             }
             Effect::RegisterWorktreeAssignment { assignment } => {

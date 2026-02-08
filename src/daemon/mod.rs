@@ -650,6 +650,9 @@ impl DaemonState {
         }
 
         // Prepare worktree and augment config with additional dirs
+        // Note: Worktree creation now happens via Effect::EnsureWorktree in the
+        // decision layer (rules.rs), not inline here. This follows the effect-based
+        // architecture: I/O goes through the Effect pipeline.
         let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
 
         // Build headless config from the unified launch config

@@ -98,28 +98,103 @@ pub async fn evaluate_tick(
 /// Non-spawn effects are always preserved.
 fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
     let mut seen_spawns: HashSet<String> = HashSet::new();
-    effects
-        .into_iter()
-        .filter(|effect| {
-            let spawn_name = match effect {
-                Effect::SpawnCoworker(config) => Some(config.name.to_lowercase()),
-                Effect::SpawnCoworkerWithCallbacks { config, .. } => {
-                    Some(config.name.to_lowercase())
+    let mut result: Vec<Effect> = Vec::new();
+    let mut registry_effects: Vec<Effect> = Vec::new();
+
+    for effect in effects {
+        let spawn_name = match &effect {
+            Effect::SpawnCoworker(config) => Some(config.name.to_lowercase()),
+            Effect::SpawnCoworkerWithCallbacks { config, .. } => Some(config.name.to_lowercase()),
+            Effect::AssignAndSpawn { config, .. } => Some(config.name.to_lowercase()),
+            Effect::ResumeCoworker { name, .. } => Some(name.to_lowercase()),
+            _ => None,
+        };
+
+        if let Some(name) = spawn_name {
+            if seen_spawns.contains(&name) {
+                tracing::debug!("Deduplicated duplicate spawn effect for '{}'", name);
+
+                // Extract and preserve registry effects from the dropped spawn
+                let on_success_effects = match effect {
+                    Effect::SpawnCoworkerWithCallbacks { on_success, .. } => on_success,
+                    Effect::AssignAndSpawn { on_success, .. } => on_success,
+                    _ => vec![],
+                };
+
+                for extracted_effect in on_success_effects {
+                    if is_registry_effect(&extracted_effect) {
+                        registry_effects.push(extracted_effect);
+                    }
                 }
-                Effect::AssignAndSpawn { config, .. } => Some(config.name.to_lowercase()),
-                Effect::ResumeCoworker { name, .. } => Some(name.to_lowercase()),
-                _ => None,
-            };
-            if let Some(name) = spawn_name {
-                if seen_spawns.contains(&name) {
-                    tracing::debug!("Deduplicated duplicate spawn effect for '{}'", name);
-                    return false;
-                }
-                seen_spawns.insert(name);
+                continue;
             }
-            true
-        })
-        .collect()
+
+            // First spawn for this coworker - extract its registry effects and add to
+            // the top level, then reconstruct the spawn without those effects
+            let (modified_effect, extracted_registry) = match effect {
+                Effect::SpawnCoworkerWithCallbacks {
+                    config,
+                    on_success,
+                    on_failure,
+                } => {
+                    let (registry, other): (Vec<_>, Vec<_>) =
+                        on_success.into_iter().partition(is_registry_effect);
+                    (
+                        Effect::SpawnCoworkerWithCallbacks {
+                            config,
+                            on_success: other,
+                            on_failure,
+                        },
+                        registry,
+                    )
+                }
+                Effect::AssignAndSpawn {
+                    task_id,
+                    owner,
+                    repo_name,
+                    config,
+                    on_success,
+                    on_failure,
+                } => {
+                    let (registry, other): (Vec<_>, Vec<_>) =
+                        on_success.into_iter().partition(is_registry_effect);
+                    (
+                        Effect::AssignAndSpawn {
+                            task_id,
+                            owner,
+                            repo_name,
+                            config,
+                            on_success: other,
+                            on_failure,
+                        },
+                        registry,
+                    )
+                }
+                other => (other, vec![]),
+            };
+
+            registry_effects.extend(extracted_registry);
+            result.push(modified_effect);
+            seen_spawns.insert(name);
+        } else {
+            result.push(effect);
+        }
+    }
+
+    // Append all collected registry effects at the end
+    result.extend(registry_effects);
+    result
+}
+
+/// Check if an effect is a registry-related effect that should be preserved
+/// when spawn effects are deduplicated.
+fn is_registry_effect(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::RegisterWorktreeAssignment { .. }
+            | Effect::BindCoworkerToWorktree { .. }
+            | Effect::SetWorktreePrNumber { .. }
+    )
 }
 
 #[cfg(test)]
@@ -138,6 +213,7 @@ mod tests {
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         })
     }
 
@@ -209,6 +285,7 @@ mod tests {
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         Effect::SpawnCoworkerWithCallbacks {
             config,
@@ -228,6 +305,7 @@ mod tests {
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         Effect::AssignAndSpawn {
             task_id: "1".to_string(),
@@ -267,6 +345,110 @@ mod tests {
         assert!(
             matches!(&deduped[0], Effect::AssignAndSpawn { config, .. } if config.name == "lexington"),
             "First effect should be AssignAndSpawn for lexington"
+        );
+    }
+
+    #[test]
+    fn dedup_preserves_registry_effects_from_dropped_spawns() {
+        // Issue #8 from PR #752 review: When two tasks are assigned to the same
+        // coworker in one tick, the second AssignAndSpawn is dropped entirely,
+        // losing its RegisterWorktreeAssignment effect.
+        use crate::worktree_registry::WorktreeAssignment;
+
+        let config1 = LaunchConfig {
+            name: "lexington".to_string(),
+            session_mode: SessionMode::Fresh,
+            task_mode: TaskMode::Isolated,
+            role: CoworkerRole::Coworker,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            restrict_setting_sources: false,
+            pr_number: None,
+            team_name: None,
+            working_dir: None,
+        };
+
+        let config2 = config1.clone();
+
+        // First spawn with task-123 worktree assignment
+        let spawn1 = Effect::AssignAndSpawn {
+            task_id: "123".to_string(),
+            owner: "lexington".to_string(),
+            repo_name: "test".to_string(),
+            config: config1,
+            on_success: vec![Effect::RegisterWorktreeAssignment {
+                assignment: WorktreeAssignment {
+                    worktree_id: "task-123-foo".to_string(),
+                    branch_name: "task-123-foo".to_string(),
+                    task_id: Some("123".to_string()),
+                    current_coworker: None,
+                    pr_number: None,
+                    created_at: chrono::Utc::now(),
+                },
+            }],
+            on_failure: vec![],
+        };
+
+        // Second spawn with task-456 worktree assignment (different task, same coworker)
+        let spawn2 = Effect::AssignAndSpawn {
+            task_id: "456".to_string(),
+            owner: "lexington".to_string(),
+            repo_name: "test".to_string(),
+            config: config2,
+            on_success: vec![Effect::RegisterWorktreeAssignment {
+                assignment: WorktreeAssignment {
+                    worktree_id: "task-456-bar".to_string(),
+                    branch_name: "task-456-bar".to_string(),
+                    task_id: Some("456".to_string()),
+                    current_coworker: None,
+                    pr_number: None,
+                    created_at: chrono::Utc::now(),
+                },
+            }],
+            on_failure: vec![],
+        };
+
+        let effects = vec![spawn1, spawn2];
+        let deduped = dedup_spawn_effects(effects);
+
+        // The spawn should be deduplicated (only one spawn for lexington)
+        let spawn_count = deduped
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::AssignAndSpawn { .. }
+                        | Effect::SpawnCoworker(_)
+                        | Effect::SpawnCoworkerWithCallbacks { .. }
+                )
+            })
+            .count();
+        assert_eq!(spawn_count, 1, "Should have only one spawn for lexington");
+
+        // BUT: Both RegisterWorktreeAssignment effects should be preserved
+        let registry_assignments: Vec<&str> = deduped
+            .iter()
+            .filter_map(|e| {
+                if let Effect::RegisterWorktreeAssignment { assignment } = e {
+                    Some(assignment.worktree_id.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            registry_assignments.len(),
+            2,
+            "Both registry assignments should be preserved"
+        );
+        assert!(
+            registry_assignments.contains(&"task-123-foo"),
+            "First task's worktree should be registered"
+        );
+        assert!(
+            registry_assignments.contains(&"task-456-bar"),
+            "Second task's worktree should be registered"
         );
     }
 }

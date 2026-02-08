@@ -918,73 +918,102 @@ impl CoworkerManager {
             }
         }
 
-        // Try to get or create the worktree
-        let worktree_path = match self.worktree_manager.create(name) {
-            Ok(path) => path,
-            Err(WorktreeError::AlreadyExists(_)) => {
-                // Worktree exists but no active session - validate it
-                let worktree_path = self.worktree_manager.worktree_path(name);
-                if !is_valid_git_worktree(&worktree_path) {
-                    tracing::warn!(
-                        "Worktree for {} is corrupted (git metadata missing), recreating",
-                        name
-                    );
-                    self.worktree_manager
-                        .force_cleanup(name)
-                        .map_err(|e| crate::Error::Rpc {
-                            code: -32603,
-                            message: format!(
-                                "Failed to cleanup corrupted worktree for {}: {}",
-                                name, e
-                            ),
-                        })?;
-
-                    self.worktree_manager
-                        .create(name)
-                        .map_err(|e| crate::Error::Rpc {
-                            code: -32603,
-                            message: format!(
-                                "Failed to recreate worktree for {} after cleanup: {}",
-                                name, e
-                            ),
-                        })?
-                } else {
-                    tracing::info!("Reusing existing valid worktree for {}", name);
-
-                    // Safety check: ensure the worktree is not on the default branch.
-                    if self.worktree_manager.is_on_default_branch(name) {
-                        tracing::warn!(
-                            "Coworker {} worktree is on default branch - creating recovery branch",
-                            name
-                        );
-                        match self.worktree_manager.checkout_new_branch(name, "recovery") {
-                            Ok(branch) => {
-                                tracing::info!(
-                                    "Created recovery branch {} for coworker {}",
-                                    branch,
-                                    name
-                                );
-                            }
-                            Err(e) => {
-                                return Err(crate::Error::Rpc {
-                                    code: -32603,
-                                    message: format!(
-                                        "Coworker {} is on default branch and recovery failed: {}",
-                                        name, e
-                                    ),
-                                });
-                            }
-                        }
-                    }
-
-                    worktree_path
-                }
-            }
-            Err(e) => {
+        // If a working_dir override is provided (task-based worktree), validate and use it
+        let worktree_path = if let Some(ref working_dir) = config.working_dir {
+            // Validate the path exists and is a valid git worktree
+            if !working_dir.exists() {
                 return Err(crate::Error::Rpc {
                     code: -32603,
-                    message: format!("Failed to create worktree for {}: {}", name, e),
+                    message: format!(
+                        "Specified working_dir does not exist: {}",
+                        working_dir.display()
+                    ),
                 });
+            }
+            if !is_valid_git_worktree(working_dir) {
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!(
+                        "Specified working_dir is not a valid git worktree: {}",
+                        working_dir.display()
+                    ),
+                });
+            }
+            tracing::info!(
+                "Using task-based worktree for {}: {}",
+                name,
+                working_dir.display()
+            );
+            working_dir.clone()
+        } else {
+            // Legacy path: create or reuse coworker-named worktree
+            match self.worktree_manager.create(name) {
+                Ok(path) => path,
+                Err(WorktreeError::AlreadyExists(_)) => {
+                    // Worktree exists but no active session - validate it
+                    let worktree_path = self.worktree_manager.worktree_path(name);
+                    if !is_valid_git_worktree(&worktree_path) {
+                        tracing::warn!(
+                            "Worktree for {} is corrupted (git metadata missing), recreating",
+                            name
+                        );
+                        self.worktree_manager.force_cleanup(name).map_err(|e| {
+                            crate::Error::Rpc {
+                                code: -32603,
+                                message: format!(
+                                    "Failed to cleanup corrupted worktree for {}: {}",
+                                    name, e
+                                ),
+                            }
+                        })?;
+
+                        self.worktree_manager
+                            .create(name)
+                            .map_err(|e| crate::Error::Rpc {
+                                code: -32603,
+                                message: format!(
+                                    "Failed to recreate worktree for {} after cleanup: {}",
+                                    name, e
+                                ),
+                            })?
+                    } else {
+                        tracing::info!("Reusing existing valid worktree for {}", name);
+
+                        // Safety check: ensure the worktree is not on the default branch.
+                        if self.worktree_manager.is_on_default_branch(name) {
+                            tracing::warn!(
+                                "Coworker {} worktree is on default branch - creating recovery branch",
+                                name
+                            );
+                            match self.worktree_manager.checkout_new_branch(name, "recovery") {
+                                Ok(branch) => {
+                                    tracing::info!(
+                                        "Created recovery branch {} for coworker {}",
+                                        branch,
+                                        name
+                                    );
+                                }
+                                Err(e) => {
+                                    return Err(crate::Error::Rpc {
+                                        code: -32603,
+                                        message: format!(
+                                            "Coworker {} is on default branch and recovery failed: {}",
+                                            name, e
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+
+                        worktree_path
+                    }
+                }
+                Err(e) => {
+                    return Err(crate::Error::Rpc {
+                        code: -32603,
+                        message: format!("Failed to create worktree for {}: {}", name, e),
+                    });
+                }
             }
         };
 

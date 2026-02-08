@@ -1088,6 +1088,7 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
         restrict_setting_sources: true,
         pr_number: None,
         team_name: None,
+        working_dir: None,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
@@ -1377,6 +1378,7 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
         restrict_setting_sources: true,
         pr_number: None,
         team_name: None,
+        working_dir: None,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
 
@@ -1690,6 +1692,7 @@ fn test_kill_orphaned_claude_processes_real() {
         restrict_setting_sources: true,
         pr_number: None,
         team_name: None,
+        working_dir: None,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());

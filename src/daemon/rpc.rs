@@ -553,6 +553,7 @@ fn handle_coworker_spawn(
         restrict_setting_sources: true,
         pr_number: None,
         team_name: Some(team),
+        working_dir: None,
     };
     match state.coworkers.spawn(&config) {
         Ok(name) => {

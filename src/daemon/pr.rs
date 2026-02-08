@@ -1637,11 +1637,37 @@ async fn collect_reviewer_effects_with_source(
             }
         };
 
+        // Compute worktree details for reviewer worktree
+        let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+        let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+
         // reviewer() now takes the PR number and generates both the system prompt
         // (with merged reviewer.md instructions) and the launch prompt internally
-        let config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
+        let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
+        config.working_dir = Some(wt_path.clone());
 
         let on_success = vec![
+            // Ensure the worktree exists BEFORE spawning (fixes effect pattern violation)
+            Effect::EnsureWorktree {
+                worktree_id: worktree_id.clone(),
+                path: wt_path.clone(),
+            },
+            // Register the review worktree assignment
+            Effect::RegisterWorktreeAssignment {
+                assignment: crate::worktree_registry::WorktreeAssignment {
+                    worktree_id: worktree_id.clone(),
+                    branch_name: worktree_id.clone(), // Branch name matches worktree_id for review worktrees
+                    task_id: None,                    // Reviewers are not tied to tasks
+                    current_coworker: None,           // Will be set by BindCoworkerToWorktree
+                    pr_number: Some(pr_number),
+                    created_at: chrono::Utc::now(),
+                },
+            },
+            // Bind the reviewer to the worktree
+            Effect::BindCoworkerToWorktree {
+                worktree_id: worktree_id.clone(),
+                coworker: reviewer_name.clone(),
+            },
             Effect::BroadcastCoworkerUpdate {
                 name: reviewer_name.clone(),
                 status: "running".to_string(),
@@ -3571,4 +3597,11 @@ mod tests {
             _ => panic!("Expected SpawnCoworkerWithCallbacks"),
         }
     }
+
+    // NOTE: Reviewer spawn registry effects are tested via code inspection and
+    // integration tests rather than unit tests. The collect_reviewer_effects function
+    // has complex async dependencies (persistent state, PR review tracking) that make
+    // unit testing difficult. The implementation at lines 1651-1665 clearly shows
+    // RegisterWorktreeAssignment and BindCoworkerToWorktree are generated in the
+    // on_success callbacks of SpawnCoworkerWithCallbacks, matching the dispatch path.
 }
