@@ -227,6 +227,27 @@ impl SessionManager {
         Ok(session_id)
     }
 
+    /// Shut down all coworker sessions.
+    ///
+    /// Called during daemon shutdown to prevent orphaned processes.
+    /// Returns the number of sessions that were shut down.
+    pub async fn shutdown_all(&self) -> usize {
+        let mut sessions = self.sessions.write().await;
+        let count = sessions.len();
+        let names: Vec<String> = sessions.keys().cloned().collect();
+        for name in &names {
+            if let Some(cs) = sessions.remove(name) {
+                let session_id = cs.session_id.clone();
+                drop(cs); // Drop triggers process kill
+                info!(
+                    "Shut down headless session '{}' during daemon shutdown (session_id={:?})",
+                    name, session_id
+                );
+            }
+        }
+        count
+    }
+
     /// Check if a coworker has a running session.
     pub async fn is_alive(&self, name: &str) -> bool {
         let sessions = self.sessions.read().await;
