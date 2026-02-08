@@ -1827,4 +1827,264 @@ mod tests {
             _ => panic!("Expected NudgeCoworker"),
         }
     }
+
+    // ======================================================================
+    // WorktreeRegistry integration tests
+    // ======================================================================
+
+    #[test]
+    fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::time::SystemTime;
+
+        // Setup: create a snapshot with a pending task (no owner, not in registry)
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_without_owners: vec![Task {
+                id: "42".to_string(),
+                subject: "Add auth endpoint".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                blocked_by: vec![],
+                description: None,
+                created_at: Some(SystemTime::now()),
+            }],
+            tasks_with_worktrees: HashSet::new(), // Task not in registry yet
+            is_at_dev_limit: false,
+            active_names: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        let state = make_test_state();
+
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        // The registry effects are inside the on_success of AssignAndSpawn
+        assert_eq!(
+            effects.len(),
+            1,
+            "Should generate exactly one top-level effect"
+        );
+
+        let assign_and_spawn = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::AssignAndSpawn {
+                    task_id,
+                    owner,
+                    on_success,
+                    ..
+                } = e
+                {
+                    Some((task_id, owner, on_success))
+                } else {
+                    None
+                }
+            })
+            .expect("Should have AssignAndSpawn effect");
+
+        assert_eq!(assign_and_spawn.0, "42");
+
+        // Verify RegisterWorktreeAssignment is in on_success
+        let register_count = assign_and_spawn
+            .2
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+            .count();
+        let bind_count = assign_and_spawn
+            .2
+            .iter()
+            .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
+            .count();
+
+        assert_eq!(
+            register_count, 1,
+            "Should have RegisterWorktreeAssignment in on_success"
+        );
+        assert_eq!(
+            bind_count, 1,
+            "Should have BindCoworkerToWorktree in on_success"
+        );
+
+        // Verify RegisterWorktreeAssignment has correct fields
+        let register_effect = assign_and_spawn
+            .2
+            .iter()
+            .find_map(|e| {
+                if let Effect::RegisterWorktreeAssignment { assignment } = e {
+                    Some(assignment)
+                } else {
+                    None
+                }
+            })
+            .expect("Should have RegisterWorktreeAssignment");
+
+        assert_eq!(register_effect.task_id, Some("42".to_string()));
+        assert!(register_effect.worktree_id.starts_with("task-42-"));
+        assert_eq!(register_effect.branch_name, register_effect.worktree_id);
+    }
+
+    #[test]
+    fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
+        // Setup: pending task with owner, task already in registry
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_with_owners: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "lexington".to_string(),
+            )],
+            tasks_with_worktrees: ["42".to_string()].into_iter().collect(), // Task already has worktree
+            is_at_dev_limit: false,
+            active_names: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            all_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        };
+
+        let state = make_test_state();
+
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        // Find the SpawnCoworkerWithCallbacks effect (for owned pending tasks, uses this variant)
+        let spawn_effect = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                    Some(on_success)
+                } else {
+                    None
+                }
+            })
+            .expect("Should have SpawnCoworkerWithCallbacks effect for owned pending task");
+
+        // Should NOT generate RegisterWorktreeAssignment (worktree already exists)
+        // SHOULD generate BindCoworkerToWorktree (rebind to new owner)
+        let register_count = spawn_effect
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+            .count();
+        let bind_count = spawn_effect
+            .iter()
+            .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
+            .count();
+
+        assert_eq!(
+            register_count, 0,
+            "Should NOT generate RegisterWorktreeAssignment for existing worktree"
+        );
+        assert_eq!(
+            bind_count, 1,
+            "Should generate BindCoworkerToWorktree to rebind"
+        );
+    }
+
+    /// Helper to create minimal DaemonState for testing
+    fn make_test_state() -> DaemonState {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git commit");
+
+        let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("worktree manager");
+        let cm = crate::coworker::CoworkerManager::new("test-session", wm);
+        let channel_dir = temp_dir.path().join("channel");
+        std::fs::create_dir_all(&channel_dir).expect("channel dir");
+        let channel = crate::channel::Channel::new(&channel_dir).expect("channel");
+
+        // Leak temp_dir so it survives the test
+        std::mem::forget(temp_dir);
+
+        DaemonState::new(
+            "/tmp/test.sock".into(),
+            cm,
+            "test-repo".to_string(),
+            vec![],
+            channel,
+            None,
+            10,
+            None,
+            "main".to_string(),
+        )
+        .expect("daemon state")
+    }
 }

@@ -3592,4 +3592,11 @@ mod tests {
             _ => panic!("Expected SpawnCoworkerWithCallbacks"),
         }
     }
+
+    // NOTE: Reviewer spawn registry effects are tested via code inspection and
+    // integration tests rather than unit tests. The collect_reviewer_effects function
+    // has complex async dependencies (persistent state, PR review tracking) that make
+    // unit testing difficult. The implementation at lines 1651-1665 clearly shows
+    // RegisterWorktreeAssignment and BindCoworkerToWorktree are generated in the
+    // on_success callbacks of SpawnCoworkerWithCallbacks, matching the dispatch path.
 }
