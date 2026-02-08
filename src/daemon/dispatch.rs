@@ -124,54 +124,52 @@ pub(super) fn check_and_recover_orphans(
     let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
     config.working_dir = Some(wt_path.clone());
 
-    // Build success effects — worktree setup prepended, then standard spawn effects
-    let mut on_success = vec![];
-
-    // Ensure the worktree exists BEFORE spawning
-    on_success.push(Effect::EnsureWorktree {
+    // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
+    // prepare_spawn() validates working_dir exists, so the worktree must exist first.
+    let mut pre_spawn = vec![Effect::EnsureWorktree {
         worktree_id: worktree_id.clone(),
         path: wt_path.clone(),
-    });
+    }];
 
-    // Register the task → worktree mapping if this is the first time
     if needs_registration {
-        on_success.push(Effect::RegisterWorktreeAssignment {
+        pre_spawn.push(Effect::RegisterWorktreeAssignment {
             assignment: crate::worktree_registry::WorktreeAssignment {
                 worktree_id: worktree_id.clone(),
-                branch_name: worktree_id.clone(), // Branch name matches worktree_id for task worktrees
+                branch_name: worktree_id.clone(),
                 task_id: Some(recovery.task_id.clone()),
-                current_coworker: None, // Will be set by BindCoworkerToWorktree
+                current_coworker: None,
                 pr_number: None,
                 created_at: chrono::Utc::now(),
             },
         });
     }
 
-    // Always bind the coworker to the worktree when spawning
-    on_success.push(Effect::BindCoworkerToWorktree {
-        worktree_id: worktree_id.clone(),
-        coworker: recovery.owner.clone(),
-    });
+    // Post-spawn success effects
+    let on_success = vec![
+        Effect::BindCoworkerToWorktree {
+            worktree_id: worktree_id.clone(),
+            coworker: recovery.owner.clone(),
+        },
+        Effect::BroadcastCoworkerUpdate {
+            name: recovery.owner.clone(),
+            status: "running".to_string(),
+            current_task: None,
+        },
+        Effect::RecordCooldown {
+            category: "orphan_spawn".to_string(),
+            key: "global".to_string(),
+        },
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "♻️ Recovered coworker {} for orphaned task !{}",
+                recovery.owner, recovery.task_id
+            ),
+        },
+    ];
 
-    on_success.push(Effect::BroadcastCoworkerUpdate {
-        name: recovery.owner.clone(),
-        status: "running".to_string(),
-        current_task: None,
-    });
-    on_success.push(Effect::RecordCooldown {
-        category: "orphan_spawn".to_string(),
-        key: "global".to_string(),
-    });
-    on_success.push(Effect::PostToChannel {
-        sender: "midtown".to_string(),
-        message: format!(
-            "♻️ Recovered coworker {} for orphaned task !{}",
-            recovery.owner, recovery.task_id
-        ),
-    });
-
-    // Return spawn effect with success/failure callbacks
-    vec![Effect::SpawnCoworkerWithCallbacks {
+    // EnsureWorktree + RegisterWorktreeAssignment run first, then spawn
+    pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
         config,
         on_success,
         on_failure: vec![
@@ -193,7 +191,8 @@ pub(super) fn check_and_recover_orphans(
                 ),
             },
         ],
-    }]
+    });
+    pre_spawn
 }
 
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
@@ -908,51 +907,50 @@ pub(super) fn spawn_for_pending_tasks(
                 );
                 config.working_dir = Some(wt_path.clone());
 
-                let mut spawn_effects = Vec::new();
-
-                // Ensure the worktree exists BEFORE spawning (fixes effect pattern violation)
-                spawn_effects.push(Effect::EnsureWorktree {
+                // Pre-spawn: create worktree and register assignment BEFORE spawning.
+                // prepare_spawn() validates working_dir exists, so the worktree must exist first.
+                effects.push(Effect::EnsureWorktree {
                     worktree_id: worktree_id.clone(),
                     path: wt_path.clone(),
                 });
 
-                // Register the task → worktree mapping if this is the first time
                 if needs_registration {
-                    spawn_effects.push(Effect::RegisterWorktreeAssignment {
+                    effects.push(Effect::RegisterWorktreeAssignment {
                         assignment: crate::worktree_registry::WorktreeAssignment {
                             worktree_id: worktree_id.clone(),
-                            branch_name: worktree_id.clone(), // Branch name matches worktree_id for task worktrees
+                            branch_name: worktree_id.clone(),
                             task_id: Some(tid.clone()),
-                            current_coworker: None, // Will be set by BindCoworkerToWorktree
+                            current_coworker: None,
                             pr_number: None,
                             created_at: chrono::Utc::now(),
                         },
                     });
                 }
 
-                // Always bind the coworker to the worktree when spawning
-                spawn_effects.push(Effect::BindCoworkerToWorktree {
-                    worktree_id: worktree_id.clone(),
-                    coworker: o.clone(),
-                });
-
-                spawn_effects.push(Effect::BroadcastCoworkerUpdate {
-                    name: o.clone(),
-                    status: "running".to_string(),
-                    current_task: None,
-                });
-                spawn_effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: daemon_messages::called_in_pending_task(
-                        o,
-                        &tid.to_string(),
-                        config::get_personality(),
-                    ),
-                });
+                // Post-spawn success effects
+                let on_success = vec![
+                    Effect::BindCoworkerToWorktree {
+                        worktree_id: worktree_id.clone(),
+                        coworker: o.clone(),
+                    },
+                    Effect::BroadcastCoworkerUpdate {
+                        name: o.clone(),
+                        status: "running".to_string(),
+                        current_task: None,
+                    },
+                    Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: daemon_messages::called_in_pending_task(
+                            o,
+                            &tid.to_string(),
+                            config::get_personality(),
+                        ),
+                    },
+                ];
 
                 effects.push(Effect::SpawnCoworkerWithCallbacks {
                     config,
-                    on_success: spawn_effects,
+                    on_success,
                     on_failure: vec![],
                 });
             }
@@ -1241,50 +1239,49 @@ pub(super) fn spawn_for_pending_tasks(
                 config::get_personality(),
             );
 
-            let mut spawn_effects = Vec::new();
-
-            // Ensure the worktree exists BEFORE spawning (fixes effect pattern violation)
-            spawn_effects.push(Effect::EnsureWorktree {
+            // Pre-spawn: create worktree and register assignment BEFORE spawning.
+            // prepare_spawn() validates working_dir exists, so the worktree must exist first.
+            effects.push(Effect::EnsureWorktree {
                 worktree_id: worktree_id.clone(),
                 path: wt_path.clone(),
             });
 
-            // Register the task → worktree mapping if this is the first time
             if needs_registration {
-                spawn_effects.push(Effect::RegisterWorktreeAssignment {
+                effects.push(Effect::RegisterWorktreeAssignment {
                     assignment: crate::worktree_registry::WorktreeAssignment {
                         worktree_id: worktree_id.clone(),
-                        branch_name: worktree_id.clone(), // Branch name matches worktree_id for task worktrees
+                        branch_name: worktree_id.clone(),
                         task_id: Some(task.id.clone()),
-                        current_coworker: None, // Will be set by BindCoworkerToWorktree
+                        current_coworker: None,
                         pr_number: None,
                         created_at: chrono::Utc::now(),
                     },
                 });
             }
 
-            // Always bind the coworker to the worktree when spawning
-            spawn_effects.push(Effect::BindCoworkerToWorktree {
-                worktree_id: worktree_id.clone(),
-                coworker: coworker_name.clone(),
-            });
-
-            spawn_effects.push(Effect::BroadcastCoworkerUpdate {
-                name: coworker_name.clone(),
-                status: "running".to_string(),
-                current_task: None,
-            });
-            spawn_effects.push(Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: channel_msg,
-            });
+            // Post-spawn success effects
+            let on_success = vec![
+                Effect::BindCoworkerToWorktree {
+                    worktree_id: worktree_id.clone(),
+                    coworker: coworker_name.clone(),
+                },
+                Effect::BroadcastCoworkerUpdate {
+                    name: coworker_name.clone(),
+                    status: "running".to_string(),
+                    current_task: None,
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: channel_msg,
+                },
+            ];
 
             effects.push(Effect::AssignAndSpawn {
                 task_id: task.id.clone(),
                 owner: coworker_name.clone(),
                 repo_name: snap.repo_name.clone(),
                 config,
-                on_success: spawn_effects,
+                on_success,
                 on_failure: vec![],
             });
         }
@@ -1987,11 +1984,28 @@ mod tests {
 
         let effects = spawn_for_pending_tasks(&snap, &state);
 
-        // The registry effects are inside the on_success of AssignAndSpawn
+        // Pre-spawn effects (EnsureWorktree, RegisterWorktreeAssignment) are top-level,
+        // followed by AssignAndSpawn with post-spawn effects in on_success.
+        assert!(
+            effects.len() >= 2,
+            "Should have pre-spawn effects + AssignAndSpawn"
+        );
+
+        // EnsureWorktree should be a top-level effect (before spawn)
+        let ensure_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
+            .count();
+        assert_eq!(ensure_count, 1, "Should have top-level EnsureWorktree");
+
+        // RegisterWorktreeAssignment should be a top-level effect (before spawn)
+        let register_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+            .count();
         assert_eq!(
-            effects.len(),
-            1,
-            "Should generate exactly one top-level effect"
+            register_count, 1,
+            "Should have top-level RegisterWorktreeAssignment"
         );
 
         let assign_and_spawn = effects
@@ -2013,12 +2027,7 @@ mod tests {
 
         assert_eq!(assign_and_spawn.0, "42");
 
-        // Verify RegisterWorktreeAssignment is in on_success
-        let register_count = assign_and_spawn
-            .2
-            .iter()
-            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
-            .count();
+        // BindCoworkerToWorktree stays in on_success (runs after spawn)
         let bind_count = assign_and_spawn
             .2
             .iter()
@@ -2026,17 +2035,16 @@ mod tests {
             .count();
 
         assert_eq!(
-            register_count, 1,
-            "Should have RegisterWorktreeAssignment in on_success"
+            bind_count, 1,
+            "Should have BindCoworkerToWorktree in on_success"
         );
         assert_eq!(
             bind_count, 1,
             "Should have BindCoworkerToWorktree in on_success"
         );
 
-        // Verify RegisterWorktreeAssignment has correct fields
-        let register_effect = assign_and_spawn
-            .2
+        // Verify the top-level RegisterWorktreeAssignment has correct fields
+        let register_effect = effects
             .iter()
             .find_map(|e| {
                 if let Effect::RegisterWorktreeAssignment { assignment } = e {
@@ -2045,7 +2053,7 @@ mod tests {
                     None
                 }
             })
-            .expect("Should have RegisterWorktreeAssignment");
+            .expect("Should have top-level RegisterWorktreeAssignment");
 
         assert_eq!(register_effect.task_id, Some("42".to_string()));
         assert!(register_effect.worktree_id.starts_with("task-42-"));
@@ -2200,10 +2208,30 @@ mod tests {
         let state = make_test_state();
         let effects = check_and_recover_orphans(&snap, &state);
 
+        // Pre-spawn effects (EnsureWorktree) are top-level, then SpawnCoworkerWithCallbacks
+        assert!(
+            effects.len() >= 2,
+            "Should have pre-spawn EnsureWorktree + SpawnCoworkerWithCallbacks"
+        );
+
+        // EnsureWorktree should be a top-level effect (before spawn)
+        let ensure_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::EnsureWorktree { worktree_id, .. } if worktree_id == "task-42-add-auth-endpoint"))
+            .count();
         assert_eq!(
-            effects.len(),
-            1,
-            "Should generate exactly one top-level effect"
+            ensure_count, 1,
+            "Should have top-level EnsureWorktree for existing worktree"
+        );
+
+        // Should NOT have RegisterWorktreeAssignment (worktree already registered)
+        let register_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+            .count();
+        assert_eq!(
+            register_count, 0,
+            "Should NOT register worktree again (already exists)"
         );
 
         // Verify SpawnCoworkerWithCallbacks has working_dir set to the existing worktree
@@ -2223,7 +2251,6 @@ mod tests {
 
         let (config, on_success) = spawn;
 
-        // Working dir should point to the existing worktree
         let expected_path =
             crate::paths::worktrees_dir_for_repo("test-repo").join("task-42-add-auth-endpoint");
         assert_eq!(
@@ -2232,33 +2259,14 @@ mod tests {
             "Should set working_dir to the existing task worktree"
         );
 
-        // on_success should include EnsureWorktree and BindCoworkerToWorktree
-        let ensure_count = on_success
-            .iter()
-            .filter(|e| matches!(e, Effect::EnsureWorktree { worktree_id, .. } if worktree_id == "task-42-add-auth-endpoint"))
-            .count();
+        // BindCoworkerToWorktree stays in on_success (runs after spawn)
         let bind_count = on_success
             .iter()
             .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { worktree_id, coworker } if worktree_id == "task-42-add-auth-endpoint" && coworker == "lexington"))
             .count();
-
-        assert_eq!(
-            ensure_count, 1,
-            "Should have EnsureWorktree for existing worktree"
-        );
         assert_eq!(
             bind_count, 1,
             "Should have BindCoworkerToWorktree to rebind"
-        );
-
-        // Should NOT have RegisterWorktreeAssignment (worktree already registered)
-        let register_count = on_success
-            .iter()
-            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
-            .count();
-        assert_eq!(
-            register_count, 0,
-            "Should NOT register worktree again (already exists)"
         );
     }
 
@@ -2317,7 +2325,39 @@ mod tests {
         let state = make_test_state();
         let effects = check_and_recover_orphans(&snap, &state);
 
-        assert_eq!(effects.len(), 1);
+        // Pre-spawn effects (EnsureWorktree, RegisterWorktreeAssignment) are top-level,
+        // followed by SpawnCoworkerWithCallbacks with post-spawn effects in on_success.
+        assert!(
+            effects.len() >= 3,
+            "Should have EnsureWorktree + RegisterWorktreeAssignment + SpawnCoworkerWithCallbacks"
+        );
+
+        // EnsureWorktree should be a top-level effect (before spawn)
+        let ensure_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
+            .count();
+        assert_eq!(ensure_count, 1, "Should have top-level EnsureWorktree");
+
+        // RegisterWorktreeAssignment should be a top-level effect (before spawn)
+        let register_effect = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::RegisterWorktreeAssignment { assignment } = e {
+                    Some(assignment)
+                } else {
+                    None
+                }
+            })
+            .expect("Should have top-level RegisterWorktreeAssignment");
+
+        assert_eq!(register_effect.task_id, Some("42".to_string()));
+        assert!(
+            register_effect
+                .worktree_id
+                .contains("task-42-add-auth-endpoint")
+        );
+        assert_eq!(register_effect.current_coworker, None);
 
         let spawn = effects
             .iter()
@@ -2349,46 +2389,15 @@ mod tests {
             working_dir
         );
 
-        // on_success should include EnsureWorktree, RegisterWorktreeAssignment, and BindCoworkerToWorktree
-        let ensure_count = on_success
-            .iter()
-            .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
-            .count();
-        let register_count = on_success
-            .iter()
-            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
-            .count();
+        // BindCoworkerToWorktree stays in on_success (runs after spawn)
         let bind_count = on_success
             .iter()
             .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
             .count();
-
-        assert_eq!(ensure_count, 1, "Should have EnsureWorktree");
         assert_eq!(
-            register_count, 1,
-            "Should have RegisterWorktreeAssignment for new worktree"
+            bind_count, 1,
+            "Should have BindCoworkerToWorktree in on_success"
         );
-        assert_eq!(bind_count, 1, "Should have BindCoworkerToWorktree");
-
-        // Verify the RegisterWorktreeAssignment effect has correct data
-        let register_effect = on_success
-            .iter()
-            .find_map(|e| {
-                if let Effect::RegisterWorktreeAssignment { assignment } = e {
-                    Some(assignment)
-                } else {
-                    None
-                }
-            })
-            .expect("Should have RegisterWorktreeAssignment");
-
-        assert_eq!(register_effect.task_id, Some("42".to_string()));
-        assert!(
-            register_effect
-                .worktree_id
-                .contains("task-42-add-auth-endpoint")
-        );
-        assert_eq!(register_effect.current_coworker, None); // Set by BindCoworkerToWorktree
     }
 
     #[test]
@@ -2454,7 +2463,38 @@ mod tests {
         let state = make_test_state();
         let effects = spawn_for_pending_tasks(&snap, &state);
 
-        assert_eq!(effects.len(), 1);
+        // Pre-spawn EnsureWorktree is top-level, then AssignAndSpawn
+        assert!(
+            effects.len() >= 2,
+            "Should have pre-spawn EnsureWorktree + AssignAndSpawn"
+        );
+
+        // EnsureWorktree should be a top-level effect (before spawn)
+        let ensure_effects: Vec<_> = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
+            .collect();
+        assert_eq!(
+            ensure_effects.len(),
+            1,
+            "Should have top-level EnsureWorktree"
+        );
+        if let Effect::EnsureWorktree { worktree_id, .. } = ensure_effects[0] {
+            assert_eq!(
+                worktree_id, "task-42-add-auth-endpoint",
+                "Should ensure the existing worktree, not a new one"
+            );
+        }
+
+        // Should NOT have RegisterWorktreeAssignment (worktree already exists)
+        let register_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
+            .count();
+        assert_eq!(
+            register_count, 0,
+            "Should NOT re-register existing worktree"
+        );
 
         let assign_and_spawn = effects
             .iter()
@@ -2472,7 +2512,7 @@ mod tests {
 
         let (config, on_success) = assign_and_spawn;
 
-        // Working dir should point to the EXISTING worktree (not a freshly computed one)
+        // Working dir should point to the EXISTING worktree
         let expected_path =
             crate::paths::worktrees_dir_for_repo("test-repo").join("task-42-add-auth-endpoint");
         assert_eq!(
@@ -2481,17 +2521,7 @@ mod tests {
             "Should reuse existing worktree path"
         );
 
-        // Should NOT generate RegisterWorktreeAssignment (worktree already exists)
-        let register_count = on_success
-            .iter()
-            .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
-            .count();
-        assert_eq!(
-            register_count, 0,
-            "Should NOT re-register existing worktree"
-        );
-
-        // SHOULD generate BindCoworkerToWorktree with the existing worktree_id
+        // BindCoworkerToWorktree stays in on_success (runs after spawn)
         let bind_effects: Vec<_> = on_success
             .iter()
             .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
@@ -2501,29 +2531,10 @@ mod tests {
             1,
             "Should bind coworker to existing worktree"
         );
-
         if let Effect::BindCoworkerToWorktree { worktree_id, .. } = bind_effects[0] {
             assert_eq!(
                 worktree_id, "task-42-add-auth-endpoint",
                 "Should bind to the existing worktree, not a new one"
-            );
-        }
-
-        // SHOULD generate EnsureWorktree with the existing worktree_id
-        let ensure_effects: Vec<_> = on_success
-            .iter()
-            .filter(|e| matches!(e, Effect::EnsureWorktree { .. }))
-            .collect();
-        assert_eq!(
-            ensure_effects.len(),
-            1,
-            "Should ensure existing worktree exists"
-        );
-
-        if let Effect::EnsureWorktree { worktree_id, .. } = ensure_effects[0] {
-            assert_eq!(
-                worktree_id, "task-42-add-auth-endpoint",
-                "Should ensure the existing worktree, not a new one"
             );
         }
     }
