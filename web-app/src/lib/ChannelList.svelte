@@ -1,5 +1,10 @@
 <script>
-  import { channels, activeChannel, kanbanData } from './store.js'
+  import { channels, activeChannel, kanbanData, activeProject } from './store.js'
+
+  let showCreateInput = false
+  let newChannelName = ''
+  let createError = ''
+  let isCreating = false
 
   // Match channel name as a whole word in task text (avoids "auth" matching "authentication")
   function matchesChannel(text, channelName) {
@@ -48,10 +53,115 @@
   function formatChannelName(name) {
     return `#${name}`
   }
+
+  function toggleCreateInput() {
+    showCreateInput = !showCreateInput
+    if (showCreateInput) {
+      newChannelName = ''
+      createError = ''
+    }
+  }
+
+  async function createChannel() {
+    createError = ''
+    const name = newChannelName.trim()
+
+    if (!name) {
+      createError = 'Channel name cannot be empty'
+      return
+    }
+
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+      createError = 'Only alphanumeric characters, hyphens, and underscores allowed'
+      return
+    }
+
+    if (name.toLowerCase() === 'midtown') {
+      createError = 'Channel name "midtown" is reserved'
+      return
+    }
+
+    isCreating = true
+    try {
+      const project = $activeProject || 'default'
+      const response = await fetch(`/api/${project}/channels/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        createError = errorData.error || 'Failed to create channel'
+        return
+      }
+
+      // Success - refresh channel list
+      const listResponse = await fetch(`/api/${project}/channels`)
+      if (listResponse.ok) {
+        const data = await listResponse.json()
+        channels.set(data.channels.map((name) => ({ name, unread: 0 })))
+      }
+
+      // Switch to the new channel and close the input
+      activeChannel.set(name)
+      showCreateInput = false
+      newChannelName = ''
+    } catch (error) {
+      createError = 'Network error: ' + error.message
+    } finally {
+      isCreating = false
+    }
+  }
+
+  function handleKeyDown(event) {
+    if (event.key === 'Enter') {
+      createChannel()
+    } else if (event.key === 'Escape') {
+      showCreateInput = false
+      newChannelName = ''
+      createError = ''
+    }
+  }
 </script>
 
 <div class="channel-list">
-  <div class="channel-list-header">Channels</div>
+  <div class="channel-list-header-row">
+    <div class="channel-list-header">Channels</div>
+    <button class="create-channel-btn" onclick={toggleCreateInput} title="Create new channel">
+      +
+    </button>
+  </div>
+
+  {#if showCreateInput}
+    <div class="create-channel-form">
+      <input
+        type="text"
+        class="channel-name-input"
+        placeholder="channel-name"
+        bind:value={newChannelName}
+        onkeydown={handleKeyDown}
+        disabled={isCreating}
+        autofocus
+      />
+      {#if createError}
+        <div class="create-error">{createError}</div>
+      {/if}
+      <div class="create-actions">
+        <button
+          class="create-btn"
+          onclick={createChannel}
+          disabled={isCreating || !newChannelName.trim()}
+        >
+          {isCreating ? 'Creating...' : 'Create'}
+        </button>
+        <button class="cancel-btn" onclick={toggleCreateInput} disabled={isCreating}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  {/if}
+
   {#each $channels as channel}
     {@const counts = getTaskCount(channel.name, $kanbanData)}
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
@@ -104,13 +214,115 @@
     overflow-y: auto;
   }
 
+  .channel-list-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px 4px;
+  }
+
   .channel-list-header {
     font-size: 0.75rem;
     font-weight: 700;
     color: #585858;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    padding: 8px 12px 4px;
+  }
+
+  .create-channel-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #585858;
+    font-size: 1.25rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .create-channel-btn:hover {
+    background: #2a2a2a;
+    color: #d0d0d0;
+  }
+
+  .create-channel-form {
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: #242424;
+    border-radius: 6px;
+  }
+
+  .channel-name-input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    background: #1c1c1c;
+    color: #d0d0d0;
+    font-size: 0.875rem;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    outline: none;
+  }
+
+  .channel-name-input:focus {
+    border-color: #5fafaf;
+  }
+
+  .channel-name-input:disabled {
+    opacity: 0.5;
+  }
+
+  .create-error {
+    margin-top: 4px;
+    font-size: 0.75rem;
+    color: #ff6b6b;
+  }
+
+  .create-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .create-btn,
+  .cancel-btn {
+    flex: 1;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .create-btn {
+    background: #5fafaf;
+    color: #1c1c1c;
+  }
+
+  .create-btn:hover:not(:disabled) {
+    background: #6fc5c5;
+  }
+
+  .create-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .cancel-btn {
+    background: #3a3a3a;
+    color: #d0d0d0;
+  }
+
+  .cancel-btn:hover:not(:disabled) {
+    background: #4a4a4a;
   }
 
   .channel-item {

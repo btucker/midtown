@@ -367,6 +367,8 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/ws", get(ws_handler))
         .route("/api/health", get(api_health))
         .route("/api/channel", get(api_channel_history))
+        .route("/api/channels", get(api_channels_list))
+        .route("/api/channels/create", post(api_channels_create))
         .route("/api/status", get(api_status))
         .route("/api/lead-pane", get(api_lead_pane))
         .route("/api/tmux-pane", get(api_tmux_pane))
@@ -383,6 +385,86 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
 /// Health check endpoint
 async fn api_health() -> &'static str {
     "ok"
+}
+
+/// List all available channels for the current repository
+async fn api_channels_list(
+    State(state): State<Arc<WebState>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
+    let channels = Channel::list(base_dir).map_err(|e| {
+        error!("Failed to list channels: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(axum::Json(serde_json::json!({ "channels": channels })))
+}
+
+/// Request body for channel creation
+#[derive(Debug, Deserialize)]
+struct CreateChannelRequest {
+    name: String,
+}
+
+/// Create a new channel
+///
+/// Accepts a POST request with JSON body `{"name": "channel-name"}`.
+/// Returns 201 Created on success, 400 Bad Request if the name is invalid.
+///
+/// Channel names must:
+/// - Be non-empty
+/// - Contain only alphanumeric characters, hyphens, and underscores
+/// - Not be named "midtown" (reserved for the main channel)
+async fn api_channels_create(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<CreateChannelRequest>,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    let channel_name = body.name.trim();
+
+    // Validate channel name
+    if channel_name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": "Channel name cannot be empty" })),
+        ));
+    }
+
+    if channel_name == "midtown" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(
+                serde_json::json!({ "error": "Cannot create channel named 'midtown' - this is reserved for the main channel" }),
+            ),
+        ));
+    }
+
+    if !channel_name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(
+                serde_json::json!({ "error": "Channel name must contain only alphanumeric characters, hyphens, and underscores" }),
+            ),
+        ));
+    }
+
+    // Create the channel (idempotent - returns existing channel if it already exists)
+    let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
+    Channel::create(base_dir, channel_name).map_err(|e| {
+        error!("Failed to create channel '{}': {}", channel_name, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Failed to create channel" })),
+        )
+    })?;
+
+    info!("Created channel '{}'", channel_name);
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({ "name": channel_name })),
+    ))
 }
 
 /// Get channel message history
