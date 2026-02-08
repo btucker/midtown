@@ -795,7 +795,7 @@ fn test_worktree_isolation() {
         .and_then(|cw| cw["name"].as_str())
         .unwrap_or("unknown");
 
-    // Build the expected worktree path
+    // Poll for worktree creation (daemon creates worktrees asynchronously)
     let worktree_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
