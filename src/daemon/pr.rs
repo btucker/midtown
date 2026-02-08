@@ -18,6 +18,7 @@ use crate::{config, daemon_messages};
 use super::DaemonState;
 use super::constants::*;
 use super::effects::Effect;
+use super::helpers::is_lead_branch;
 use super::helpers::*;
 use super::snapshot::WorldSnapshot;
 use super::trackers::{PrIssueType, StuckConditionType};
@@ -1235,6 +1236,18 @@ async fn collect_comment_notification_effects(
 
         effects.extend(comment_action_to_effects(action, pr_number, title, state));
 
+        // If this is a lead/* branch, also nudge the lead so they see review feedback
+        if is_lead_branch(head_ref) {
+            let lead_nudge_msg = format!(
+                "Your PR #{} ({}) has new review comments — please address feedback.",
+                pr_number,
+                truncate_str(title, 40)
+            );
+            effects.push(Effect::NudgeLead {
+                message: lead_nudge_msg,
+            });
+        }
+
         // Also create a review feedback task for consistent "task !X" formatting.
         // Skip if a creation is already in flight (nudged to Lead, awaiting confirmation).
         let key = super::DaemonState::task_creation_key(pr_number, &owner);
@@ -2038,6 +2051,12 @@ async fn add_eyes_reaction(repo_full_name: &str, comment_node: &crate::webhook::
 
 /// Async version of `get_pr_owner_coworker` that doesn't block the Tokio runtime.
 async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
+    let branch = get_pr_branch_async(pr_number).await?;
+    coworker_from_branch(&branch)
+}
+
+/// Fetch the branch name (headRefName) for a PR using the GitHub CLI.
+async fn get_pr_branch_async(pr_number: u64) -> Option<String> {
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
@@ -2056,8 +2075,7 @@ async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
         return None;
     }
 
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    coworker_from_branch(&branch)
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Look up stored session context for a PR author, for use in handoff decisions.
@@ -2162,7 +2180,21 @@ pub(super) async fn handle_pr_comment_nudge(
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
     let is_actionable = !matches!(action, crate::rules::PrAction::Skip { .. });
-    let effects = comment_action_to_effects(action, pr_number, "", state);
+    let mut effects = comment_action_to_effects(action, pr_number, "", state);
+
+    // If this is a lead/* branch, also nudge the lead so they see review feedback
+    if let Some(branch) = get_pr_branch_async(pr_number).await
+        && is_lead_branch(&branch)
+    {
+        let lead_nudge_msg = format!(
+            "Your PR #{} has review feedback from {}. Please address it and merge if appropriate.",
+            pr_number, activity.actor
+        );
+        effects.push(Effect::NudgeLead {
+            message: lead_nudge_msg,
+        });
+    }
+
     super::effects::execute_effects(effects, state).await;
 
     // Create a review feedback task directly. In-memory deduplication prevents
@@ -2629,6 +2661,38 @@ mod tests {
             coworker_from_branch("amsterdam/add-feature"),
             Some("amsterdam".to_string()),
             "amsterdam is a valid coworker name"
+        );
+    }
+
+    #[test]
+    fn is_lead_branch_detects_lead_branches() {
+        // Lead branches start with "lead/"
+        assert!(
+            is_lead_branch("lead/fix-bug"),
+            "lead/fix-bug is a lead branch"
+        );
+        assert!(
+            is_lead_branch("lead/add-feature"),
+            "lead/add-feature is a lead branch"
+        );
+        assert!(
+            is_lead_branch("lead/root-cause-claude-md-updates"),
+            "lead/root-cause-claude-md-updates is a lead branch"
+        );
+
+        // Coworker and other branches should not be detected as lead branches
+        assert!(
+            !is_lead_branch("york/fix-bug"),
+            "york/fix-bug is not a lead branch"
+        );
+        assert!(
+            !is_lead_branch("feature/add-auth"),
+            "feature/add-auth is not a lead branch"
+        );
+        assert!(!is_lead_branch("main"), "main is not a lead branch");
+        assert!(
+            !is_lead_branch("leading/edge"),
+            "leading/edge is not a lead branch (only exact prefix match)"
         );
     }
 
