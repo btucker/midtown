@@ -91,7 +91,7 @@
       <div class="task-list">
         {#each $daemonStatus.tasks as task}
           <div class="task-item">
-            <span class="task-id">#{task.id}</span>
+            <span class="task-id">!{task.id}</span>
             <span class="task-subject">{task.subject}</span>
             <span class="task-status">{task.status}</span>
           </div>
