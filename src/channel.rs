@@ -857,6 +857,8 @@ mod tests {
             from: "agent1".to_string(),
             content: "New message".to_string(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         writeln!(file, "{}", serde_json::to_string(&new_msg).unwrap()).unwrap();
 
@@ -867,6 +869,8 @@ mod tests {
             from: "agent2".to_string(),
             content: "Old message (delayed)".to_string(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
 
@@ -1038,6 +1042,8 @@ mod tests {
                     from: "agent1".to_string(),
                     content: format!("Old message {}", i),
                     message_type: MessageType::Text,
+                    channel: None,
+                    source_channel: None,
                 };
                 writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
             }
@@ -1050,6 +1056,8 @@ mod tests {
                     from: "agent1".to_string(),
                     content: format!("Recent message {}", i),
                     message_type: MessageType::Text,
+                    channel: None,
+                    source_channel: None,
                 };
                 writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
             }
@@ -1107,6 +1115,8 @@ mod tests {
                 from: "agent1".to_string(),
                 content: "Old".to_string(),
                 message_type: MessageType::Text,
+                channel: None,
+                source_channel: None,
             };
             writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
         }
@@ -1159,6 +1169,8 @@ mod tests {
                 from: "agent1".to_string(),
                 content: "Very old".to_string(),
                 message_type: MessageType::Text,
+                channel: None,
+                source_channel: None,
             };
             writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
             file.write_all(existing.as_bytes()).unwrap();
