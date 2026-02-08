@@ -1630,12 +1630,45 @@ async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if already assigned for review.
+        // Check if already assigned for review AND the reviewer is still active.
+        // If a reviewer was assigned but has since died/shut down, we should spawn
+        // a replacement rather than waiting for the assignment to expire.
         {
             let ps = state.persistent_state.lock().await;
             if ps.github.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review", pr_number);
-                continue;
+                // Check if the assigned reviewer is still alive
+                if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
+                    let running_coworkers = state.coworkers.list_running();
+                    let active_names: std::collections::HashSet<String> = running_coworkers
+                        .iter()
+                        .map(|cw| cw.name.to_lowercase())
+                        .collect();
+
+                    // Also check headless sessions (fixes dead reviewer detection for headless coworkers)
+                    let is_active = active_names.contains(reviewer_name)
+                        || state.session_manager.is_alive(reviewer_name).await;
+
+                    if is_active {
+                        debug!(
+                            "PR #{} already assigned to active reviewer {}",
+                            pr_number, reviewer_name
+                        );
+                        continue;
+                    } else {
+                        debug!(
+                            "PR #{} assigned to {} but reviewer is dead, clearing assignment and spawning replacement",
+                            pr_number, reviewer_name
+                        );
+                        // Drop the lock before calling mutable method
+                        drop(ps);
+                        let mut ps = state.persistent_state.lock().await;
+                        ps.github.remove_assignment(pr_number);
+                    }
+                } else {
+                    // Assignment exists but no reviewer name - shouldn't happen, but skip anyway
+                    debug!("PR #{} has assignment but no reviewer name", pr_number);
+                    continue;
+                }
             }
         }
 
