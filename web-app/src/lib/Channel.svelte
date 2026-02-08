@@ -174,9 +174,6 @@
 </script>
 
 <div class="channel-container">
-  <div class="channel-header">
-    <h2>#{$activeChannel}</h2>
-  </div>
   <div class="messages" bind:this={messagesContainer} onscroll={handleScroll}>
     {#if channelMessages.length === 0}
       <div class="empty-state">
@@ -294,19 +291,6 @@
     flex-direction: column;
     height: 100%;
     position: relative;
-  }
-
-  .channel-header {
-    padding: 12px 16px;
-    background: #262626;
-    border-bottom: 1px solid #3a3a3a;
-  }
-
-  .channel-header h2 {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #5fafaf;
-    margin: 0;
   }
 
   .messages {
