@@ -411,7 +411,7 @@ fn window_exists(session: &str, window: &str) -> bool {
 /// stub commands don't produce TUI output.
 #[test]
 #[ignore]
-#[timeout(120_000)]
+#[timeout(180_000)]
 fn test_daemon_spawns_lead_with_real_claude() {
     // Skip when using a stub command - this test requires real Claude TUI output
     if std::env::var("MIDTOWN_LEAD_COMMAND").is_ok() {
