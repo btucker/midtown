@@ -422,6 +422,19 @@ impl HeadlessSession {
     pub async fn kill(&mut self) -> std::io::Result<()> {
         self.child.kill().await
     }
+
+    /// Check if the child process has exited without blocking.
+    ///
+    /// Returns `Some(ExitStatus)` if exited, `None` if still running.
+    /// This is a non-blocking check using `waitpid(WNOHANG)` under the hood.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    /// Get the child process ID, if available.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
 }
 
 impl Drop for HeadlessSession {

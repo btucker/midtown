@@ -489,6 +489,69 @@ impl SessionManager {
             .collect()
     }
 
+    /// Check all tracked sessions for process liveness using `try_wait()`.
+    ///
+    /// This is a defense-in-depth backstop for `drain_events()`. If a child
+    /// process exits but stdout doesn't close cleanly (pipe buffering, timing
+    /// race, etc.), `drain_events` may not detect the exit. This method uses
+    /// the kernel's `waitpid(WNOHANG)` to definitively check if each process
+    /// is still alive, and force-marks dead sessions as Stopped.
+    ///
+    /// Returns the names of sessions that were discovered to be dead.
+    pub async fn reconcile_process_health(&self) -> Vec<String> {
+        let mut sessions = self.sessions.write().await;
+        let mut newly_stopped = Vec::new();
+
+        for (name, cs) in sessions.iter_mut() {
+            // Only check sessions that we think are alive
+            if cs.status == SessionStatus::Stopped {
+                continue;
+            }
+
+            let session = match cs.session.as_mut() {
+                Some(s) => s,
+                None => {
+                    // No session handle but status isn't Stopped — fix inconsistency
+                    warn!(
+                        "Session '{}' has no handle but status={:?} — marking as stopped",
+                        name, cs.status
+                    );
+                    cs.status = SessionStatus::Stopped;
+                    newly_stopped.push(name.clone());
+                    continue;
+                }
+            };
+
+            match session.try_wait() {
+                Ok(Some(exit_status)) => {
+                    // Process has exited but drain_events didn't catch it
+                    warn!(
+                        "Session '{}' process exited (status={}) but was still tracked as {:?} — forcing cleanup",
+                        name, exit_status, cs.status
+                    );
+                    cs.status = SessionStatus::Stopped;
+                    cs.session = None;
+                    newly_stopped.push(name.clone());
+                }
+                Ok(None) => {
+                    // Process is still running — all good
+                }
+                Err(e) => {
+                    // Error checking process status — treat as dead
+                    warn!(
+                        "Failed to check process liveness for session '{}': {} — marking as stopped",
+                        name, e
+                    );
+                    cs.status = SessionStatus::Stopped;
+                    cs.session = None;
+                    newly_stopped.push(name.clone());
+                }
+            }
+        }
+
+        newly_stopped
+    }
+
     /// Remove a stopped session entry (cleanup after the coworker is fully shut down).
     pub async fn remove(&self, name: &str) {
         let log_path = {
@@ -678,5 +741,48 @@ mod tests {
         let sm = SessionManager::new("test-repo".to_string());
         let names = sm.list_alive_names().await;
         assert!(names.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_catches_no_handle_sessions() {
+        let sm = SessionManager::new("test-repo".to_string());
+
+        // Insert a session with Running status but no handle (session: None)
+        // This simulates the inconsistent state where a session handle is lost
+        insert_test_session(&sm, "madison", SessionStatus::Running).await;
+
+        let stopped = sm.reconcile_process_health().await;
+        assert_eq!(
+            stopped,
+            vec!["madison"],
+            "Should detect handle-less Running session"
+        );
+
+        // Verify the session is now marked as Stopped
+        let alive = sm.list_alive_names().await;
+        assert!(
+            !alive.contains(&"madison".to_string()),
+            "madison should no longer be alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_skips_already_stopped() {
+        let sm = SessionManager::new("test-repo".to_string());
+
+        insert_test_session(&sm, "park", SessionStatus::Stopped).await;
+
+        let stopped = sm.reconcile_process_health().await;
+        assert!(
+            stopped.is_empty(),
+            "Should not flag already-stopped sessions"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_empty() {
+        let sm = SessionManager::new("test-repo".to_string());
+        let stopped = sm.reconcile_process_health().await;
+        assert!(stopped.is_empty());
     }
 }
