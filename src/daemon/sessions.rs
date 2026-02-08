@@ -263,6 +263,11 @@ impl SessionManager {
 
             let mut events = Vec::new();
 
+            // Drain stderr first to prevent pipe buffer deadlock.
+            // If stderr writes >64KB without draining, the child process blocks.
+            // This must happen every tick, not just on exit.
+            let _ = session.drain_stderr().await;
+
             // Non-blocking drain: try to read events without waiting.
             // Use tokio::time::timeout with zero duration to poll.
             loop {
