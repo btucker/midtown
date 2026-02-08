@@ -1672,7 +1672,11 @@ async fn collect_reviewer_effects_with_source(
                         health
                             .iter()
                             .filter_map(|(name, h)| {
-                                if h.has_usage_limit { Some(name.clone()) } else { None }
+                                if h.has_usage_limit {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
                             })
                             .collect()
                     };
@@ -1952,7 +1956,7 @@ fn review_complete_action_to_effects(
 ///
 /// Returns effects to be executed by the caller (following the evaluate-execute pattern).
 pub(super) async fn process_pending_review_spawns(
-    snap: &WorldSnapshot,
+    _snap: &WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
     let mut all_effects = Vec::new();

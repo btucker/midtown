@@ -391,6 +391,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let daemon_logs = Vec::new();
 
     // ── Worktree registry ────────────────────────────────────────────────
+    #[allow(clippy::type_complexity)]
     let (tasks_with_worktrees, task_worktree_map, worktree_branch_owners, merged_pr_branches): (
         HashSet<String>,
         HashMap<String, String>,
