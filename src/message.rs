@@ -82,6 +82,14 @@ pub struct Message {
     /// Type of message
     #[serde(rename = "type")]
     pub message_type: MessageType,
+    /// Channel name (defaults to "midtown" for backward compatibility).
+    /// Stored as Option for backward compat with existing struct literals,
+    /// but always initialized in constructors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Optional source channel for cross-posts (None if not a cross-post)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_channel: Option<String>,
 }
 
 impl Message {
@@ -108,7 +116,41 @@ impl Message {
             from: from.into(),
             content: content.into(),
             message_type,
+            channel: Some("midtown".to_string()),
+            source_channel: None,
         }
+    }
+
+    /// Create a new message for a specific channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use midtown::{Message, MessageType};
+    ///
+    /// let msg = Message::for_channel("pr-discussion", "agent1", "Let's review", MessageType::Text);
+    /// assert_eq!(msg.channel_name(), "pr-discussion");
+    /// ```
+    pub fn for_channel(
+        channel: impl Into<String>,
+        from: impl Into<String>,
+        content: impl Into<String>,
+        message_type: MessageType,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            timestamp: Utc::now(),
+            from: from.into(),
+            content: content.into(),
+            message_type,
+            channel: Some(channel.into()),
+            source_channel: None,
+        }
+    }
+
+    /// Get the channel name (defaults to "midtown" if not set).
+    pub fn channel_name(&self) -> &str {
+        self.channel.as_deref().unwrap_or("midtown")
     }
 
     /// Create a text message.
@@ -238,5 +280,61 @@ mod tests {
         assert_eq!(msg.from, "lexington");
         assert_eq!(msg.content, "investigating the auth bug");
         assert_eq!(msg.message_type, MessageType::Action);
+    }
+
+    #[test]
+    fn test_channel_defaults_to_midtown() {
+        let msg = Message::text("agent1", "Hello");
+        assert_eq!(msg.channel_name(), "midtown");
+        assert_eq!(msg.source_channel, None);
+    }
+
+    #[test]
+    fn test_for_channel() {
+        let msg =
+            Message::for_channel("pr-discussion", "agent1", "Let's review", MessageType::Text);
+        assert_eq!(msg.channel_name(), "pr-discussion");
+        assert_eq!(msg.from, "agent1");
+    }
+
+    #[test]
+    fn test_backward_compatibility_deserialize() {
+        // Simulate an old message JSON without channel field
+        let old_json = r#"{
+            "id": "test-id",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "from": "agent1",
+            "content": "Hello",
+            "type": "text"
+        }"#;
+
+        let msg: Message = serde_json::from_str(old_json).unwrap();
+        assert_eq!(msg.channel_name(), "midtown"); // Should default
+        assert_eq!(msg.from, "agent1");
+        assert_eq!(msg.content, "Hello");
+    }
+
+    #[test]
+    fn test_backward_compatibility_struct_literal() {
+        // Old code that uses struct literals without channel field should still compile
+        let msg = Message {
+            id: "test".to_string(),
+            timestamp: Utc::now(),
+            from: "agent1".to_string(),
+            content: "Test".to_string(),
+            message_type: MessageType::Text,
+            channel: None, // Explicitly set to None for old code
+            source_channel: None,
+        };
+        assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
+    }
+
+    #[test]
+    fn test_new_format_serialize_deserialize() {
+        let msg = Message::for_channel("pr-discussion", "agent1", "Test", MessageType::Text);
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.channel_name(), "pr-discussion");
+        assert_eq!(parsed.from, "agent1");
     }
 }

@@ -121,7 +121,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|p| p.get("prompt"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            handle_coworker_spawn(request.id, state, resume, prompt)
+            handle_coworker_spawn(request.id, state, resume, prompt).await
         }
 
         "coworker.break" => {
@@ -515,7 +515,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 // ============================================================================
 
 /// Handle coworker.spawn RPC method.
-fn handle_coworker_spawn(
+async fn handle_coworker_spawn(
     id: RequestId,
     state: &DaemonState,
     resume: bool,
@@ -536,11 +536,24 @@ fn handle_coworker_spawn(
         );
     }
 
-    // Pass prompt to spawn() - it handles waiting and nudging internally
-    // Coworkers use isolated task lists (don't share the lead's task list)
+    // Pick a name for the coworker
+    let name = match state.coworkers.next_available_name() {
+        Some(n) => n,
+        None => {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    "No available coworker slots (all avenue names in use)".to_string(),
+                ),
+            );
+        }
+    };
+
+    // Build headless launch config
     let team = crate::mailbox::team_name_for_repo(&state.repo_name);
     let config = crate::launch::LaunchConfig {
-        name: String::new(), // spawn() picks a name
+        name,
         session_mode: if resume {
             crate::launch::SessionMode::Resume
         } else {
@@ -556,18 +569,20 @@ fn handle_coworker_spawn(
         working_dir: None,
         model: "sonnet".to_string(),
     };
-    match state.coworkers.spawn(&config) {
-        Ok(name) => {
-            info!("Spawned coworker: {}", name);
-            state.broadcast_coworker_update(&name, "running", None);
+
+    // Spawn via the headless path (creates worktree + headless session)
+    match state.spawn_coworker(&config).await {
+        Ok(()) => {
+            info!("Spawned coworker: {}", config.name);
+            state.broadcast_coworker_update(&config.name, "running", None);
 
             Response::success(
                 id,
                 serde_json::json!({
                     "success": true,
-                    "message": format!("Called in coworker: {}", name),
+                    "message": format!("Called in coworker: {}", config.name),
                     "coworkers": [{
-                        "name": name,
+                        "name": config.name,
                         "status": "running",
                         "current_task": null,
                         "started_at": chrono::Utc::now().to_rfc3339(),

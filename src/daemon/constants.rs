@@ -27,7 +27,9 @@ pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
 
-/// Minimum age in seconds before a PR is eligible for auto-review (60 seconds)
+/// Minimum age in seconds before a PR is eligible for auto-review (60 seconds).
+/// Tradeoff: Faster reviewer spawn (biggest throughput win) vs. potential duplicate
+/// assignment if PR hash bucket changes quickly. Hash bucket dedup should still work.
 pub const PR_REVIEW_DELAY_SECS: u64 = 60;
 
 /// Maximum number of concurrent PR reviews the daemon will run.
@@ -68,33 +70,35 @@ pub(super) const LEAD_HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 /// tries to respawn the lead window before the tmux session is fully settled.
 pub(super) const LEAD_HEALTH_CHECK_STARTUP_GRACE: Duration = Duration::from_secs(30);
 
-/// Interval for orphaned worktree cleanup tick (10 seconds)
-///
-/// Worktree cleanup involves expensive git and gh CLI operations for each
-/// orphaned worktree. To avoid saturating the blocking thread pool and causing
-/// RPC timeouts, we process at most one worktree per tick. With a 10-second
-/// interval, 10 orphaned worktrees take ~100 seconds to fully process.
-pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 10;
+/// Interval for task dispatch and orphaned worktree cleanup tick (5 seconds).
+/// Tradeoff: Tasks get assigned faster and orphan recovery happens sooner vs. more frequent
+/// snapshot collection (CPU impact). Worktree cleanup is still rate-limited to one worktree
+/// per tick. Testing shows 5s interval has acceptable CPU overhead while significantly
+/// improving task assignment latency. With 5s interval, 10 orphaned worktrees take ~50s.
+pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 
 /// Minimum time a coworker must be alive before being sent on a break (5 minutes)
 /// This prevents spawn storms where coworkers are rapidly sent on breaks.
 pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 
-/// Cooldown between orphan recovery spawns (5 seconds)
-/// Only spawn one coworker per tick, with a minimum gap between spawns.
-pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
+/// Cooldown between orphan recovery spawns (2 seconds).
+/// Tradeoff: Multiple orphan recoveries happen faster vs. spawn storm risk. At 2s with
+/// ORPHAN_CHECK_INTERVAL_SECS=5s, we can recover multiple tasks quickly without overwhelming
+/// the system. Still enforces one-spawn-per-tick to prevent uncontrolled spawning.
+pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(2);
 
-/// Grace period after a coworker stops before orphan recovery kicks in (60 seconds).
-/// When a coworker completes work and goes idle → shutdown, the task may not yet
-/// be marked done. This grace period prevents false recovery by giving the system
-/// time to process the task completion (e.g., PR auto-complete, manual status update).
-pub(super) const ORPHAN_RECOVERY_GRACE_PERIOD: Duration = Duration::from_secs(60);
+/// Grace period after a coworker stops before orphan recovery kicks in (20 seconds).
+/// Tradeoff: Faster recovery of abandoned tasks vs. risk of recovering tasks that are
+/// legitimately completing. Most task completions (PR merge, status update) happen within
+/// seconds, so 20s should be sufficient to prevent false recovery while still being aggressive.
+pub(super) const ORPHAN_RECOVERY_GRACE_PERIOD: Duration = Duration::from_secs(20);
 
-/// Cooldown after a coworker spawn failure before retrying (2 minutes).
-/// Prevents infinite respawn loops when a coworker's environment is broken
-/// (missing worktree, bad session, etc.). The task is reset to pending so
-/// other coworkers can pick it up.
-pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(120);
+/// Cooldown after a coworker spawn failure before retrying (60 seconds).
+/// Tradeoff: Failed spawns retry sooner vs. risk of rapid retry loops. Most spawn failures
+/// are transient (system load, network hiccup), so 60s gives the system time to stabilize
+/// while still retrying reasonably fast. The task resets to pending so other coworkers can
+/// claim it during the cooldown, providing an alternative recovery path.
+pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// Cooldown between zombie respawn attempts for the same coworker (5 minutes).
 /// Prevents respawn loops if the zombie condition keeps recurring.

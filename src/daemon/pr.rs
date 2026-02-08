@@ -3497,14 +3497,14 @@ mod tests {
     ///
     /// ## Bug scenario (before fix):
     /// 1. PR #42 is opened at t=0
-    /// 2. Poll at t=30s: PR is too new (within 60s delay), no reviewer spawn
-    /// 3. Poll at t=90s: PR data unchanged → hash unchanged → early return (BUG!)
+    /// 2. Poll at t=15s: PR is too new (within 30s delay), no reviewer spawn
+    /// 3. Poll at t=45s: PR data unchanged → hash unchanged → early return (BUG!)
     ///    - The reviewer spawn eligibility was never re-evaluated
     ///
     /// ## Fixed behavior (after fix):
     /// 1. PR #42 is opened at t=0
-    /// 2. Poll at t=30s: PR is too new, no reviewer spawn, cache hash saved
-    /// 3. Poll at t=90s: time bucket changed (bucket 0→1) → hash changed
+    /// 2. Poll at t=15s: PR is too new, no reviewer spawn, cache hash saved
+    /// 3. Poll at t=45s: time bucket changed (bucket 0→1) → hash changed
     ///    - Poll proceeds, PR age re-evaluated, reviewer spawn triggered
     ///
     /// This test simulates time passing to verify the hash changes at bucket boundaries.
@@ -3646,7 +3646,7 @@ mod tests {
         let cm = crate::coworker::CoworkerManager::new("test-session", wm);
         let channel_dir = temp_dir.path().join("channel");
         std::fs::create_dir_all(&channel_dir).expect("channel dir");
-        let channel = crate::channel::Channel::new(&channel_dir).expect("channel");
+        let channel = crate::channel::Channel::new(&channel_dir, "midtown").expect("channel");
 
         // Leak temp_dir so it survives the test (DaemonState doesn't own it)
         std::mem::forget(temp_dir);

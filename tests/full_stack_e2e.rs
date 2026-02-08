@@ -477,95 +477,20 @@ fn test_daemon_spawns_lead_with_real_claude() {
 
 /// Spawn coworker via RPC, verify its tmux window appears and has TUI output.
 ///
-/// The daemon's coworker.spawn RPC creates a worktree, opens a tmux window,
-/// and launches Claude Code. We verify the window exists and has visible TUI
-/// output (indicating Claude Code is running).
+/// OBSOLETE: This test verified tmux window creation for coworkers, but
+/// coworkers are now headless sessions (no tmux windows). Coworker spawning
+/// and worktree creation is tested by test_worktree_isolation instead.
 ///
-/// Note: We verify the window and TUI, not channel posts, because channel
-/// posts depend on Claude actually following instructions within a time window,
-/// which is inherently variable with real AI.
+/// The daemon's coworker.spawn RPC creates a worktree and launches a headless
+/// Claude Code session. Tmux windows are only created for the lead.
+///
+/// Skipped because coworkers no longer create tmux windows as of commit d534e46.
 #[test]
 #[ignore]
-#[timeout(240_000)] // 4 minutes: first test in suite triggers cargo build --release
+#[timeout(240_000)]
 fn test_coworker_spawn_and_tui_renders() {
-    if !tmux_available() {
-        eprintln!("tmux not available, skipping");
-        return;
-    }
-
-    // Verify claude CLI is installed before proceeding
-    if !claude_available() {
-        eprintln!("claude CLI not available, skipping");
-        return;
-    }
-
-    let mut fixture = match FullStackFixture::new() {
-        Some(f) => f,
-        None => return,
-    };
-
-    if !fixture.start_daemon() {
-        return;
-    }
-
-    let session = fixture.tmux_session_name();
-
-    // Spawn a coworker via RPC (the daemon assigns a name from the pool)
-    let spawn_response = fixture.rpc_call("coworker.spawn", Some(serde_json::json!({})));
-
-    assert!(
-        spawn_response.is_some(),
-        "Should receive response from coworker.spawn"
-    );
-
-    let spawn_response = spawn_response.unwrap();
-    if spawn_response["error"].is_object() {
-        eprintln!(
-            "Coworker spawn failed (expected in some environments): {:?}",
-            spawn_response["error"]
-        );
-        return;
-    }
-
-    // Extract the assigned coworker name from the response
-    let coworker_name = spawn_response["result"]["coworkers"][0]["name"]
-        .as_str()
-        .expect("Response should contain coworker name");
-    eprintln!("Spawned coworker with name: {}", coworker_name);
-
-    // Wait for the coworker window to appear (up to 60s)
-    let mut window_found = false;
-    for _ in 0..60 {
-        thread::sleep(Duration::from_secs(1));
-        if window_exists(&session, coworker_name) {
-            window_found = true;
-            break;
-        }
-    }
-
-    assert!(
-        window_found,
-        "Coworker window '{}' should appear in tmux session '{}' within 60s",
-        coworker_name, session
-    );
-
-    // Verify the coworker pane has visible output (TUI rendered)
-    let mut has_output = false;
-    for _ in 0..30 {
-        thread::sleep(Duration::from_secs(1));
-        if let Some(content) = capture_pane(&session, coworker_name)
-            && midtown::tmux::content_has_output(&content)
-        {
-            has_output = true;
-            break;
-        }
-    }
-
-    assert!(
-        has_output,
-        "Coworker pane '{}' should have visible TUI output within 90s of spawn",
-        coworker_name
-    );
+    eprintln!("SKIPPED: Coworkers are now headless (no tmux windows)");
+    eprintln!("See test_worktree_isolation for coworker spawn verification");
 }
 
 /// Send an @lead channel message, verify the nudge appears in the lead pane.
@@ -870,10 +795,7 @@ fn test_worktree_isolation() {
         .and_then(|cw| cw["name"].as_str())
         .unwrap_or("unknown");
 
-    // Give the daemon a moment to create the worktree
-    thread::sleep(Duration::from_secs(5));
-
-    // Verify the worktree directory exists
+    // Build the expected worktree path
     let worktree_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
@@ -881,10 +803,22 @@ fn test_worktree_isolation() {
         .join(&fixture.repo_name)
         .join(coworker_name);
 
+    // Poll for worktree existence (worktree creation is async in CI environments)
+    // Max wait time: 30s, checking every 500ms
+    let mut waited = 0;
+    let max_wait = Duration::from_secs(30);
+    let poll_interval = Duration::from_millis(500);
+
+    while !worktree_path.exists() && waited < max_wait.as_millis() as u64 {
+        thread::sleep(poll_interval);
+        waited += poll_interval.as_millis() as u64;
+    }
+
     assert!(
         worktree_path.exists(),
-        "Worktree directory should exist at {:?}",
-        worktree_path
+        "Worktree directory should exist at {:?} after waiting {}ms",
+        worktree_path,
+        waited
     );
 
     // Verify it's a valid git worktree by checking for .git file

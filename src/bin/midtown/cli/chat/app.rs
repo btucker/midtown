@@ -63,6 +63,7 @@ pub struct KanbanTask {
     pub owner: Option<String>,
     pub status: TaskStatus,
     /// When the task file was last modified (used as proxy for status change time)
+    #[allow(dead_code)] // Will be used in future PR detail views
     pub modified_at: Option<DateTime<Utc>>,
 }
 
@@ -76,10 +77,10 @@ pub enum TaskStatus {
 
 /// A PR item for the kanban board (open PRs in Review column)
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Transitioning to split-panel layout, PRs will be shown differently
 pub struct KanbanPr {
     pub number: u64,
     pub title: String,
-    #[allow(dead_code)] // Populated but not yet rendered in TUI
     pub author: String,
     pub created_at: DateTime<Utc>,
     pub ci_status: CiStatus,
@@ -99,6 +100,7 @@ pub struct KanbanPr {
 
 /// A merged PR item for the Done column
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Transitioning to split-panel layout
 pub struct MergedPr {
     pub number: u64,
     pub title: String,
@@ -114,6 +116,17 @@ const INITIAL_MESSAGE_COUNT: usize = 100;
 /// When loading history, if we exceed this limit, we stop loading more.
 /// This prevents unbounded memory growth when scrolling through large channel logs.
 const MAX_LOADED_MESSAGES: usize = 500;
+
+/// Which pane has focus in the split-panel layout
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusedPane {
+    /// Board panel (left) - channel swimlanes with tasks
+    Board,
+    /// Chat panel (right) - message stream for selected channel
+    Chat,
+    /// Input bar (bottom of chat panel) - text input for posting messages
+    InputBar,
+}
 
 /// Application state
 pub struct App {
@@ -178,6 +191,15 @@ pub struct App {
     usage_receiver: Option<Receiver<Option<UsageData>>>,
     /// Last time usage data was refreshed
     usage_last_refresh: Instant,
+    /// Which pane currently has focus
+    pub focused_pane: FocusedPane,
+    /// Currently selected channel index in the board
+    #[allow(dead_code)] // Will be used for multi-channel navigation
+    pub selected_channel_index: usize,
+    /// Text input buffer for the input bar
+    pub input_text: String,
+    /// Cursor position in the input text
+    pub input_cursor: usize,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -232,6 +254,10 @@ impl App {
             usage_data: None,
             usage_receiver: None,
             usage_last_refresh: Instant::now() - USAGE_REFRESH_INTERVAL, // Force initial refresh
+            focused_pane: FocusedPane::Board,
+            selected_channel_index: 0,
+            input_text: String::new(),
+            input_cursor: 0,
         };
 
         // Initial load
@@ -546,6 +572,15 @@ impl App {
     /// Toggle selection mode (disables mouse capture for text selection)
     pub fn toggle_selection_mode(&mut self) {
         self.selection_mode = !self.selection_mode;
+    }
+
+    /// Cycle focus between panes: Board → Chat → InputBar → Board
+    pub fn cycle_focus(&mut self) {
+        self.focused_pane = match self.focused_pane {
+            FocusedPane::Board => FocusedPane::Chat,
+            FocusedPane::Chat => FocusedPane::InputBar,
+            FocusedPane::InputBar => FocusedPane::Board,
+        };
     }
 
     /// Maximum scroll offset
@@ -1406,6 +1441,10 @@ pub(super) mod tests {
             usage_data: None,
             usage_receiver: None,
             usage_last_refresh: Instant::now(),
+            focused_pane: FocusedPane::Board,
+            selected_channel_index: 0,
+            input_text: String::new(),
+            input_cursor: 0,
         }
     }
 
@@ -1502,6 +1541,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -1627,6 +1668,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -1700,6 +1743,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -1752,6 +1797,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 

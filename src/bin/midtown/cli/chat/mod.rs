@@ -31,6 +31,17 @@ use app::App;
 use ratatui::style::Color as RatatuiColor;
 use ui::Hyperlink;
 
+/// Convert a character index to a byte index in a UTF-8 string.
+///
+/// Returns the byte offset where the nth character starts.
+/// If char_idx exceeds the character count, returns the string's byte length.
+fn char_index_to_byte_index(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(byte_idx, _)| byte_idx)
+        .unwrap_or(s.len())
+}
+
 /// Run the chat TUI
 pub fn run() -> Result<(), String> {
     // Setup terminal
@@ -319,12 +330,29 @@ enum EventResult {
 
 /// Handle a terminal event, returns the result.
 fn handle_event(app: &mut App, event: Event) -> EventResult {
+    use app::FocusedPane;
+
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => EventResult::Exit,
+            KeyCode::Char('q') => EventResult::Exit,
+            KeyCode::Esc => {
+                // Esc exits when in Board or Chat, clears input when in InputBar
+                if app.focused_pane == FocusedPane::InputBar {
+                    app.input_text.clear();
+                    app.input_cursor = 0;
+                    EventResult::Continue
+                } else {
+                    EventResult::Exit
+                }
+            }
             KeyCode::Char('s') => {
                 app.toggle_selection_mode();
                 EventResult::ToggleSelectionMode
+            }
+            // Tab cycles focus: Board → Chat → InputBar → Board
+            KeyCode::Tab => {
+                app.cycle_focus();
+                EventResult::Continue
             }
             // Number keys 1-9 open the corresponding diagram in browser
             KeyCode::Char(c @ '1'..='9') => {
@@ -335,13 +363,30 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     EventResult::Continue
                 }
             }
+            // Up/Down behavior depends on focused pane
             KeyCode::Up | KeyCode::Char('k') => {
-                app.scroll_up();
-                EventResult::Continue
+                match app.focused_pane {
+                    FocusedPane::Board => {
+                        // Navigate channel/task list (future implementation)
+                        EventResult::Continue
+                    }
+                    FocusedPane::Chat | FocusedPane::InputBar => {
+                        app.scroll_up();
+                        EventResult::Continue
+                    }
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                app.scroll_down();
-                EventResult::Continue
+                match app.focused_pane {
+                    FocusedPane::Board => {
+                        // Navigate channel/task list (future implementation)
+                        EventResult::Continue
+                    }
+                    FocusedPane::Chat | FocusedPane::InputBar => {
+                        app.scroll_down();
+                        EventResult::Continue
+                    }
+                }
             }
             KeyCode::PageUp => {
                 app.page_up();
@@ -357,6 +402,58 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             }
             KeyCode::End | KeyCode::Char('G') => {
                 app.scroll_to_bottom();
+                EventResult::Continue
+            }
+            // Enter sends message when in InputBar
+            KeyCode::Enter => {
+                if app.focused_pane == FocusedPane::InputBar && !app.input_text.is_empty() {
+                    // TODO: Post message to channel
+                    app.input_text.clear();
+                    app.input_cursor = 0;
+                }
+                EventResult::Continue
+            }
+            // Character input when in InputBar
+            KeyCode::Char(c) => {
+                if app.focused_pane == FocusedPane::InputBar {
+                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                    app.input_text.insert(byte_idx, c);
+                    app.input_cursor += 1;
+                }
+                EventResult::Continue
+            }
+            // Backspace in InputBar
+            KeyCode::Backspace => {
+                if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                    app.input_cursor -= 1;
+                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                    app.input_text.remove(byte_idx);
+                }
+                EventResult::Continue
+            }
+            // Delete in InputBar
+            KeyCode::Delete => {
+                if app.focused_pane == FocusedPane::InputBar
+                    && app.input_cursor < app.input_text.chars().count()
+                {
+                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                    app.input_text.remove(byte_idx);
+                }
+                EventResult::Continue
+            }
+            // Left/Right for cursor movement in InputBar
+            KeyCode::Left => {
+                if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                    app.input_cursor -= 1;
+                }
+                EventResult::Continue
+            }
+            KeyCode::Right => {
+                if app.focused_pane == FocusedPane::InputBar
+                    && app.input_cursor < app.input_text.chars().count()
+                {
+                    app.input_cursor += 1;
+                }
                 EventResult::Continue
             }
             _ => EventResult::Continue,

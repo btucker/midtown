@@ -422,11 +422,18 @@ Each project daemon runs its own webhook server for GitHub integration. Port 470
 
 ### Chat TUI
 
-The `midtown chat` command opens an IRC-style chat interface with:
+The `midtown chat` command opens a split-panel interface with:
 
+**Layout**:
+- **Board panel** (left 40%): Channel swimlanes showing in-progress (●) and pending (○) tasks per channel
+- **Chat panel** (right 60%): Real-time message display with mermaid diagram rendering
+- **Input bar** (bottom): Text input for posting messages (Tab to focus, Enter to send)
+
+**Features**:
 - Real-time channel message display
 - Mermaid diagram detection and rendering (via `selkie-rs` with content-hash caching)
 - Inline ASCII art for flowchart diagrams (press number keys to open SVG in browser)
+- Tab-based focus navigation (Board → Chat → InputBar)
 - Mouse support for scrolling and navigation
 - Clickable hyperlinks via OSC 8 escape sequences
 - Real-time token usage and cost tracking

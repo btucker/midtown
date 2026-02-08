@@ -33,6 +33,7 @@ pub struct Hyperlink {
 }
 
 /// Format duration as (Xm) or (Xh) for display
+#[allow(dead_code)]
 fn format_duration_minutes(since: DateTime<Utc>) -> String {
     let now = Utc::now();
     let duration = now.signed_duration_since(since);
@@ -115,6 +116,7 @@ fn get_sender_color(name: &str) -> Color {
 }
 
 /// Minimum height of the kanban board (including borders)
+#[allow(dead_code)]
 const MIN_KANBAN_HEIGHT: u16 = 6;
 
 /// Calculate the dynamic kanban board height based on In Progress and Review columns
@@ -122,6 +124,7 @@ const MIN_KANBAN_HEIGHT: u16 = 6;
 /// Only In Progress and Review columns expand the board height since they contain
 /// active work that should always be visible. Backlog and Done columns truncate
 /// because they're expected to have many items.
+#[allow(dead_code)]
 fn calculate_kanban_height(in_progress_count: usize, review_count: usize) -> u16 {
     // In Progress items take 2 lines (title + owner/duration)
     // Review items take 3 lines (title + PR#/elapsed + reviewer)
@@ -150,29 +153,36 @@ fn repo_status_height(app: &App) -> u16 {
 /// These need to be written directly to the terminal using OSC 8 escape sequences,
 /// bypassing ratatui's buffer system (which doesn't support hyperlinks).
 pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
-    // Calculate dynamic kanban height based on In Progress and Review columns
-    let (_pending, in_progress, _completed) = app.tasks_by_status();
-    let kanban_height = calculate_kanban_height(in_progress.len(), app.prs.len());
-
-    // Split into repo status (top), kanban, chat, and optional usage bar panels
+    // Split-panel layout: repo status (top), then horizontal split (board left | chat right), usage (bottom)
     let status_height = repo_status_height(app);
     let usage_height = if app.usage_data.is_some() { 4 } else { 0 };
-    let chunks = Layout::default()
+
+    let vertical_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(status_height),
-            Constraint::Length(kanban_height),
             Constraint::Min(10),
             Constraint::Length(usage_height),
         ])
         .split(f.area());
 
-    draw_repo_status_lines(f, app, chunks[0]);
-    let hyperlinks = draw_kanban_panel(f, app, chunks[1]);
-    draw_chat_panel(f, app, chunks[2]);
+    // Draw repo status at top
+    draw_repo_status_lines(f, app, vertical_chunks[0]);
+
+    // Split the main area horizontally: board (left 40%) | chat (right 60%)
+    let horizontal_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40), // Board panel
+            Constraint::Percentage(60), // Chat panel
+        ])
+        .split(vertical_chunks[1]);
+
+    let hyperlinks = draw_board_panel(f, app, horizontal_chunks[0]);
+    draw_chat_panel(f, app, horizontal_chunks[1]);
 
     if app.usage_data.is_some() {
-        draw_usage_bars(f, app, chunks[3]);
+        draw_usage_bars(f, app, vertical_chunks[2]);
     }
 
     hyperlinks
@@ -207,6 +217,79 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
     } else {
         "just now".to_string()
     }
+}
+
+/// Draw the board panel (left side) with channel swimlanes
+fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
+    // Phase 6 scaffolding: Until backend multi-channel support (Phase 4a) is complete,
+    // we'll show a mock channel list. The UI is ready for real channels.
+
+    // For now, show a single #midtown channel with all tasks
+    let mut lines = Vec::new();
+    let hyperlinks = Vec::new();
+
+    // Channel header: #midtown (X tasks)
+    let task_count = app.tasks.len();
+    let channel_header = format!("  #midtown ({})", task_count);
+    lines.push(Line::from(vec![Span::styled(
+        channel_header,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from("")); // Blank line after header
+
+    // Show tasks grouped under this channel
+    let (pending, in_progress, _completed) = app.tasks_by_status();
+
+    // In Progress tasks
+    for task in &in_progress {
+        let status_marker = "● ";
+        let owner_text = if let Some(ref owner) = task.owner {
+            format!(" [{}]", owner)
+        } else {
+            String::new()
+        };
+
+        let task_line = format!(
+            "    {} #{} {}{}",
+            status_marker, task.id, task.subject, owner_text
+        );
+        lines.push(Line::from(vec![Span::styled(
+            task_line,
+            Style::default().fg(Color::Green),
+        )]));
+    }
+
+    // Pending tasks
+    for task in &pending {
+        let status_marker = "○ ";
+        let owner_text = if let Some(ref owner) = task.owner {
+            format!(" [{}]", owner)
+        } else {
+            String::new()
+        };
+
+        let task_line = format!(
+            "    {} #{} {}{}",
+            status_marker, task.id, task.subject, owner_text
+        );
+        lines.push(Line::from(vec![Span::styled(
+            task_line,
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
+
+    // Render the panel
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Board")
+        .style(Style::default().fg(Color::White));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, area);
+
+    hyperlinks
 }
 
 /// Draw stacked repo status lines (one per repo, or single line for single-repo)
@@ -301,6 +384,7 @@ fn build_repo_status_line(repo_label: &str, status: &RepoStatus, width: u16) -> 
 }
 
 /// A kanban item that may span multiple lines
+#[allow(dead_code)]
 struct KanbanItem {
     /// Lines to display (1 for Backlog/Done, up to 2 for In Progress/Review)
     lines: Vec<String>,
@@ -311,6 +395,7 @@ struct KanbanItem {
 }
 
 /// Get the dot character for CI status (colored in rendering)
+#[allow(dead_code)]
 fn ci_status_dot(status: &CiStatus) -> &'static str {
     match status {
         CiStatus::Passed => "●",
@@ -324,6 +409,7 @@ fn ci_status_dot(status: &CiStatus) -> &'static str {
 ///
 /// Shows task ID when available (with task name or PR title as fallback),
 /// otherwise shows PR number.
+#[allow(dead_code)]
 fn build_review_card_line1(
     ci_dot: &str,
     repo_badge: &str,
@@ -341,6 +427,7 @@ fn build_review_card_line1(
 }
 
 /// Get the color for CI status dot
+#[allow(dead_code)]
 fn ci_status_color(status: &CiStatus) -> Color {
     match status {
         CiStatus::Passed => Color::Rgb(0, 208, 80),
@@ -353,6 +440,7 @@ fn ci_status_color(status: &CiStatus) -> Color {
 /// Draw the kanban board with 4 columns
 ///
 /// Returns hyperlinks for PR items in Review and Done columns
+#[allow(dead_code)]
 fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
     // Split into 4 equal columns
     let columns = Layout::default()
@@ -478,6 +566,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
 /// Draw a single kanban column with multi-line item support and optional hyperlinks
 ///
 /// Returns hyperlinks for items that have URLs (these will be rendered post-draw)
+#[allow(dead_code)]
 fn draw_kanban_column(
     f: &mut Frame,
     area: Rect,
@@ -590,6 +679,7 @@ fn draw_kanban_column(
 }
 
 /// Render a plain text line with optional CI status dot coloring
+#[allow(dead_code)]
 fn render_plain_line(
     buffer: &mut Buffer,
     x: u16,
@@ -620,6 +710,7 @@ fn render_plain_line(
 /// support, this can be revisited.
 ///
 /// The `url` parameter is kept for API compatibility but currently unused.
+#[allow(dead_code)]
 fn render_hyperlink_line(
     buffer: &mut Buffer,
     x: u16,
@@ -638,6 +729,7 @@ fn render_hyperlink_line(
 /// For kanban items with identifiers like "PR #42" or "#1 Task name", this function
 /// prioritizes showing the identifier (#N) when space is very limited, since that's
 /// the most useful information for identifying the item.
+#[allow(dead_code)]
 fn truncate_str(s: &str, max_width: usize) -> String {
     if s.chars().count() <= max_width {
         return s.to_string();
@@ -685,6 +777,7 @@ fn truncate_str(s: &str, max_width: usize) -> String {
 /// Handles formats like:
 /// - "PR #42 Some title" -> "#42"
 /// - "#1 Task name" -> "#1"
+#[allow(dead_code)]
 fn extract_identifier(s: &str) -> Option<String> {
     // Find the # character
     let hash_pos = s.find('#')?;
@@ -707,6 +800,21 @@ fn extract_identifier(s: &str) -> Option<String> {
 
 /// Draw the chat panel showing messages
 fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    // Split chat panel vertically: messages (top) + input bar (bottom)
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(5),    // Messages area
+            Constraint::Length(3), // Input bar (3 lines with border)
+        ])
+        .split(area);
+
+    draw_chat_messages(f, app, chunks[0]);
+    draw_input_bar(f, app, chunks[1]);
+}
+
+/// Draw the chat messages area (top of chat panel)
+fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     // Show selection mode indicator in title
     let title = if app.selection_mode {
         " #midtown [SELECT: press 's' to exit] "
@@ -809,6 +917,48 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let paragraph = Paragraph::new(visible_lines);
+
+    f.render_widget(block, area);
+    f.render_widget(paragraph, inner);
+}
+
+/// Draw the input bar at the bottom of the chat panel
+fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
+    use super::app::FocusedPane;
+
+    let is_focused = app.focused_pane == FocusedPane::InputBar;
+    let border_color = if is_focused {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+
+    // Show input text with cursor
+    let prompt = "> ";
+    let char_count = app.input_text.chars().count();
+    let text_with_cursor = if is_focused && app.input_cursor == char_count {
+        format!("{}{}_", prompt, app.input_text)
+    } else if is_focused {
+        // Convert character index to byte index for split_at
+        let byte_idx = app
+            .input_text
+            .char_indices()
+            .nth(app.input_cursor)
+            .map(|(idx, _)| idx)
+            .unwrap_or(app.input_text.len());
+        let (before, after) = app.input_text.split_at(byte_idx);
+        format!("{}{}_{}", prompt, before, after)
+    } else {
+        format!("{}{}", prompt, app.input_text)
+    };
+
+    let paragraph = Paragraph::new(text_with_cursor);
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
@@ -1665,6 +1815,8 @@ mod tests {
             content: "line1\nline2\nline3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
@@ -1672,6 +1824,8 @@ mod tests {
             content: "line1\nline2\nline3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1713,6 +1867,8 @@ mod tests {
             content: "first message".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let msg2 = Message {
             id: "2".to_string(),
@@ -1720,6 +1876,8 @@ mod tests {
             content: "second message".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1758,6 +1916,8 @@ mod tests {
             content: "completed task 3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Action,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1821,6 +1981,8 @@ mod tests {
             content: "Session started".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::System,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1901,6 +2063,8 @@ mod tests {
                 content: format!("message content {}", i),
                 timestamp: Utc::now(),
                 message_type: MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -2001,6 +2165,8 @@ mod tests {
                 content: format!("message content {}", i),
                 timestamp: Utc::now(),
                 message_type: MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -2136,6 +2302,8 @@ mod tests {
             content: "working on task".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let daemon_msg = Message {
             id: "2".to_string(),
@@ -2143,6 +2311,8 @@ mod tests {
             content: "Called in coworker".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let daemon_lines = render_message(&daemon_msg, 80, Some("madison"), &current_tasks, None);
@@ -2158,6 +2328,8 @@ mod tests {
             content: "Another daemon event".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2173,6 +2345,8 @@ mod tests {
             content: "Check passed".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2188,6 +2362,8 @@ mod tests {
             content: "back to work".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2228,6 +2404,8 @@ mod tests {
             content: "Check passed".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2243,6 +2421,8 @@ mod tests {
             content: "Called in coworker".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let daemon_lines = render_message(&daemon_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2266,6 +2446,8 @@ mod tests {
             content: "working".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2304,6 +2486,8 @@ mod tests {
             content: "working on feature".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         // Test with a current task
@@ -2359,6 +2543,8 @@ mod tests {
             content: "test".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -2390,6 +2576,8 @@ mod tests {
             content: "test".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         // Task stored with lowercase "park"
@@ -2656,6 +2844,8 @@ mod tests {
             content: content.to_string(),
             timestamp: chrono::Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         }
     }
 
@@ -3035,6 +3225,8 @@ mod tests {
             content: "ignored".to_string(),
             timestamp: chrono::Utc::now(),
             message_type: MessageType::Action,
+            channel: None,
+            source_channel: None,
         };
         let segments = vec![ContentSegment::Mermaid(source.to_string())];
         let current_tasks = HashMap::new();
