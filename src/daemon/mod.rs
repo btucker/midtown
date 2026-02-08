@@ -1742,7 +1742,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             // Drain events from headless sessions to prevent stdout buffer filling up.
             // Also detects process exits and updates health state for the snapshot.
             _ = session_drain_interval.tick() => {
-                let (events, stopped) = state.session_manager.drain_events().await;
+                let (events, stopped, stderr_by_name) = state.session_manager.drain_events().await;
 
                 // Update health state from SessionManager (used by snapshot for decision functions)
                 let health = state.session_manager.collect_health().await;
@@ -1770,10 +1770,32 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         let mut records = state.coworker_records.write().await;
                         records.remove(&name);
                     }
-                    let msg = crate::message::Message::text(
-                        "system",
-                        format!("⚠️ Coworker {} session exited unexpectedly", name),
-                    );
+
+                    // Format message with stderr if available
+                    let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {
+                        if stderr_lines.is_empty() {
+                            format!("⚠️ Coworker {} session exited unexpectedly", name)
+                        } else {
+                            // Include last N lines of stderr (up to 10 lines)
+                            let last_n: Vec<&str> = stderr_lines
+                                .iter()
+                                .rev()
+                                .take(10)
+                                .rev()
+                                .map(|s| s.as_str())
+                                .collect();
+                            format!(
+                                "⚠️ Coworker {} session exited unexpectedly\n\nStderr ({} lines):\n{}",
+                                name,
+                                stderr_lines.len(),
+                                last_n.join("\n")
+                            )
+                        }
+                    } else {
+                        format!("⚠️ Coworker {} session exited unexpectedly", name)
+                    };
+
+                    let msg = crate::message::Message::text("system", message_text);
                     if let Err(e) = state.send_and_broadcast(&msg) {
                         warn!("Failed to post session exit message for {}: {}", name, e);
                     }

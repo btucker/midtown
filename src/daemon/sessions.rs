@@ -239,12 +239,19 @@ impl SessionManager {
     /// health flags), and returns events grouped by coworker name.
     ///
     /// Also detects sessions that have exited: returns their names in the
-    /// second tuple element so the caller can trigger cleanup (deregister,
-    /// stop time recording, etc.).
-    pub async fn drain_events(&self) -> (HashMap<String, Vec<StreamEvent>>, Vec<String>) {
+    /// second tuple element along with stderr lines from the exited sessions
+    /// in the third tuple element (as a HashMap<name, Vec<stderr_lines>>).
+    pub async fn drain_events(
+        &self,
+    ) -> (
+        HashMap<String, Vec<StreamEvent>>,
+        Vec<String>,
+        HashMap<String, Vec<String>>,
+    ) {
         let mut sessions = self.sessions.write().await;
         let mut all_events: HashMap<String, Vec<StreamEvent>> = HashMap::new();
         let mut stopped = Vec::new();
+        let mut stderr_by_name: HashMap<String, Vec<String>> = HashMap::new();
         // Collect (log_path, events) pairs for async writing after releasing the lock
         let mut events_to_log: Vec<(PathBuf, Vec<StreamEvent>)> = Vec::new();
 
@@ -317,10 +324,21 @@ impl SessionManager {
                     }
                     Ok(None) => {
                         // stdout closed — session has exited
+                        // Drain stderr before dropping the session
+                        let stderr_lines = session.drain_stderr().await;
                         cs.status = SessionStatus::Stopped;
                         cs.session = None;
                         stopped.push(name.clone());
-                        debug!("Session '{}' exited (stdout closed)", name);
+
+                        if !stderr_lines.is_empty() {
+                            stderr_by_name.insert(name.clone(), stderr_lines.clone());
+                            debug!(
+                                "Session '{}' exited (stdout closed) with stderr: {:?}",
+                                name, stderr_lines
+                            );
+                        } else {
+                            debug!("Session '{}' exited (stdout closed)", name);
+                        }
                         break;
                     }
                     Err(_) => {
@@ -364,7 +382,7 @@ impl SessionManager {
             });
         }
 
-        (all_events, stopped)
+        (all_events, stopped, stderr_by_name)
     }
 
     /// Get the session ID for a coworker (if known).
@@ -516,9 +534,10 @@ mod tests {
     #[tokio::test]
     async fn test_drain_events_empty() {
         let sm = SessionManager::new("test-repo".to_string());
-        let (events, stopped) = sm.drain_events().await;
+        let (events, stopped, stderr_by_name) = sm.drain_events().await;
         assert!(events.is_empty());
         assert!(stopped.is_empty());
+        assert!(stderr_by_name.is_empty());
     }
 
     #[tokio::test]
