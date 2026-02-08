@@ -1063,7 +1063,7 @@ async fn handle_coworker_report_state(
                     state.clear_coworker_assignments(name);
 
                     // Immediately trigger task dispatch so pending tasks get picked up
-                    // without waiting for the next TaskDispatchTick (up to 10 seconds).
+                    // without waiting for the next TaskDispatchTick (up to 5 seconds).
                     // This is the same pattern as daemon.check-pending RPC.
                     let snap = snapshot::collect_world_snapshot(state).await;
                     let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
