@@ -223,6 +223,8 @@ pub struct PrActivity {
     pub pr_number: u64,
     /// The coworker who owns the PR (from branch prefix or body frontmatter)
     pub owner_coworker: Option<String>,
+    /// The PR branch name (used to detect lead/* branches)
+    pub branch: Option<String>,
     /// The actor who triggered the event (coworker name or GitHub username)
     pub actor: String,
     /// The comment/review node for adding reactions
@@ -835,6 +837,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         pr_activity: Some(PrActivity {
             pr_number: event.pull_request.number,
             owner_coworker: coworker.map(|s| s.to_string()),
+            branch: branch.map(|s| s.to_string()),
             actor: event.review.user.login,
             comment_node: Some(CommentNode::Review {
                 pull: event.pull_request.number,
@@ -885,11 +888,12 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     };
 
     // For issue_comment, the payload doesn't include the PR branch,
-    // so owner_coworker is None. The daemon will look it up asynchronously.
+    // so owner_coworker and branch are None. The daemon will look them up asynchronously.
     Ok(Some(WebhookEvent {
         pr_activity: Some(PrActivity {
             pr_number: event.issue.number,
             owner_coworker: None,
+            branch: None,
             actor: commenter,
             comment_node: Some(CommentNode::IssueComment(event.comment.id)),
             repo_full_name: Some(event.repository.full_name),
@@ -936,6 +940,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         pr_activity: Some(PrActivity {
             pr_number: event.pull_request.number,
             owner_coworker: coworker.map(|s| s.to_string()),
+            branch: branch.map(|s| s.to_string()),
             actor: commenter,
             comment_node: Some(CommentNode::ReviewComment(event.comment.id)),
             repo_full_name: Some(event.repository.full_name),

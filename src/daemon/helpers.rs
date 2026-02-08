@@ -100,6 +100,15 @@ pub fn coworker_from_branch(branch: &str) -> Option<String> {
         .map(|&s| s.to_string())
 }
 
+/// Check if a branch is a lead branch (starts with "lead/").
+///
+/// Lead branches (e.g., "lead/fix-bug") indicate the PR is authored by the Lead,
+/// not a coworker. When review feedback is posted on these PRs, the Lead should
+/// be nudged in addition to or instead of any coworker who opened the PR.
+pub fn is_lead_branch(branch: &str) -> bool {
+    branch.starts_with("lead/")
+}
+
 // ---------------------------------------------------------------------------
 // PR helpers
 // ---------------------------------------------------------------------------
