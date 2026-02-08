@@ -297,6 +297,14 @@ pub struct ChannelMessageData {
     pub timestamp: String,
     #[serde(rename = "type")]
     pub msg_type: String,
+    /// Channel name (defaults to "midtown" for backward compat)
+    #[serde(default = "default_channel")]
+    pub channel: String,
+}
+
+#[allow(dead_code)] // Used by serde default attribute
+fn default_channel() -> String {
+    "midtown".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -385,11 +393,15 @@ async fn api_channel_history(
 
     let response: Vec<ChannelMessageData> = messages
         .into_iter()
-        .map(|m| ChannelMessageData {
-            from: m.from,
-            content: m.content,
-            timestamp: m.timestamp.to_rfc3339(),
-            msg_type: format!("{:?}", m.message_type).to_lowercase(),
+        .map(|m| {
+            let channel = m.channel_name().to_string();
+            ChannelMessageData {
+                from: m.from,
+                content: m.content,
+                timestamp: m.timestamp.to_rfc3339(),
+                msg_type: format!("{:?}", m.message_type).to_lowercase(),
+                channel,
+            }
         })
         .collect();
 
@@ -1360,6 +1372,7 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         content: message.content.clone(),
         timestamp: message.timestamp.to_rfc3339(),
         msg_type: format!("{:?}", message.message_type).to_lowercase(),
+        channel: message.channel_name().to_string(),
     })
 }
 
@@ -1420,6 +1433,7 @@ mod tests {
             content: "Hello".to_string(),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             msg_type: "text".to_string(),
+            channel: "midtown".to_string(),
         });
 
         let json = serde_json::to_string(&update).unwrap();

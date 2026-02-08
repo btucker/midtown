@@ -2545,7 +2545,7 @@ mod tests {
         let cm = crate::coworker::CoworkerManager::new("test-session", wm);
         let channel_dir = temp_dir.path().join("channel");
         std::fs::create_dir_all(&channel_dir).expect("channel dir");
-        let channel = crate::channel::Channel::new(&channel_dir).expect("channel");
+        let channel = crate::channel::Channel::new(&channel_dir, "midtown").expect("channel");
 
         // Leak temp_dir so it survives the test
         std::mem::forget(temp_dir);

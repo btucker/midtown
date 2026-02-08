@@ -67,13 +67,29 @@ impl Cursor {
     }
 
     /// Get the path for a cursor file
-    pub fn file_path(base_dir: &Path, agent: &str) -> PathBuf {
-        base_dir.join("cursors").join(format!("{}.json", agent))
+    ///
+    /// For backward compatibility:
+    /// - If channel is "midtown" and cursors/<agent>.json exists (legacy), use that
+    /// - Otherwise use cursors/<channel>/<agent>.json
+    pub fn file_path(base_dir: &Path, channel: &str, agent: &str) -> PathBuf {
+        // Legacy path for midtown channel
+        if channel == "midtown" {
+            let legacy_path = base_dir.join("cursors").join(format!("{}.json", agent));
+            if legacy_path.exists() {
+                return legacy_path;
+            }
+        }
+
+        // New per-channel path
+        base_dir
+            .join("cursors")
+            .join(channel)
+            .join(format!("{}.json", agent))
     }
 
     /// Load a cursor from disk, or create a new one if it doesn't exist
-    pub fn load_or_create(base_dir: &Path, agent: &str) -> Result<Self> {
-        let path = Self::file_path(base_dir, agent);
+    pub fn load_or_create(base_dir: &Path, channel: &str, agent: &str) -> Result<Self> {
+        let path = Self::file_path(base_dir, channel, agent);
         if path.exists() {
             Self::load(&path)
         } else {
@@ -90,8 +106,10 @@ impl Cursor {
     }
 
     /// Save the cursor to disk
-    pub fn save(&self, base_dir: &Path) -> Result<()> {
-        let path = Self::file_path(base_dir, &self.agent);
+    ///
+    /// Note: The channel name must be provided since it's not stored in the Cursor struct.
+    pub fn save(&self, base_dir: &Path, channel: &str) -> Result<()> {
+        let path = Self::file_path(base_dir, channel, &self.agent);
 
         // Ensure cursors directory exists
         if let Some(parent) = path.parent() {
@@ -143,9 +161,9 @@ mod tests {
         let mut cursor = Cursor::new("test_agent");
         cursor.update(100, Some("msg-123".to_string()));
 
-        cursor.save(temp_dir.path()).unwrap();
+        cursor.save(temp_dir.path(), "midtown").unwrap();
 
-        let loaded = Cursor::load_or_create(temp_dir.path(), "test_agent").unwrap();
+        let loaded = Cursor::load_or_create(temp_dir.path(), "midtown", "test_agent").unwrap();
         assert_eq!(loaded.agent, "test_agent");
         assert_eq!(loaded.position, 100);
         assert_eq!(loaded.last_message_id, Some("msg-123".to_string()));
@@ -154,9 +172,32 @@ mod tests {
     #[test]
     fn test_cursor_load_or_create_new() {
         let temp_dir = TempDir::new().unwrap();
-        let cursor = Cursor::load_or_create(temp_dir.path(), "new_agent").unwrap();
+        let cursor = Cursor::load_or_create(temp_dir.path(), "midtown", "new_agent").unwrap();
         assert_eq!(cursor.agent, "new_agent");
         assert_eq!(cursor.position, 0);
+    }
+
+    #[test]
+    fn test_cursor_per_channel() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create cursors for same agent on different channels
+        let mut cursor1 = Cursor::new("agent1");
+        cursor1.update(100, Some("msg-1".to_string()));
+        cursor1.save(temp_dir.path(), "channel-a").unwrap();
+
+        let mut cursor2 = Cursor::new("agent1");
+        cursor2.update(200, Some("msg-2".to_string()));
+        cursor2.save(temp_dir.path(), "channel-b").unwrap();
+
+        // Load and verify they're independent
+        let loaded1 = Cursor::load_or_create(temp_dir.path(), "channel-a", "agent1").unwrap();
+        assert_eq!(loaded1.position, 100);
+        assert_eq!(loaded1.last_message_id, Some("msg-1".to_string()));
+
+        let loaded2 = Cursor::load_or_create(temp_dir.path(), "channel-b", "agent1").unwrap();
+        assert_eq!(loaded2.position, 200);
+        assert_eq!(loaded2.last_message_id, Some("msg-2".to_string()));
     }
 
     #[test]
