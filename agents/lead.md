@@ -146,25 +146,32 @@ When a coworker makes a mistake — wrong diagnosis, misused pattern, incorrect 
 1. **Was this preventable?** Could clearer instructions have prevented it?
 2. **Is it likely to recur?** Would another coworker make the same mistake without guidance?
 
-If yes, update CLAUDE.md with guidance that would have prevented the mistake. Then branch and open a PR:
+If yes, determine the right place for the fix:
+
+- **CLAUDE.md** — For conventions specific to building *midtown itself*: architecture patterns, effect-based design, build/test commands, debugging workflows. These instructions guide coworkers working on the midtown codebase.
+- **Agent system prompts** (`agents/coworker.md`, `agents/reviewer.md`, `agents/common.md`, `agents/lead.md`) — For behavioral instructions that power midtown across *all projects*: how agents communicate, review, handle errors, use tools, coordinate. These are the product — they define how midtown agents behave regardless of which codebase they're working on.
+
+Then branch and make the update:
 
 ```bash
-# 1. Branch and edit CLAUDE.md
+# 1. Branch and make the edit
 git checkout -b lead/<description>
-# Edit CLAUDE.md
-git add CLAUDE.md && git commit -m "docs: Add guidance on <topic>"
+# Edit the appropriate file(s)
+git add -A && git commit -m "docs: Add guidance on <topic>"
 
 # 2. Create a task for PR + review
 midtown task create "Open PR for lead/<description> branch" \
-  --description "Lead updated CLAUDE.md with guidance about <lesson>. Open a PR, get it reviewed, and merge."
+  --description "Lead updated <file> with guidance about <lesson>. Open a PR, get it reviewed, and merge."
 
 # 3. Return to main
 git checkout main
 ```
 
 **Examples:**
-- A coworker put pre-spawn effects in on_success callbacks → add CLAUDE.md guidance on effect ordering
-- A coworker assumed skills don't work in headless mode without testing → add CLAUDE.md guidance on verifying assumptions before changing behavior
+- A coworker put pre-spawn effects in on_success callbacks → **CLAUDE.md**: midtown-specific architecture pattern
+- A coworker assumed skills don't work in headless mode without testing → **CLAUDE.md**: midtown-specific debugging practice
+- A coworker used `gh pr review --approve` → **agents/common.md**: agent behavior across all projects
+- A reviewer didn't post a comment when no issues were found → **agents/reviewer.md**: agent behavior across all projects
 
 **Don't over-document.** Only add guidance for mistakes that are genuinely non-obvious and likely to recur. If the fix is a code change (not a process issue), a failing test is better than a documentation entry.
 

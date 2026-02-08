@@ -155,6 +155,7 @@ pub enum StreamEvent {
 pub struct HeadlessSession {
     child: Child,
     stdout_reader: BufReader<tokio::process::ChildStdout>,
+    stderr_reader: BufReader<tokio::process::ChildStderr>,
     stdin: Option<tokio::process::ChildStdin>,
     session_id: Option<String>,
 }
@@ -252,7 +253,7 @@ impl HeadlessSession {
 
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::null());
+        cmd.stderr(Stdio::piped());
 
         let mut child = cmd.spawn()?;
 
@@ -260,8 +261,13 @@ impl HeadlessSession {
             .stdout
             .take()
             .ok_or_else(|| std::io::Error::other("failed to capture stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("failed to capture stderr"))?;
         let stdin = child.stdin.take();
         let stdout_reader = BufReader::new(stdout);
+        let stderr_reader = BufReader::new(stderr);
 
         info!(
             "Spawned headless Claude session (model={}, resume={})",
@@ -271,6 +277,7 @@ impl HeadlessSession {
         Ok(Self {
             child,
             stdout_reader,
+            stderr_reader,
             stdin,
             session_id: None,
         })
@@ -373,6 +380,37 @@ impl HeadlessSession {
     /// Get the session ID (available after the init event).
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    /// Drain all available stderr lines without blocking.
+    ///
+    /// Returns a vector of stderr lines (up to a reasonable limit to avoid memory issues).
+    /// This is non-blocking — reads only what's currently buffered.
+    pub async fn drain_stderr(&mut self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut line = String::new();
+
+        // Read up to 100 lines or until we'd block
+        for _ in 0..100 {
+            line.clear();
+            match tokio::time::timeout(
+                Duration::from_millis(10),
+                self.stderr_reader.read_line(&mut line),
+            )
+            .await
+            {
+                Ok(Ok(0)) => break, // EOF
+                Ok(Ok(_)) => {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        lines.push(trimmed.to_string());
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break, // Error or timeout
+            }
+        }
+
+        lines
     }
 
     /// Wait for the process to exit and return the exit status.
