@@ -1201,17 +1201,18 @@ pub(crate) struct OrphanRecovery {
 /// An orphaned task is `in_progress` but its owner is not active.
 /// Returns at most ONE recovery action (rate-limited to one per tick).
 ///
-/// Skips recovery when the owner has an open PR and no review feedback —
-/// the coworker is correctly waiting for human review and should not be
-/// respawned until there is actionable work. CI failures on PRs are
+/// Skips recovery when the owner recently stopped (within grace period)
+/// and has an open PR without review feedback — they are correctly on break
+/// waiting for review. However, killed/dead coworkers (not in recently_stopped)
+/// are recovered even without review feedback. CI failures on PRs are
 /// handled separately by the webhook/PR poll pathway and do not need
 /// orphan recovery to intervene.
 pub(crate) fn decide_orphan_recovery(
     in_progress: &[(String, String, String)], // (task_id, task_subject, owner)
     active_names: &HashSet<String>,
     at_dev_limit: bool,
-    coworkers_with_open_prs: &HashSet<String>,
-    review_feedback_pr_coworkers: &HashSet<String>,
+    _coworkers_with_open_prs: &HashSet<String>,
+    _review_feedback_pr_coworkers: &HashSet<String>,
     recently_stopped: &HashSet<String>,
     attached_coworkers: &HashSet<String>,
 ) -> Option<OrphanRecovery> {
@@ -1241,27 +1242,16 @@ pub(crate) fn decide_orphan_recovery(
         // When a coworker completes work and goes idle → shutdown, the task may
         // not yet be marked done. Without this grace period, orphan recovery
         // would immediately respawn the coworker for a task they already finished.
+        //
+        // This also handles the case where a coworker cleanly went on break while
+        // waiting for PR review — they're correctly idle and should not be recovered
+        // until the grace period expires.
+        //
+        // After the grace period (or if the coworker was killed/crashed), any orphan
+        // task is fair game for recovery, regardless of PR status. Dead coworkers
+        // don't come back on their own — we need to recover them even if their PR
+        // hasn't been reviewed yet.
         if recently_stopped.contains(&owner_lower) {
-            continue;
-        }
-        // Skip coworkers whose PR is open without review feedback IF they
-        // recently stopped (within grace period). They are correctly on break
-        // waiting for human review — recovering them would create a loop
-        // (recover → idle → shutdown → recover).
-        //
-        // However, if they're NOT in recently_stopped (e.g., killed by auth switch,
-        // crash, or stopped >60s ago), they're stuck/dead and should be recovered
-        // even without review feedback. The skip condition should only apply to
-        // coworkers who cleanly went on break, not to dead/stuck coworkers.
-        //
-        // Bug (task !961): Previously this skipped ALL coworkers with open PRs
-        // without review feedback, regardless of whether they recently stopped.
-        // This meant killed coworkers were never recovered if their PR was still
-        // waiting for review.
-        let has_open_pr = coworkers_with_open_prs.contains(&owner_lower);
-        let has_review_feedback = review_feedback_pr_coworkers.contains(&owner_lower);
-        let is_recently_stopped = recently_stopped.contains(&owner_lower);
-        if has_open_pr && !has_review_feedback && is_recently_stopped {
             continue;
         }
         // Found an orphan — return the first one (rate-limited)
