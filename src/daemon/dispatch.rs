@@ -834,29 +834,62 @@ pub(super) fn spawn_for_pending_tasks(
                     tid,
                     &format!("You've been assigned task #{}: {}. Get started!", tid, subj),
                 );
-                let config = crate::launch::LaunchConfig::coworker(
+
+                // Compute worktree details for task-based worktree
+                let worktree_id = crate::worktree_registry::branch_slug_for_task(tid, subj);
+                let wt_path =
+                    crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+
+                let mut config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
                     state.repo_name.clone(),
                     crate::launch::SessionMode::Resume,
                     Some(prompt),
                 );
+                config.working_dir = Some(wt_path);
+
+                // Check if task already has a worktree registered (recovery/reassignment case)
+                let needs_registration = !snap.tasks_with_worktrees.contains(tid);
+
+                let mut spawn_effects = Vec::new();
+
+                // Register the task → worktree mapping if this is the first time
+                if needs_registration {
+                    spawn_effects.push(Effect::RegisterWorktreeAssignment {
+                        assignment: crate::worktree_registry::WorktreeAssignment {
+                            worktree_id: worktree_id.clone(),
+                            branch_name: worktree_id.clone(), // Branch name matches worktree_id for task worktrees
+                            task_id: Some(tid.clone()),
+                            current_coworker: None, // Will be set by BindCoworkerToWorktree
+                            pr_number: None,
+                            created_at: chrono::Utc::now(),
+                        },
+                    });
+                }
+
+                // Always bind the coworker to the worktree when spawning
+                spawn_effects.push(Effect::BindCoworkerToWorktree {
+                    worktree_id: worktree_id.clone(),
+                    coworker: o.clone(),
+                });
+
+                spawn_effects.push(Effect::BroadcastCoworkerUpdate {
+                    name: o.clone(),
+                    status: "running".to_string(),
+                    current_task: None,
+                });
+                spawn_effects.push(Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: daemon_messages::called_in_pending_task(
+                        o,
+                        &tid.to_string(),
+                        config::get_personality(),
+                    ),
+                });
+
                 effects.push(Effect::SpawnCoworkerWithCallbacks {
                     config,
-                    on_success: vec![
-                        Effect::BroadcastCoworkerUpdate {
-                            name: o.clone(),
-                            status: "running".to_string(),
-                            current_task: None,
-                        },
-                        Effect::PostToChannel {
-                            sender: "midtown".to_string(),
-                            message: daemon_messages::called_in_pending_task(
-                                o,
-                                &tid.to_string(),
-                                config::get_personality(),
-                            ),
-                        },
-                    ],
+                    on_success: spawn_effects,
                     on_failure: vec![],
                 });
             }
@@ -1120,34 +1153,67 @@ pub(super) fn spawn_for_pending_tasks(
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
-            let config = crate::launch::LaunchConfig::coworker(
+            // Compute worktree details for task-based worktree
+            let worktree_id =
+                crate::worktree_registry::branch_slug_for_task(&task.id, &task.subject);
+            let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+
+            let mut config = crate::launch::LaunchConfig::coworker(
                 coworker_name.clone(),
                 state.repo_name.clone(),
                 crate::launch::SessionMode::Fresh,
                 Some(prompt.clone()),
             );
+            config.working_dir = Some(wt_path);
+
+            // Check if task already has a worktree registered (unlikely for unowned, but handles recovery)
+            let needs_registration = !snap.tasks_with_worktrees.contains(&task.id);
+
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
                 &task.id.to_string(),
                 &task.subject,
                 config::get_personality(),
             );
+
+            let mut spawn_effects = Vec::new();
+
+            // Register the task → worktree mapping if this is the first time
+            if needs_registration {
+                spawn_effects.push(Effect::RegisterWorktreeAssignment {
+                    assignment: crate::worktree_registry::WorktreeAssignment {
+                        worktree_id: worktree_id.clone(),
+                        branch_name: worktree_id.clone(), // Branch name matches worktree_id for task worktrees
+                        task_id: Some(task.id.clone()),
+                        current_coworker: None, // Will be set by BindCoworkerToWorktree
+                        pr_number: None,
+                        created_at: chrono::Utc::now(),
+                    },
+                });
+            }
+
+            // Always bind the coworker to the worktree when spawning
+            spawn_effects.push(Effect::BindCoworkerToWorktree {
+                worktree_id: worktree_id.clone(),
+                coworker: coworker_name.clone(),
+            });
+
+            spawn_effects.push(Effect::BroadcastCoworkerUpdate {
+                name: coworker_name.clone(),
+                status: "running".to_string(),
+                current_task: None,
+            });
+            spawn_effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: channel_msg,
+            });
+
             effects.push(Effect::AssignAndSpawn {
                 task_id: task.id.clone(),
                 owner: coworker_name.clone(),
                 repo_name: snap.repo_name.clone(),
                 config,
-                on_success: vec![
-                    Effect::BroadcastCoworkerUpdate {
-                        name: coworker_name.clone(),
-                        status: "running".to_string(),
-                        current_task: None,
-                    },
-                    Effect::PostToChannel {
-                        sender: "midtown".to_string(),
-                        message: channel_msg,
-                    },
-                ],
+                on_success: spawn_effects,
                 on_failure: vec![],
             });
         }
