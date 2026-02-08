@@ -647,6 +647,7 @@
     display: flex;
     gap: 8px;
     padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     background: #262626;
     border-top: 1px solid #3a3a3a;
   }
