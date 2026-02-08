@@ -245,6 +245,8 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         let mut all_events: HashMap<String, Vec<StreamEvent>> = HashMap::new();
         let mut stopped = Vec::new();
+        // Collect (log_path, events) pairs for async writing after releasing the lock
+        let mut events_to_log: Vec<(PathBuf, Vec<StreamEvent>)> = Vec::new();
 
         for (name, cs) in sessions.iter_mut() {
             let session = match cs.session.as_mut() {
@@ -311,15 +313,6 @@ impl SessionManager {
                             _ => {}
                         }
 
-                        // Write event to JSONL log file for debugging and `coworker view`
-                        if let Some(ref mut log_file) = cs.output_log
-                            && let Ok(json) = serde_json::to_string(&event)
-                        {
-                            let _ = writeln!(log_file, "{}", json);
-                            // Flush immediately so `tail -f` works in real-time
-                            let _ = log_file.flush();
-                        }
-
                         events.push(event);
                     }
                     Ok(None) => {
@@ -338,8 +331,37 @@ impl SessionManager {
             }
 
             if !events.is_empty() {
+                // Queue events for async logging (after releasing the lock)
+                if cs.output_log.is_some() {
+                    events_to_log.push((cs.output_log_path.clone(), events.clone()));
+                }
                 all_events.insert(name.clone(), events);
             }
+        }
+
+        // Release the lock before performing file I/O
+        drop(sessions);
+
+        // Write all collected events to their log files asynchronously
+        // This keeps the drain loop fast and prevents stdout buffer blocking
+        if !events_to_log.is_empty() {
+            tokio::task::spawn_blocking(move || {
+                for (log_path, events) in events_to_log {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                    {
+                        for event in events {
+                            if let Ok(json) = serde_json::to_string(&event) {
+                                let _ = writeln!(file, "{}", json);
+                            }
+                        }
+                        // Flush once per session to support `tail -f`
+                        let _ = file.flush();
+                    }
+                }
+            });
         }
 
         (all_events, stopped)
@@ -383,8 +405,21 @@ impl SessionManager {
 
     /// Remove a stopped session entry (cleanup after the coworker is fully shut down).
     pub async fn remove(&self, name: &str) {
-        let mut sessions = self.sessions.write().await;
-        sessions.remove(name);
+        let log_path = {
+            let mut sessions = self.sessions.write().await;
+            let log_path = sessions.get(name).map(|cs| cs.output_log_path.clone());
+            sessions.remove(name);
+            log_path
+        };
+
+        // Delete the headless output log file if it exists
+        if let Some(path) = log_path {
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    debug!("Failed to remove output log {:?}: {}", path, e);
+                }
+            });
+        }
     }
 
     /// Get recent output for a coworker from the JSONL log file.
@@ -395,15 +430,23 @@ impl SessionManager {
     ///
     /// This enables `midtown coworker view` to work with headless coworkers.
     pub async fn get_output(&self, name: &str) -> Option<String> {
-        let sessions = self.sessions.read().await;
-        let cs = sessions.get(name)?;
-
-        // Read the entire log file
-        let log_path = &cs.output_log_path;
-        let content = match std::fs::read_to_string(log_path) {
-            Ok(c) => c,
-            Err(_) => return Some(String::from("(no output yet)")),
+        // Get the log path without holding the lock during file I/O
+        let log_path = {
+            let sessions = self.sessions.read().await;
+            let cs = sessions.get(name)?;
+            cs.output_log_path.clone()
         };
+
+        // Perform file I/O in spawn_blocking to avoid blocking the async runtime
+        // (following pattern from commit 9575557)
+        let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(log_path))
+            .await
+            .ok()?
+            .ok()?;
+
+        if content.is_empty() {
+            return Some(String::from("(no output yet)"));
+        }
 
         // Collect last 200 lines
         let lines: Vec<String> = content

@@ -1738,7 +1738,14 @@ fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Respons
     } else {
         // Read recent messages (last 20)
         match state.channel.read_all() {
-            Ok(msgs) => msgs.into_iter().rev().take(20).rev().collect(),
+            Ok(msgs) => {
+                let total = msgs.len();
+                if total > 20 {
+                    msgs.into_iter().skip(total - 20).collect()
+                } else {
+                    msgs
+                }
+            }
             Err(e) => {
                 error!("Failed to read channel: {}", e);
                 return Response::error(id, RpcError::new(-32603, e.to_string()));
