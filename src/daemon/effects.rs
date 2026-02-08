@@ -161,15 +161,6 @@ pub enum Effect {
         completed_task_id: String,
         repo_name: String,
     },
-    /// Create a new task for a PR author to address review feedback.
-    ///
-    /// Writes the task directly to shared storage. Includes in-memory
-    /// deduplication to prevent repeated task creation.
-    CreateReviewFeedbackTask {
-        pr_number: u64,
-        pr_title: String,
-        owner: String,
-    },
     /// Force-delete orphaned worktrees whose PRs were merged (squash-merge).
     ///
     /// These worktrees appear to have "unmerged commits" because the squash-merge
@@ -732,50 +723,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-            Effect::CreateReviewFeedbackTask {
-                pr_number,
-                pr_title,
-                owner,
-            } => {
-                let key = DaemonState::task_creation_key(pr_number, &owner);
-                if state.is_task_creation_pending(&key) {
-                    debug!(
-                        "Skipping duplicate task creation for {} (PR #{}): already pending",
-                        owner, pr_number
-                    );
-                } else {
-                    state.mark_task_creation_pending(&key);
-                    let subject = format!("Address review feedback on PR #{}", pr_number);
-                    let description = format!(
-                        "PR #{} ({}) has review feedback that needs to be addressed. \
-                         Please review the comments, make the requested changes, and push updates. \
-                         Once feedback is addressed, the reviewer will re-check and approve.",
-                        pr_number, pr_title
-                    );
-                    match crate::tasks::create_task_for_repo(
-                        &subject,
-                        &description,
-                        &format!("Addressing review feedback on PR #{}", pr_number),
-                        &owner,
-                        &state.repo_name,
-                        None,
-                    ) {
-                        Ok(task_id) => {
-                            info!(
-                                "Created review feedback task !{} for {} (PR #{})",
-                                task_id, owner, pr_number
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to create review feedback task for {} (PR #{}): {}",
-                                owner, pr_number, e
-                            );
-                            state.clear_task_creation_pending(&key);
-                        }
-                    }
-                }
-            }
             Effect::ForceCleanupWorktrees { names } => {
                 if names.is_empty() {
                     continue;
@@ -1323,7 +1270,7 @@ mod tests {
     #[test]
     fn test_dedup_quadruple_nudge_scenario() {
         // Reproduces the exact bug: 4 nudges to same coworker in 1 second
-        // from different PR issue sources + a duplicate CreateReviewFeedbackTask.
+        // from different PR issue sources.
         let effects = vec![
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
@@ -1357,16 +1304,11 @@ mod tests {
                     issue_type: PrIssueType::GreenWithFeedback,
                 }],
             },
-            Effect::CreateReviewFeedbackTask {
-                pr_number: 181,
-                pr_title: "feat: Add auth endpoint".into(),
-                owner: "riverside".into(),
-            },
         ];
 
         let deduped = dedup_nudge_effects(effects);
 
-        // Should have: 1 nudge (with merged callbacks) + 1 CreateReviewFeedbackTask
+        // Should have: 1 nudge (with merged callbacks)
         assert_eq!(
             count_nudge_with_callbacks(&deduped, "riverside"),
             1,
@@ -1385,12 +1327,5 @@ mod tests {
         } else {
             panic!("Expected NudgeCoworkerWithCallbacks");
         }
-
-        // CreateReviewFeedbackTask should still be present
-        let task_effects: Vec<_> = deduped
-            .iter()
-            .filter(|e| matches!(e, Effect::CreateReviewFeedbackTask { .. }))
-            .collect();
-        assert_eq!(task_effects.len(), 1);
     }
 }
