@@ -1436,9 +1436,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // This catches claude processes that were orphaned when tmux sessions were
     // killed directly without going through `midtown stop`.
     let mut orphan_process_interval = interval(std::time::Duration::from_secs(300));
-    // Run immediately on startup to clean up orphans from previous daemon.
-    // Don't skip the first tick — orphans from a crashed/restarted daemon
-    // need to be killed before we start spawning new coworkers.
+    // Run cleanup immediately on startup, before the interval timer begins.
+    // Orphans from a crashed/restarted daemon need to be killed before we
+    // start spawning new coworkers.
     {
         let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
         let killed = crate::tmux::kill_orphaned_processes(pattern);
