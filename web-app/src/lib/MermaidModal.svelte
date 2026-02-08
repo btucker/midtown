@@ -138,6 +138,11 @@
         // So: new_translate = viewport_point - diagram_point * new_scale
         translateX = viewportPinchX - diagramPinchX * newScale
         translateY = viewportPinchY - diagramPinchY * newScale
+
+        // Track finger movement during pinch (panning while zooming)
+        translateX += (midX - lastPinchMidX)
+        translateY += (midY - lastPinchMidY)
+
         scale = newScale
       }
 
@@ -192,17 +197,21 @@
     if (!svg) return
 
     const containerRect = containerEl.getBoundingClientRect()
-    const svgRect = svg.getBoundingClientRect()
+
+    // Get intrinsic SVG dimensions (not affected by current transform)
+    const bbox = svg.getBBox()
+    const intrinsicWidth = bbox.width
+    const intrinsicHeight = bbox.height
 
     // Calculate scale to fit full width with 5% padding
     const targetWidth = containerRect.width * 0.95
-    const initialScale = targetWidth / svgRect.width
+    const initialScale = targetWidth / intrinsicWidth
 
     scale = clampScale(initialScale)
 
-    // Center the diagram
-    const scaledWidth = svgRect.width * scale
-    const scaledHeight = svgRect.height * scale
+    // Center the diagram using intrinsic dimensions
+    const scaledWidth = intrinsicWidth * scale
+    const scaledHeight = intrinsicHeight * scale
     translateX = (containerRect.width - scaledWidth) / 2
     translateY = (containerRect.height - scaledHeight) / 2
   }
