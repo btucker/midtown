@@ -77,7 +77,7 @@ pub(super) fn check_and_recover_orphans(
         let cooldowns = state.cooldowns.lock().unwrap();
         if !cooldowns.check("spawn_failure", &recovery.owner, SPAWN_FAILURE_COOLDOWN) {
             debug!(
-                "Spawn failure cooldown active for {} — skipping orphan recovery for task #{}",
+                "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
                 recovery.owner, recovery.task_id
             );
             return vec![];
@@ -85,14 +85,14 @@ pub(super) fn check_and_recover_orphans(
     }
 
     info!(
-        "Detected orphaned task #{} owned by {} - attempting recovery",
+        "Detected orphaned task !{} owned by {} - attempting recovery",
         recovery.task_id, recovery.owner
     );
 
     let prompt = format_task_prompt(
         &recovery.task_id,
         &format!(
-            "You've been assigned task #{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!",
+            "You've been assigned task !{}: {}. Your previous session was interrupted but your worktree and branch are still intact. Check your git status and get started!",
             recovery.task_id, recovery.task_subject
         ),
     );
@@ -123,7 +123,7 @@ pub(super) fn check_and_recover_orphans(
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
-                    "♻️ Recovered coworker {} for orphaned task #{}",
+                    "♻️ Recovered coworker {} for orphaned task !{}",
                     recovery.owner, recovery.task_id
                 ),
             },
@@ -140,7 +140,7 @@ pub(super) fn check_and_recover_orphans(
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
-                    "🔄 Task #{} reset to pending - {} could not be respawned (backing off for {}s)",
+                    "🔄 Task !{} reset to pending - {} could not be respawned (backing off for {}s)",
                     recovery.task_id,
                     recovery.owner,
                     SPAWN_FAILURE_COOLDOWN.as_secs()
@@ -220,13 +220,13 @@ fn decide_discovered_coworker_nudges(
             let prompt = format_task_prompt(
                 task_id,
                 &format!(
-                    "Resume task #{}: {}. The daemon was restarted and discovered you still running. Check your git status and continue where you left off.",
+                    "Resume task !{}: {}. The daemon was restarted and discovered you still running. Check your git status and continue where you left off.",
                     task_id, task_subject
                 ),
             );
 
             info!(
-                "Nudging discovered coworker {} to resume task #{}",
+                "Nudging discovered coworker {} to resume task !{}",
                 name, task_id
             );
 
@@ -237,7 +237,7 @@ fn decide_discovered_coworker_nudges(
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
-                    "♻️ Nudged discovered coworker {} to resume task #{}",
+                    "♻️ Nudged discovered coworker {} to resume task !{}",
                     name, task_id
                 ),
             });
@@ -319,7 +319,7 @@ pub(super) fn check_for_duplicate_task_workers(
             .unwrap_or("unknown");
 
         info!(
-            "Detected {} duplicate workers on task #{} ({}): {:?}",
+            "Detected {} duplicate workers on task !{} ({}): {:?}",
             workers.len(),
             task_id,
             task_subject,
@@ -348,13 +348,13 @@ pub(super) fn check_for_duplicate_task_workers(
         // Keep the first (earliest) worker, kill the rest
         let (keeper, keeper_time) = workers_with_times[0].clone();
         info!(
-            "Keeping {} (started {:?}) for task #{}",
+            "Keeping {} (started {:?}) for task !{}",
             keeper, keeper_time, task_id
         );
 
         for (duplicate, dup_time) in workers_with_times.into_iter().skip(1) {
             warn!(
-                "Killing duplicate worker {} (started {:?}) for task #{} - {} is already working on it",
+                "Killing duplicate worker {} (started {:?}) for task !{} - {} is already working on it",
                 duplicate, dup_time, task_id, keeper
             );
 
@@ -370,7 +370,7 @@ pub(super) fn check_for_duplicate_task_workers(
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
-                    "🔪 Killed duplicate worker {} on task #{} ({}) - {} started earlier",
+                    "🔪 Killed duplicate worker {} on task !{} ({}) - {} started earlier",
                     duplicate, task_id, task_subject, keeper
                 ),
             });
@@ -753,7 +753,7 @@ pub(super) fn spawn_for_pending_tasks(
             && snap.merged_pr_numbers.contains(&pr_num)
         {
             info!(
-                "Auto-completing stale task #{}: PR #{} has been merged",
+                "Auto-completing stale task !{}: PR #{} has been merged",
                 task_id, pr_num
             );
             effects.push(Effect::CompleteTask {
@@ -803,14 +803,14 @@ pub(super) fn spawn_for_pending_tasks(
             } => {
                 let nudge_msg = format_task_prompt(
                     tid,
-                    &format!("You have pending task #{}: {}. Get started!", tid, subj),
+                    &format!("You have pending task !{}: {}. Get started!", tid, subj),
                 );
                 // Deliver via mailbox (non-urgent task assignment to idle coworker).
                 // Also send via tmux as fallback in case mailbox isn't polled.
                 effects.push(Effect::DeliverMailboxMessage {
                     name: o.clone(),
                     message: nudge_msg.clone(),
-                    summary: Some(format!("Task #{} assignment", tid)),
+                    summary: Some(format!("Task !{} assignment", tid)),
                 });
                 effects.push(Effect::NudgeCoworkerWithCallbacks {
                     name: o.clone(),
@@ -827,12 +827,12 @@ pub(super) fn spawn_for_pending_tasks(
                 task_subject: ref subj,
             } => {
                 info!(
-                    "Pending task #{} is assigned to {} but coworker not running - spawning",
+                    "Pending task !{} is assigned to {} but coworker not running - spawning",
                     tid, o
                 );
                 let prompt = format_task_prompt(
                     tid,
-                    &format!("You've been assigned task #{}: {}. Get started!", tid, subj),
+                    &format!("You've been assigned task !{}: {}. Get started!", tid, subj),
                 );
                 let config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
@@ -909,7 +909,7 @@ pub(super) fn spawn_for_pending_tasks(
         // Check dev coworkers limit before spawning (reserve slots for reviewers)
         if snap.is_at_dev_limit {
             debug!(
-                "Dev coworkers limit reached, deferring unowned task #{}",
+                "Dev coworkers limit reached, deferring unowned task !{}",
                 task.id
             );
             break;
@@ -920,7 +920,7 @@ pub(super) fn spawn_for_pending_tasks(
         // before the previous tick's AssignAndSpawn effect has completed its disk write.
         if state.is_task_spawn_in_flight(&task.id) {
             debug!(
-                "Task #{} already has in-flight spawn, skipping duplicate",
+                "Task !{} already has in-flight spawn, skipping duplicate",
                 task.id
             );
             continue;
@@ -932,7 +932,7 @@ pub(super) fn spawn_for_pending_tasks(
             && snap.merged_pr_numbers.contains(&pr_num)
         {
             info!(
-                "Auto-completing stale task #{}: PR #{} has been merged",
+                "Auto-completing stale task !{}: PR #{} has been merged",
                 task.id, pr_num
             );
             effects.push(Effect::CompleteTask {
@@ -955,7 +955,7 @@ pub(super) fn spawn_for_pending_tasks(
                 // Check in-memory map first (handles same-tick assignments)
                 if let Some(name) = pr_coworker_map.get(&pr_num) {
                     info!(
-                        "Task #{} references PR #{} - assigning to in-memory owner {}",
+                        "Task !{} references PR #{} - assigning to in-memory owner {}",
                         task.id, pr_num, name
                     );
                     break 'resolve Some(name.clone());
@@ -965,7 +965,7 @@ pub(super) fn spawn_for_pending_tasks(
                     crate::tasks::find_pr_owner_in_tasks(&pr_num, all_tasks)
                 {
                     info!(
-                        "Task #{} references PR #{} - assigning to existing owner {}",
+                        "Task !{} references PR #{} - assigning to existing owner {}",
                         task.id, pr_num, existing_owner
                     );
                     break 'resolve Some(existing_owner);
@@ -977,7 +977,7 @@ pub(super) fn spawn_for_pending_tasks(
             for blocked_by_id in &task.blocked_by {
                 if let Some(name) = task_coworker_map.get(blocked_by_id) {
                     info!(
-                        "Task #{} blocked by #{} - assigning to same owner {}",
+                        "Task !{} blocked by #{} - assigning to same owner {}",
                         task.id, blocked_by_id, name
                     );
                     break 'resolve Some(name.clone());
@@ -986,7 +986,7 @@ pub(super) fn spawn_for_pending_tasks(
             // Check disk for blockedBy owners
             if let Some(owner) = crate::tasks::find_owner_via_blocked_by(task, all_tasks) {
                 info!(
-                    "Task #{} blocked by owned task - assigning to {}",
+                    "Task !{} blocked by owned task - assigning to {}",
                     task.id, owner
                 );
                 break 'resolve Some(owner);
@@ -1004,10 +1004,10 @@ pub(super) fn spawn_for_pending_tasks(
             name
         } else {
             let Some(name) = state.coworkers.next_available_name() else {
-                debug!("No available coworker slots for unowned task #{}", task.id);
+                debug!("No available coworker slots for unowned task !{}", task.id);
                 break;
             };
-            debug!("Task #{}: allocated fresh coworker name {}", task.id, name,);
+            debug!("Task !{}: allocated fresh coworker name {}", task.id, name,);
             name
         };
 
@@ -1037,7 +1037,7 @@ pub(super) fn spawn_for_pending_tasks(
                 || (is_busy_from_snapshot && !was_grouped))
         {
             debug!(
-                "Task #{}: skipping coworker {} (busy_snapshot={}, assigned_tick={}, reviewer={}, grouped={})",
+                "Task !{}: skipping coworker {} (busy_snapshot={}, assigned_tick={}, reviewer={}, grouped={})",
                 task.id,
                 coworker_name,
                 is_busy_from_snapshot,
@@ -1052,14 +1052,14 @@ pub(super) fn spawn_for_pending_tasks(
         // to the same not-yet-spawned coworker within the same tick.
         if !already_running && (assigned_this_tick || is_busy_from_snapshot) && !was_grouped {
             debug!(
-                "Task #{}: skipping {} (already assigned this tick)",
+                "Task !{}: skipping {} (already assigned this tick)",
                 task.id, coworker_name
             );
             continue;
         }
 
         info!(
-            "Proposing task #{} for {} (already_running={})",
+            "Proposing task !{} for {} (already_running={})",
             task.id, coworker_name, already_running
         );
 
@@ -1077,7 +1077,7 @@ pub(super) fn spawn_for_pending_tasks(
             format_task_prompt(
                 &task.id,
                 &format!(
-                    "You've been assigned task #{}: {}. Run `midtown task claim {}` to claim it, then get started!",
+                    "You've been assigned task !{}: {}. Run `midtown task claim {}` to claim it, then get started!",
                     task.id, task.subject, task.id
                 ),
             )
@@ -1085,7 +1085,7 @@ pub(super) fn spawn_for_pending_tasks(
             format_task_prompt(
                 &task.id,
                 &format!(
-                    "You've been assigned task #{}: {}. Get started!",
+                    "You've been assigned task !{}: {}. Get started!",
                     task.id, task.subject
                 ),
             )
@@ -1188,7 +1188,7 @@ pub(super) fn build_task_completion_effects(
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
-                "✅ Auto-completed task #{} (PR #{} opened)",
+                "✅ Auto-completed task !{} (PR #{} opened)",
                 task_id, pr_number
             ),
         },
@@ -1662,7 +1662,7 @@ mod tests {
         match &effects[0] {
             Effect::NudgeCoworker { name, message } => {
                 assert_eq!(name, "lexington");
-                assert!(message.contains("Resume task #42"));
+                assert!(message.contains("Resume task !42"));
             }
             _ => panic!("Expected NudgeCoworker"),
         }
@@ -1670,7 +1670,7 @@ mod tests {
             Effect::PostToChannel { sender, message } => {
                 assert_eq!(sender, "midtown");
                 assert!(message.contains("lexington"));
-                assert!(message.contains("task #42"));
+                assert!(message.contains("task !42"));
             }
             _ => panic!("Expected PostToChannel"),
         }
@@ -1753,7 +1753,7 @@ mod tests {
         // Should nudge about the task, not the review
         match &effects[0] {
             Effect::NudgeCoworker { message, .. } => {
-                assert!(message.contains("Resume task #42"));
+                assert!(message.contains("Resume task !42"));
             }
             _ => panic!("Expected NudgeCoworker"),
         }

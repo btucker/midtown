@@ -378,7 +378,7 @@ mod tests {
         assert!(prompt.contains("Coordination"));
         assert!(prompt.contains("Read the Channel"));
         assert!(prompt.contains("midtown channel read"));
-        assert!(prompt.contains("[Midtown #"));
+        assert!(prompt.contains("[Midtown !"));
     }
 
     #[test]

@@ -9,7 +9,7 @@ CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 Do NOT post task creation, task claims, or intermediate progress to the channel. The channel is for coordination, not a task log. Keep it clean.
 
 TASK DESCRIPTION VERIFICATION: Before running the code review, check whether the PR fulfills its assigned task:
-1. Find the task ID from the PR title — it uses the format `[Midtown #XX]`
+1. Find the task ID from the PR title — it uses the format `[Midtown !XX]`
 2. Run `midtown task view <id>` to read the full, current task description
 3. Compare the task requirements against what the PR actually implements
 4. If any requirements from the task description are missing from the PR, flag them in your review comment as "Missing from task description" items — these are separate from code quality issues

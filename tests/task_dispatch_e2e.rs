@@ -263,7 +263,7 @@ fn in_progress_tasks_have_owners() {
         let owner = task.owner.as_deref().unwrap_or("");
         assert!(
             !owner.is_empty(),
-            "in_progress task #{} should have an owner, found empty",
+            "in_progress task !{} should have an owner, found empty",
             task.id
         );
     }
@@ -325,7 +325,7 @@ fn blocked_tasks_identified() {
                 if blocker.status != "completed" {
                     assert!(
                         is_task_blocked(task, &data.all_tasks),
-                        "task #{} with incomplete blocker #{} should be blocked",
+                        "task !{} with incomplete blocker #{} should be blocked",
                         task.id,
                         blocker_id
                     );
@@ -390,7 +390,7 @@ fn pending_task_with_active_owner_gets_nudge() {
         if is_active {
             // Owner is active - they should be nudged, not spawned
             println!(
-                "Pending task #{} has active owner {} - nudge expected",
+                "Pending task !{} has active owner {} - nudge expected",
                 task.id, owner
             );
         }
@@ -559,11 +559,11 @@ fn blocked_task_not_assigned() {
                         .iter()
                         .any(|t| t.id == *b_id && t.status != "completed")
                 }),
-            "blocked task #{} should not be available for dispatch",
+            "blocked task !{} should not be available for dispatch",
             task.id
         );
         println!(
-            "Blocked task #{} ({}) correctly excluded - blocked by {:?}",
+            "Blocked task !{} ({}) correctly excluded - blocked by {:?}",
             task.id, task.subject, task.blocked_by
         );
     }
@@ -659,7 +659,7 @@ fn snapshot_data_integrity_for_dispatch() {
             let is_valid = valid_avenues.iter().any(|a| *a == owner_lower);
             assert!(
                 is_valid,
-                "task #{} has invalid owner name: {}",
+                "task !{} has invalid owner name: {}",
                 task.id, owner
             );
         }
@@ -705,7 +705,7 @@ fn busy_coworker_not_assigned_additional_tasks() {
     let should_skip = already_running && (is_reviewer || (is_busy && !was_grouped));
     assert!(
         should_skip,
-        "Task #{} should NOT be assigned to busy coworker {} (busy={}, grouped={})",
+        "Task !{} should NOT be assigned to busy coworker {} (busy={}, grouped={})",
         task.id, coworker_name, is_busy, was_grouped
     );
 }

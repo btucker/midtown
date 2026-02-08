@@ -73,21 +73,21 @@ pub fn called_in_reviewer(name: &str, pr_number: u64, personality: Personality) 
         .replace("{pr}", &pr_number.to_string())
 }
 
-/// Called in coworker {name} for pending task #{task_id}.
+/// Called in coworker {name} for pending task !{task_id}.
 pub fn called_in_pending_task(name: &str, task_id: &str, personality: Personality) -> String {
     let templates: &[&str] = &[
-        "🚀 Called in coworker {name} for pending task #{task}",
-        "📞 Paging {name} — task #{task} is waiting",
-        "🏃 {name} is on the way for task #{task}",
-        "👋 {name} just walked in for task #{task}",
-        "🎯 Tapped {name} for task #{task}",
+        "🚀 Called in coworker {name} for pending task !{task}",
+        "📞 Paging {name} — task !{task} is waiting",
+        "🏃 {name} is on the way for task !{task}",
+        "👋 {name} just walked in for task !{task}",
+        "🎯 Tapped {name} for task !{task}",
     ];
     pick(templates, personality)
         .replace("{name}", name)
         .replace("{task}", task_id)
 }
 
-/// Called in coworker {name} for assigned task #{task_id}: {subject}.
+/// Called in coworker {name} for assigned task !{task_id}: {subject}.
 pub fn called_in_assigned_task(
     name: &str,
     task_id: &str,
@@ -95,11 +95,11 @@ pub fn called_in_assigned_task(
     personality: Personality,
 ) -> String {
     let templates: &[&str] = &[
-        "🚀 Called in coworker {name} for assigned task #{task}: {subject}",
-        "📞 Paging {name} — task #{task}: {subject}",
-        "🏃 {name} is on the way for task #{task}: {subject}",
-        "👋 {name} just walked in for task #{task}: {subject}",
-        "🎯 Tapped {name} for task #{task}: {subject}",
+        "🚀 Called in coworker {name} for assigned task !{task}: {subject}",
+        "📞 Paging {name} — task !{task}: {subject}",
+        "🏃 {name} is on the way for task !{task}: {subject}",
+        "👋 {name} just walked in for task !{task}: {subject}",
+        "🎯 Tapped {name} for task !{task}: {subject}",
     ];
     pick(templates, personality)
         .replace("{name}", name)
@@ -217,7 +217,7 @@ mod tests {
             );
             assert_eq!(
                 called_in_assigned_task("eve", "5", "Fix bug", Personality::Normal),
-                "🚀 Called in coworker eve for assigned task #5: Fix bug"
+                "🚀 Called in coworker eve for assigned task !5: Fix bug"
             );
             assert_eq!(idle_waiting(Personality::Normal), "waiting for input");
         }

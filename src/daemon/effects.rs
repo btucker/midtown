@@ -480,7 +480,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::ResetTaskToPending { task_id, repo_name } => {
                 if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {
-                    warn!("Failed to reset task #{} to pending: {}", task_id, e);
+                    warn!("Failed to reset task !{} to pending: {}", task_id, e);
                 }
                 // Clear task assignment tracking (task is no longer assigned)
                 state.clear_task_assignment_by_task(&task_id);
@@ -561,7 +561,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // Set task owner on disk so status and owner are consistent
                         if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
                             warn!(
-                                "Failed to set task #{} owner to {} after spawn: {}",
+                                "Failed to set task !{} owner to {} after spawn: {}",
                                 task_id, owner, e
                             );
                         }
@@ -570,7 +570,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             crate::tasks::set_task_in_progress_for_repo(&task_id, &repo_name)
                         {
                             warn!(
-                                "Failed to set task #{} to in_progress after spawn: {}",
+                                "Failed to set task !{} to in_progress after spawn: {}",
                                 task_id, e
                             );
                         }
@@ -696,9 +696,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::CompleteTask { task_id, repo_name } => {
                 if let Err(e) = crate::tasks::complete_task_for_repo(&task_id, &repo_name) {
-                    warn!("Failed to complete task #{}: {}", task_id, e);
+                    warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
-                    info!("Auto-completed task #{}", task_id);
+                    info!("Auto-completed task !{}", task_id);
                     // Clear task assignment tracking (coworker is now free)
                     state.clear_task_assignment_by_task(&task_id);
                 }
@@ -711,12 +711,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     crate::tasks::clear_blocked_by_for_repo(&completed_task_id, &repo_name)
                 {
                     warn!(
-                        "Failed to clear blockedBy for task #{}: {}",
+                        "Failed to clear blockedBy for task !{}: {}",
                         completed_task_id, e
                     );
                 } else {
                     info!(
-                        "Cleared blockedBy references to completed task #{}",
+                        "Cleared blockedBy references to completed task !{}",
                         completed_task_id
                     );
                 }
@@ -751,7 +751,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     ) {
                         Ok(task_id) => {
                             info!(
-                                "Created review feedback task #{} for {} (PR #{})",
+                                "Created review feedback task !{} for {} (PR #{})",
                                 task_id, owner, pr_number
                             );
                         }

@@ -881,13 +881,13 @@ impl DaemonState {
             match effect {
                 effects::Effect::AssignAndSpawn { task_id, .. } => {
                     self.mark_task_spawn_in_flight(task_id);
-                    debug!("Marked task #{} as in-flight spawn", task_id);
+                    debug!("Marked task !{} as in-flight spawn", task_id);
                 }
                 effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. } => {
                     for sub_effect in on_success {
                         if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
                             self.mark_task_spawn_in_flight(task_id);
-                            debug!("Marked task #{} as in-flight nudge assignment", task_id);
+                            debug!("Marked task !{} as in-flight nudge assignment", task_id);
                         }
                     }
                 }

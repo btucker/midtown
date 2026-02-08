@@ -1010,7 +1010,7 @@ async fn collect_stuck_condition_effects(
                         .into_iter()
                         .find(|(_, _, owner)| owner.eq_ignore_ascii_case(name))
                         .map(|(id, subject, _)| {
-                            format!("task #{} ({})", id, truncate_str(&subject, 30))
+                            format!("task !{} ({})", id, truncate_str(&subject, 30))
                         })
                         .unwrap_or_else(|| "their task".to_string());
 
@@ -1131,7 +1131,7 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
 /// For each coworker-owned PR:
 /// 1. Count non-owner comments (excludes PR author and coworker's own comments)
 /// 2. If count increased since last poll, nudge/spawn the owner AND create a review
-///    feedback task for consistent "task #X" formatting
+///    feedback task for consistent "task !X" formatting
 ///
 /// This enables the polling path to fill the gap identified in graceful degradation:
 /// webhooks handle real-time notifications, polling handles the fallback case.
@@ -1235,7 +1235,7 @@ async fn collect_comment_notification_effects(
 
         effects.extend(comment_action_to_effects(action, pr_number, title, state));
 
-        // Also create a review feedback task for consistent "task #X" formatting.
+        // Also create a review feedback task for consistent "task !X" formatting.
         // Skip if a creation is already in flight (nudged to Lead, awaiting confirmation).
         let key = super::DaemonState::task_creation_key(pr_number, &owner);
         if !state.is_task_creation_pending(&key) {
@@ -2166,7 +2166,7 @@ pub(super) async fn handle_pr_comment_nudge(
             ) {
                 Ok(task_id) => {
                     info!(
-                        "Created review feedback task #{} for {} (PR #{}) via webhook",
+                        "Created review feedback task !{} for {} (PR #{}) via webhook",
                         task_id, owner, pr_number
                     );
                 }

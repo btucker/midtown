@@ -1290,12 +1290,12 @@ async fn handle_task_create(
                 warn!("Failed to post task creation to channel: {}", e);
             }
 
-            info!("Created task #{}: {}", task_id, subject);
+            info!("Created task !{}: {}", task_id, subject);
             Response::success(
                 id,
                 serde_json::json!({
                     "type": "message",
-                    "message": format!("Task #{} created: {}", task_id, subject),
+                    "message": format!("Task !{} created: {}", task_id, subject),
                 }),
             )
         }
@@ -1396,12 +1396,12 @@ fn handle_task_update(
         state.clear_task_assignment_by_task(task_id);
     }
 
-    info!("Updated task #{}", task_id);
+    info!("Updated task !{}", task_id);
     Response::success(
         id,
         serde_json::json!({
             "type": "message",
-            "message": format!("Task #{} updated", task_id),
+            "message": format!("Task !{} updated", task_id),
         }),
     )
 }
@@ -1422,15 +1422,15 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
 
     // Unblock dependent tasks
     if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &repo_name) {
-        warn!("Failed to clear blockedBy for task #{}: {}", task_id, e);
+        warn!("Failed to clear blockedBy for task !{}: {}", task_id, e);
     }
 
-    info!("Completed task #{}", task_id);
+    info!("Completed task !{}", task_id);
     Response::success(
         id,
         serde_json::json!({
             "type": "message",
-            "message": format!("Task #{} completed", task_id),
+            "message": format!("Task !{} completed", task_id),
         }),
     )
 }
@@ -1446,7 +1446,7 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
     let Some(task) = task else {
         return Response::error(
             id,
-            RpcError::new(-32602, format!("Task #{} not found", task_id)),
+            RpcError::new(-32602, format!("Task !{} not found", task_id)),
         );
     };
 
@@ -1456,7 +1456,7 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
             RpcError::new(
                 -32602,
                 format!(
-                    "Task #{} is not pending (status: {:?})",
+                    "Task !{} is not pending (status: {:?})",
                     task_id, task.status
                 ),
             ),
@@ -1485,7 +1485,7 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
             }
             Err(e) => {
                 warn!(
-                    "Task claim disk write attempt {} failed for task #{}: {}",
+                    "Task claim disk write attempt {} failed for task !{}: {}",
                     attempt + 1,
                     task_id,
                     e
@@ -1506,13 +1506,13 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
     // Record in-memory assignment for busy tracking (only after disk write succeeds)
     state.record_task_assignment(from, task_id);
 
-    info!("Task claim: {} claimed task #{} directly", from, task_id);
+    info!("Task claim: {} claimed task !{} directly", from, task_id);
 
     Response::success(
         id,
         serde_json::json!({
             "success": true,
-            "message": format!("Claimed task #{}", task_id),
+            "message": format!("Claimed task !{}", task_id),
         }),
     )
 }
@@ -2557,7 +2557,7 @@ fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, St
                     return Ok(coworker.clone());
                 }
             }
-            Err(format!("No coworker is assigned to task #{}", id))
+            Err(format!("No coworker is assigned to task !{}", id))
         }
         AttachTarget::Pr(pr_num) => {
             // Check reviewer assignments

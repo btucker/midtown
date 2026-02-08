@@ -116,7 +116,7 @@ fn handle_list(show_all: bool) -> Result<Response, String> {
                 || t.status == midtown::tasks::TaskStatus::InProgress
         })
         .map(|t| TaskInfo {
-            id: format!("#{}", t.id),
+            id: format!("!{}", t.id),
             subject: t.subject,
             status: match t.status {
                 midtown::tasks::TaskStatus::Pending => "pending".to_string(),
@@ -136,12 +136,15 @@ fn handle_list(show_all: bool) -> Result<Response, String> {
 /// (e.g., "midtown task view 777") reference the shared list, so this always reads
 /// from the correct location regardless of the caller's task isolation mode.
 fn handle_view(id: &str) -> Result<Response, String> {
-    let id = id.strip_prefix('#').unwrap_or(id);
+    let id = id
+        .strip_prefix('#')
+        .or_else(|| id.strip_prefix('!'))
+        .unwrap_or(id);
     let tasks = midtown::tasks::read_tasks();
     let task = tasks
         .iter()
         .find(|t| t.id == id)
-        .ok_or_else(|| format!("Task #{} not found", id))?;
+        .ok_or_else(|| format!("Task !{} not found", id))?;
 
     let status_str = match task.status {
         midtown::tasks::TaskStatus::Pending => "pending",
@@ -149,7 +152,7 @@ fn handle_view(id: &str) -> Result<Response, String> {
         midtown::tasks::TaskStatus::Completed => "completed",
     };
 
-    let mut output = format!("Task #{}\n", task.id);
+    let mut output = format!("Task !{}\n", task.id);
     output.push_str("─────────────────────────────\n");
     output.push_str(&format!("Subject:  {}\n", task.subject));
     output.push_str(&format!("Status:   {}\n", status_str));

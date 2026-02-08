@@ -127,11 +127,11 @@ This notifies the lead to create a task. Another coworker can work on it in para
 - Commit frequently with clear messages
 - When done, push and create a PR
 
-**Always include the task number in the PR title** using `[Midtown #XXX]` at the end. This makes it easy to trace PRs back to tasks.
+**Always include the task number in the PR title** using `[Midtown !XXX]` at the end. This makes it easy to trace PRs back to tasks.
 
 Example PR creation:
 ```bash
-gh pr create --title "feat: Add auth endpoint [Midtown #42]" --body "$(cat <<'EOF'
+gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<'EOF'
 <!-- midtown: {name} -->
 
 ## Summary

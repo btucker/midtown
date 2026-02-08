@@ -207,7 +207,7 @@ fn pane_has_queued_input(pane_content: &str) -> bool {
 /// Test idle coworker conditions in snapshot-20260203-152121.
 ///
 /// Expected behavior:
-/// - York is busy (has task #27) → NOT eligible for idle shutdown
+/// - York is busy (has task !27) → NOT eligible for idle shutdown
 /// - Lexington is idle (completed task, at prompt) → eligible for idle shutdown
 /// - Coworkers with open PRs → NOT eligible for idle shutdown
 /// - Broadway is active reviewer → NOT eligible for idle shutdown
@@ -216,17 +216,17 @@ fn fixture_idle_detection_snapshot_152121() {
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
     let snap = load_health_snapshot(fixture);
 
-    // ─── York: Busy with task #27, should NOT be sent on break ───
+    // ─── York: Busy with task !27, should NOT be sent on break ───
     assert!(
         snap.busy_coworkers.contains("york"),
-        "York should be busy with task #27"
+        "York should be busy with task !27"
     );
 
     // Verify york's pane shows active work (not idle)
     let york_pane = snap.pane_contents.get("york").expect("york pane exists");
     assert!(
         york_pane.contains("Fixing false idle detection"),
-        "York should be working on task #27"
+        "York should be working on task !27"
     );
 
     // ─── Lexington: Idle, should be sent on break ───
@@ -358,7 +358,7 @@ fn usage_limit_detection_in_pane_content() {
     );
 
     // Normal pane
-    let normal_pane = "⏺ Working on task #42\n\n❯ ";
+    let normal_pane = "⏺ Working on task !42\n\n❯ ";
     assert!(
         !pane_shows_usage_limit(normal_pane),
         "Should not detect usage limit in normal pane"
@@ -479,12 +479,12 @@ fn busy_coworker_identification() {
         );
     }
 
-    // York has task #27
+    // York has task !27
     assert!(
         snap.in_progress_tasks
             .iter()
             .any(|(id, _, owner)| id == "27" && owner == "york"),
-        "York should own in-progress task #27"
+        "York should own in-progress task !27"
     );
 }
 
