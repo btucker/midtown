@@ -3889,6 +3889,7 @@ mod tests {
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
