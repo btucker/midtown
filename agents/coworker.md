@@ -56,7 +56,6 @@ midtown state completed --task 5
 midtown channel post "/me completed task 5"
 
 midtown state idle
-midtown channel post "/me idle, ready for next task"
 ```
 
 ### Other Updates
@@ -82,13 +81,12 @@ midtown channel post "@user yes, the test suite covers that case"
 Without the @mention, the daemon cannot route your reply and the other person may never see it. Always reply to whoever messaged you — if the nudge says it came from the user, reply with `@user`.
 
 ### Idle Status (No Feedback Needed)
-When you become idle, report it and post a channel message without requesting feedback:
+When you become idle, report it without requesting feedback:
 ```bash
 midtown state idle
-midtown channel post "/me idle, ready for next task"
 ```
 
-These are **informational only** - do not ask questions or request confirmation. The daemon will auto-shutdown idle coworkers or assign new work when available.
+The daemon tracks idle state automatically via headless session events and will auto-shutdown idle coworkers or assign new work when available.
 
 ## Your Task
 Your task is assigned by the daemon and included in your initial prompt. You don't need to check a shared task list — just work on what you were given.
