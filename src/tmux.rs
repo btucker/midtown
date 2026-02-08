@@ -2544,6 +2544,7 @@ Claude is now processing the request
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2576,6 +2577,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2612,6 +2614,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2644,6 +2647,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2672,6 +2676,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2702,6 +2707,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2726,6 +2732,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2756,6 +2763,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2792,6 +2800,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2818,6 +2827,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2846,6 +2856,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2870,6 +2881,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2896,6 +2908,7 @@ Claude is now processing the request
             restrict_setting_sources: true,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let retry = config.as_fresh_retry();
         assert_eq!(retry.session_mode, SessionMode::Fresh);
@@ -2988,6 +3001,7 @@ Claude is now processing the request
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),

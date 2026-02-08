@@ -138,6 +138,7 @@ mod tests {
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         })
     }
 
@@ -209,6 +210,7 @@ mod tests {
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         Effect::SpawnCoworkerWithCallbacks {
             config,
@@ -228,6 +230,7 @@ mod tests {
             restrict_setting_sources: false,
             pr_number: None,
             team_name: None,
+            working_dir: None,
         };
         Effect::AssignAndSpawn {
             task_id: "1".to_string(),
