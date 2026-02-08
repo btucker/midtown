@@ -1642,29 +1642,40 @@ async fn collect_reviewer_effects_with_source(
         {
             let ps = state.persistent_state.lock().await;
             if ps.github.is_assigned(pr_number) {
-                // Check if the assigned reviewer is still alive
+                // Check if the assigned reviewer is still alive using pure decision logic
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    // Use snapshot data (pure, no I/O) to check if reviewer is active.
-                    // snap.active_names includes both tmux and headless coworkers.
-                    // Filter out usage-limited coworkers: they're running but can't complete
-                    // reviews (fixes #860 regression).
-                    let is_active = snap.active_names.contains(reviewer_name)
-                        && !snap.usage_limited_coworkers.contains(reviewer_name);
+                    let liveness = crate::rules::decide_reviewer_liveness(
+                        reviewer_name,
+                        &snap.active_names,
+                        &snap.usage_limited_coworkers,
+                    );
 
-                    if is_active {
-                        debug!(
-                            "PR #{} already assigned to active reviewer {}",
-                            pr_number, reviewer_name
-                        );
-                        continue;
-                    } else {
-                        debug!(
-                            "PR #{} assigned to {} but reviewer is dead/usage-limited, will spawn replacement (assignment will be replaced)",
-                            pr_number, reviewer_name
-                        );
-                        // Don't clear assignment here - just proceed to spawn.
-                        // The spawn callback will replace the stale assignment when
-                        // the new reviewer is successfully spawned.
+                    match liveness {
+                        crate::rules::ReviewerLivenessDecision::Active => {
+                            debug!(
+                                "PR #{} already assigned to active reviewer {}",
+                                pr_number, reviewer_name
+                            );
+                            continue;
+                        }
+                        crate::rules::ReviewerLivenessDecision::Dead => {
+                            debug!(
+                                "PR #{} assigned to {} but reviewer is dead, will spawn replacement",
+                                pr_number, reviewer_name
+                            );
+                            // Don't clear assignment here - just proceed to spawn.
+                            // The spawn callback will replace the stale assignment when
+                            // the new reviewer is successfully spawned.
+                        }
+                        crate::rules::ReviewerLivenessDecision::UsageLimited => {
+                            debug!(
+                                "PR #{} assigned to {} but reviewer is usage-limited, will spawn replacement",
+                                pr_number, reviewer_name
+                            );
+                            // Don't clear assignment here - just proceed to spawn.
+                            // The spawn callback will replace the stale assignment when
+                            // the new reviewer is successfully spawned.
+                        }
                     }
                 } else {
                     // Assignment exists but no reviewer name - shouldn't happen, but skip anyway
