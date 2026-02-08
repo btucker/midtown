@@ -555,6 +555,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,
+                "description": task.description,
                 "status": status,
                 "owner": task.owner,
             })
