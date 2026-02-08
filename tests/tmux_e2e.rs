@@ -1168,7 +1168,7 @@ fn test_channel_write_read_roundtrip() {
     let temp = tempfile::tempdir().unwrap();
     let base_dir = temp.path().join("project");
 
-    let channel = midtown::Channel::new(&base_dir).unwrap();
+    let channel = midtown::Channel::new(&base_dir, "midtown").unwrap();
 
     // Write messages from different senders
     channel

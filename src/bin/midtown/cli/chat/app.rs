@@ -1441,6 +1441,10 @@ pub(super) mod tests {
             usage_data: None,
             usage_receiver: None,
             usage_last_refresh: Instant::now(),
+            focused_pane: FocusedPane::Board,
+            selected_channel_index: 0,
+            input_text: String::new(),
+            input_cursor: 0,
         }
     }
 
