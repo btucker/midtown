@@ -870,10 +870,7 @@ fn test_worktree_isolation() {
         .and_then(|cw| cw["name"].as_str())
         .unwrap_or("unknown");
 
-    // Give the daemon a moment to create the worktree (increased from 5s to 10s for CI)
-    thread::sleep(Duration::from_secs(10));
-
-    // Verify the worktree directory exists
+    // Build the expected worktree path
     let worktree_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
@@ -881,10 +878,22 @@ fn test_worktree_isolation() {
         .join(&fixture.repo_name)
         .join(coworker_name);
 
+    // Poll for worktree existence (worktree creation is async in CI environments)
+    // Max wait time: 30s, checking every 500ms
+    let mut waited = 0;
+    let max_wait = Duration::from_secs(30);
+    let poll_interval = Duration::from_millis(500);
+
+    while !worktree_path.exists() && waited < max_wait.as_millis() as u64 {
+        thread::sleep(poll_interval);
+        waited += poll_interval.as_millis() as u64;
+    }
+
     assert!(
         worktree_path.exists(),
-        "Worktree directory should exist at {:?}",
-        worktree_path
+        "Worktree directory should exist at {:?} after waiting {}ms",
+        worktree_path,
+        waited
     );
 
     // Verify it's a valid git worktree by checking for .git file
