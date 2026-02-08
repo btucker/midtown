@@ -214,6 +214,7 @@ mod tests {
             pr_number: None,
             team_name: None,
             working_dir: None,
+            model: "sonnet".to_string(),
         })
     }
 
@@ -286,6 +287,7 @@ mod tests {
             pr_number: None,
             team_name: None,
             working_dir: None,
+            model: "sonnet".to_string(),
         };
         Effect::SpawnCoworkerWithCallbacks {
             config,
@@ -306,6 +308,7 @@ mod tests {
             pr_number: None,
             team_name: None,
             working_dir: None,
+            model: "sonnet".to_string(),
         };
         Effect::AssignAndSpawn {
             task_id: "1".to_string(),
@@ -366,6 +369,7 @@ mod tests {
             pr_number: None,
             team_name: None,
             working_dir: None,
+            model: "sonnet".to_string(),
         };
 
         let config2 = config1.clone();

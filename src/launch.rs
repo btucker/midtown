@@ -75,6 +75,9 @@ pub struct LaunchConfig {
     /// a coworker-named worktree. Used by the WorktreeRegistry system for
     /// task-based worktrees at ~/.midtown/worktrees/<repo>/task-<id>-<slug>/.
     pub working_dir: Option<PathBuf>,
+    /// The Claude model to use for this session (e.g., "sonnet", "opus", "haiku").
+    /// Defaults to "sonnet" for standard coworkers, "opus" for reviewers.
+    pub model: String,
 }
 
 /// The shell command string and generated session ID (if fresh).
@@ -109,6 +112,7 @@ impl LaunchConfig {
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
+            model: "sonnet".to_string(),
         }
     }
 
@@ -129,6 +133,7 @@ impl LaunchConfig {
             pr_number: Some(pr_number),
             team_name: None, // Reviewers don't need mailbox (short-lived)
             working_dir: None,
+            model: "opus".to_string(),
         }
     }
 
@@ -172,6 +177,7 @@ impl LaunchConfig {
             pr_number: None,
             team_name: Some(team),
             working_dir: None,
+            model: "opus".to_string(),
         }
     }
 
@@ -216,7 +222,7 @@ impl LaunchConfig {
         );
 
         HeadlessConfig {
-            model: "sonnet".to_string(), // Default model for coworkers
+            model: self.model.clone(),
             system_prompt,
             json_schema: None,
             cwd: None, // Set by caller (worktree path)
