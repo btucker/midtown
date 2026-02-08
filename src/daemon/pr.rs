@@ -3408,14 +3408,14 @@ mod tests {
     ///
     /// ## Bug scenario (before fix):
     /// 1. PR #42 is opened at t=0
-    /// 2. Poll at t=30s: PR is too new (within 60s delay), no reviewer spawn
-    /// 3. Poll at t=90s: PR data unchanged → hash unchanged → early return (BUG!)
+    /// 2. Poll at t=15s: PR is too new (within 30s delay), no reviewer spawn
+    /// 3. Poll at t=45s: PR data unchanged → hash unchanged → early return (BUG!)
     ///    - The reviewer spawn eligibility was never re-evaluated
     ///
     /// ## Fixed behavior (after fix):
     /// 1. PR #42 is opened at t=0
-    /// 2. Poll at t=30s: PR is too new, no reviewer spawn, cache hash saved
-    /// 3. Poll at t=90s: time bucket changed (bucket 0→1) → hash changed
+    /// 2. Poll at t=15s: PR is too new, no reviewer spawn, cache hash saved
+    /// 3. Poll at t=45s: time bucket changed (bucket 0→1) → hash changed
     ///    - Poll proceeds, PR age re-evaluated, reviewer spawn triggered
     ///
     /// This test simulates time passing to verify the hash changes at bucket boundaries.
@@ -3423,18 +3423,18 @@ mod tests {
     fn pr_poll_cache_reevaluates_after_time_bucket_change() {
         // Same PR data throughout - the data doesn't change, only time passes
         let pr_data = r#"[{"number": 42, "title": "feat: Add feature", "state": "OPEN"}]"#;
-        let bucket_secs = super::PR_REVIEW_DELAY_SECS; // 60 seconds
+        let bucket_secs = super::PR_REVIEW_DELAY_SECS; // 30 seconds
 
-        // Scenario: PR opened at t=0, first poll at t=30
-        // Bucket boundaries are at multiples of 60: 0, 60, 120, ...
-        let t_first_poll = 30u64; // In bucket 0 (0-59)
+        // Scenario: PR opened at t=0, first poll at t=15
+        // Bucket boundaries are at multiples of 30: 0, 30, 60, ...
+        let t_first_poll = 15u64; // In bucket 0 (0-29)
         let hash_first_poll = super::compute_time_aware_hash_at(pr_data, bucket_secs, t_first_poll);
 
-        // At this point, PR is too new for review (only 30s old).
+        // At this point, PR is too new for review (only 15s old).
         // The daemon would skip reviewer spawn. Hash is cached.
 
-        // Second poll at t=50 (still in bucket 0)
-        let t_second_poll = 50u64; // Still in bucket 0 (0-59)
+        // Second poll at t=25 (still in bucket 0)
+        let t_second_poll = 25u64; // Still in bucket 0 (0-29)
         let hash_second_poll =
             super::compute_time_aware_hash_at(pr_data, bucket_secs, t_second_poll);
 
@@ -3444,9 +3444,9 @@ mod tests {
             "Within same time bucket, hash should be stable for caching"
         );
 
-        // Third poll at t=90 (NEW bucket!)
-        // This is 90s after PR creation, well past the 60s review delay
-        let t_third_poll = 90u64; // In bucket 1 (60-119)
+        // Third poll at t=45 (NEW bucket!)
+        // This is 45s after PR creation, well past the 30s review delay
+        let t_third_poll = 45u64; // In bucket 1 (30-59)
         let hash_third_poll = super::compute_time_aware_hash_at(pr_data, bucket_secs, t_third_poll);
 
         // Hash should be DIFFERENT (new bucket) - triggers re-evaluation
@@ -3481,46 +3481,46 @@ mod tests {
     #[test]
     fn pr_poll_cache_bucket_boundary_precision() {
         let pr_data = r#"[{"number": 99}]"#;
-        let bucket_secs = super::PR_REVIEW_DELAY_SECS; // 60 seconds
+        let bucket_secs = super::PR_REVIEW_DELAY_SECS; // 30 seconds
 
-        // Bucket boundaries: 0-59 (bucket 0), 60-119 (bucket 1), 120-179 (bucket 2)
+        // Bucket boundaries: 0-29 (bucket 0), 30-59 (bucket 1), 60-89 (bucket 2)
         //
-        // t=59 → 59/60 = 0 (bucket 0)
-        // t=60 → 60/60 = 1 (bucket 1)
+        // t=29 → 29/30 = 0 (bucket 0)
+        // t=30 → 30/30 = 1 (bucket 1)
 
-        // Poll at t=59 (end of bucket 0)
-        let t_end_of_bucket = 59u64;
+        // Poll at t=29 (end of bucket 0)
+        let t_end_of_bucket = 29u64;
         let hash_end = super::compute_time_aware_hash_at(pr_data, bucket_secs, t_end_of_bucket);
 
-        // Poll at t=60 (start of bucket 1)
-        let t_start_next_bucket = 60u64;
+        // Poll at t=30 (start of bucket 1)
+        let t_start_next_bucket = 30u64;
         let hash_start =
             super::compute_time_aware_hash_at(pr_data, bucket_secs, t_start_next_bucket);
 
         // One second difference at bucket boundary → different hash
         assert_ne!(
             hash_end, hash_start,
-            "Crossing bucket boundary (59→60) should change hash"
+            "Crossing bucket boundary (29→30) should change hash"
         );
 
         // Verify bucket values
         assert_eq!(
             t_end_of_bucket / bucket_secs,
             0,
-            "t=59 should be in bucket 0"
+            "t=29 should be in bucket 0"
         );
         assert_eq!(
             t_start_next_bucket / bucket_secs,
             1,
-            "t=60 should be in bucket 1"
+            "t=30 should be in bucket 1"
         );
 
-        // Within bucket, 58→59 should be same hash
-        let hash_58 = super::compute_time_aware_hash_at(pr_data, bucket_secs, 58);
-        let hash_59 = super::compute_time_aware_hash_at(pr_data, bucket_secs, 59);
+        // Within bucket, 28→29 should be same hash
+        let hash_28 = super::compute_time_aware_hash_at(pr_data, bucket_secs, 28);
+        let hash_29 = super::compute_time_aware_hash_at(pr_data, bucket_secs, 29);
         assert_eq!(
-            hash_58, hash_59,
-            "Within same bucket (58→59), hash should be stable"
+            hash_28, hash_29,
+            "Within same bucket (28→29), hash should be stable"
         );
     }
 
