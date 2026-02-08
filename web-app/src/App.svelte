@@ -410,7 +410,7 @@
     .mobile-close {
       display: block;
       position: absolute;
-      top: 12px;
+      top: calc(env(safe-area-inset-top) + 12px);
       right: 12px;
       width: 32px;
       height: 32px;
@@ -427,6 +427,8 @@
       left: 0;
       top: 0;
       bottom: 0;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
       z-index: 100;
       transform: translateX(-100%);
       transition: transform 0.3s ease;
