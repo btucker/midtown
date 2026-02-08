@@ -53,6 +53,8 @@ or add the HTML comment anywhere in your comment:
 <!-- midtown: {name} -->
 ```
 
+**Reviews are comment-based, not formal GitHub reviews.** All coworkers share the same GitHub user, so `gh pr review --approve` is meaningless. Post reviews as PR comments using `gh pr comment`. Authors merge their own PRs after review feedback is addressed.
+
 **DO NOT use @mentions in GitHub** (PR descriptions, comments, reviews). GitHub interprets `@name` as GitHub usernames, not coworker names. Use @mentions only in the IRC channel chat where the daemon routes them.
 
 - ❌ GitHub: "Thanks @vernon for the review"
