@@ -1748,8 +1748,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // Sync internal state with actual tmux windows first.
                 // Preserve headless session names so they don't get removed
                 // (headless coworkers have no tmux windows).
+                // Use list_alive_names() to exclude stopped sessions pending cleanup —
+                // list_names() would include them, causing sync_with_tmux to preserve
+                // stale entries in the CoworkerManager tracking map.
                 let headless_names: std::collections::HashSet<String> =
-                    state.session_manager.list_names().await.into_iter().collect();
+                    state.session_manager.list_alive_names().await.into_iter().collect();
                 if let Err(e) = state.coworkers.sync_with_tmux(&headless_names) {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }

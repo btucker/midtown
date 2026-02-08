@@ -1196,6 +1196,44 @@ impl CoworkerManager {
             );
         }
 
+        // Recover headless coworkers that are alive in SessionManager but missing
+        // from the CoworkerManager tracking map. This handles the race condition
+        // where a session is spawned (added to SessionManager) but registration
+        // in CoworkerManager hasn't completed yet when sync_with_tmux runs.
+        // Without this, the daemon loses track of running headless sessions.
+        for headless_name in headless_names {
+            // Only recover valid coworker names
+            if !all_names.contains(headless_name.as_str()) {
+                continue;
+            }
+
+            // Skip if already tracked
+            if coworkers.contains_key(headless_name) {
+                continue;
+            }
+
+            // Use worktree path if available, otherwise use a placeholder.
+            // The real working_dir will be set when registration completes.
+            let worktree_path = self.worktree_manager.worktree_path(headless_name);
+            let working_dir = worktree_path.to_string_lossy().to_string();
+
+            let coworker = Coworker {
+                name: headless_name.clone(),
+                status: CoworkerStatus::Running,
+                working_dir,
+                started_at: chrono::Utc::now(), // Unknown, use now as approximation
+                current_task: None,             // Will be discovered via task tracking
+                session_id: None,               // Will be set when coworker registers
+                isolated_tasks: false,          // Assume shared task list (conservative default)
+            };
+
+            coworkers.insert(headless_name.clone(), coworker);
+            tracing::info!(
+                "Recovered undiscovered headless coworker from SessionManager: {}",
+                headless_name
+            );
+        }
+
         Ok(())
     }
 
@@ -1811,5 +1849,105 @@ mod tests {
             result.is_err(),
             "shutdown should error for untracked coworker"
         );
+    }
+
+    #[test]
+    fn test_sync_with_tmux_preserves_headless_coworkers() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Register a headless coworker (no tmux window)
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "madison".to_string(),
+                Coworker {
+                    name: "madison".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None,
+                    isolated_tasks: false,
+                },
+            );
+        }
+
+        assert_eq!(manager.count(), 1);
+
+        // sync_with_tmux should preserve madison because it's in headless_names,
+        // even though it has no tmux window
+        let headless_names: std::collections::HashSet<String> =
+            ["madison".to_string()].into_iter().collect();
+        let result = manager.sync_with_tmux(&headless_names);
+        assert!(result.is_ok());
+
+        // madison should still be tracked
+        assert_eq!(manager.count(), 1);
+        let coworkers = manager.coworkers.read().unwrap();
+        assert!(coworkers.contains_key("madison"));
+    }
+
+    #[test]
+    fn test_sync_with_tmux_recovers_missing_headless_coworkers() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Do NOT register any coworker in the map.
+        // This simulates the race condition: SessionManager has the session
+        // (so it appears in headless_names), but CoworkerManager doesn't
+        // have an entry yet (registration hasn't completed).
+        assert_eq!(manager.count(), 0);
+
+        // sync_with_tmux should recover madison by adding it to the map
+        // because it's in headless_names (alive in SessionManager)
+        let headless_names: std::collections::HashSet<String> =
+            ["madison".to_string()].into_iter().collect();
+        let result = manager.sync_with_tmux(&headless_names);
+        assert!(result.is_ok());
+
+        // madison should now be tracked (recovered from headless_names)
+        assert_eq!(
+            manager.count(),
+            1,
+            "sync_with_tmux should recover headless coworkers missing from the tracking map"
+        );
+        let coworkers = manager.coworkers.read().unwrap();
+        assert!(
+            coworkers.contains_key("madison"),
+            "madison should be in the coworkers map after recovery"
+        );
+        let madison = coworkers.get("madison").unwrap();
+        assert_eq!(madison.status, CoworkerStatus::Running);
+    }
+
+    #[test]
+    fn test_sync_with_tmux_removes_coworker_not_in_headless_or_tmux() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Register a coworker that has no tmux window AND is not in headless_names
+        {
+            let mut coworkers = manager.coworkers.write().unwrap();
+            coworkers.insert(
+                "park".to_string(),
+                Coworker {
+                    name: "park".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: None,
+                    isolated_tasks: false,
+                },
+            );
+        }
+
+        assert_eq!(manager.count(), 1);
+
+        // sync_with_tmux with empty headless_names should remove park
+        let headless_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let result = manager.sync_with_tmux(&headless_names);
+        assert!(result.is_ok());
+
+        // park should be removed (not in tmux windows, not in headless_names)
+        assert_eq!(manager.count(), 0);
     }
 }

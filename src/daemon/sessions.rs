@@ -447,10 +447,25 @@ impl SessionManager {
         health
     }
 
-    /// List all managed session names.
+    /// List all managed session names (including stopped sessions pending cleanup).
     pub async fn list_names(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
         sessions.keys().cloned().collect()
+    }
+
+    /// List only alive session names (excludes stopped sessions pending cleanup).
+    ///
+    /// Use this instead of `list_names()` when building the headless preservation
+    /// set for `sync_with_tmux()`. Using `list_names()` includes stopped sessions
+    /// that haven't been removed yet, which can cause `sync_with_tmux` to preserve
+    /// stale entries in the CoworkerManager tracking map.
+    pub async fn list_alive_names(&self) -> Vec<String> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .iter()
+            .filter(|(_, cs)| cs.status != SessionStatus::Stopped)
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     /// Remove a stopped session entry (cleanup after the coworker is fully shut down).
@@ -538,6 +553,29 @@ impl Default for SessionManager {
 mod tests {
     use super::*;
 
+    /// Insert a fake session entry for testing (no real process).
+    async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionStatus) {
+        let mut sessions = sm.sessions.write().await;
+        sessions.insert(
+            name.to_string(),
+            CoworkerSession {
+                session: None,
+                name: name.to_string(),
+                status,
+                started_at: Utc::now(),
+                session_id: None,
+                cost_usd: 0.0,
+                last_event_at: None,
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                output_log: None,
+                output_log_path: PathBuf::new(),
+            },
+        );
+    }
+
     #[test]
     fn test_session_manager_default() {
         let _sm = SessionManager::new("test-repo".to_string());
@@ -584,5 +622,40 @@ mod tests {
         let sm = SessionManager::new("test-repo".to_string());
         let health = sm.collect_health().await;
         assert!(health.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_alive_names_excludes_stopped() {
+        let sm = SessionManager::new("test-repo".to_string());
+
+        // Insert a running session and a stopped session
+        insert_test_session(&sm, "madison", SessionStatus::Running).await;
+        insert_test_session(&sm, "park", SessionStatus::Stopped).await;
+        insert_test_session(&sm, "broadway", SessionStatus::Starting).await;
+
+        // list_names returns all sessions (including stopped)
+        let all_names = sm.list_names().await;
+        assert_eq!(all_names.len(), 3);
+
+        // list_alive_names should exclude the stopped session
+        let alive_names = sm.list_alive_names().await;
+        assert_eq!(
+            alive_names.len(),
+            2,
+            "list_alive_names should exclude stopped sessions"
+        );
+        assert!(alive_names.contains(&"madison".to_string()));
+        assert!(alive_names.contains(&"broadway".to_string()));
+        assert!(
+            !alive_names.contains(&"park".to_string()),
+            "stopped session 'park' should not be in alive names"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_alive_names_empty() {
+        let sm = SessionManager::new("test-repo".to_string());
+        let names = sm.list_alive_names().await;
+        assert!(names.is_empty());
     }
 }
