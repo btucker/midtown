@@ -770,19 +770,38 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     continue;
                 }
                 let coworkers = state.coworkers.clone();
-                let to_cleanup = names;
+
+                // Filter out names where headless sessions are still alive.
+                // Check session_manager before entering spawn_blocking since is_alive is async.
+                let mut to_cleanup = Vec::new();
+                for name in names {
+                    // Guard: check SessionManager directly to avoid a race where
+                    // the headless session exists but hasn't yet registered in
+                    // the daemon's coworkers map.
+                    if state.session_manager.is_alive(&name).await {
+                        warn!(
+                            "Skipping cleanup of worktree for {} — headless session still running",
+                            name
+                        );
+                        continue;
+                    }
+                    // Double-check: skip if coworker is registered in the manager
+                    if coworkers.get(&name).is_some() {
+                        warn!(
+                            "Skipping cleanup of worktree for {} — coworker still registered",
+                            name
+                        );
+                        continue;
+                    }
+                    to_cleanup.push(name);
+                }
+
+                if to_cleanup.is_empty() {
+                    continue;
+                }
+
                 tokio::task::spawn_blocking(move || {
                     for name in to_cleanup {
-                        // Guard: check tmux windows directly to avoid a race where
-                        // sync_with_tmux hasn't yet registered a running coworker
-                        // in the daemon's internal map.
-                        if coworkers.has_tmux_window(&name) {
-                            warn!(
-                                "Skipping cleanup of worktree for {} — tmux window still exists",
-                                name
-                            );
-                            continue;
-                        }
                         match coworkers.force_cleanup_worktree(&name) {
                             Ok(()) => {
                                 info!("Cleaned up orphaned worktree for {} (PR was merged)", name);
