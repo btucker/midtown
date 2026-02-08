@@ -41,6 +41,8 @@ export function hasMermaid(text) {
  * Restores > at line starts for blockquote support before markdown processing.
  * Auto-links bare URLs and ensures all links open in new tabs.
  * Disables underscore-based italic rendering (keeps asterisk-based italics).
+ * Converts #channel references to clickable channel-switch links.
+ * Converts !N task references to clickable task-detail links.
  */
 export function renderContent(text) {
   // Escape &, <, and > for XSS defense-in-depth.
@@ -76,8 +78,31 @@ export function renderContent(text) {
   // Restore underscores after markdown processing
   html = html.replace(/\x01UNDERSCORE\x01/g, '_')
 
+  // Make #channel references clickable (exclude if inside code/pre tags)
+  html = html.replace(/#([a-z0-9-]+)\b/gi, (match, channelName) => {
+    return `<a href="#" class="channel-link" data-channel="${channelName}">#${channelName}</a>`
+  })
+
+  // Make !N task references clickable (exclude if inside code/pre tags)
+  html = html.replace(/!(\d+)\b/g, (match, taskId) => {
+    return `<a href="#" class="task-link" data-task="${taskId}">!${taskId}</a>`
+  })
+
+  // Make PR #N references clickable with GitHub links
+  // Match patterns: PR #123, #123, pull request #123
+  html = html.replace(/\b(PR|pull request)\s+#(\d+)\b/gi, (match, prefix, prNum) => {
+    return `<a href="#" class="pr-link" data-pr="${prNum}">${prefix} #${prNum}</a>`
+  })
+  html = html.replace(/\B#(\d+)\b/g, (match, prNum) => {
+    return `<a href="#" class="pr-link" data-pr="${prNum}">#${prNum}</a>`
+  })
+
   // Ensure all links open in new tabs
   html = html.replace(/<a /g, '<a target="_blank" rel="noopener" ')
+
+  // Restore target for internal channel/task links (they shouldn't open new tabs)
+  html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="channel-link")/g, '<a $1')
+  html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="task-link")/g, '<a $1')
 
   return html
 }

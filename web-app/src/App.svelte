@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import Channel from './lib/Channel.svelte'
+  import ChannelList from './lib/ChannelList.svelte'
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
@@ -16,7 +17,16 @@
     checkPushSubscription,
   } from './lib/push.js'
 
-  let activeTab = $state('channel')
+  let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
+  let sidebarOpen = $state(false)
+
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen
+  }
+
+  function closeSidebar() {
+    sidebarOpen = false
+  }
 
   onMount(async () => {
     // Always in multi-project mode — served from shared gateway on port 47022
@@ -95,35 +105,51 @@
   {/if}
 
   {#if $activeProject}
-    <Kanban />
-
     <nav>
       <button
-        class:active={activeTab === 'channel'}
-        onclick={() => (activeTab = 'channel')}
+        class:active={activeView === 'board'}
+        onclick={() => (activeView = 'board')}
       >
-        Channel
+        Board
       </button>
       <button
-        class:active={activeTab === 'status'}
-        onclick={() => (activeTab = 'status')}
+        class:active={activeView === 'status'}
+        onclick={() => (activeView = 'status')}
       >
         Status
       </button>
       <button
-        class:active={activeTab === 'tmux'}
-        onclick={() => (activeTab = 'tmux')}
+        class:active={activeView === 'tmux'}
+        onclick={() => (activeView = 'tmux')}
       >
         tmux
       </button>
     </nav>
 
     <div class="content">
-      {#if activeTab === 'channel'}
-        <Channel />
-      {:else if activeTab === 'status'}
+      {#if activeView === 'board'}
+        <div class="split-panel">
+          <button class="mobile-menu-toggle" onclick={toggleSidebar} aria-label="Toggle menu">
+            ☰
+          </button>
+          <aside class="board-sidebar" class:open={sidebarOpen}>
+            <button class="mobile-close" onclick={closeSidebar} aria-label="Close menu">
+              ✕
+            </button>
+            <Kanban />
+            <ChannelList />
+          </aside>
+          {#if sidebarOpen}
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div class="sidebar-overlay" onclick={closeSidebar} role="button" tabindex="0"></div>
+          {/if}
+          <main class="channel-main">
+            <Channel />
+          </main>
+        </div>
+      {:else if activeView === 'status'}
         <Status />
-      {:else if activeTab === 'tmux'}
+      {:else if activeView === 'tmux'}
         <Tmux />
       {/if}
     </div>
@@ -311,6 +337,112 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
+  }
+
+  .split-panel {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .mobile-menu-toggle {
+    display: none;
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 50;
+    width: 40px;
+    height: 40px;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    background: #262626;
+    color: #d0d0d0;
+    font-size: 1.25rem;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .mobile-menu-toggle:hover {
+    background: #303030;
+    border-color: #5fafaf;
+  }
+
+  .mobile-close {
+    display: none;
+  }
+
+  .sidebar-overlay {
+    display: none;
+  }
+
+  .board-sidebar {
+    width: 280px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    background: #1c1c1c;
+    border-right: 1px solid #3a3a3a;
+  }
+
+  .channel-main {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Responsive: collapse sidebar on narrow screens */
+  @media (max-width: 768px) {
+    .mobile-menu-toggle {
+      display: block;
+    }
+
+    .mobile-close {
+      display: block;
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      color: #d0d0d0;
+      font-size: 1.5rem;
+      cursor: pointer;
+      z-index: 101;
+    }
+
+    .board-sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      z-index: 100;
+      transform: translateX(-100%);
+      transition: transform 0.3s ease;
+      box-shadow: 2px 0 8px rgba(0, 0, 0, 0.5);
+    }
+
+    .board-sidebar.open {
+      transform: translateX(0);
+    }
+
+    .sidebar-overlay {
+      display: block;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 99;
+    }
+
+    .channel-main {
+      width: 100%;
+    }
   }
 
   .no-project {

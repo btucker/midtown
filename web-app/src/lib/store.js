@@ -1,6 +1,17 @@
 import { writable } from 'svelte/store'
 
-// Channel messages
+// Channel messages - now keyed by channel name
+// Format: { 'midtown': [...messages], 'auth-refactor': [...messages], ... }
+export const messagesByChannel = writable({ midtown: [] })
+
+// List of available channels with metadata
+// Format: [{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }, ...]
+export const channels = writable([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }])
+
+// Currently active/selected channel name
+export const activeChannel = writable('midtown')
+
+// Legacy: single message array for backward compatibility during transition
 export const messages = writable([])
 
 // WebSocket connection status

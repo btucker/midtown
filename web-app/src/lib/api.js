@@ -1,5 +1,8 @@
 import {
   messages,
+  messagesByChannel,
+  channels,
+  activeChannel,
   connected,
   coworkers,
   leadTyping,
@@ -57,6 +60,9 @@ export function switchProject(projectName, webhookPort) {
 
   // Clear current state
   messages.set([])
+  messagesByChannel.set({ midtown: [] })
+  channels.set([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }])
+  activeChannel.set('midtown')
   coworkers.set([])
   leadTyping.set(false)
   daemonStatus.set(null)
@@ -105,6 +111,35 @@ export async function fetchHistory() {
     if (res.ok) {
       const data = await res.json()
       messages.set(data)
+
+      // Group messages by channel
+      const byChannel = {}
+      const channelSet = new Set()
+      for (const msg of data) {
+        const channelName = msg.channel || 'midtown'
+        if (!byChannel[channelName]) {
+          byChannel[channelName] = []
+        }
+        byChannel[channelName].push(msg)
+        channelSet.add(channelName)
+      }
+
+      messagesByChannel.set(byChannel)
+
+      // Build channel list
+      const channelList = Array.from(channelSet).map((name) => ({
+        name,
+        unread: 0,
+        has_pr: false,
+        ci_status: null,
+      }))
+      // Ensure midtown is first
+      channelList.sort((a, b) => {
+        if (a.name === 'midtown') return -1
+        if (b.name === 'midtown') return 1
+        return a.name.localeCompare(b.name)
+      })
+      channels.set(channelList)
     }
   } catch (err) {
     console.error('Failed to fetch history:', err)
@@ -248,9 +283,34 @@ export function clearErrorCallback(id) {
 function handleUpdate(update) {
   switch (update.type) {
     case 'channel_message':
-      messages.update((msgs) => [...msgs, update.data])
+      const msg = update.data
+      const channelName = msg.channel || 'midtown'
+
+      // Add to legacy messages array
+      messages.update((msgs) => [...msgs, msg])
+
+      // Add to channel-specific messages
+      messagesByChannel.update((byChannel) => {
+        const channelMsgs = byChannel[channelName] || []
+        return {
+          ...byChannel,
+          [channelName]: [...channelMsgs, msg],
+        }
+      })
+
+      // Update channel list if this is a new channel
+      channels.update((channelList) => {
+        if (!channelList.find((ch) => ch.name === channelName)) {
+          return [
+            ...channelList,
+            { name: channelName, unread: 0, has_pr: false, ci_status: null },
+          ]
+        }
+        return channelList
+      })
+
       // Dismiss typing indicator when lead posts a message
-      if (update.data.from?.toLowerCase() === 'lead') {
+      if (msg.from?.toLowerCase() === 'lead') {
         leadTyping.set(false)
         if (leadTypingTimeout) clearTimeout(leadTypingTimeout)
       }
