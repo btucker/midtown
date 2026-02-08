@@ -836,6 +836,35 @@ fn test_worktree_isolation() {
             "Worktree did NOT appear after {}ms",
             waited
         );
+
+        // Debug: check what worktrees actually exist
+        eprintln!("Debug: Checking for alternative worktree locations...");
+
+        let coworkers_base = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".midtown")
+            .join("coworkers");
+
+        eprintln!("Coworkers base exists: {}", coworkers_base.exists());
+
+        if let Ok(entries) = fs::read_dir(&coworkers_base) {
+            for entry in entries.flatten() {
+                eprintln!("  Found repo dir: {:?}", entry.file_name());
+            }
+        }
+
+        // Check what git worktree list shows
+        let worktree_list = Command::new("git")
+            .args(["worktree", "list"])
+            .current_dir(&fixture.temp_dir)
+            .output();
+
+        if let Ok(output) = worktree_list {
+            eprintln!(
+                "git worktree list output:\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
     }
 
     // Verify the worktree directory exists
