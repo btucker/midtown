@@ -870,10 +870,7 @@ fn test_worktree_isolation() {
         .and_then(|cw| cw["name"].as_str())
         .unwrap_or("unknown");
 
-    // Give the daemon a moment to create the worktree
-    thread::sleep(Duration::from_secs(5));
-
-    // Verify the worktree directory exists
+    // Poll for worktree creation (daemon creates worktrees asynchronously)
     let worktree_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
@@ -881,8 +878,18 @@ fn test_worktree_isolation() {
         .join(&fixture.repo_name)
         .join(coworker_name);
 
+    let mut worktree_exists = false;
+    for _ in 0..60 {
+        // 60 * 100ms = 6 seconds max
+        if worktree_path.exists() {
+            worktree_exists = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
     assert!(
-        worktree_path.exists(),
+        worktree_exists,
         "Worktree directory should exist at {:?}",
         worktree_path
     );
