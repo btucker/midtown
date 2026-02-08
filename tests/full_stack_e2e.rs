@@ -826,9 +826,14 @@ fn test_worktree_isolation() {
         waited += poll_interval.as_millis() as u64;
     }
 
-    if waited > 0 {
+    if worktree_path.exists() && waited > 0 {
         eprintln!(
             "Worktree appeared after {}ms",
+            waited
+        );
+    } else if !worktree_path.exists() {
+        eprintln!(
+            "Worktree did NOT appear after {}ms",
             waited
         );
     }
