@@ -198,7 +198,6 @@ pub enum Effect {
     ///
     /// Called when a coworker is assigned to work in an existing task-based
     /// worktree. Updates the registry's reverse indexes.
-    #[allow(dead_code)]
     BindCoworkerToWorktree {
         worktree_id: String,
         coworker: String,
@@ -212,7 +211,6 @@ pub enum Effect {
     /// Register a new task-based worktree assignment in the registry.
     ///
     /// Called during task dispatch when a new worktree is allocated for a task.
-    #[allow(dead_code)]
     RegisterWorktreeAssignment {
         assignment: crate::worktree_registry::WorktreeAssignment,
     },
