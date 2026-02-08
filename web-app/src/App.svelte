@@ -5,6 +5,7 @@
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
+  import UsageBars from './lib/UsageBars.svelte'
   import AuthSwitcher from './lib/AuthSwitcher.svelte'
   import { messages, connected, coworkers, projects, activeProject } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from './lib/api.js'
@@ -136,8 +137,11 @@
             <button class="mobile-close" onclick={closeSidebar} aria-label="Close menu">
               ✕
             </button>
-            <Kanban />
-            <ChannelList />
+            <div class="sidebar-scroll">
+              <Kanban />
+              <ChannelList />
+            </div>
+            <UsageBars />
           </aside>
           {#if sidebarOpen}
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -381,9 +385,13 @@
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
     background: #1c1c1c;
     border-right: 1px solid #3a3a3a;
+  }
+
+  .sidebar-scroll {
+    flex: 1;
+    overflow-y: auto;
   }
 
   .channel-main {

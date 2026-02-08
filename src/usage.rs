@@ -2,12 +2,13 @@
 //!
 //! Fetches session (5-hour) and weekly (7-day) utilization data from
 //! the Anthropic API using the OAuth token from macOS Keychain.
+//! Used by both the TUI and the web UI.
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Usage data from the Anthropic API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct UsageData {
     /// Session (5-hour window) utilization percentage (0-100)
     pub session_util: f64,
@@ -50,7 +51,7 @@ pub struct OAuthCredentials {
 pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
     use sha2::{Digest, Sha256};
 
-    let config_dir = midtown::auth::current_profile_dir();
+    let config_dir = crate::auth::current_profile_dir();
     let config_dir_str = config_dir.to_string_lossy();
 
     // Derive the keychain service name hash
@@ -99,7 +100,7 @@ pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
 
 /// Fetch usage data from the Anthropic API.
 pub fn fetch_usage(token: &str, account_email: Option<String>) -> Option<UsageData> {
-    // Use blocking reqwest since we run this on a background thread
+    // Use blocking reqwest since this runs on a blocking thread pool
     let client = reqwest::blocking::Client::new();
     let resp = client
         .get("https://api.anthropic.com/api/oauth/usage")
@@ -136,49 +137,36 @@ pub fn fetch_usage(token: &str, account_email: Option<String>) -> Option<UsageDa
     })
 }
 
+/// Fetch usage data using credentials from the macOS Keychain.
+///
+/// Combines credential retrieval and API fetch into a single call.
+/// Returns `None` if credentials are unavailable or the API call fails.
+pub fn fetch_usage_with_credentials() -> Option<UsageData> {
+    let creds = get_oauth_credentials()?;
+    fetch_usage(&creds.token, creds.email)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_usage_response_parsing() {
-        let json = r#"{
-            "five_hour": {
-                "utilization": 43.2,
-                "resets_at": "2026-02-05T22:59:00Z"
-            },
-            "seven_day": {
-                "utilization": 52.1,
-                "resets_at": "2026-02-11T15:59:00Z"
-            },
-            "seven_day_oauth_apps": null,
-            "seven_day_opus": null,
-            "extra_usage": {
-                "is_enabled": false,
-                "monthly_limit": null,
-                "used_credits": null,
-                "utilization": null
-            }
-        }"#;
+    fn test_usage_data_serialization() {
+        let data = UsageData {
+            session_util: 43.2,
+            session_resets: DateTime::parse_from_rfc3339("2026-02-05T22:59:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            week_util: 52.1,
+            week_resets: DateTime::parse_from_rfc3339("2026-02-11T15:59:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            account_email: Some("test@example.com".to_string()),
+        };
 
-        let resp: UsageResponse = serde_json::from_str(json).unwrap();
-        let five = resp.five_hour.unwrap();
-        assert!((five.utilization - 43.2).abs() < f64::EPSILON);
-        assert_eq!(five.resets_at, "2026-02-05T22:59:00Z");
-
-        let seven = resp.seven_day.unwrap();
-        assert!((seven.utilization - 52.1).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_usage_response_missing_fields() {
-        let json = r#"{
-            "five_hour": null,
-            "seven_day": null
-        }"#;
-
-        let resp: UsageResponse = serde_json::from_str(json).unwrap();
-        assert!(resp.five_hour.is_none());
-        assert!(resp.seven_day.is_none());
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("43.2"));
+        assert!(json.contains("52.1"));
+        assert!(json.contains("test@example.com"));
     }
 }

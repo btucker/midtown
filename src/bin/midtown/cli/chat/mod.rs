@@ -9,7 +9,6 @@
 mod app;
 mod mermaid;
 mod ui;
-mod usage;
 
 use std::io::{self, Write};
 use std::time::Duration;

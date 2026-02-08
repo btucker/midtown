@@ -11,7 +11,7 @@ use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
 use super::mermaid::MermaidCache;
-use super::usage::{self, UsageData};
+use midtown::usage::{self, UsageData};
 
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {

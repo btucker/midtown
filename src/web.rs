@@ -194,6 +194,12 @@ static OPEN_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 /// Cached merged PR list.
 static MERGED_PRS_CACHE: TtlCache<Vec<serde_json::Value>> = TtlCache::new();
 
+/// Cached usage data (session + weekly utilization).
+static USAGE_CACHE: TtlCache<crate::usage::UsageData> = TtlCache::new();
+
+/// TTL for usage data cache (2 minutes, matching TUI refresh interval).
+const USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
+
 /// Configuration for the web server
 #[derive(Debug, Clone)]
 pub struct WebConfig {
@@ -361,6 +367,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/push/unsubscribe", post(api_push_unsubscribe))
         .route("/api/auth/profiles", get(api_auth_profiles))
         .route("/api/auth/switch", post(api_auth_switch))
+        .route("/api/usage", get(api_usage))
         .with_state(state)
 }
 
@@ -1086,6 +1093,36 @@ async fn api_auth_switch(
                 axum::Json(serde_json::json!({ "error": msg })),
             ))
         }
+    }
+}
+
+/// Get API usage data (session + weekly utilization).
+///
+/// Fetches from the Anthropic OAuth usage API with a 2-minute TTL cache.
+/// Returns 204 No Content if credentials are unavailable or the API call fails.
+async fn api_usage() -> Result<impl IntoResponse, StatusCode> {
+    let data = tokio::task::spawn_blocking(|| {
+        USAGE_CACHE.get(USAGE_CACHE_TTL).or_else(|| {
+            let data = crate::usage::fetch_usage_with_credentials()?;
+            USAGE_CACHE.set(data.clone());
+            Some(data)
+        })
+    })
+    .await
+    .map_err(|e| {
+        error!("Failed to spawn blocking task for usage: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match data {
+        Some(usage) => Ok(axum::Json(serde_json::json!({
+            "session_util": usage.session_util,
+            "session_resets": usage.session_resets.to_rfc3339(),
+            "week_util": usage.week_util,
+            "week_resets": usage.week_resets.to_rfc3339(),
+            "account_email": usage.account_email,
+        }))),
+        None => Err(StatusCode::NO_CONTENT),
     }
 }
 
