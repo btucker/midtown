@@ -1436,7 +1436,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // This catches claude processes that were orphaned when tmux sessions were
     // killed directly without going through `midtown stop`.
     let mut orphan_process_interval = interval(std::time::Duration::from_secs(300));
-    // Skip the first tick (which fires immediately)
+    // Run immediately on startup to clean up orphans from previous daemon.
+    // Don't skip the first tick — orphans from a crashed/restarted daemon
+    // need to be killed before we start spawning new coworkers.
+    {
+        let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
+        let killed = crate::tmux::kill_orphaned_processes(pattern);
+        if killed > 0 {
+            info!(
+                "Startup cleanup: killed {} orphaned claude process(es) from previous daemon",
+                killed
+            );
+        }
+    }
     orphan_process_interval.tick().await;
 
     // Timer for draining headless session events (every 2 seconds).
@@ -1872,6 +1884,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 break;
             }
         }
+    }
+
+    // Shut down all coworker sessions to prevent orphaned processes
+    info!("Shutting down all coworker sessions...");
+    let shutdown_count = state.session_manager.shutdown_all().await;
+    if shutdown_count > 0 {
+        info!("Shut down {} coworker session(s)", shutdown_count);
     }
 
     // Signal webhook forwarder watchdog to stop
