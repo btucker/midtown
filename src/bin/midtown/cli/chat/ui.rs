@@ -1665,6 +1665,8 @@ mod tests {
             content: "line1\nline2\nline3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
@@ -1672,6 +1674,8 @@ mod tests {
             content: "line1\nline2\nline3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1713,6 +1717,8 @@ mod tests {
             content: "first message".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let msg2 = Message {
             id: "2".to_string(),
@@ -1720,6 +1726,8 @@ mod tests {
             content: "second message".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1758,6 +1766,8 @@ mod tests {
             content: "completed task 3".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Action,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1821,6 +1831,8 @@ mod tests {
             content: "Session started".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::System,
+            channel: None,
+            source_channel: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1901,6 +1913,8 @@ mod tests {
                 content: format!("message content {}", i),
                 timestamp: Utc::now(),
                 message_type: MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -2001,6 +2015,8 @@ mod tests {
                 content: format!("message content {}", i),
                 timestamp: Utc::now(),
                 message_type: MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -2136,6 +2152,8 @@ mod tests {
             content: "working on task".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let daemon_msg = Message {
             id: "2".to_string(),
@@ -2143,6 +2161,8 @@ mod tests {
             content: "Called in coworker".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let daemon_lines = render_message(&daemon_msg, 80, Some("madison"), &current_tasks, None);
@@ -2158,6 +2178,8 @@ mod tests {
             content: "Another daemon event".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2173,6 +2195,8 @@ mod tests {
             content: "Check passed".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2188,6 +2212,8 @@ mod tests {
             content: "back to work".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2228,6 +2254,8 @@ mod tests {
             content: "Check passed".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2243,6 +2271,8 @@ mod tests {
             content: "Called in coworker".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let daemon_lines = render_message(&daemon_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2266,6 +2296,8 @@ mod tests {
             content: "working".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2304,6 +2336,8 @@ mod tests {
             content: "working on feature".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         // Test with a current task
@@ -2359,6 +2393,8 @@ mod tests {
             content: "test".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -2390,6 +2426,8 @@ mod tests {
             content: "test".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         };
 
         // Task stored with lowercase "park"
@@ -2656,6 +2694,8 @@ mod tests {
             content: content.to_string(),
             timestamp: chrono::Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         }
     }
 
@@ -3035,6 +3075,8 @@ mod tests {
             content: "ignored".to_string(),
             timestamp: chrono::Utc::now(),
             message_type: MessageType::Action,
+            channel: None,
+            source_channel: None,
         };
         let segments = vec![ContentSegment::Mermaid(source.to_string())];
         let current_tasks = HashMap::new();

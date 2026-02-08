@@ -1502,6 +1502,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -1627,6 +1629,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -1700,6 +1704,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 
@@ -1752,6 +1758,8 @@ pub(super) mod tests {
                 content: format!("message {}", i),
                 timestamp: chrono::Utc::now(),
                 message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
             })
             .collect();
 

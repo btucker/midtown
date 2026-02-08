@@ -151,6 +151,8 @@ fn generate_messages(count: usize) -> Vec<Message> {
             } else {
                 MessageType::Text
             },
+            channel: None,
+            source_channel: None,
         })
         .collect()
 }
@@ -167,6 +169,8 @@ fn generate_long_messages(count: usize) -> Vec<Message> {
             content: long_content.clone(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         })
         .collect()
 }
@@ -184,6 +188,8 @@ fn test_single_message_render_latency() {
         content: "This is a test message with **markdown** and `code`".to_string(),
         timestamp: Utc::now(),
         message_type: MessageType::Text,
+        channel: None,
+        source_channel: None,
     };
 
     let current_tasks = HashMap::new();
@@ -624,6 +630,8 @@ fn test_unicode_message_rendering() {
             content: "This message has emoji: \u{1F389}\u{1F680}\u{2728} and CJK: \u{4E2D}\u{6587}\u{6D4B}\u{8BD5} and symbols: \u{2192}\u{2713}\u{2717}".to_string(),
             timestamp: Utc::now(),
             message_type: MessageType::Text,
+            channel: None,
+            source_channel: None,
         })
         .collect();
 
