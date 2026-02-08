@@ -333,9 +333,20 @@ impl SessionManager {
                                     }
                                 }
                             }
-                            StreamEvent::User { .. } => {
-                                // User events contain tool_result blocks — clear pending tool flag
-                                cs.has_pending_tool = false;
+                            StreamEvent::User { message, .. } => {
+                                // User events may contain tool_result blocks — only clear pending tool flag if present
+                                if let Some(content) = message.get("content")
+                                    && let Some(arr) = content.as_array()
+                                {
+                                    for block in arr {
+                                        if block.get("type").and_then(|t| t.as_str())
+                                            == Some("tool_result")
+                                        {
+                                            cs.has_pending_tool = false;
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                             _ => {}
                         }
