@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, daemonStatus } from './store.js'
   import { sendMessage } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -8,6 +8,7 @@
   let inputText = $state('')
   let messagesContainer = $state(null)
   let autoScroll = $state(true)
+  let selectedTask = $state(null)
 
   // Filter messages by active channel
   let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
@@ -19,6 +20,31 @@
   function getPrStatus(prNum) {
     const pr = $kanbanData.review.find((p) => p.number === parseInt(prNum))
     return pr ? pr.status : null
+  }
+
+  // Build GitHub PR URL using repo status.
+  // Returns null if repo full name is unavailable.
+  function getPrUrl(prNum) {
+    if ($repoStatus.fullName) {
+      return `https://github.com/${$repoStatus.fullName}/pull/${prNum}`
+    }
+    return null
+  }
+
+  // Find a task by ID from the daemon status task list
+  function findTask(taskId) {
+    const tasks = $daemonStatus?.tasks || []
+    return tasks.find((t) => String(t.id) === String(taskId)) || null
+  }
+
+  function closeTaskModal() {
+    selectedTask = null
+  }
+
+  function handleModalKeydown(event) {
+    if (event.key === 'Escape' && selectedTask) {
+      closeTaskModal()
+    }
   }
 
   // Handle clicks on channel links, task links, and PR links
@@ -34,15 +60,17 @@
       } else if (target.classList.contains('task-link')) {
         e.preventDefault()
         const taskId = target.dataset.task
-        // TODO: Show task detail panel/modal
-        console.log('Task link clicked:', taskId)
+        const task = findTask(taskId)
+        if (task) {
+          selectedTask = task
+        }
       } else if (target.classList.contains('pr-link')) {
         e.preventDefault()
         const prNum = target.dataset.pr
-        // Open GitHub PR in new tab (assuming GitHub URL structure)
-        // In real implementation, this should use the actual repo URL from config
-        console.log('PR link clicked:', prNum)
-        // window.open(`https://github.com/owner/repo/pull/${prNum}`, '_blank')
+        const url = getPrUrl(prNum)
+        if (url) {
+          window.open(url, '_blank', 'noopener')
+        }
       }
     }
 
@@ -173,6 +201,8 @@
   }
 </script>
 
+<svelte:window onkeydown={handleModalKeydown} />
+
 <div class="channel-container">
   <div class="messages" bind:this={messagesContainer} onscroll={handleScroll}>
     {#if channelMessages.length === 0}
@@ -284,6 +314,34 @@
     <button type="submit" disabled={!inputText.trim()}>Send</button>
   </form>
 </div>
+
+<!-- Task detail modal (opened by clicking !N task links in chat) -->
+{#if selectedTask}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus -->
+  <div class="task-modal-overlay" onclick={closeTaskModal} role="dialog" aria-modal="true" tabindex="-1">
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+    <div class="task-modal-content" role="document" onclick={(e) => e.stopPropagation()}>
+      <button class="task-modal-close" onclick={closeTaskModal} aria-label="Close">×</button>
+
+      <div class="task-modal-header">
+        <span class="task-modal-id">!{selectedTask.id}</span>
+        <span class="task-modal-status">{selectedTask.status}</span>
+      </div>
+      <h4 class="task-modal-title">{selectedTask.subject}</h4>
+      {#if selectedTask.description}
+        <p class="task-modal-description">{selectedTask.description}</p>
+      {:else}
+        <p class="task-modal-description empty">No description</p>
+      {/if}
+      {#if selectedTask.owner}
+        <div class="task-modal-meta">
+          <span class="task-meta-label">Owner:</span>
+          <span class="task-meta-value">{selectedTask.owner}</span>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   .channel-container {
@@ -622,5 +680,108 @@
 
   button:hover:not(:disabled) {
     opacity: 0.9;
+  }
+
+  /* Task detail modal (matches Kanban modal style) */
+  .task-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+  }
+
+  .task-modal-content {
+    background: #16213e;
+    border-radius: 8px;
+    padding: 16px;
+    max-width: 400px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+    position: relative;
+    border: 1px solid #0f3460;
+  }
+
+  .task-modal-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: transparent;
+    border: none;
+    color: #666;
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 4px 8px;
+    line-height: 1;
+    border-radius: 0;
+  }
+
+  .task-modal-close:hover {
+    color: #00d9ff;
+  }
+
+  .task-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .task-modal-id {
+    color: #00d9ff;
+    font-family: ui-monospace, monospace;
+    font-size: 0.85rem;
+  }
+
+  .task-modal-status {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: #0f3460;
+    color: #888;
+    text-transform: capitalize;
+  }
+
+  .task-modal-title {
+    color: #eee;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 12px 0;
+    line-height: 1.4;
+  }
+
+  .task-modal-description {
+    color: #aaa;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    margin: 0 0 12px 0;
+    white-space: pre-wrap;
+  }
+
+  .task-modal-description.empty {
+    color: #666;
+    font-style: italic;
+  }
+
+  .task-modal-meta {
+    display: flex;
+    gap: 8px;
+    font-size: 0.8rem;
+    margin-bottom: 4px;
+  }
+
+  .task-meta-label {
+    color: #666;
+  }
+
+  .task-meta-value {
+    color: #ccc;
   }
 </style>
