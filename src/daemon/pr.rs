@@ -482,7 +482,7 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Auto-spawn reviewers for PRs that need review
-    effects.extend(collect_reviewer_effects(state, &prs).await);
+    effects.extend(collect_reviewer_effects(snap, state, &prs).await);
 
     // Pre-collect review status for all PRs before stuck detection (pure decision logic
     // should not make async API calls). Coworkers can't submit formal GitHub reviews
@@ -1484,8 +1484,13 @@ fn handoff_to_coworker_effects(
 /// not already assigned) and returns effects to spawn reviewer coworkers.
 /// Uses `SpawnCoworkerWithCallbacks` so that reviewer assignment and channel
 /// messages only happen on successful spawn.
-async fn collect_reviewer_effects(state: &DaemonState, prs: &[serde_json::Value]) -> Vec<Effect> {
+async fn collect_reviewer_effects(
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
+        snap,
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
@@ -1494,6 +1499,7 @@ async fn collect_reviewer_effects(state: &DaemonState, prs: &[serde_json::Value]
 }
 
 async fn collect_reviewer_effects_with_source(
+    snap: &WorldSnapshot,
     state: &DaemonState,
     prs: &[serde_json::Value],
     source: crate::github_state::AssignmentSource,
@@ -1632,12 +1638,52 @@ async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if already assigned for review.
+        // Check if already assigned for review AND the reviewer is still active.
+        // If a reviewer was assigned but has since died/shut down, we should spawn
+        // a replacement rather than waiting for the assignment to expire.
         {
             let ps = state.persistent_state.lock().await;
             if ps.github.is_assigned(pr_number) {
-                debug!("PR #{} already assigned for review", pr_number);
-                continue;
+                // Check if the assigned reviewer is still alive using pure decision logic
+                if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
+                    let liveness = crate::rules::decide_reviewer_liveness(
+                        reviewer_name,
+                        &snap.active_names,
+                        &snap.usage_limited_coworkers,
+                    );
+
+                    match liveness {
+                        crate::rules::ReviewerLivenessDecision::Active => {
+                            debug!(
+                                "PR #{} already assigned to active reviewer {}",
+                                pr_number, reviewer_name
+                            );
+                            continue;
+                        }
+                        crate::rules::ReviewerLivenessDecision::Dead => {
+                            debug!(
+                                "PR #{} assigned to {} but reviewer is dead, will spawn replacement",
+                                pr_number, reviewer_name
+                            );
+                            // Don't clear assignment here - just proceed to spawn.
+                            // The spawn callback will replace the stale assignment when
+                            // the new reviewer is successfully spawned.
+                        }
+                        crate::rules::ReviewerLivenessDecision::UsageLimited => {
+                            debug!(
+                                "PR #{} assigned to {} but reviewer is usage-limited, will spawn replacement",
+                                pr_number, reviewer_name
+                            );
+                            // Don't clear assignment here - just proceed to spawn.
+                            // The spawn callback will replace the stale assignment when
+                            // the new reviewer is successfully spawned.
+                        }
+                    }
+                } else {
+                    // Assignment exists but no reviewer name - shouldn't happen, but skip anyway
+                    debug!("PR #{} has assignment but no reviewer name", pr_number);
+                    continue;
+                }
             }
         }
 
@@ -1874,7 +1920,10 @@ fn review_complete_action_to_effects(
 /// Unlike the previous `tokio::time::sleep` approach, these survive daemon restarts.
 ///
 /// Returns effects to be executed by the caller (following the evaluate-execute pattern).
-pub(super) async fn process_pending_review_spawns(state: &DaemonState) -> Vec<Effect> {
+pub(super) async fn process_pending_review_spawns(
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<Effect> {
     let mut all_effects = Vec::new();
 
     // Drain ready spawns from persistent state
@@ -1946,6 +1995,7 @@ pub(super) async fn process_pending_review_spawns(state: &DaemonState) -> Vec<Ef
         // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
         // Use Webhook source since this was triggered by a webhook event.
         let effects = collect_reviewer_effects_with_source(
+            snap,
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
