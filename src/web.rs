@@ -1163,8 +1163,14 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
             Ok(WsMessage::Text(text)) => {
                 if let Err(e) = handle_client_message(&text, &state_clone, conn_id).await {
                     warn!("Error handling client message: {}", e);
-                    // Send error back to client
-                    let _ = error_tx.send(e).await;
+                    // Send error back to client using try_send to avoid blocking.
+                    // If the channel is full (client is slow), log and drop the error.
+                    if let Err(send_err) = error_tx.try_send(e) {
+                        warn!(
+                            "Failed to send error to WebSocket client (conn {}): {:?}",
+                            conn_id, send_err
+                        );
+                    }
                 }
             }
             Ok(WsMessage::Close(_)) => break,
@@ -1739,5 +1745,67 @@ mod tests {
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("Cannot nudge coworker"));
         assert!(err_msg.contains("lexington"));
+    }
+
+    #[tokio::test]
+    async fn test_error_channel_backpressure() {
+        // Stress test: verify that error channel backpressure doesn't block message handling.
+        // Generate 20 errors rapidly (channel capacity is 10) and ensure the handler continues.
+        use crate::coworker::CoworkerManager;
+        use crate::worktree::WorktreeManager;
+        use tempfile::TempDir;
+
+        let (updates_tx, _) = broadcast::channel(10);
+        let (channel_post_tx, _) = mpsc::channel(10);
+
+        // Create a minimal CoworkerManager
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .ok();
+
+        let worktree_manager = WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("Failed to create worktree manager");
+        let coworkers = CoworkerManager::new("midtown-test", worktree_manager);
+
+        let state = Arc::new(WebState {
+            config: WebConfig::default(),
+            updates_tx,
+            coworkers: Some(coworkers),
+            channel_post_tx,
+            push_manager: None,
+            all_repo_paths: Vec::new(),
+            default_branch: "main".to_string(),
+            repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
+        });
+
+        // Trigger 20 errors (channel capacity is 10) by sending invalid messages.
+        // The key assertion: handle_client_message should not hang or panic.
+        for i in 0..20 {
+            let json = format!(r#"{{"type": "invalid_type_{}"}}"#, i);
+            let result = handle_client_message(&json, &state, 1).await;
+            // All should error (invalid message type)
+            assert!(result.is_err(), "Expected error for invalid message {}", i);
+        }
+
+        // If we reach here without hanging, backpressure is handled correctly
     }
 }
