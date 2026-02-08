@@ -16,11 +16,11 @@ TASK DESCRIPTION VERIFICATION: Before running the code review, check whether the
 
 Task descriptions can evolve after a coworker starts working. The coworker may not notice updates. This check catches that gap.
 
-Now run the code review: /code-review:code-review {pr_number}
+Now follow the review workflow in your initial prompt to review the PR. The initial prompt contains step-by-step instructions.
 
-IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
+IMPORTANT: You MUST always post a GitHub comment on the PR using `gh pr comment {pr_number} --body`, even if no issues are found. Use the "no issues found" format if the review turns up clean.
 
-**THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **40** instead of 80. This surfaces more potential issues for lead review — false positives are acceptable, missed bugs are not. Include issues that score >= 40 in your PR comment.
+**ISSUE FILTERING**: Focus on substantial issues that could impact functionality, correctness, or CLAUDE.md compliance. Avoid nitpicks and style issues that linters would catch. False positives are acceptable — it's better to flag a questionable pattern than to miss a real bug.
 
 **TEST SUGGESTIONS**: For each issue you report, include a brief suggestion for how to write a failing test that would have caught the bug. Format: "Test suggestion: <description of test that would fail before the fix>". This helps the author understand the bug and prevents regressions. Examples:
 - "Test suggestion: Add a unit test that spawns two coworkers with the same name concurrently and asserts only one succeeds"
