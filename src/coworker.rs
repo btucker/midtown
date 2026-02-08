@@ -1082,7 +1082,14 @@ impl CoworkerManager {
     /// This adds the coworker to the internal tracking map. Call this after
     /// the headless session has been successfully started.
     ///
-    /// Returns an error if the name was taken by a concurrent spawn.
+    /// If an entry already exists with `session_id: None`, it's treated as a
+    /// provisional recovery entry and is updated with the authoritative values
+    /// (session_id, isolated_tasks, working_dir). This allows `sync_with_tmux`
+    /// recovery to create provisional entries without blocking legitimate
+    /// registrations.
+    ///
+    /// Returns an error if the name was taken by a concurrent spawn (an entry
+    /// exists with a non-None session_id).
     pub fn register(
         &self,
         name: &str,
@@ -1092,14 +1099,26 @@ impl CoworkerManager {
     ) -> crate::Result<()> {
         let mut coworkers = self.coworkers.write().unwrap();
 
-        if coworkers.contains_key(name) {
-            return Err(crate::Error::Rpc {
-                code: -32603,
-                message: format!(
-                    "Coworker {} was registered by another concurrent request",
-                    name
-                ),
-            });
+        // Check if an entry already exists
+        if let Some(existing) = coworkers.get(name) {
+            // If the existing entry has a session_id, it's a real concurrent spawn race.
+            // Fail to prevent overwriting a legitimate registration.
+            if existing.session_id.is_some() {
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!(
+                        "Coworker {} was registered by another concurrent request",
+                        name
+                    ),
+                });
+            }
+
+            // If session_id is None, this is a provisional recovery entry.
+            // Update it with the authoritative values from the spawn flow.
+            tracing::info!(
+                "Updating provisional recovery entry for {} with authoritative values",
+                name
+            );
         }
 
         let coworker = Coworker {
@@ -1258,7 +1277,18 @@ impl CoworkerManager {
             }
             let working_dir = worktree_path.to_string_lossy().to_string();
 
-            let coworker = Coworker::recovered(headless_name.clone(), working_dir);
+            // Create a PROVISIONAL coworker entry with session_id: None.
+            // This signals to register() that it should update this entry
+            // rather than fail with a "concurrent request" error.
+            let coworker = Coworker {
+                name: headless_name.clone(),
+                status: CoworkerStatus::Running,
+                working_dir,
+                started_at: chrono::Utc::now(), // Unknown, use now as approximation
+                current_task: None,             // Will be discovered via task tracking
+                session_id: None,               // PROVISIONAL - signals register() can update
+                isolated_tasks: false,          // PROVISIONAL - will be updated by register()
+            };
             coworkers.insert(headless_name.clone(), coworker);
             tracing::info!(
                 "Recovered undiscovered headless coworker from SessionManager: {}",
@@ -2022,5 +2052,70 @@ mod tests {
 
         // park should be removed (not in tmux windows, not in headless_names)
         assert_eq!(manager.count(), 0);
+    }
+
+    #[test]
+    fn test_recovery_doesnt_block_register() {
+        // Simulate the race condition:
+        // 1. A headless session exists in SessionManager (simulated by headless_names set)
+        // 2. sync_with_tmux recovers it and creates a Coworker entry
+        // 3. The spawn flow then tries to call register() and should NOT fail
+
+        let (manager, temp_dir) = test_manager();
+
+        // Create a valid worktree for lexington so recovery can proceed
+        let worktree_path = manager.worktree_manager.worktree_path("lexington");
+        Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                &worktree_path.to_string_lossy(),
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to create worktree for lexington");
+
+        // Simulate that a headless session named "lexington" exists but isn't tracked yet
+        let headless_names: std::collections::HashSet<String> =
+            ["lexington".to_string()].into_iter().collect();
+
+        // sync_with_tmux recovers the headless session
+        let result = manager.sync_with_tmux(&headless_names);
+        assert!(result.is_ok(), "sync_with_tmux should succeed");
+
+        // Now the recovery loop has created a Coworker entry for lexington
+        assert_eq!(manager.count(), 1);
+        let entry = manager.get("lexington").unwrap();
+        assert_eq!(entry.name, "lexington");
+        assert_eq!(entry.isolated_tasks, false); // hardcoded by recovery
+
+        // The spawn flow now tries to register. This should NOT fail.
+        // In the current buggy code, this will return an error because
+        // the HashMap already has "lexington".
+        let result = manager.register(
+            "lexington",
+            "/tmp/worktree".to_string(),
+            Some("session-id-123".to_string()),
+            true,
+        );
+
+        assert!(
+            result.is_ok(),
+            "register() should succeed even after recovery created an entry (got: {:?})",
+            result.err()
+        );
+
+        // Verify the entry was updated with the correct isolated_tasks value
+        let entry = manager.get("lexington").unwrap();
+        assert_eq!(
+            entry.isolated_tasks, true,
+            "isolated_tasks should be updated to true (from register call)"
+        );
+        assert_eq!(
+            entry.session_id,
+            Some("session-id-123".to_string()),
+            "session_id should be set"
+        );
     }
 }
