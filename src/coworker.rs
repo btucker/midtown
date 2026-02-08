@@ -1102,7 +1102,10 @@ impl CoworkerManager {
     /// The second case handles coworkers that were missed during startup discovery
     /// (e.g., due to timing issues or transient tmux failures). Without this,
     /// orphan cleanup would incorrectly delete worktrees for running coworkers.
-    pub fn sync_with_tmux(&self) -> crate::Result<()> {
+    pub fn sync_with_tmux(
+        &self,
+        headless_names: &std::collections::HashSet<String>,
+    ) -> crate::Result<()> {
         let active_windows = tmux::list_windows(&self.session_name)?;
 
         // Get all known coworker names for validation
@@ -1114,8 +1117,9 @@ impl CoworkerManager {
 
         let mut coworkers = self.coworkers.write().unwrap();
 
-        // Remove coworkers whose windows are gone
-        coworkers.retain(|name, _| active_windows.contains(name));
+        // Remove coworkers whose windows are gone, but preserve headless sessions
+        // (they don't have tmux windows but are still alive)
+        coworkers.retain(|name, _| active_windows.contains(name) || headless_names.contains(name));
 
         // Add coworkers whose windows exist but aren't tracked.
         // This prevents orphan cleanup from deleting worktrees for coworkers
