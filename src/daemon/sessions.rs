@@ -52,6 +52,8 @@ pub struct CoworkerSession {
     pub has_api_error: bool,
     /// Whether the session has a running subagent.
     pub has_running_subagent: bool,
+    /// Whether the session has a pending tool execution (tool_use seen, no tool_result yet).
+    pub has_pending_tool: bool,
     /// File handle for writing stream events to JSONL log.
     /// Used for debugging and `midtown coworker view`.
     output_log: Option<std::fs::File>,
@@ -90,6 +92,7 @@ impl CoworkerSession {
             has_usage_limit: false,
             has_api_error: false,
             has_running_subagent: false,
+            has_pending_tool: false,
             output_log,
             output_log_path,
         }
@@ -306,18 +309,41 @@ impl SessionManager {
                                 }
                             }
                             StreamEvent::Assistant { message, .. } => {
-                                // Check for subagent activity markers in assistant messages
+                                // Check for subagent activity markers and pending tool state
+                                if let Some(content) = message.get("content")
+                                    && let Some(arr) = content.as_array()
+                                {
+                                    let mut has_tool_use = false;
+                                    for block in arr {
+                                        if block.get("type").and_then(|t| t.as_str())
+                                            == Some("tool_use")
+                                        {
+                                            has_tool_use = true;
+                                            if let Some(tool_name) =
+                                                block.get("name").and_then(|n| n.as_str())
+                                            {
+                                                cs.has_running_subagent = tool_name == "Task"
+                                                    || tool_name == "dispatch_agent";
+                                            }
+                                        }
+                                    }
+                                    // If we saw any tool_use, mark as pending (will be cleared by User event)
+                                    if has_tool_use {
+                                        cs.has_pending_tool = true;
+                                    }
+                                }
+                            }
+                            StreamEvent::User { message, .. } => {
+                                // User events may contain tool_result blocks — only clear pending tool flag if present
                                 if let Some(content) = message.get("content")
                                     && let Some(arr) = content.as_array()
                                 {
                                     for block in arr {
                                         if block.get("type").and_then(|t| t.as_str())
-                                            == Some("tool_use")
-                                            && let Some(tool_name) =
-                                                block.get("name").and_then(|n| n.as_str())
+                                            == Some("tool_result")
                                         {
-                                            cs.has_running_subagent = tool_name == "Task"
-                                                || tool_name == "dispatch_agent";
+                                            cs.has_pending_tool = false;
+                                            break;
                                         }
                                     }
                                 }
@@ -412,6 +438,7 @@ impl SessionManager {
                     has_usage_limit: cs.has_usage_limit,
                     has_api_error: cs.has_api_error,
                     has_running_subagent: cs.has_running_subagent,
+                    has_pending_tool: cs.has_pending_tool,
                     exit_code: None,
                 },
             );
