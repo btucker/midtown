@@ -148,8 +148,8 @@ When a coworker makes a mistake — wrong diagnosis, misused pattern, incorrect 
 
 If yes, determine the right place for the fix:
 
-- **CLAUDE.md** — For codebase conventions, architectural patterns, build/test guidance, and development workflow rules that apply to everyone
-- **Agent system prompts** (`agents/coworker.md`, `agents/reviewer.md`, `agents/common.md`, `agents/lead.md`) — For behavioral instructions specific to a role: how coworkers should communicate, review, handle errors, use tools, etc.
+- **CLAUDE.md** — For conventions specific to building *midtown itself*: architecture patterns, effect-based design, build/test commands, debugging workflows. These instructions guide coworkers working on the midtown codebase.
+- **Agent system prompts** (`agents/coworker.md`, `agents/reviewer.md`, `agents/common.md`, `agents/lead.md`) — For behavioral instructions that power midtown across *all projects*: how agents communicate, review, handle errors, use tools, coordinate. These are the product — they define how midtown agents behave regardless of which codebase they're working on.
 
 Then branch and make the update:
 
@@ -168,10 +168,10 @@ git checkout main
 ```
 
 **Examples:**
-- A coworker assumed skills don't work in headless mode without testing → CLAUDE.md: "Always verify assumptions about headless mode by testing directly"
-- A coworker put pre-spawn effects in on_success callbacks → CLAUDE.md: "Effect ordering: prerequisites go before the action, not in on_success"
-- A coworker used `gh pr review --approve` → `agents/common.md`: "Reviews are comment-based, not formal GitHub reviews"
-- A reviewer didn't post a comment when no issues were found → `agents/reviewer.md`: "You MUST always post a GitHub comment"
+- A coworker put pre-spawn effects in on_success callbacks → **CLAUDE.md**: midtown-specific architecture pattern
+- A coworker assumed skills don't work in headless mode without testing → **CLAUDE.md**: midtown-specific debugging practice
+- A coworker used `gh pr review --approve` → **agents/common.md**: agent behavior across all projects
+- A reviewer didn't post a comment when no issues were found → **agents/reviewer.md**: agent behavior across all projects
 
 **Don't over-document.** Only add guidance for mistakes that are genuinely non-obvious and likely to recur. If the fix is a code change (not a process issue), a failing test is better than a documentation entry.
 
