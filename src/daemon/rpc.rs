@@ -139,6 +139,19 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
         "coworker.list" => handle_coworker_list(request.id, state),
 
+        "coworker.view" => {
+            let name = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str());
+
+            match name {
+                Some(name) => handle_coworker_view(request.id, name, state).await,
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
         "coworker.report-state" => {
             let params = request.params.as_ref();
             let name = params.and_then(|p| p.get("name")).and_then(|v| v.as_str());
@@ -935,6 +948,30 @@ fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
             "coworkers": coworkers,
         }),
     )
+}
+
+/// Handle coworker.view RPC method.
+///
+/// Returns the recent output from a headless coworker session by reading
+/// the JSONL log file. This enables `midtown coworker view` to work with
+/// headless coworkers.
+async fn handle_coworker_view(id: RequestId, name: &str, state: &DaemonState) -> Response {
+    match state.session_manager.get_output(name).await {
+        Some(output) => Response::success(
+            id,
+            serde_json::json!({
+                "success": true,
+                "output": output,
+            }),
+        ),
+        None => Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!("No headless session found for coworker '{}'", name),
+            ),
+        ),
+    }
 }
 
 /// Handle coworker.report-state RPC method.

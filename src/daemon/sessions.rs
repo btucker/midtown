@@ -8,10 +8,12 @@
 //! a child process communicating via stdin/stdout JSON streams.
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 
@@ -50,10 +52,33 @@ pub struct CoworkerSession {
     pub has_api_error: bool,
     /// Whether the session has a running subagent.
     pub has_running_subagent: bool,
+    /// File handle for writing stream events to JSONL log.
+    /// Used for debugging and `midtown coworker view`.
+    output_log: Option<std::fs::File>,
+    /// Path to the output log file.
+    output_log_path: PathBuf,
 }
 
 impl CoworkerSession {
-    fn new(name: String, session: HeadlessSession) -> Self {
+    fn new(name: String, session: HeadlessSession, repo: &str) -> Self {
+        let output_log_path = crate::paths::headless_output_file(repo, &name);
+
+        // Open the log file in append mode, creating it if needed
+        let output_log = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&output_log_path)
+        {
+            Ok(file) => Some(file),
+            Err(e) => {
+                warn!(
+                    "Failed to open output log for '{}' at {:?}: {}",
+                    name, output_log_path, e
+                );
+                None
+            }
+        };
+
         Self {
             session: Some(session),
             name,
@@ -65,6 +90,8 @@ impl CoworkerSession {
             has_usage_limit: false,
             has_api_error: false,
             has_running_subagent: false,
+            output_log,
+            output_log_path,
         }
     }
 }
@@ -76,14 +103,16 @@ impl CoworkerSession {
 #[allow(dead_code)]
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, CoworkerSession>>,
+    repo_name: String,
 }
 
 #[allow(dead_code)]
 impl SessionManager {
     /// Create a new empty session manager.
-    pub fn new() -> Self {
+    pub fn new(repo_name: String) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            repo_name,
         }
     }
 
@@ -135,7 +164,7 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         sessions.insert(
             name.to_string(),
-            CoworkerSession::new(name.to_string(), session),
+            CoworkerSession::new(name.to_string(), session, &self.repo_name),
         );
 
         info!("Spawned headless session for '{}'", name);
@@ -282,6 +311,15 @@ impl SessionManager {
                             _ => {}
                         }
 
+                        // Write event to JSONL log file for debugging and `coworker view`
+                        if let Some(ref mut log_file) = cs.output_log
+                            && let Ok(json) = serde_json::to_string(&event)
+                        {
+                            let _ = writeln!(log_file, "{}", json);
+                            // Flush immediately so `tail -f` works in real-time
+                            let _ = log_file.flush();
+                        }
+
                         events.push(event);
                     }
                     Ok(None) => {
@@ -348,11 +386,58 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         sessions.remove(name);
     }
+
+    /// Get recent output for a coworker from the JSONL log file.
+    ///
+    /// Reads the last ~200 lines from the headless output log and extracts
+    /// text content from Assistant events. Returns None if the session doesn't
+    /// exist or the log file can't be read.
+    ///
+    /// This enables `midtown coworker view` to work with headless coworkers.
+    pub async fn get_output(&self, name: &str) -> Option<String> {
+        let sessions = self.sessions.read().await;
+        let cs = sessions.get(name)?;
+
+        // Read the entire log file
+        let log_path = &cs.output_log_path;
+        let content = match std::fs::read_to_string(log_path) {
+            Ok(c) => c,
+            Err(_) => return Some(String::from("(no output yet)")),
+        };
+
+        // Collect last 200 lines
+        let lines: Vec<String> = content
+            .lines()
+            .rev()
+            .take(200)
+            .map(|s| s.to_string())
+            .collect();
+
+        // Parse JSONL events and extract text from Assistant messages
+        let mut output_lines = Vec::new();
+        for line in lines.iter().rev() {
+            if let Ok(StreamEvent::Assistant { message, .. }) =
+                serde_json::from_str::<StreamEvent>(line)
+                && let Some(content) = message.get("content")
+                && let Some(arr) = content.as_array()
+            {
+                for block in arr {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                        && let Some(text) = block.get("text").and_then(|t| t.as_str())
+                    {
+                        output_lines.push(text.to_string());
+                    }
+                }
+            }
+        }
+
+        Some(output_lines.join("\n"))
+    }
 }
 
 impl Default for SessionManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(String::new())
     }
 }
 
@@ -362,32 +447,32 @@ mod tests {
 
     #[test]
     fn test_session_manager_default() {
-        let _sm = SessionManager::new();
+        let _sm = SessionManager::new("test-repo".to_string());
     }
 
     #[tokio::test]
     async fn test_send_message_no_session() {
-        let sm = SessionManager::new();
+        let sm = SessionManager::new("test-repo".to_string());
         let result = sm.send_message("nonexistent", "hello").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_shutdown_no_session() {
-        let sm = SessionManager::new();
+        let sm = SessionManager::new("test-repo".to_string());
         let result = sm.shutdown("nonexistent").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_is_alive_no_session() {
-        let sm = SessionManager::new();
+        let sm = SessionManager::new("test-repo".to_string());
         assert!(!sm.is_alive("nonexistent").await);
     }
 
     #[tokio::test]
     async fn test_drain_events_empty() {
-        let sm = SessionManager::new();
+        let sm = SessionManager::new("test-repo".to_string());
         let (events, stopped) = sm.drain_events().await;
         assert!(events.is_empty());
         assert!(stopped.is_empty());
@@ -395,14 +480,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_names_empty() {
-        let sm = SessionManager::new();
+        let sm = SessionManager::new("test-repo".to_string());
         let names = sm.list_names().await;
         assert!(names.is_empty());
     }
 
     #[tokio::test]
     async fn test_collect_health_empty() {
-        let sm = SessionManager::new();
+        let sm = SessionManager::new("test-repo".to_string());
         let health = sm.collect_health().await;
         assert!(health.is_empty());
     }
