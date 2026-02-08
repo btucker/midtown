@@ -472,6 +472,121 @@ fn green_ci_with_feedback_nudges_owner() {
 }
 
 // ---------------------------------------------------------------------------
+// Lead Branch Review Comments (Task #959)
+// ---------------------------------------------------------------------------
+
+/// Test that the is_lead_branch helper correctly identifies lead/* branches.
+///
+/// This helper is used by both webhook and polling paths to detect when a PR
+/// is authored by the lead (as opposed to a coworker).
+#[test]
+fn is_lead_branch_detects_lead_branches() {
+    use midtown::daemon::helpers::is_lead_branch;
+
+    // Lead branches
+    assert!(
+        is_lead_branch("lead/fix-bug"),
+        "lead/fix-bug should be detected"
+    );
+    assert!(
+        is_lead_branch("lead/refactor"),
+        "lead/refactor should be detected"
+    );
+    assert!(
+        is_lead_branch("lead/feature-123"),
+        "lead/feature-123 should be detected"
+    );
+
+    // Non-lead branches
+    assert!(
+        !is_lead_branch("madison/feature"),
+        "madison/feature should not be detected"
+    );
+    assert!(
+        !is_lead_branch("amsterdam/fix"),
+        "amsterdam/fix should not be detected"
+    );
+    assert!(!is_lead_branch("main"), "main should not be detected");
+    assert!(
+        !is_lead_branch("feature/lead"),
+        "feature/lead should not be detected (prefix required)"
+    );
+    assert!(
+        !is_lead_branch("lead-branch"),
+        "lead-branch should not be detected (/ required)"
+    );
+}
+
+/// Test that PRs on lead/* branches are handled correctly in polling logic.
+///
+/// When polling detects review comments on a lead/* PR, it should prepare a
+/// NudgeLead effect rather than attempting to nudge a coworker.
+///
+/// Note: This is a unit-style test of the helpers, not a full E2E test.
+/// The full E2E test would require simulating the GitHub API responses.
+#[test]
+fn lead_branch_pr_comment_detection() {
+    use midtown::daemon::helpers::is_lead_branch;
+
+    // Simulate PR data from GitHub API polling
+    let lead_pr = json!({
+        "number": 500,
+        "title": "feat: Improve daemon logic",
+        "headRefName": "lead/improve-daemon",
+        "mergeable": "MERGEABLE",
+        "state": "OPEN",
+        "isDraft": false,
+        "reviewDecision": "",
+        "createdAt": "2024-01-01T00:00:00Z",
+        "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}]
+    });
+
+    let head_ref = lead_pr["headRefName"].as_str().unwrap();
+    assert!(
+        is_lead_branch(head_ref),
+        "Should detect lead branch from PR data"
+    );
+
+    // Coworker extraction should return None for lead branches
+    let owner = coworker_from_branch(head_ref);
+    assert_eq!(
+        owner, None,
+        "Lead branches should not extract a coworker name"
+    );
+}
+
+/// Test that non-lead PRs don't trigger lead branch handling.
+#[test]
+fn non_lead_branch_pr_is_handled_normally() {
+    use midtown::daemon::helpers::is_lead_branch;
+
+    let coworker_pr = json!({
+        "number": 501,
+        "title": "feat: Add feature",
+        "headRefName": "madison/add-feature",
+        "mergeable": "MERGEABLE",
+        "state": "OPEN",
+        "isDraft": false,
+        "reviewDecision": "",
+        "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}]
+    });
+
+    let head_ref = coworker_pr["headRefName"].as_str().unwrap();
+    assert!(
+        !is_lead_branch(head_ref),
+        "Should NOT detect coworker branch as lead"
+    );
+
+    // Coworker extraction should work normally
+    let owner = coworker_from_branch(head_ref);
+    assert_eq!(
+        owner,
+        Some("madison".to_string()),
+        "Should extract coworker from branch"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Integration scenarios
 // ---------------------------------------------------------------------------
 

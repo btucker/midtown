@@ -1237,17 +1237,18 @@ pub(crate) struct OrphanRecovery {
 /// An orphaned task is `in_progress` but its owner is not active.
 /// Returns at most ONE recovery action (rate-limited to one per tick).
 ///
-/// Skips recovery when the owner has an open PR and no review feedback —
-/// the coworker is correctly waiting for human review and should not be
-/// respawned until there is actionable work. CI failures on PRs are
+/// Skips recovery when the owner recently stopped (within grace period)
+/// and has an open PR without review feedback — they are correctly on break
+/// waiting for review. However, killed/dead coworkers (not in recently_stopped)
+/// are recovered even without review feedback. CI failures on PRs are
 /// handled separately by the webhook/PR poll pathway and do not need
 /// orphan recovery to intervene.
 pub(crate) fn decide_orphan_recovery(
     in_progress: &[(String, String, String)], // (task_id, task_subject, owner)
     active_names: &HashSet<String>,
     at_dev_limit: bool,
-    coworkers_with_open_prs: &HashSet<String>,
-    review_feedback_pr_coworkers: &HashSet<String>,
+    _coworkers_with_open_prs: &HashSet<String>,
+    _review_feedback_pr_coworkers: &HashSet<String>,
     recently_stopped: &HashSet<String>,
     attached_coworkers: &HashSet<String>,
 ) -> Option<OrphanRecovery> {
@@ -1277,24 +1278,16 @@ pub(crate) fn decide_orphan_recovery(
         // When a coworker completes work and goes idle → shutdown, the task may
         // not yet be marked done. Without this grace period, orphan recovery
         // would immediately respawn the coworker for a task they already finished.
+        //
+        // This also handles the case where a coworker cleanly went on break while
+        // waiting for PR review — they're correctly idle and should not be recovered
+        // until the grace period expires.
+        //
+        // After the grace period (or if the coworker was killed/crashed), any orphan
+        // task is fair game for recovery, regardless of PR status. Dead coworkers
+        // don't come back on their own — we need to recover them even if their PR
+        // hasn't been reviewed yet.
         if recently_stopped.contains(&owner_lower) {
-            continue;
-        }
-        // Skip coworkers whose PR is open and has no review feedback.
-        // They are correctly on break waiting for human review — recovering them
-        // would create a loop (recover → idle → shutdown → recover).
-        //
-        // Previously this also required CI to have passed, but that created a
-        // race: coworkers_with_open_prs has a gh CLI fallback (available immediately),
-        // while ci_passed_pr_coworkers is only populated by the PR poll (every 30s).
-        // In the window before the PR poll caches CI status, the skip check failed
-        // and the coworker was repeatedly recovered for a completed task.
-        //
-        // CI failures on PRs are handled separately by handle_webhook_ci_failure()
-        // and the PR poll pathway — orphan recovery does not need to duplicate that.
-        let has_open_pr = coworkers_with_open_prs.contains(&owner_lower);
-        let has_review_feedback = review_feedback_pr_coworkers.contains(&owner_lower);
-        if has_open_pr && !has_review_feedback {
             continue;
         }
         // Found an orphan — return the first one (rate-limited)
@@ -2869,6 +2862,7 @@ mod tests {
         let active = set(&[]); // amsterdam is not active (on break)
         let coworkers_with_open_prs = set(&["amsterdam"]);
         let review_feedback = set(&[]); // no review feedback yet
+        let recently_stopped = set(&["amsterdam"]); // cleanly stopped (on break)
 
         let result = decide_orphan_recovery(
             &tasks,
@@ -2876,7 +2870,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
-            &HashSet::new(),
+            &recently_stopped,
             &HashSet::new(),
         );
         // Should NOT recover — coworker is correctly waiting for review
@@ -2928,6 +2922,7 @@ mod tests {
         let active = set(&[]); // amsterdam is not active
         let coworkers_with_open_prs = set(&["amsterdam"]);
         let review_feedback = set(&[]);
+        let recently_stopped = set(&["amsterdam"]); // cleanly stopped after opening PR
 
         let result = decide_orphan_recovery(
             &tasks,
@@ -2935,7 +2930,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
-            &HashSet::new(),
+            &recently_stopped,
             &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR. CI failures
@@ -2993,6 +2988,7 @@ mod tests {
         let active = set(&[]); // lexington is not active (shut down)
         let coworkers_with_open_prs = set(&["lexington"]); // PR detected via fallback
         let review_feedback = set(&[]);
+        let recently_stopped = set(&["lexington"]); // cleanly stopped after opening PR
 
         let result = decide_orphan_recovery(
             &tasks,
@@ -3000,7 +2996,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
-            &HashSet::new(),
+            &recently_stopped,
             &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR and no review feedback.
@@ -3034,6 +3030,7 @@ mod tests {
         let active = set(&[]);
         let coworkers_with_open_prs = set(&["lexington"]);
         let review_feedback = set(&[]);
+        let recently_stopped = set(&["lexington"]); // cleanly stopped after opening PR
 
         let result = decide_orphan_recovery(
             &tasks,
@@ -3041,7 +3038,7 @@ mod tests {
             false,
             &coworkers_with_open_prs,
             &review_feedback,
-            &HashSet::new(),
+            &recently_stopped,
             &HashSet::new(),
         );
         // Should NOT recover — coworker has an open PR. Even though CI status
@@ -3810,6 +3807,74 @@ mod tests {
         assert!(
             result.is_none(),
             "attached coworker should not be treated as orphan"
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_recovers_killed_coworker_with_open_pr() {
+        // Bug (task !961): When a coworker is killed (e.g., by auth switch) while
+        // their PR is still open without review feedback, they should be recovered.
+        // Current behavior: orphan recovery permanently skips them because they have
+        // an open PR without review feedback, even though they're not "waiting for
+        // review" — they're DEAD.
+        //
+        // The fix: only skip if the coworker is in recently_stopped (cleanly stopped
+        // within grace period). If they're not in recently_stopped, they're stuck/dead
+        // and should be recovered even if the PR doesn't have review feedback yet.
+        let tasks = vec![(
+            "952".to_string(),
+            "Fix PR handling".to_string(),
+            "broadway".to_string(),
+        )];
+        let active = set(&[]); // broadway is not active (killed)
+        let coworkers_with_open_prs = set(&["broadway"]); // PR is open
+        let review_feedback = set(&[]); // no review feedback yet
+        let recently_stopped = set(&[]); // NOT in recently_stopped (killed, not cleanly stopped)
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &review_feedback,
+            &recently_stopped,
+            &HashSet::new(),
+        );
+        // SHOULD recover — coworker is dead/stuck, not waiting for review
+        assert!(
+            result.is_some(),
+            "Should recover killed coworker even if PR is open without review feedback"
+        );
+        assert_eq!(result.unwrap().task_id, "952");
+    }
+
+    #[test]
+    fn orphan_recovery_skips_recently_stopped_coworker_awaiting_review() {
+        // When a coworker cleanly stops (within grace period) and has an open PR
+        // without review feedback, they're correctly waiting for review — don't recover.
+        let tasks = vec![(
+            "952".to_string(),
+            "Fix PR handling".to_string(),
+            "broadway".to_string(),
+        )];
+        let active = set(&[]); // broadway is not active
+        let coworkers_with_open_prs = set(&["broadway"]); // PR is open
+        let review_feedback = set(&[]); // no review feedback yet
+        let recently_stopped = set(&["broadway"]); // cleanly stopped within grace period
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &review_feedback,
+            &recently_stopped,
+            &HashSet::new(),
+        );
+        // Should NOT recover — coworker is correctly waiting for review
+        assert!(
+            result.is_none(),
+            "Should not recover coworker who recently stopped and is awaiting review"
         );
     }
 
