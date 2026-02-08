@@ -1941,6 +1941,7 @@ mod tests {
             tasks_with_worktrees: HashSet::new(), // Task not in registry yet
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
             running_coworkers: vec![],
@@ -2060,6 +2061,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
             active_reviewers: HashSet::new(),

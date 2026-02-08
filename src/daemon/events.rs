@@ -80,7 +80,7 @@ pub async fn evaluate_tick(
                     tracing::warn!("PR poll error: {}", e);
                 }
             }
-            effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap, state).await);
+            effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
             dedup_spawn_effects(effects)
         }
     }

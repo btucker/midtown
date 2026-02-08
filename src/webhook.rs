@@ -607,7 +607,12 @@ const COWORKER_NAMES: &[&str] = &[
     "riverside",
 ];
 
-/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington")
+/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
+///
+/// **Note:** This only supports legacy `<coworker>/<description>` branches. Task-based
+/// branches (`task-*`, `review-pr-*`) are handled via frontmatter (`<!-- midtown: name -->`)
+/// in the PR body. Since webhooks don't have access to the worktree registry, they rely on
+/// coworkers including frontmatter in their PRs for correct attribution.
 fn coworker_from_branch(branch: &str) -> Option<&'static str> {
     let prefix = branch.split('/').next()?;
     COWORKER_NAMES
