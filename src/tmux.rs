@@ -1794,6 +1794,7 @@ pub fn spawn_lead(
         restrict_setting_sources: false,
         pr_number: None,
         team_name: None, // Lead is human-facing, not an agent-teams member
+        working_dir: None,
     };
 
     // Allow tests/CI to override the lead command (claude isn't available in CI)

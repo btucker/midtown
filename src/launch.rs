@@ -70,6 +70,11 @@ pub struct LaunchConfig {
     /// and `--team-name` CLI flags to enable the Claude Code agent teams
     /// mailbox system for message delivery.
     pub team_name: Option<String>,
+    /// Optional working directory override for task-based worktrees.
+    /// When set, the spawn path will use this directory instead of creating
+    /// a coworker-named worktree. Used by the WorktreeRegistry system for
+    /// task-based worktrees at ~/.midtown/worktrees/<repo>/task-<id>-<slug>/.
+    pub working_dir: Option<PathBuf>,
 }
 
 /// The shell command string and generated session ID (if fresh).
@@ -103,6 +108,7 @@ impl LaunchConfig {
             restrict_setting_sources: true,
             pr_number: None,
             team_name: Some(team),
+            working_dir: None,
         }
     }
 
@@ -122,6 +128,7 @@ impl LaunchConfig {
             restrict_setting_sources: true,
             pr_number: Some(pr_number),
             team_name: None, // Reviewers don't need mailbox (short-lived)
+            working_dir: None,
         }
     }
 
@@ -164,6 +171,7 @@ impl LaunchConfig {
             restrict_setting_sources: true,
             pr_number: None,
             team_name: Some(team),
+            working_dir: None,
         }
     }
 
