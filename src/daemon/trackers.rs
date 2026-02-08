@@ -704,6 +704,101 @@ mod tests {
     }
 
     #[test]
+    fn orphan_tracker_prune_with_full_orphan_list_preserves_warned_at() {
+        // Regression test for: orphan warning repeating every tick.
+        //
+        // Bug: gather_orphan_cleanup_data() called prune(&unmerged) where
+        // `unmerged` was a SUBSET of all orphans (capped at 2 per tick, then
+        // filtered by open PRs). This dropped tracker entries for orphans not
+        // in the current batch, losing their warned_at state and causing
+        // repeat warnings after the grace period.
+        //
+        // Fix: prune with the FULL orphan list (all_orphaned) so entries are
+        // only removed when the worktree is no longer orphaned.
+        let mut tracker = OrphanTracker::new();
+
+        // Simulate: amsterdam detected past grace period and warned
+        let warned_time = Instant::now() - Duration::from_secs(5); // warned 5s ago
+        tracker.entries.insert(
+            "amsterdam".to_string(),
+            OrphanEntry {
+                first_detected: Instant::now()
+                    - ORPHAN_INITIAL_GRACE_PERIOD
+                    - Duration::from_secs(300),
+                warned_at: Some(warned_time),
+            },
+        );
+
+        // Verify: warning is suppressed (warned recently, cooldown not elapsed)
+        assert!(
+            !tracker.should_warn("amsterdam"),
+            "precondition: warning should be suppressed by recent warned_at"
+        );
+
+        // Tick N+1: amsterdam is still orphaned (in all_orphaned) but was NOT
+        // in the 2-item processing batch this tick, so unmerged is empty.
+        // FIX: prune with all_orphaned (which INCLUDES amsterdam), not unmerged.
+        let all_orphaned = vec!["amsterdam".to_string()]; // still orphaned
+        tracker.prune(&all_orphaned);
+
+        // Entry should be preserved since amsterdam is in the prune list
+        assert!(
+            tracker.entries.contains_key("amsterdam"),
+            "entry should be preserved — amsterdam is still orphaned"
+        );
+
+        // Tick N+2: amsterdam IS in the processing batch again.
+        tracker.track("amsterdam".to_string()); // no-op, already exists
+
+        // Simulate grace period having elapsed
+        tracker.entries.get_mut("amsterdam").unwrap().first_detected =
+            Instant::now() - ORPHAN_INITIAL_GRACE_PERIOD - Duration::from_secs(1);
+
+        // should_warn returns false because warned_at was preserved
+        assert!(
+            !tracker.should_warn("amsterdam"),
+            "should NOT warn again — warned_at was preserved by prune(all_orphaned)"
+        );
+    }
+
+    #[test]
+    fn orphan_tracker_prune_with_subset_drops_warned_at_regression() {
+        // Demonstrates the bug that was fixed: pruning with a subset loses state.
+        // This test documents the problematic behavior to prevent regression.
+        let mut tracker = OrphanTracker::new();
+
+        // amsterdam was warned 5s ago
+        tracker.entries.insert(
+            "amsterdam".to_string(),
+            OrphanEntry {
+                first_detected: Instant::now()
+                    - ORPHAN_INITIAL_GRACE_PERIOD
+                    - Duration::from_secs(300),
+                warned_at: Some(Instant::now() - Duration::from_secs(5)),
+            },
+        );
+
+        // Pruning with empty subset (simulating amsterdam not in this tick's batch)
+        // drops the entry — this was the root cause of the bug.
+        tracker.prune(&[]);
+        assert!(
+            !tracker.entries.contains_key("amsterdam"),
+            "prune with empty list drops all entries (expected behavior of prune)"
+        );
+
+        // Re-tracking creates a fresh entry with warned_at: None
+        tracker.track("amsterdam".to_string());
+        tracker.entries.get_mut("amsterdam").unwrap().first_detected =
+            Instant::now() - ORPHAN_INITIAL_GRACE_PERIOD - Duration::from_secs(1);
+
+        // This would cause a repeat warning — the bug behavior we fixed at the call site
+        assert!(
+            tracker.should_warn("amsterdam"),
+            "fresh entry after prune+track has no warned_at, so should_warn is true (the bug)"
+        );
+    }
+
+    #[test]
     fn orphan_tracker_prune_removes_resolved() {
         let mut tracker = OrphanTracker::new();
 

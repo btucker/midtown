@@ -604,7 +604,11 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
     // Collect worktrees due for warning using the tracker (scoped to drop before awaits)
     let due_for_warning = {
         let mut tracker = state.orphan_tracker.write().unwrap();
-        tracker.prune(&unmerged);
+        // Prune using the FULL orphan list, not the filtered `unmerged` subset.
+        // Using `unmerged` (which is capped at 2 per tick, then filtered by open PRs
+        // and merged status) would drop tracker entries for orphans not in the current
+        // batch, losing their warned_at timestamps and causing repeat warnings.
+        tracker.prune(&all_orphaned);
         unmerged
             .into_iter()
             .filter(|name| {
@@ -661,10 +665,11 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
             (vec![], due_for_warning.clone())
         });
 
-        // Prune cleaned entries from tracker
+        // Prune using the FULL orphan list to preserve warned_at timestamps for
+        // orphans not in the `remaining` subset (same rationale as line 611).
         if !cleaned.is_empty() {
             let mut tracker = state.orphan_tracker.write().unwrap();
-            tracker.prune(&remaining);
+            tracker.prune(&all_orphaned);
         }
 
         (cleaned, remaining)
