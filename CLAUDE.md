@@ -65,7 +65,7 @@ The daemon (`src/daemon/`) is the central coordinator. It implements an **event-
 ```
 Event sources (timer ticks, webhooks, RPC, signals)
     → DaemonEvent
-    → collect_snapshot() → WorldSnapshot (immutable)
+    → collect_world_snapshot() → WorldSnapshot (immutable)
     → evaluate_tick(event, snapshot, state) → Vec<Effect>   // pure, in rules.rs
     → execute_effects(effects)                               // imperative shell, in effects.rs
 ```
@@ -147,7 +147,7 @@ Don't nudge for information that can wait for the next channel read.
 
 Functions in `rules.rs` take immutable data and return decisions. No mutation, no I/O, no async. Phase transitions are returned as data, applied by the caller. If a decision depends on a side effect (spawn success, API call), split into two decisions with an effect in between. The `evaluate_tick()` → `Vec<Effect>` → `execute_effects()` pipeline is the canonical path.
 
-**This constraint should apply to ALL functions called from `evaluate_tick()`**, not just those in `rules.rs`. The target architecture has decision-phase functions in domain modules (`pr.rs`, `dispatch.rs`, `health.rs`) also being pure — returning `Vec<Effect>` without performing I/O. Currently, the codebase is migrating toward this pattern: some functions like `collect_merged_pr_cleanup_effects()` in `pr.rs` follow it, while others still use `.await` and `.lock()`. When adding or modifying decision logic, prefer the pure pattern: no `.await`, no `state.persistent_state.lock()`, no `session_manager.is_alive()`, no direct state queries. If data is needed for a decision, add it to `WorldSnapshot` during `collect_snapshot()` so it's available as immutable input.
+The target architecture extends this constraint to ALL functions called from `evaluate_tick()`, not just those in `rules.rs`. Decision-phase functions in domain modules (`pr.rs`, `dispatch.rs`, `health.rs`) should also be pure — returning `Vec<Effect>` without performing I/O. Currently, the codebase is migrating toward this pattern: some functions like `collect_stale_check_effects_with_time()` in `pr.rs` follow it, while others still use `.await` and `.lock()`. When adding or modifying decision logic, prefer the pure pattern: no `.await`, no `state.persistent_state.lock()`, no `session_manager.is_alive()`, no direct state queries. If data is needed for a decision, add it to `WorldSnapshot` during `collect_world_snapshot()` so it's available as immutable input.
 
 ### Daemon Is the Single Authority for State
 
