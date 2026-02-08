@@ -61,15 +61,19 @@ export const MOCK_STATUS = {
   pull_requests: [
     {
       number: 42,
-      title: 'feat: Add auth endpoint',
+      title: 'feat: Add auth endpoint [Midtown #2]',
       author: 'park',
       status: 'awaiting review',
+      task_id: 2,
+      task_name: 'Add auth endpoint',
     },
     {
       number: 43,
       title: 'fix: Login redirect',
       author: 'amsterdam',
       status: 'approved',
+      task_id: null,
+      task_name: null,
     },
   ],
   merged_prs: [
