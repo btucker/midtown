@@ -182,7 +182,10 @@ export async function fetchUsage() {
     }
     // 204 No Content means no credentials available — leave store as null
   } catch (err) {
-    console.error('Failed to fetch usage:', err)
+    // Retain last-known-good data on transient network errors so the
+    // UsageBars component doesn't disappear and reappear. Data will
+    // refresh on the next successful 2-minute poll cycle.
+    console.warn('Failed to fetch usage (retaining cached data):', err)
   }
 }
 

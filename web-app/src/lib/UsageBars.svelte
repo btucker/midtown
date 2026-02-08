@@ -100,6 +100,11 @@
       </div>
     {/each}
   </div>
+{:else}
+  <div class="usage-container">
+    <div class="usage-header">Usage</div>
+    <div class="usage-placeholder">Loading...</div>
+  </div>
 {/if}
 
 <style>
@@ -163,5 +168,10 @@
 
   .usage-estimate {
     color: #585858;
+  }
+
+  .usage-placeholder {
+    font-size: 0.7rem;
+    color: #484848;
   }
 </style>
