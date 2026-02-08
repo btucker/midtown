@@ -96,6 +96,25 @@ pub struct Coworker {
     pub isolated_tasks: bool,
 }
 
+impl Coworker {
+    /// Create a Coworker entry for recovery (tmux or headless session discovery).
+    ///
+    /// Used by `sync_with_tmux()` when a running session is found that isn't
+    /// tracked in CoworkerManager. Placeholder fields (started_at, current_task,
+    /// session_id) will be populated when the coworker registers via RPC.
+    pub fn recovered(name: String, working_dir: String) -> Self {
+        Self {
+            name,
+            status: CoworkerStatus::Running,
+            working_dir,
+            started_at: chrono::Utc::now(), // Unknown, use now as approximation
+            current_task: None,             // Will be discovered via task tracking
+            session_id: None,               // Will be set when coworker registers
+            isolated_tasks: false,          // Assume shared task list (conservative default)
+        }
+    }
+}
+
 /// A queued nudge message for a coworker.
 #[derive(Debug, Clone)]
 struct CoworkerNudge {
@@ -1178,17 +1197,7 @@ impl CoworkerManager {
 
             let working_dir = worktree_path.to_string_lossy().to_string();
 
-            // Create a coworker entry for this undiscovered coworker
-            let coworker = Coworker {
-                name: window_name.clone(),
-                status: CoworkerStatus::Running,
-                working_dir,
-                started_at: chrono::Utc::now(), // Unknown, use now as approximation
-                current_task: None,             // Will be discovered via task tracking
-                session_id: None,               // Will be set when coworker registers
-                isolated_tasks: false,          // Assume shared task list (conservative default)
-            };
-
+            let coworker = Coworker::recovered(window_name.clone(), working_dir);
             coworkers.insert(window_name.clone(), coworker);
             tracing::info!(
                 "Recovered undiscovered coworker from tmux: {} (preventing worktree deletion)",
@@ -1212,21 +1221,21 @@ impl CoworkerManager {
                 continue;
             }
 
-            // Use worktree path if available, otherwise use a placeholder.
-            // The real working_dir will be set when registration completes.
+            // Verify the worktree actually exists and is valid before tracking.
+            // Same validation as the tmux recovery path — if a headless session
+            // survives with a corrupted/missing worktree, we shouldn't create
+            // an entry with an invalid working_dir path.
             let worktree_path = self.worktree_manager.worktree_path(headless_name);
+            if !is_valid_git_worktree(&worktree_path) {
+                tracing::warn!(
+                    "Headless session {} exists but worktree is missing or invalid - not tracking",
+                    headless_name
+                );
+                continue;
+            }
             let working_dir = worktree_path.to_string_lossy().to_string();
 
-            let coworker = Coworker {
-                name: headless_name.clone(),
-                status: CoworkerStatus::Running,
-                working_dir,
-                started_at: chrono::Utc::now(), // Unknown, use now as approximation
-                current_task: None,             // Will be discovered via task tracking
-                session_id: None,               // Will be set when coworker registers
-                isolated_tasks: false,          // Assume shared task list (conservative default)
-            };
-
+            let coworker = Coworker::recovered(headless_name.clone(), working_dir);
             coworkers.insert(headless_name.clone(), coworker);
             tracing::info!(
                 "Recovered undiscovered headless coworker from SessionManager: {}",
@@ -1889,7 +1898,21 @@ mod tests {
 
     #[test]
     fn test_sync_with_tmux_recovers_missing_headless_coworkers() {
-        let (manager, _temp_dir) = test_manager();
+        let (manager, temp_dir) = test_manager();
+
+        // Create a valid worktree for madison so recovery can proceed.
+        // Without a valid worktree, the validation check will skip it.
+        let worktree_path = manager.worktree_manager.worktree_path("madison");
+        Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                &worktree_path.to_string_lossy(),
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to create worktree for madison");
 
         // Do NOT register any coworker in the map.
         // This simulates the race condition: SessionManager has the session
@@ -1917,6 +1940,29 @@ mod tests {
         );
         let madison = coworkers.get("madison").unwrap();
         assert_eq!(madison.status, CoworkerStatus::Running);
+    }
+
+    #[test]
+    fn test_sync_with_tmux_skips_headless_recovery_with_invalid_worktree() {
+        let (manager, _temp_dir) = test_manager();
+
+        // Do NOT create a worktree for "madison".
+        // The worktree_path will point to a non-existent directory.
+        assert_eq!(manager.count(), 0);
+
+        // sync_with_tmux should NOT recover madison because the worktree
+        // is missing/invalid — same validation the tmux path performs.
+        let headless_names: std::collections::HashSet<String> =
+            ["madison".to_string()].into_iter().collect();
+        let result = manager.sync_with_tmux(&headless_names);
+        assert!(result.is_ok());
+
+        // madison should NOT be tracked (invalid worktree)
+        assert_eq!(
+            manager.count(),
+            0,
+            "sync_with_tmux should not recover headless coworkers with invalid worktrees"
+        );
     }
 
     #[test]
