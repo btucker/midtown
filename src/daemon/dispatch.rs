@@ -1232,10 +1232,10 @@ pub(super) fn spawn_for_pending_tasks(
 }
 
 // ============================================================================
-// Task completion for PR opened
+// Task completion for PR merged
 // ============================================================================
 
-/// Build effects to auto-complete a task when its PR is opened.
+/// Build effects to auto-complete a task when its PR is merged.
 ///
 /// This is a pure function that extracts the task ID from a PR title
 /// (looking for `[Midtown #XX]`) and returns the effects needed to:
