@@ -61,12 +61,15 @@
           <div class="coworker-card">
             <div class="coworker-header">
               <span class="coworker-name">{cw.name}</span>
-              <span
-                class="status-badge"
-                style="background: {getStatusColor(cw.status)}"
-              >
-                {cw.status}
-              </span>
+              <div class="badges">
+                <span
+                  class="status-badge"
+                  style="background: {getStatusColor(cw.status)}"
+                >
+                  {cw.status}
+                </span>
+                <span class="model-badge">{cw.model}</span>
+              </div>
             </div>
             {#if cw.current_task}
               <div class="current-task">
@@ -195,11 +198,25 @@
     text-transform: capitalize;
   }
 
+  .badges {
+    display: flex;
+    gap: 4px;
+  }
+
   .status-badge {
     font-size: 0.7rem;
     padding: 2px 8px;
     border-radius: 12px;
     color: #1c1c1c;
+    text-transform: capitalize;
+  }
+
+  .model-badge {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: #3a3a3a;
+    color: #a8a8a8;
     text-transform: capitalize;
   }
 

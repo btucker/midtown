@@ -143,6 +143,7 @@ fn test_concurrent_name_allocation_no_overwrites() {
                         current_task: None,
                         session_id: None,
                         isolated_tasks: false,
+                        model: "sonnet".to_string(),
                     });
 
                     if inserted {
@@ -245,6 +246,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             current_task: None,
             session_id: None,
             isolated_tasks: true, // Reviewer should be isolated!
+            model: "sonnet".to_string(),
         });
         *spawn1_result_clone.lock().unwrap() = Some(inserted);
     });
@@ -275,6 +277,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             current_task: None,
             session_id: None,
             isolated_tasks: false, // Task coworker has shared access
+            model: "sonnet".to_string(),
         });
         *spawn2_result_clone.lock().unwrap() = Some(inserted);
     });
@@ -352,6 +355,7 @@ fn test_spawn_should_be_atomic() {
         current_task: None,
         session_id: None,
         isolated_tasks: true,
+        model: "sonnet".to_string(),
     });
 
     // Second spawn attempt should fail (name already in use)
