@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, daemonStatus } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus } from './store.js'
   import { sendMessage } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -22,9 +22,23 @@
     return pr ? pr.status : null
   }
 
-  // Build GitHub PR URL using repo status.
+  // Build GitHub PR URL (multi-repo aware).
+  // Looks up the PR in kanbanData to find its repo, then resolves via
+  // repoStatuses. Falls back to the primary repo if no match is found.
   // Returns null if repo full name is unavailable.
   function getPrUrl(prNum) {
+    const num = parseInt(prNum)
+    // Search open and merged PRs for this number
+    const pr = $kanbanData.review.find((p) => p.number === num)
+      || $kanbanData.done.find((p) => p.number === num)
+    // If the PR has a repo label, resolve it via repoStatuses (multi-repo)
+    if (pr?.repo && $repoStatuses.length > 0) {
+      const info = $repoStatuses.find((r) => r.label === pr.repo)
+      if (info?.fullName) {
+        return `https://github.com/${info.fullName}/pull/${prNum}`
+      }
+    }
+    // Fall back to the primary repo
     if ($repoStatus.fullName) {
       return `https://github.com/${$repoStatus.fullName}/pull/${prNum}`
     }
