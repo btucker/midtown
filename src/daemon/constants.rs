@@ -27,10 +27,12 @@ pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
 
-/// Minimum age in seconds before a PR is eligible for auto-review (30 seconds).
-/// Tradeoff: Faster reviewer spawn (biggest throughput win) vs. potential duplicate
-/// assignment if PR hash bucket changes quickly. Hash bucket dedup should still work.
-pub const PR_REVIEW_DELAY_SECS: u64 = 30;
+/// Minimum age in seconds before a PR is eligible for auto-review (45 seconds).
+/// Tradeoff: Faster reviewer spawn vs. sufficient time for CI startup and author context.
+/// Reduced from 60s to 45s to improve throughput while maintaining buffer for CI checks
+/// to start reporting and for PR author to add additional context after opening.
+/// Hash bucket deduplication prevents duplicate reviewer assignments.
+pub const PR_REVIEW_DELAY_SECS: u64 = 45;
 
 /// Maximum number of concurrent PR reviews the daemon will run.
 pub const MAX_CONCURRENT_REVIEWS: usize = 4;
@@ -87,11 +89,12 @@ pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(300);
 /// the system. Still enforces one-spawn-per-tick to prevent uncontrolled spawning.
 pub(super) const ORPHAN_SPAWN_COOLDOWN: Duration = Duration::from_secs(2);
 
-/// Grace period after a coworker stops before orphan recovery kicks in (20 seconds).
+/// Grace period after a coworker stops before orphan recovery kicks in (40 seconds).
 /// Tradeoff: Faster recovery of abandoned tasks vs. risk of recovering tasks that are
-/// legitimately completing. Most task completions (PR merge, status update) happen within
-/// seconds, so 20s should be sufficient to prevent false recovery while still being aggressive.
-pub(super) const ORPHAN_RECOVERY_GRACE_PERIOD: Duration = Duration::from_secs(20);
+/// legitimately completing. Reduced from 60s to 40s (still conservative) to speed up
+/// orphan recovery while maintaining safety margin for slow completion workflows (PR merge
+/// + CI checks, network latency, delayed RPC when coworker is wrapping up).
+pub(super) const ORPHAN_RECOVERY_GRACE_PERIOD: Duration = Duration::from_secs(40);
 
 /// Cooldown after a coworker spawn failure before retrying (60 seconds).
 /// Tradeoff: Failed spawns retry sooner vs. risk of rapid retry loops. Most spawn failures

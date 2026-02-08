@@ -780,6 +780,14 @@ fn test_worktree_isolation() {
     );
 
     let spawn_response = spawn_response.unwrap();
+
+    // Debug: print the full response
+    eprintln!(
+        "Spawn response: {}",
+        serde_json::to_string_pretty(&spawn_response)
+            .unwrap_or_else(|_| format!("{:?}", spawn_response))
+    );
+
     if spawn_response["error"].is_object() {
         eprintln!(
             "Coworker spawn failed (expected in some environments): {:?}",
@@ -795,13 +803,17 @@ fn test_worktree_isolation() {
         .and_then(|cw| cw["name"].as_str())
         .unwrap_or("unknown");
 
-    // Build the expected worktree path
+    eprintln!("Extracted coworker name: {}", coworker_name);
+
+    // Poll for worktree to exist instead of fixed sleep (more robust for CI)
     let worktree_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
         .join("coworkers")
         .join(&fixture.repo_name)
         .join(coworker_name);
+
+    eprintln!("Waiting for worktree at: {:?}", worktree_path);
 
     // Poll for worktree existence (worktree creation is async in CI environments)
     // Max wait time: 60s (matching other E2E tests), checking every 500ms
@@ -814,6 +826,42 @@ fn test_worktree_isolation() {
         waited += poll_interval.as_millis() as u64;
     }
 
+    if worktree_path.exists() && waited > 0 {
+        eprintln!("Worktree appeared after {}ms", waited);
+    } else if !worktree_path.exists() {
+        eprintln!("Worktree did NOT appear after {}ms", waited);
+
+        // Debug: check what worktrees actually exist
+        eprintln!("Debug: Checking for alternative worktree locations...");
+
+        let coworkers_base = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".midtown")
+            .join("coworkers");
+
+        eprintln!("Coworkers base exists: {}", coworkers_base.exists());
+
+        if let Ok(entries) = fs::read_dir(&coworkers_base) {
+            for entry in entries.flatten() {
+                eprintln!("  Found repo dir: {:?}", entry.file_name());
+            }
+        }
+
+        // Check what git worktree list shows
+        let worktree_list = Command::new("git")
+            .args(["worktree", "list"])
+            .current_dir(&fixture.temp_dir)
+            .output();
+
+        if let Ok(output) = worktree_list {
+            eprintln!(
+                "git worktree list output:\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    // Verify the worktree directory exists
     assert!(
         worktree_path.exists(),
         "Worktree directory should exist at {:?} after waiting {}ms",
