@@ -321,8 +321,37 @@ pub fn reviewer_system_prompt(name: &str) -> String {
 ///
 /// This is just the task description (which PR to review), not the behavioral
 /// instructions. The behavioral instructions are in `reviewer_system_prompt()`.
+///
+/// NOTE: This cannot use skill invocations (like /code-review:code-review) because
+/// reviewers run in headless mode with stream-json, where skills aren't supported.
+/// The review workflow must be inlined here.
 pub fn reviewer_launch_prompt(pr_number: u64) -> String {
-    format!("Review PR #{pr_number} using /code-review:code-review {pr_number}")
+    format!(
+        r#"Review PR #{pr_number}. Follow these steps:
+
+1. Check PR eligibility:
+   - Run `gh pr view {pr_number} --json isDraft,state` to verify it's open and not a draft
+   - If draft or closed, post a channel message explaining why you're skipping the review, then go idle
+
+2. Get context:
+   - Run `gh pr view {pr_number} --json files` to see which files changed
+   - Read the root CLAUDE.md if it exists
+   - Read any CLAUDE.md files in directories with changed files
+
+3. Review the changes:
+   - Run `gh pr diff {pr_number}` to see the full diff
+   - Check for bugs, logic errors, and CLAUDE.md compliance
+   - Look for edge cases, error handling gaps, and potential issues
+   - Focus on substantial issues, not nitpicks
+
+4. Post your review:
+   - ALWAYS post a GitHub comment using `gh pr comment {pr_number} --body`
+   - Use the format from your system prompt (either list issues found, or "No issues found")
+   - Include the "🤖 Generated with Claude Code" footer
+   - When linking code, use full SHA + line ranges
+
+Remember: You MUST post a GitHub comment even if no issues are found. Post to the channel when done."#
+    )
 }
 
 /// Build the reviewer launch prompt for a given PR number (legacy function).
@@ -607,7 +636,7 @@ mod tests {
     fn test_reviewer_prompt_substitutes_pr_number() {
         let prompt = reviewer_prompt(42);
         assert!(prompt.contains("reviewing PR #42"));
-        assert!(prompt.contains("/code-review:code-review 42"));
+        // NOTE: We no longer use /code-review:code-review because skills don't work in headless mode
         assert!(prompt.contains("gh pr comment 42 --body"));
         assert!(prompt.contains("PR #42 repeats"));
         assert!(
@@ -681,8 +710,8 @@ mod tests {
 
         // Should contain reviewer-specific instructions from reviewer.md
         assert!(
-            prompt.contains("THRESHOLD OVERRIDE"),
-            "Reviewer system prompt should include THRESHOLD OVERRIDE from reviewer.md"
+            prompt.contains("ISSUE FILTERING"),
+            "Reviewer system prompt should include ISSUE FILTERING from reviewer.md"
         );
         assert!(
             prompt.contains("CHANNEL MESSAGE DISCIPLINE"),
