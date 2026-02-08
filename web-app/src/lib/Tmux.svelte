@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { connected, activeProject } from './store.js'
-  import { sendWsMessage, onNextError } from './api.js'
+  import { sendWsMessage, onNextError, clearErrorCallback } from './api.js'
 
   let paneContent = $state('')
   let error = $state(null)
@@ -17,6 +17,7 @@
   let nudgeStatusTimeout = null
   let nudgeErrorTimeout = null
   let lastSentCols = 0
+  let pendingErrorCallbackId = null  // Track callback ID for cleanup on unmount
 
   // Approximate character width for a monospace font at 0.8rem.
   // This converts pixel width → terminal columns for the resize message.
@@ -90,12 +91,19 @@
     const text = nudgeText.trim()
     if (!text || !selectedWindow) return
 
+    // Clear any previous pending callback
+    if (pendingErrorCallbackId !== null) {
+      clearErrorCallback(pendingErrorCallbackId)
+      pendingErrorCallbackId = null
+    }
+
     // Register error handler before sending
-    onNextError((errorMsg) => {
+    pendingErrorCallbackId = onNextError((errorMsg) => {
       nudgeError = errorMsg
       nudgeStatus = null
       if (nudgeErrorTimeout) clearTimeout(nudgeErrorTimeout)
       nudgeErrorTimeout = setTimeout(() => { nudgeError = null }, 4000)
+      pendingErrorCallbackId = null  // Callback consumed
     })
 
     if (sendWsMessage({ type: 'nudge', target: selectedWindow, message: text })) {
@@ -104,10 +112,16 @@
       nudgeError = null
       if (nudgeStatusTimeout) clearTimeout(nudgeStatusTimeout)
       nudgeStatusTimeout = setTimeout(() => { nudgeStatus = null }, 2000)
+      // Clear the error callback on success to prevent memory leak
+      clearErrorCallback(pendingErrorCallbackId)
+      pendingErrorCallbackId = null
     } else {
       nudgeError = 'Not connected to server'
       if (nudgeErrorTimeout) clearTimeout(nudgeErrorTimeout)
       nudgeErrorTimeout = setTimeout(() => { nudgeError = null }, 4000)
+      // Clear the error callback since we handled the error immediately
+      clearErrorCallback(pendingErrorCallbackId)
+      pendingErrorCallbackId = null
     }
   }
 
@@ -190,6 +204,11 @@
     if (resizeTimeout) clearTimeout(resizeTimeout)
     if (nudgeStatusTimeout) clearTimeout(nudgeStatusTimeout)
     if (nudgeErrorTimeout) clearTimeout(nudgeErrorTimeout)
+    // Clean up pending error callback to prevent memory leak and state updates on unmounted component
+    if (pendingErrorCallbackId !== null) {
+      clearErrorCallback(pendingErrorCallbackId)
+      pendingErrorCallbackId = null
+    }
   })
 </script>
 

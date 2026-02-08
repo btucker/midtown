@@ -1680,4 +1680,64 @@ mod tests {
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("not available"));
     }
+
+    #[tokio::test]
+    async fn test_coworker_nudge_not_supported_via_web_ui() {
+        // Verify that nudging a coworker (not lead) returns "not supported via web UI"
+        use crate::coworker::CoworkerManager;
+        use crate::worktree::WorktreeManager;
+        use tempfile::TempDir;
+
+        let (updates_tx, _) = broadcast::channel(10);
+        let (channel_post_tx, _) = mpsc::channel(10);
+
+        // Create a minimal CoworkerManager for testing
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("Failed to init git repo");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(temp_dir.path())
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(temp_dir.path())
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .ok();
+
+        let worktree_manager = WorktreeManager::new(temp_dir.path().to_path_buf())
+            .expect("Failed to create worktree manager");
+        let coworkers = CoworkerManager::new("midtown-test", worktree_manager);
+
+        let state = Arc::new(WebState {
+            config: WebConfig::default(),
+            updates_tx,
+            coworkers: Some(coworkers),
+            channel_post_tx,
+            push_manager: None,
+            all_repo_paths: Vec::new(),
+            default_branch: "main".to_string(),
+            repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+            viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
+        });
+
+        // Try to nudge a coworker (not "lead")
+        let json = r#"{"type": "nudge", "target": "lexington", "message": "test nudge"}"#;
+        let result = handle_client_message(json, &state, 1).await;
+
+        // Should return the "Cannot nudge coworker" error
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("Cannot nudge coworker"));
+        assert!(err_msg.contains("lexington"));
+    }
 }
