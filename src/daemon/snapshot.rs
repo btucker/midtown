@@ -181,6 +181,10 @@ pub struct WorldSnapshot {
     /// Task IDs that already have worktrees allocated in the registry.
     /// Used by dispatch to decide whether to allocate a new worktree or reuse.
     pub tasks_with_worktrees: HashSet<String>,
+    /// Mapping from task_id → worktree_id for tasks that have registered worktrees.
+    /// Used by dispatch to reuse existing worktrees when reassigning tasks to
+    /// different coworkers (preserves build cache and partial work).
+    pub task_worktree_map: HashMap<String, String>,
 
     // ── Limits & timing ─────────────────────────────────────────────────
     /// Whether the daemon is at the absolute coworker limit (max capacity).
@@ -381,13 +385,17 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     let daemon_logs = Vec::new();
 
     // ── Worktree registry ────────────────────────────────────────────────
-    let tasks_with_worktrees: HashSet<String> = {
+    let (tasks_with_worktrees, task_worktree_map): (HashSet<String>, HashMap<String, String>) = {
         let ps = state.persistent_state.lock().await;
-        ps.worktree_registry
-            .all_assignments()
-            .values()
-            .filter_map(|a| a.task_id.clone())
-            .collect()
+        let mut task_ids = HashSet::new();
+        let mut wt_map = HashMap::new();
+        for assignment in ps.worktree_registry.all_assignments().values() {
+            if let Some(ref task_id) = assignment.task_id {
+                task_ids.insert(task_id.clone());
+                wt_map.insert(task_id.clone(), assignment.worktree_id.clone());
+            }
+        }
+        (task_ids, wt_map)
     };
 
     // ── Limits & timing ─────────────────────────────────────────────────
@@ -429,6 +437,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         channel_messages,
         daemon_logs,
         tasks_with_worktrees,
+        task_worktree_map,
         is_at_coworker_limit,
         is_at_dev_limit,
         now_utc,
@@ -526,6 +535,7 @@ mod tests {
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),
@@ -604,6 +614,7 @@ mod tests {
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: Utc::now(),
