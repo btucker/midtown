@@ -665,10 +665,11 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
             (vec![], due_for_warning.clone())
         });
 
-        // Prune cleaned entries from tracker
+        // Prune using the FULL orphan list to preserve warned_at timestamps for
+        // orphans not in the `remaining` subset (same rationale as line 611).
         if !cleaned.is_empty() {
             let mut tracker = state.orphan_tracker.write().unwrap();
-            tracker.prune(&remaining);
+            tracker.prune(&all_orphaned);
         }
 
         (cleaned, remaining)
