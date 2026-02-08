@@ -1646,12 +1646,13 @@ async fn collect_reviewer_effects_with_source(
         let mut config = crate::launch::LaunchConfig::reviewer(reviewer_name.clone(), pr_number);
         config.working_dir = Some(wt_path.clone());
 
+        // Ensure the worktree exists BEFORE spawning (fixes effect ordering bug)
+        effects.push(Effect::EnsureWorktree {
+            worktree_id: worktree_id.clone(),
+            path: wt_path.clone(),
+        });
+
         let on_success = vec![
-            // Ensure the worktree exists BEFORE spawning (fixes effect pattern violation)
-            Effect::EnsureWorktree {
-                worktree_id: worktree_id.clone(),
-                path: wt_path.clone(),
-            },
             // Register the review worktree assignment
             Effect::RegisterWorktreeAssignment {
                 assignment: crate::worktree_registry::WorktreeAssignment {
