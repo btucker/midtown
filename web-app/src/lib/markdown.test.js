@@ -299,4 +299,56 @@ describe('renderContent - special links', () => {
     expect(result).toContain('class="channel-link"')
     expect(result).toContain('class="pr-link"')
   })
+
+  // Issue #1: Code/pre tag exclusion - #references inside inline code should NOT be linked
+  it('does not convert #N inside inline code to PR link', () => {
+    const result = renderContent('run `git checkout #123`')
+    // #123 inside backticks should NOT be converted to a clickable link
+    expect(result).not.toMatch(/<code[^>]*>.*<a /)
+    expect(result).toContain('<code>')
+  })
+
+  it('does not convert #channel inside inline code to channel link', () => {
+    const result = renderContent('use `#midtown` config')
+    // Already tested above but verify no channel-link inside code
+    expect(result).not.toMatch(/<code[^>]*>.*class="channel-link"/)
+  })
+
+  it('does not convert !task inside inline code to task link', () => {
+    const result = renderContent('see `!42` for details')
+    expect(result).not.toMatch(/<code[^>]*>.*class="task-link"/)
+  })
+
+  // Issue #2: PR link regex collision - "PR #456" should produce exactly one link
+  it('does not create nested anchors for PR #N references', () => {
+    const result = renderContent('Check PR #456 for details')
+    // Should have exactly one <a> wrapping "PR #456", not nested anchors
+    const anchorCount = (result.match(/<a /g) || []).length
+    expect(anchorCount).toBe(1)
+    expect(result).toContain('class="pr-link"')
+    expect(result).toContain('PR #456</a>')
+  })
+
+  // Issue #4: pr-link anchors should NOT have target="_blank"
+  it('does not add target="_blank" to pr-link anchors', () => {
+    const result = renderContent('see #42')
+    expect(result).toContain('class="pr-link"')
+    // pr-link should NOT have target="_blank" since it's handled by event delegation
+    expect(result).not.toMatch(/target="_blank"[^>]*class="pr-link"/)
+    expect(result).not.toMatch(/class="pr-link"[^>]*target="_blank"/)
+  })
+
+  it('does not add target="_blank" to channel-link anchors', () => {
+    const result = renderContent('see #midtown')
+    expect(result).toContain('class="channel-link"')
+    expect(result).not.toMatch(/target="_blank"[^>]*class="channel-link"/)
+    expect(result).not.toMatch(/class="channel-link"[^>]*target="_blank"/)
+  })
+
+  it('does not add target="_blank" to task-link anchors', () => {
+    const result = renderContent('see !42')
+    expect(result).toContain('class="task-link"')
+    expect(result).not.toMatch(/target="_blank"[^>]*class="task-link"/)
+    expect(result).not.toMatch(/class="task-link"[^>]*target="_blank"/)
+  })
 })

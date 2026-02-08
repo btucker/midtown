@@ -1,9 +1,16 @@
 <script>
   import { channels, activeChannel, kanbanData } from './store.js'
 
+  // Match channel name as a whole word in task text (avoids "auth" matching "authentication")
+  function matchesChannel(text, channelName) {
+    if (!text) return false
+    const pattern = new RegExp(`\\b${channelName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+    return pattern.test(text)
+  }
+
   // Get CI status for a channel based on its PRs
   function getChannelCiStatus(channelName, kanban) {
-    const channelPrs = kanban.review.filter((pr) => pr.task_name?.toLowerCase().includes(channelName.toLowerCase()))
+    const channelPrs = kanban.review.filter((pr) => matchesChannel(pr.task_name, channelName))
     if (channelPrs.length === 0) return null
 
     // Check if any PR has failing CI
@@ -23,9 +30,9 @@
         review: kanban.review.length,
       }
     }
-    // Topic channels filter by channel name in task description
+    // Topic channels filter by channel name as whole word in task description
     const filter = (list) => list.filter((item) =>
-      (item.title || item.task_name || '').toLowerCase().includes(channelName.toLowerCase())
+      matchesChannel(item.title || item.task_name || '', channelName)
     )
     return {
       inProgress: filter(kanban.inProgress).length,
