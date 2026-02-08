@@ -1887,8 +1887,9 @@ mod tests {
         // even though it has no tmux window
         let headless_names: std::collections::HashSet<String> =
             ["madison".to_string()].into_iter().collect();
-        let result = manager.sync_with_tmux(&headless_names);
-        assert!(result.is_ok());
+        manager
+            .sync_with_tmux(&headless_names)
+            .expect("sync_with_tmux should succeed");
 
         // madison should still be tracked
         assert_eq!(manager.count(), 1);
@@ -1924,8 +1925,9 @@ mod tests {
         // because it's in headless_names (alive in SessionManager)
         let headless_names: std::collections::HashSet<String> =
             ["madison".to_string()].into_iter().collect();
-        let result = manager.sync_with_tmux(&headless_names);
-        assert!(result.is_ok());
+        manager
+            .sync_with_tmux(&headless_names)
+            .expect("sync_with_tmux should succeed");
 
         // madison should now be tracked (recovered from headless_names)
         assert_eq!(
@@ -1954,8 +1956,9 @@ mod tests {
         // is missing/invalid — same validation the tmux path performs.
         let headless_names: std::collections::HashSet<String> =
             ["madison".to_string()].into_iter().collect();
-        let result = manager.sync_with_tmux(&headless_names);
-        assert!(result.is_ok());
+        manager
+            .sync_with_tmux(&headless_names)
+            .expect("sync_with_tmux should succeed");
 
         // madison should NOT be tracked (invalid worktree)
         assert_eq!(
@@ -1990,8 +1993,9 @@ mod tests {
 
         // sync_with_tmux with empty headless_names should remove park
         let headless_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let result = manager.sync_with_tmux(&headless_names);
-        assert!(result.is_ok());
+        manager
+            .sync_with_tmux(&headless_names)
+            .expect("sync_with_tmux should succeed");
 
         // park should be removed (not in tmux windows, not in headless_names)
         assert_eq!(manager.count(), 0);
