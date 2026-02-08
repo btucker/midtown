@@ -132,9 +132,15 @@ function updateKanbanData(data) {
   const prs = data.pull_requests || []
   const mergedPrs = data.merged_prs || []
 
+  // Build set of task IDs that have open PRs (normalized to strings for comparison)
+  const tasksWithOpenPrs = new Set(
+    prs.map((pr) => String(pr.task_id)).filter((id) => id !== 'null' && id !== 'undefined')
+  )
+
   kanbanData.set({
     backlog: tasks.filter((t) => t.status === 'pending'),
-    inProgress: tasks.filter((t) => t.status === 'in_progress'),
+    // Exclude tasks with open PRs - they belong in the Review column
+    inProgress: tasks.filter((t) => t.status === 'in_progress' && !tasksWithOpenPrs.has(String(t.id))),
     review: prs.map((pr) => ({
       number: pr.number,
       title: pr.title,
@@ -145,6 +151,8 @@ function updateKanbanData(data) {
       review_posted: pr.review_posted || false,
       created_at: pr.created_at,
       repo: pr.repo || null,
+      task_id: pr.task_id,
+      task_name: pr.task_name,
     })),
     done: mergedPrs.slice(0, 10).map((pr) => ({
       number: pr.number,

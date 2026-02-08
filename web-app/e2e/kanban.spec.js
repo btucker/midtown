@@ -23,9 +23,9 @@ test.describe('Kanban board', () => {
 
   test('shows task counts in column headers', async ({ page }) => {
     const kanban = page.locator(kanbanSelector)
-    // Backlog: 2 pending tasks, In Progress: 1
+    // Backlog: 2 pending tasks, In Progress: 0 (task #2 has PR so it's in review)
     await expect(kanban.locator('.column-title.backlog .count')).toHaveText('(2)')
-    await expect(kanban.locator('.column-title.in-progress .count')).toHaveText('(1)')
+    await expect(kanban.locator('.column-title.in-progress .count')).toHaveText('(0)')
     await expect(kanban.locator('.column-title.review .count')).toHaveText('(2)')
     await expect(kanban.locator('.column-title.done .count')).toHaveText('(2)')
   })
@@ -46,10 +46,9 @@ test.describe('Kanban board', () => {
     const inProgressColumn = kanban.locator('.kanban-column').nth(1)
     const cards = inProgressColumn.locator('.kanban-card')
 
-    await expect(cards).toHaveCount(1)
-    await expect(cards.first().locator('.task-id')).toHaveText('#2')
-    await expect(cards.first().locator('.task-subject')).toHaveText('Add auth endpoint')
-    await expect(cards.first().locator('.card-detail')).toContainText('park')
+    // Task #2 has a PR, so In Progress is empty with default mock
+    await expect(cards).toHaveCount(0)
+    await expect(inProgressColumn.locator('.empty')).toContainText('No tasks')
   })
 
   test('renders review column with PR cards and CI status dots', async ({ page }) => {
@@ -59,11 +58,11 @@ test.describe('Kanban board', () => {
 
     await expect(cards).toHaveCount(2)
 
-    // First PR: awaiting review (yellow dot)
+    // First PR: has task_id so shows task info on first line, PR link in card-detail
     const firstCard = cards.first()
-    await expect(firstCard.locator('.pr-link')).toHaveText('PR#42')
-    await expect(firstCard.locator('.pr-title')).toHaveText('feat: Add auth endpoint')
-    await expect(firstCard.locator('.card-detail')).toContainText('park')
+    await expect(firstCard.locator('.task-id')).toHaveText('#2')
+    await expect(firstCard.locator('.task-subject')).toHaveText('Add auth endpoint')
+    await expect(firstCard.locator('.card-detail .pr-link')).toHaveText('PR#42')
 
     // CI dot should be present
     const ciDot = firstCard.locator('.ci-dot')
@@ -73,7 +72,8 @@ test.describe('Kanban board', () => {
   test('PR links point to GitHub', async ({ page }) => {
     const kanban = page.locator(kanbanSelector)
     const reviewColumn = kanban.locator('.kanban-column').nth(2)
-    const prLink = reviewColumn.locator('.pr-link').first()
+    // First PR has task_id, so PR link is in card-detail
+    const prLink = reviewColumn.locator('.card-detail .pr-link').first()
 
     await expect(prLink).toHaveAttribute('href', /\/pull\/42$/)
     await expect(prLink).toHaveAttribute('target', '_blank')
@@ -153,5 +153,47 @@ test.describe('Kanban board', () => {
     // Tmux tab - kanban still visible
     await page.locator('nav').getByRole('button', { name: 'Tmux' }).click()
     await expect(kanban).toBeVisible()
+  })
+
+  test('tasks with open PRs do not show in "In Progress" column', async ({ page }) => {
+    // Task #2 has an associated open PR #42 (via [Midtown #2] in PR title)
+    await mockAllRoutes(page, {
+      status: {
+        daemon: 'running',
+        coworkers: [],
+        tasks: [
+          { id: 1, subject: 'Fix login bug', status: 'pending', owner: null },
+          { id: 2, subject: 'Add auth endpoint', status: 'in_progress', owner: 'park' },
+          { id: 3, subject: 'Refactor database', status: 'in_progress', owner: 'amsterdam' },
+        ],
+        pull_requests: [
+          {
+            number: 42,
+            title: 'feat: Add auth endpoint [Midtown #2]',
+            author: 'park',
+            status: 'awaiting review',
+            task_id: 2,
+            task_name: 'Add auth endpoint',
+          },
+        ],
+        merged_prs: [],
+      },
+    })
+    await page.goto('/')
+
+    const kanban = page.locator(kanbanSelector)
+    const inProgressColumn = kanban.locator('.kanban-column').nth(1)
+    const reviewColumn = kanban.locator('.kanban-column').nth(2)
+
+    // In Progress should only show task #3 (no PR)
+    await expect(inProgressColumn.locator('.kanban-card')).toHaveCount(1)
+    await expect(inProgressColumn.locator('.task-id')).toHaveText('#3')
+    await expect(inProgressColumn.locator('.task-subject')).toHaveText('Refactor database')
+
+    // Review should show PR #42 with task info
+    await expect(reviewColumn.locator('.kanban-card')).toHaveCount(1)
+    await expect(reviewColumn.locator('.task-id')).toHaveText('#2')
+    await expect(reviewColumn.locator('.task-subject')).toHaveText('Add auth endpoint')
+    await expect(reviewColumn.locator('.pr-link')).toHaveText('PR#42')
   })
 })

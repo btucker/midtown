@@ -1931,6 +1931,16 @@ fn get_open_prs() -> Vec<serde_json::Value> {
         ])
         .output();
 
+    // Build a map of task_id -> task_subject for PR enrichment
+    let tasks = crate::tasks::read_tasks();
+    let task_map: std::collections::HashMap<u64, String> = tasks
+        .iter()
+        .filter_map(|t| {
+            let id = t.id.parse::<u64>().ok()?;
+            Some((id, t.subject.clone()))
+        })
+        .collect();
+
     match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1938,11 +1948,17 @@ fn get_open_prs() -> Vec<serde_json::Value> {
                 prs.into_iter()
                     .map(|pr| {
                         let status = format_pr_status(&pr);
+                        let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                        // Extract task ID from PR title and look up task name
+                        let task_id = crate::tasks::extract_task_id_from_pr_title(title);
+                        let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
                         serde_json::json!({
                             "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
-                            "title": pr.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                            "title": title,
                             "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
                             "status": status,
+                            "task_id": task_id,
+                            "task_name": task_name,
                         })
                     })
                     .collect()
