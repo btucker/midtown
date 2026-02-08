@@ -632,6 +632,11 @@ pub(crate) fn decide_stuck_coworker_restarts(
         if health.has_running_subagent {
             continue;
         }
+        // Skip coworkers with pending tool executions — session goes quiet
+        // while waiting for tool results (e.g., long Bash commands, slow API calls)
+        if health.has_pending_tool {
+            continue;
+        }
         // Check last_event_at — no events yet means just spawned, skip
         let last_event = match health.last_event_at {
             Some(t) => t,
@@ -3446,6 +3451,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -3484,6 +3490,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -3524,6 +3531,7 @@ mod tests {
                 has_usage_limit: true,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -3563,6 +3571,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: true,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -3605,6 +3614,7 @@ mod tests {
                 has_api_error: false,
                 // But has a running subagent, so parent stream is expected to be quiet
                 has_running_subagent: true,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -3641,6 +3651,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: Some(1),
             },
         );
@@ -3681,6 +3692,7 @@ mod tests {
                 has_usage_limit: false,
                 has_api_error: false,
                 has_running_subagent: false,
+                has_pending_tool: false,
                 exit_code: None,
             },
         );
@@ -3703,6 +3715,49 @@ mod tests {
         assert!(
             restarts.is_empty(),
             "attached coworker should not be flagged as stuck"
+        );
+    }
+
+    #[test]
+    fn stuck_detection_skips_pending_tool_execution() {
+        use crate::daemon::snapshot::ProcessHealth;
+
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "broadway".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                // Last event was 10 minutes ago — normally stuck
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                // But has a pending tool (saw tool_use, waiting for tool_result)
+                has_pending_tool: true,
+                exit_code: None,
+            },
+        );
+
+        let tasks = vec![(
+            "42".to_string(),
+            "Build project".to_string(),
+            "broadway".to_string(),
+        )];
+
+        let restarts = decide_stuck_coworker_restarts(
+            &health,
+            &tasks,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(180),
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "coworker with pending tool execution should not be flagged as stuck"
         );
     }
 

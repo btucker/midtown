@@ -100,10 +100,13 @@ pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(120);
 /// Prevents respawn loops if the zombie condition keeps recurring.
 pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
 
-/// How long a coworker's process can go without events before considering it stuck (3 minutes).
+/// How long a coworker's process can go without events before considering it stuck (5 minutes).
 /// If the headless session hasn't emitted any events for this duration, the coworker
-/// is killed and restarted with its current task.
-pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(180);
+/// is killed and restarted with its current task. Increased from 180s to 300s to reduce
+/// false positives during legitimate long-running operations (slow API responses, large builds).
+/// The pending tool detection (has_pending_tool) handles most cases, but this provides
+/// additional safety margin for edge cases.
+pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(300);
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.
