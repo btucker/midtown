@@ -1461,6 +1461,9 @@ fn parse_markdown(text: &str, base_style: Style) -> Vec<Span<'static>> {
 /// Uses word boundaries when possible, falls back to character wrapping.
 /// Handles UTF-8 multi-byte characters correctly by using character indices.
 fn wrap_line(text: &str, width: usize) -> Vec<&str> {
+    // Clamp width to minimum 1 to prevent infinite loop
+    let width = width.max(1);
+
     if text.is_empty() {
         return vec![""];
     }
@@ -1716,6 +1719,14 @@ mod tests {
         for line in &wrapped {
             assert!(line.chars().count() <= 40);
         }
+    }
+
+    #[test]
+    fn test_wrap_line_zero_width() {
+        // Zero width should not cause infinite loop - clamp to minimum 1
+        let wrapped = wrap_line("hello", 0);
+        // Should produce single-character chunks
+        assert_eq!(wrapped, vec!["h", "e", "l", "l", "o"]);
     }
 
     #[test]
