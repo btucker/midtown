@@ -3649,7 +3649,7 @@ mod tests {
         let base_dir = temp_dir.path().to_path_buf();
         std::mem::forget(temp_dir);
 
-        let channel_router = crate::ChannelRouter::new(&base_dir, "test-repo");
+        let channel_router = crate::ChannelRouter::new(&base_dir, "midtown");
 
         DaemonState::new(
             "/tmp/test.sock".into(),

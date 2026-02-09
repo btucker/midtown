@@ -1578,7 +1578,12 @@ pub(super) async fn handle_channel_post(
         tracker.insert(key, now);
     }
 
-    let msg = Message::new(from, content.clone(), msg_type.clone());
+    let msg = Message::for_channel(
+        state.channel_router.default_channel_name(),
+        from,
+        content.clone(),
+        msg_type.clone(),
+    );
 
     // Use async version to avoid blocking the runtime during file lock acquisition
     if let Err(e) = state.send_and_broadcast_async(&msg).await {

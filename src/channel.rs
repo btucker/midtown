@@ -849,6 +849,11 @@ impl ChannelRouter {
         Ok(channel)
     }
 
+    /// Get the default channel name.
+    pub fn default_channel_name(&self) -> &str {
+        &self.default_channel_name
+    }
+
     /// Get the default channel (uses default_channel_name).
     pub fn default_channel(&self) -> Result<Channel> {
         self.get_channel(&self.default_channel_name)

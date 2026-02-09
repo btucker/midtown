@@ -970,7 +970,8 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
             "Re-ran workflow {} (check '{}') for PR #{}",
             run_id, check_name, pr_number
         );
-        let msg = Message::new(
+        let msg = Message::for_channel(
+            state.channel_router.default_channel_name(),
             "midtown",
             format!(
                 "🔄 Re-running stale CI check '{}' on PR #{} (workflow {})",
@@ -1025,7 +1026,8 @@ async fn rebase_pr_on_main(state: &DaemonState, pr_number: u64, reason: &str) {
 
     if output.status.success() {
         info!("Updated PR #{} branch to include latest main", pr_number);
-        let msg = Message::new(
+        let msg = Message::for_channel(
+            state.channel_router.default_channel_name(),
             "midtown",
             format!(
                 "🔄 Updated PR #{} to include latest main ({})",
@@ -1069,7 +1071,8 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
 
     if output.status.success() {
         info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
-        let msg = Message::new(
+        let msg = Message::for_channel(
+            state.channel_router.default_channel_name(),
             "midtown",
             format!(
                 "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
@@ -1084,7 +1087,8 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         warn!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
-        let msg = Message::new(
+        let msg = Message::for_channel(
+            state.channel_router.default_channel_name(),
             "midtown",
             format!(
                 "⚠️ Auto-merge failed for PR #{} ({}) — {}",

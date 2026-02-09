@@ -1265,7 +1265,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Create channel router for the repo
     let channel_base_dir = crate::paths::projects_dir_for_repo(&repo_name);
-    let channel_router = crate::ChannelRouter::new(&channel_base_dir, &repo_name);
+    let channel_router = crate::ChannelRouter::new(&channel_base_dir, "midtown");
     info!("Channel base: {}", channel_base_dir.display());
 
     // Remove existing socket file if present
