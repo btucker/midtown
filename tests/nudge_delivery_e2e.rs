@@ -515,7 +515,7 @@ fn test_lead_nudge_delayed_when_input_has_text() {
     // Verify text is there
     let content = capture_pane(&session, "lead").unwrap_or_default();
     assert!(
-        midtown::tmux::has_input_text(&content),
+        midtown::tmux::has_input_text(&content, None),
         "Should detect text in input. Content: {:?}",
         content
     );
@@ -1129,7 +1129,7 @@ mod coworker_input_stability_tests {
         // Verify text is there
         let content = capture_pane(&session, coworker_name).unwrap_or_default();
         assert!(
-            midtown::tmux::has_input_text(&content),
+            midtown::tmux::has_input_text(&content, None),
             "Should detect text in input. Content: {:?}",
             content
         );
