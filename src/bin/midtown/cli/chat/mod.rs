@@ -173,9 +173,8 @@ async fn run_app_async(
             }
 
             // Auto-scroll back to bottom if user scrolled up and forgot
-            // Skip if in selection mode - user may be copying text
             _ = auto_scroll_interval.tick() => {
-                if app.scroll_offset > 0 && !app.selection_mode {
+                if app.scroll_offset > 0 {
                     app.scroll_to_bottom();
                 }
             }

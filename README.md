@@ -433,7 +433,9 @@ The `midtown chat` command opens a split-panel interface with:
 - Real-time channel message display
 - Mermaid diagram detection and rendering (via `selkie-rs` with content-hash caching)
 - Inline ASCII art for flowchart diagrams (press number keys to open SVG in browser)
+- **Type-anywhere UX**: Character keys auto-focus the input bar (like Slack/Discord)
 - Tab-based focus navigation (Board → Chat → InputBar)
+- Arrow keys, PageUp/PageDown, Home/End for scrolling
 - Mouse support for scrolling and navigation
 - Clickable hyperlinks via OSC 8 escape sequences
 - Real-time token usage and cost tracking

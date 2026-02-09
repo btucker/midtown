@@ -165,8 +165,6 @@ pub struct App {
     repo_status_last_refresh: Instant,
     /// Receiver for async repo status from background thread
     repo_status_receiver: Option<Receiver<Vec<(RepoInfo, RepoStatus)>>>,
-    /// Selection mode - when true, mouse capture is disabled for text selection
-    pub selection_mode: bool,
     /// User display name from config (None = "user")
     pub user_display_name: Option<String>,
     /// Cached mapping of coworker name -> current task subject.
@@ -244,7 +242,6 @@ impl App {
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
-            selection_mode: false,
             user_display_name: midtown::config::get_user_display_name(),
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
@@ -571,11 +568,6 @@ impl App {
 
     /// Toggle selection mode (disables mouse capture for text selection)
     /// Note: No keyboard shortcut currently bound to this - reserved for future use
-    #[allow(dead_code)]
-    pub fn toggle_selection_mode(&mut self) {
-        self.selection_mode = !self.selection_mode;
-    }
-
     /// Cycle focus between panes: Board → Chat → InputBar → Board
     pub fn cycle_focus(&mut self) {
         self.focused_pane = match self.focused_pane {
@@ -1433,7 +1425,6 @@ pub(super) mod tests {
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
-            selection_mode: false,
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
