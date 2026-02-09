@@ -1,12 +1,13 @@
 <script>
   import { getSelkie } from './selkie.js'
-  import MermaidModal from './MermaidModal.svelte'
+  import BiggerPicture from 'bigger-picture'
+  import { onMount } from 'svelte'
 
   let { code } = $props()
   let svgHtml = $state('')
   let error = $state('')
   let loading = $state(true)
-  let expanded = $state(false)
+  let bp = null
 
   let counter = 0
 
@@ -29,6 +30,11 @@
       }
     }
     return new XMLSerializer().serializeToString(doc.documentElement)
+  }
+
+  // Convert SVG string to data URL for Bigger Picture
+  function svgToDataUrl(svgString) {
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgString)))}`
   }
 
   $effect(() => {
@@ -56,8 +62,30 @@
     })
   })
 
+  onMount(() => {
+    // Initialize Bigger Picture with dark theme
+    bp = BiggerPicture({
+      target: document.body,
+    })
+
+    return () => {
+      if (bp) {
+        bp.close()
+        bp.$destroy()
+      }
+    }
+  })
+
   function handleExpand() {
-    expanded = true
+    if (!bp || !svgHtml) return
+
+    // Convert SVG to data URL and open in lightbox
+    const dataUrl = svgToDataUrl(svgHtml)
+    bp.open({
+      items: [{ img: dataUrl }],
+      // Start at first (and only) item
+      position: 0,
+    })
   }
 </script>
 
@@ -74,10 +102,6 @@
     {@html svgHtml}
     <div class="expand-hint">Click to expand</div>
   </div>
-
-  {#if expanded}
-    <MermaidModal {svgHtml} onclose={() => expanded = false} />
-  {/if}
 {/if}
 
 <style>
