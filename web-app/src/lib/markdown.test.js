@@ -351,4 +351,44 @@ describe('renderContent - special links', () => {
     expect(result).not.toMatch(/target="_blank"[^>]*class="task-link"/)
     expect(result).not.toMatch(/class="task-link"[^>]*target="_blank"/)
   })
+
+  it('does not add target="_blank" to coworker-link anchors', () => {
+    const result = renderContent('see @lexington')
+    expect(result).toContain('class="coworker-link"')
+    expect(result).not.toMatch(/target="_blank"[^>]*class="coworker-link"/)
+    expect(result).not.toMatch(/class="coworker-link"[^>]*target="_blank"/)
+  })
+
+  // Coworker mention links
+  it('converts @name references to clickable coworker links', () => {
+    const result = renderContent('Thanks @lexington for the fix')
+    expect(result).toContain('class="coworker-link"')
+    expect(result).toContain('data-coworker="lexington"')
+    expect(result).toContain('@lexington</a>')
+  })
+
+  it('handles multiple @name references', () => {
+    const result = renderContent('@park and @madison reviewed it')
+    expect(result).toMatch(/class="coworker-link".*class="coworker-link"/)
+    expect(result).toContain('data-coworker="park"')
+    expect(result).toContain('data-coworker="madison"')
+  })
+
+  it('does not convert @name inside inline code to coworker link', () => {
+    const result = renderContent('use `@lexington` syntax')
+    expect(result).not.toMatch(/<code[^>]*>.*class="coworker-link"/)
+  })
+
+  // Coworker link protection: ensure coworker: links survive subsequent patterns
+  it('preserves coworker links when mixed with other special references', () => {
+    const result = renderContent('@lexington is working on !42 in #midtown for PR #123')
+    expect(result).toContain('class="coworker-link"')
+    expect(result).toContain('data-coworker="lexington"')
+    expect(result).toContain('class="task-link"')
+    expect(result).toContain('class="channel-link"')
+    expect(result).toContain('class="pr-link"')
+    // Each link should appear exactly once, no corruption
+    const coworkerLinks = (result.match(/class="coworker-link"/g) || []).length
+    expect(coworkerLinks).toBe(1)
+  })
 })

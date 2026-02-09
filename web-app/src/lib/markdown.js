@@ -43,6 +43,7 @@ export function hasMermaid(text) {
  * Disables underscore-based italic rendering (keeps asterisk-based italics).
  * Converts #channel references to clickable channel-switch links.
  * Converts !N task references to clickable task-detail links.
+ * Converts @name coworker mentions to clickable coworker-detail links.
  */
 export function renderContent(text) {
   // Escape &, <, and > for XSS defense-in-depth.
@@ -95,7 +96,7 @@ export function renderContent(text) {
   function preserveAndReplace(text, pattern, replacement) {
     const tempPreserved = []
     // First, protect already-converted markdown links (our special URL schemes)
-    text = text.replace(/\[([^\]]+)\]\((channel|task|pr):[^)]+\)/g, (m) => {
+    text = text.replace(/\[([^\]]+)\]\((channel|task|pr|coworker):[^)]+\)/g, (m) => {
       tempPreserved.push(m)
       return `\x03TEMP${tempPreserved.length - 1}\x03`
     })
