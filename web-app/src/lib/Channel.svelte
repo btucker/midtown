@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen } from './store.js'
   import { sendMessage, uploadFile } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -24,15 +24,21 @@
     return pr ? pr.status : null
   }
 
+  // Find a PR by number across all kanban columns that contain PR data.
+  // PRs appear in 'review' (open) and 'done' (merged) columns.
+  function findPr(prNum) {
+    const num = parseInt(prNum)
+    return $kanbanData.review.find((p) => p.number === num)
+      || $kanbanData.done.find((p) => p.number === num)
+      || null
+  }
+
   // Build GitHub PR URL (multi-repo aware).
   // Looks up the PR in kanbanData to find its repo, then resolves via
   // repoStatuses. Falls back to the primary repo if no match is found.
   // Returns null if repo full name is unavailable.
   function getPrUrl(prNum) {
-    const num = parseInt(prNum)
-    // Search open and merged PRs for this number
-    const pr = $kanbanData.review.find((p) => p.number === num)
-      || $kanbanData.done.find((p) => p.number === num)
+    const pr = findPr(prNum)
     // If the PR has a repo label, resolve it via repoStatuses (multi-repo)
     if (pr?.repo && $repoStatuses.length > 0) {
       const info = $repoStatuses.find((r) => r.label === pr.repo)
@@ -63,7 +69,7 @@
     }
   }
 
-  // Handle clicks on channel links, task links, and PR links
+  // Handle clicks on channel links, task links, PR links, and coworker links
   onMount(() => {
     function handleLinkClick(e) {
       const target = e.target
@@ -78,14 +84,57 @@
         const taskId = target.dataset.task
         const task = findTask(taskId)
         if (task) {
-          selectedTask = task
+          // Desktop (>= 1025px): use DetailPanel; Mobile/tablet: use modal
+          if ($isWideScreen) {
+            detailPanelData.set({ type: 'task', data: task })
+          } else {
+            selectedTask = task
+          }
         }
       } else if (target.classList.contains('pr-link')) {
         e.preventDefault()
         const prNum = target.dataset.pr
         const url = getPrUrl(prNum)
         if (url) {
-          window.open(url, '_blank', 'noopener')
+          // Desktop (>= 1025px): use DetailPanel if PR data available, else open GitHub
+          if ($isWideScreen) {
+            const pr = findPr(prNum)
+            if (pr) {
+              detailPanelData.set({
+                type: 'pr',
+                data: {
+                  number: pr.number,
+                  title: pr.title,
+                  author: pr.author,
+                  reviewer: pr.reviewer,
+                  status: pr.status,
+                  url: url,
+                },
+              })
+            } else {
+              // PR not in kanban data — fall back to opening GitHub
+              window.open(url, '_blank', 'noopener')
+            }
+          } else {
+            window.open(url, '_blank', 'noopener')
+          }
+        }
+      } else if (target.classList.contains('coworker-link')) {
+        e.preventDefault()
+        const coworkerName = target.dataset.coworker
+        // Find the coworker in the store
+        const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
+        if (coworker && $isWideScreen) {
+          detailPanelData.set({
+            type: 'coworker',
+            data: {
+              name: coworker.name,
+              status: coworker.status,
+              current_task: coworker.current_task,
+              model: coworker.model,
+              started_at: coworker.started_at,
+            },
+          })
         }
       }
     }
@@ -573,6 +622,13 @@
   .message-text :global(a.pr-link),
   .action-text :global(a.pr-link) {
     color: #5f87af;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .message-text :global(a.coworker-link),
+  .action-text :global(a.coworker-link) {
+    color: #87d7d7;
     font-weight: 600;
     cursor: pointer;
   }

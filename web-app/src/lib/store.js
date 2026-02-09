@@ -67,3 +67,11 @@ export const authSwitching = writable(false)
 // API usage data (session + weekly utilization)
 // Format: { session_util, session_resets, week_util, week_resets, account_email }
 export const usageData = writable(null)
+
+// Detail panel state (desktop three-column layout)
+// Format: { type: 'task'|'pr'|'coworker', data: {...} } or null when closed
+export const detailPanelData = writable(null)
+
+// Viewport width tracking for responsive breakpoints
+// true when viewport > 1024px (wide desktop layout)
+export const isWideScreen = writable(false)
