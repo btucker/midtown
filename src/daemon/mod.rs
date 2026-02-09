@@ -1197,6 +1197,68 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
     }
 }
 
+/// Persist session info for all running coworkers before daemon shutdown.
+///
+/// Collects session data from SessionManager and enriches it with task/PR/purpose
+/// info from CoworkerManager and persistent state, then saves to daemon-state.json.
+async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> {
+    // Collect base session info (session_id, pid, last_active) from SessionManager
+    let mut session_info = state.session_manager.collect_session_info().await;
+
+    // Enrich with task/PR assignments and working directories from CoworkerManager
+    let coworkers = state.coworkers.list();
+    for coworker in coworkers {
+        if let Some(info) = session_info.get_mut(&coworker.name) {
+            info.working_dir = Some(coworker.working_dir.clone());
+
+            // Determine coworker type and assignment based on current_task and isolated_tasks
+            if coworker.isolated_tasks {
+                // Isolated coworker - likely a reviewer
+                info.coworker_type = Some("reviewer".to_string());
+
+                // Look up PR assignment from persistent state
+                let persistent = state.persistent_state.lock().await;
+                if let Some(assignment) = persistent
+                    .github
+                    .pr_reviewers
+                    .values()
+                    .find(|assignment| assignment.reviewer == coworker.name)
+                {
+                    let pr_num = assignment.pr_number;
+                    info.pr_number = Some(pr_num);
+                    info.purpose = format!("reviewer for PR #{}", pr_num);
+                } else {
+                    info.purpose = "reviewer (unassigned)".to_string();
+                }
+            } else {
+                // Regular dev coworker
+                info.coworker_type = Some("dev".to_string());
+                if let Some(task_str) = &coworker.current_task {
+                    // Parse task ID from string like "!42" or "42"
+                    let task_id: Option<u64> = task_str.trim_start_matches('!').parse().ok();
+                    info.task_id = task_id;
+                    info.purpose = format!("task {}", task_str);
+                } else {
+                    info.purpose = "dev (no task)".to_string();
+                }
+            }
+        }
+    }
+
+    // Save enriched session info to persistent state
+    {
+        let mut persistent = state.persistent_state.lock().await;
+        persistent.headless_sessions = session_info;
+        persistent.save_for_repo(&state.repo_name)?;
+        info!(
+            "Persisted {} session(s) for restart survival",
+            persistent.headless_sessions.len()
+        );
+    }
+
+    Ok(())
+}
+
 /// Run the full snapshot→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
     let mut snap = snapshot::collect_world_snapshot(state).await;
@@ -1481,6 +1543,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Recover coworker workflow state from their state files across daemon restarts.
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
+
+    // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
+    // This must run BEFORE session recovery to clean up processes before spawning new ones.
+    startup::kill_zombie_claude_processes();
+
+    // Recover headless coworker sessions from persisted state (session survival).
+    // This kills orphaned processes and spawns with --resume to continue previous work.
+    let recovery_effects =
+        startup::recover_headless_sessions(&state.persistent_state, &repo_name).await;
+    if !recovery_effects.is_empty() {
+        info!(
+            "Executing {} session recovery effect(s)",
+            recovery_effects.len()
+        );
+        effects::execute_effects(recovery_effects, &state).await;
+    }
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -2031,11 +2109,28 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         }
     }
 
-    // Shut down all coworker sessions to prevent orphaned processes
-    info!("Shutting down all coworker sessions...");
+    // Persist session info for survival across daemon restarts
+    info!("Persisting session info for restart survival...");
+    if let Err(e) = persist_sessions_for_restart(&state).await {
+        warn!(
+            "Failed to persist sessions for restart (sessions will not survive): {}",
+            e
+        );
+    }
+
+    // Mark all sessions to be detached (not killed) on drop
+    // CRITICAL: Always detach even if persistence failed above - sessions should
+    // survive the restart even if we can't restore their context
+    state.session_manager.detach_all().await;
+
+    // Shut down all coworker sessions (detach instead of kill)
+    info!("Shutting down all coworker sessions (detach mode)...");
     let shutdown_count = state.session_manager.shutdown_all().await;
     if shutdown_count > 0 {
-        info!("Shut down {} coworker session(s)", shutdown_count);
+        info!(
+            "Detached {} coworker session(s) for restart survival",
+            shutdown_count
+        );
     }
 
     // Signal webhook forwarder watchdog to stop
