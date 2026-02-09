@@ -449,6 +449,13 @@ pub(crate) struct DaemonState {
     /// Owns the child processes and provides spawn/nudge/shutdown primitives.
     /// Used by `spawn_coworker()` and effect handlers for coworker lifecycle.
     pub(crate) session_manager: sessions::SessionManager,
+    /// Response cache for RPC idempotency.
+    ///
+    /// Caches responses by request ID for 60 seconds to prevent duplicate execution
+    /// when clients retry after timeouts. This transforms RPC from "at-least-once"
+    /// to "exactly-once" semantics.
+    rpc_response_cache:
+        Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
 }
 
 impl DaemonState {
@@ -497,6 +504,18 @@ impl DaemonState {
     fn record_coworker_stop_time(&self, name: &str) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
         stop_times.insert(name.to_lowercase(), chrono::Utc::now());
+    }
+
+    /// Remove expired entries from the RPC response cache.
+    ///
+    /// Called periodically during PR polling ticks, alongside other cleanup
+    /// operations (cooldowns, stale webhook events, etc.). Without this,
+    /// expired entries remain in the HashMap forever — their TTL is only
+    /// checked on read, but memory is never freed.
+    async fn cleanup_rpc_response_cache(&self) {
+        let now = std::time::Instant::now();
+        let mut cache = self.rpc_response_cache.lock().await;
+        cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
     }
 
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
@@ -613,6 +632,7 @@ impl DaemonState {
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
+            rpc_response_cache: Mutex::new(HashMap::new()),
         })
     }
 

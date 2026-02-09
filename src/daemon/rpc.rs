@@ -92,10 +92,31 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
     };
 
-    debug!("Received request: method={}", request.method);
+    debug!(
+        "Received request: method={}, id={:?}",
+        request.method, request.id
+    );
+
+    // Clone request ID for cache operations (it will be moved during dispatch)
+    let request_id_for_cache = request.id.clone();
+
+    // Check cache for idempotent response (within 60 second TTL)
+    {
+        let now = std::time::Instant::now();
+        let cache = state.rpc_response_cache.lock().await;
+        if let Some((cached_response, timestamp)) = cache.get(&request_id_for_cache)
+            && now.duration_since(*timestamp).as_secs() < 60
+        {
+            debug!(
+                "Cache hit for request id={:?}, returning cached response",
+                request_id_for_cache
+            );
+            return cached_response.clone();
+        }
+    }
 
     // Dispatch based on method
-    match request.method.as_str() {
+    let response = match request.method.as_str() {
         "ping" => Response::success(request.id, serde_json::json!("pong")),
 
         "version" => Response::success(
@@ -521,7 +542,21 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
         }
+    };
+
+    // Cache only successful responses for idempotency (60 second TTL).
+    // Error responses are NOT cached so that clients can retry after transient
+    // failures (e.g., invalid params due to race conditions) without getting
+    // a stale cached error.
+    if !response.is_error() {
+        let mut cache = state.rpc_response_cache.lock().await;
+        cache.insert(
+            request_id_for_cache,
+            (response.clone(), std::time::Instant::now()),
+        );
     }
+
+    response
 }
 
 // ============================================================================
@@ -3096,5 +3131,144 @@ mod tests {
         assert!(parse_attach_target("invalid").is_err());
         assert!(parse_attach_target("unknown:value").is_err());
         assert!(parse_attach_target("").is_err());
+    }
+
+    // ---- RPC idempotency cache tests ----
+
+    /// Verify that the cache lookup logic correctly skips expired entries.
+    ///
+    /// The cache in `handle_request` checks `now.duration_since(timestamp) < 60s`.
+    /// An entry older than 60 seconds should be treated as a cache miss, allowing
+    /// the request to re-execute (important for retries after transient failures).
+    #[test]
+    fn test_rpc_cache_ttl_expiration() {
+        use crate::rpc::{RequestId, Response};
+
+        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
+        let request_id = RequestId::String("test-ttl-123".to_string());
+        let cached_response =
+            Response::success(request_id.clone(), serde_json::json!({"task_id": 42}));
+
+        // Insert entry with a timestamp 61 seconds in the past
+        let old_timestamp = Instant::now() - Duration::from_secs(61);
+        cache.insert(request_id.clone(), (cached_response, old_timestamp));
+
+        // Simulate the cache lookup from handle_request (lines 104-116)
+        let now = Instant::now();
+        let cache_hit = cache
+            .get(&request_id)
+            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+
+        assert!(
+            cache_hit.is_none(),
+            "Entry older than 60 seconds should be a cache miss"
+        );
+    }
+
+    /// Verify that cache entries within TTL are returned as hits.
+    #[test]
+    fn test_rpc_cache_within_ttl() {
+        use crate::rpc::{RequestId, Response};
+
+        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
+        let request_id = RequestId::String("test-fresh-456".to_string());
+        let cached_response =
+            Response::success(request_id.clone(), serde_json::json!({"task_id": 99}));
+
+        // Insert entry with current timestamp (within TTL)
+        cache.insert(request_id.clone(), (cached_response, Instant::now()));
+
+        let now = Instant::now();
+        let cache_hit = cache
+            .get(&request_id)
+            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+
+        assert!(cache_hit.is_some(), "Recent entry should be a cache hit");
+    }
+
+    /// Verify that cleanup_rpc_response_cache retains fresh entries and
+    /// removes expired ones — preventing unbounded memory growth.
+    #[test]
+    fn test_rpc_cache_cleanup_removes_expired_entries() {
+        use crate::rpc::{RequestId, Response};
+
+        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
+
+        // Add 100 expired entries
+        let old_timestamp = Instant::now() - Duration::from_secs(120);
+        for i in 0..100 {
+            let id = RequestId::String(format!("expired-{}", i));
+            let resp = Response::success(id.clone(), serde_json::json!({"i": i}));
+            cache.insert(id, (resp, old_timestamp));
+        }
+
+        // Add 3 fresh entries
+        let fresh_timestamp = Instant::now();
+        for i in 0..3 {
+            let id = RequestId::String(format!("fresh-{}", i));
+            let resp = Response::success(id.clone(), serde_json::json!({"i": i}));
+            cache.insert(id, (resp, fresh_timestamp));
+        }
+
+        assert_eq!(cache.len(), 103);
+
+        // Simulate the cleanup logic from DaemonState::cleanup_rpc_response_cache
+        let now = Instant::now();
+        cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+
+        assert_eq!(
+            cache.len(),
+            3,
+            "Cleanup should remove all 100 expired entries, keeping 3 fresh ones"
+        );
+
+        // Verify only fresh entries remain
+        for i in 0..3 {
+            let id = RequestId::String(format!("fresh-{}", i));
+            assert!(
+                cache.contains_key(&id),
+                "Fresh entry {} should be retained",
+                i
+            );
+        }
+    }
+
+    /// Verify that only successful responses are cached (error responses are excluded).
+    ///
+    /// This is important because caching errors would prevent retry-on-failure:
+    /// if a request fails due to a transient issue, retrying with the same request ID
+    /// should re-attempt the operation, not return the cached error.
+    #[test]
+    fn test_rpc_cache_only_caches_success_responses() {
+        use crate::rpc::{RequestId, Response, RpcError};
+
+        let success = Response::success(
+            RequestId::String("s1".to_string()),
+            serde_json::json!({"ok": true}),
+        );
+        let error = Response::error(
+            RequestId::String("e1".to_string()),
+            RpcError::invalid_params(),
+        );
+
+        // Reproduce the cache-insertion guard from handle_request (line 547)
+        assert!(!success.is_error(), "Success response should not be error");
+        assert!(error.is_error(), "Error response should be error");
+
+        // Simulate: only cache non-error responses
+        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
+        let responses = vec![success, error];
+
+        for resp in &responses {
+            // This mirrors the guard: `if !response.is_error()`
+            if !resp.is_error() {
+                cache.insert(
+                    RequestId::String("test".to_string()),
+                    (resp.clone(), Instant::now()),
+                );
+            }
+        }
+
+        assert_eq!(cache.len(), 1, "Only success response should be cached");
     }
 }

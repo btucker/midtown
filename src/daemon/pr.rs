@@ -327,6 +327,7 @@ pub(super) async fn poll_prs_for_issues(
         let mut cooldowns = state.cooldowns.lock().unwrap();
         cooldowns.cleanup(Duration::from_secs(7200)); // 2 hours
     }
+    state.cleanup_rpc_response_cache().await;
 
     // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
     // open PRs, but verify via the state field to guard against stale/cached results)
