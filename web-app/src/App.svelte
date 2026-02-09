@@ -560,4 +560,52 @@
     border-radius: 3px;
     color: #a8a8a8;
   }
+
+  /* Bigger Picture lightbox styles - dark theme */
+  :global(.bp-wrap) {
+    background: rgba(0, 0, 0, 0.9) !important;
+  }
+
+  :global(.bp-x) {
+    background: #2a2a2a !important;
+    border: 1px solid #4a4a4a !important;
+    color: #d0d0d0 !important;
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 50% !important;
+    opacity: 1 !important;
+  }
+
+  :global(.bp-x:hover) {
+    background: #3a2020 !important;
+    border-color: #ff5f5f !important;
+    color: #ff5f5f !important;
+  }
+
+  :global(.bp-x::before),
+  :global(.bp-x::after) {
+    background: currentColor !important;
+  }
+
+  :global(.bp-lr) {
+    background: #2a2a2a !important;
+    border: 1px solid #4a4a4a !important;
+    color: #d0d0d0 !important;
+    opacity: 1 !important;
+  }
+
+  :global(.bp-lr:hover) {
+    background: #303030 !important;
+    border-color: #5fafaf !important;
+    color: #5fafaf !important;
+  }
+
+  :global(.bp-img) {
+    background: transparent !important;
+  }
+
+  /* Ensure lightbox is above other z-indexed elements */
+  :global(.bp-wrap) {
+    z-index: 2000 !important;
+  }
 </style>
