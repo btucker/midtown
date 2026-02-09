@@ -47,6 +47,11 @@ pub struct GitHubState {
     /// This enables PR continuity when the original author is unavailable.
     #[serde(default)]
     pub pr_author_sessions: HashMap<u64, PrAuthorSession>,
+
+    /// GitHub API rate limit state (GraphQL and REST quotas).
+    /// Fetched periodically to enable adaptive throttling when quotas run low.
+    #[serde(default)]
+    pub rate_limit: crate::github_rate_limit::GitHubRateLimit,
 }
 
 /// A pending reviewer spawn triggered by a webhook event.

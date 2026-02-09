@@ -233,6 +233,12 @@ pub enum Effect {
     /// for automatic cleanup on merge.
     #[allow(dead_code)]
     SetWorktreePrNumber { worktree_id: String, pr_number: u64 },
+    /// Update the GitHub API rate limit state in persistent storage.
+    ///
+    /// Called periodically (every 2 minutes) to track GraphQL and REST API quota
+    /// consumption. Used by adaptive throttling to reduce PR polling frequency
+    /// when quotas run low.
+    UpdateRateLimit(crate::github_rate_limit::GitHubRateLimit),
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -934,6 +940,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 debug!("Set PR #{} for worktree {}", pr_number, worktree_id);
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon state after setting PR number: {}", e);
+                }
+            }
+            Effect::UpdateRateLimit(rate_limit) => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.github.rate_limit = rate_limit.clone();
+                debug!("Updated GitHub rate limits: {}", rate_limit.summary());
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!("Failed to save daemon state after updating rate limit: {}", e);
                 }
             }
         }

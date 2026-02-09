@@ -147,6 +147,9 @@ pub struct WorldSnapshot {
     /// Count of open PRs that need review (not draft, no Claude review, no formal review).
     /// Used by task dispatch to prioritize reviews over new task pickup.
     pub prs_needing_review: usize,
+    /// GitHub API rate limit state (GraphQL and REST quotas).
+    /// Used by adaptive throttling to reduce polling frequency when quotas run low.
+    pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -357,6 +360,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         reviewed
     };
 
+    // ── GitHub rate limit ────────────────────────────────────────────────
+    let github_rate_limit = {
+        let ps = state.persistent_state.lock().await;
+        ps.github.rate_limit.clone()
+    };
+
     // ── Dependency state ──────────────────────────────────────────────────
     let coworkers_with_unblocked_deps = crate::tasks::get_coworkers_with_unblocked_dependents();
 
@@ -456,6 +465,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         reviewer_pr_assignments,
         reviewed_prs,
         prs_needing_review,
+        github_rate_limit,
         coworkers_with_unblocked_deps,
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
@@ -571,6 +581,7 @@ mod tests {
             is_at_dev_limit: false,
             now_utc: Utc::now(),
             repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         };
 
         assert_eq!(snapshot.coworker_stop_times.len(), 2);
@@ -652,6 +663,7 @@ mod tests {
             is_at_dev_limit: false,
             now_utc: Utc::now(),
             repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
         };
 
         assert!(snapshot.channel_messages.is_empty());

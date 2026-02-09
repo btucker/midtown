@@ -92,6 +92,9 @@ pub mod auth;
 // Persistent GitHub state (PR reviewer assignments)
 pub mod github_state;
 
+// GitHub API rate limit tracking
+pub mod github_rate_limit;
+
 // Task-based worktree registry
 pub mod worktree_registry;
 

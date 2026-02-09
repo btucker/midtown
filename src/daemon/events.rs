@@ -35,6 +35,11 @@ pub enum DaemonEvent {
     /// Previously ran in a separate `tokio::spawn` task, now integrated into the
     /// main select! loop to prevent spawn races with TaskDispatchTick.
     PrPollTick,
+    /// Periodic rate limit check: fetch GitHub API quotas and update state.
+    ///
+    /// Runs every 2 minutes to monitor GraphQL and REST API usage.
+    /// Used by adaptive throttling to reduce PR polling when quotas run low.
+    RateLimitCheckTick,
 }
 
 /// Evaluate a daemon event against the current world snapshot, returning effects.
@@ -73,15 +78,74 @@ pub async fn evaluate_tick(
         }
         DaemonEvent::PrPollTick => {
             // PR polling: check open PRs for issues, spawn reviewers, clean up merged worktrees.
+            // When GitHub API quota is critically low (< 5%), skip non-essential polling.
             let mut effects = Vec::new();
-            match super::pr::poll_prs_for_issues(snap, state).await {
-                Ok(pr_effects) => effects.extend(pr_effects),
-                Err(e) => {
-                    tracing::warn!("PR poll error: {}", e);
+
+            if snap.github_rate_limit.is_critical() {
+                tracing::warn!(
+                    "Skipping PR poll (GitHub API quota critical: {})",
+                    snap.github_rate_limit.summary()
+                );
+            } else {
+                // Normal PR polling when quota is not critical
+                match super::pr::poll_prs_for_issues(snap, state).await {
+                    Ok(pr_effects) => effects.extend(pr_effects),
+                    Err(e) => {
+                        tracing::warn!("PR poll error: {}", e);
+                    }
                 }
+                effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
             }
-            effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
+
             dedup_spawn_effects(effects)
+        }
+        DaemonEvent::RateLimitCheckTick => {
+            // Fetch GitHub API rate limits and update persistent state.
+            // This runs independently of PR polling to track quota consumption.
+            let mut effects = Vec::new();
+            if let Some(rate_limit) = crate::github_rate_limit::GitHubRateLimit::fetch() {
+                // Check if state changed (low → critical, critical → recovered, etc.)
+                let was_critical = snap.github_rate_limit.is_critical();
+                let was_low = snap.github_rate_limit.is_low();
+                let now_critical = rate_limit.is_critical();
+                let now_low = rate_limit.is_low();
+
+                // Warn when entering critical state (< 5%)
+                if now_critical && !was_critical {
+                    effects.push(Effect::PostSystemMessage {
+                        message: format!(
+                            "⚠️ GitHub API quota critical ({}). PR polling paused until reset at {}.",
+                            rate_limit.summary(),
+                            rate_limit.graphql.reset_time().format("%H:%M UTC")
+                        ),
+                    });
+                    effects.push(Effect::RecordCooldown {
+                        category: "rate_limit_critical".to_string(),
+                        key: "throttle_warning".to_string(),
+                    });
+                }
+                // Warn when entering low state (< 20%)
+                else if now_low && !was_low && !now_critical {
+                    effects.push(Effect::PostSystemMessage {
+                        message: format!(
+                            "⚠️ GitHub API quota low ({}). Consider reducing manual gh commands.",
+                            rate_limit.summary()
+                        ),
+                    });
+                }
+                // Post recovery message when quota resets
+                else if was_critical && !now_critical {
+                    effects.push(Effect::PostSystemMessage {
+                        message: format!(
+                            "✅ GitHub API quota recovered ({}). PR polling resumed.",
+                            rate_limit.summary()
+                        ),
+                    });
+                }
+
+                effects.push(Effect::UpdateRateLimit(rate_limit));
+            }
+            effects
         }
     }
 }
