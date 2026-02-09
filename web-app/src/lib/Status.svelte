@@ -231,6 +231,7 @@
 
   .task-text {
     color: #a8a8a8;
+    font-size: 0.75rem;
   }
 
   .started-at {
