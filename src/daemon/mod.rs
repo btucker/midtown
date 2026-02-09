@@ -1725,8 +1725,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     }
                 }
 
+                // Defense-in-depth: check process liveness via try_wait() to catch
+                // sessions where the process exited but drain_events didn't detect it
+                // (e.g., pipe buffering issues, partial reads, timing races).
+                let reconciled = state.session_manager.reconcile_process_health().await;
+                let mut all_stopped: Vec<String> = stopped;
+                if !reconciled.is_empty() {
+                    warn!(
+                        "Process reconciliation found {} dead session(s) missed by drain_events: {:?}",
+                        reconciled.len(),
+                        reconciled
+                    );
+                    all_stopped.extend(reconciled);
+                }
+
                 // Handle stopped sessions: deregister, record stop time, post to channel
-                for name in stopped {
+                for name in all_stopped {
                     warn!("Headless session '{}' exited unexpectedly", name);
                     state.coworkers.deregister(&name);
                     state.record_coworker_stop_time(&name);
