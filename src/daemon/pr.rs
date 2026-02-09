@@ -270,7 +270,9 @@ pub(super) async fn poll_prs_for_issues(
 
     // Run gh pr list command (include createdAt and isDraft for review filtering)
     // Include state field to filter out merged/closed PRs after restart
-    // Include comments and author for polling-based review comment detection
+    // NOTE: comments and author are fetched on-demand in collect_comment_notification_effects
+    // to reduce GraphQL cost (bulk poll runs every 30s for ALL PRs, but comment detection
+    // only needs to check PRs owned by coworkers/lead)
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
@@ -278,7 +280,7 @@ pub(super) async fn poll_prs_for_issues(
             "--state",
             "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,comments,author",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
         ])
         .output()
         .await?;
@@ -1122,6 +1124,35 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
     }]
 }
 
+/// Fetch PR details with comments and author for a specific PR.
+///
+/// This is used by `collect_comment_notification_effects` to fetch comment data
+/// on-demand, avoiding the GraphQL cost of fetching comments for ALL open PRs
+/// in the bulk poll.
+async fn fetch_pr_comments(
+    pr_number: u64,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "comments,author",
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr view failed for PR #{}: {}", pr_number, stderr).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pr_data: serde_json::Value = serde_json::from_str(&stdout)?;
+    Ok(pr_data)
+}
+
 /// Polling fallback for review comment notifications.
 ///
 /// When webhooks are degraded, this detects new review comments by comparing
@@ -1129,8 +1160,9 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
 /// (`PrIssueType::ReviewComment`) to avoid duplicate notifications.
 ///
 /// For each coworker-owned PR:
-/// 1. Count non-owner comments (excludes PR author and coworker's own comments)
-/// 2. If count increased since last poll, nudge/spawn the owner AND create a review
+/// 1. Fetch comments on-demand (not included in bulk poll to reduce GraphQL cost)
+/// 2. Count non-owner comments (excludes PR author and coworker's own comments)
+/// 3. If count increased since last poll, nudge/spawn the owner AND create a review
 ///    feedback task for consistent "task !X" formatting
 ///
 /// This enables the polling path to fill the gap identified in graceful degradation:
@@ -1169,8 +1201,17 @@ async fn collect_comment_notification_effects(
 
         // Check for lead/* branches first, before filtering by coworker ownership
         if is_lead_branch(head_ref) {
+            // Fetch PR details with comments on-demand
+            let pr_with_comments = match fetch_pr_comments(pr_number).await {
+                Ok(data) => data,
+                Err(e) => {
+                    debug!("Failed to fetch comments for PR #{}: {}", pr_number, e);
+                    continue;
+                }
+            };
+
             // Count all comments for lead PRs
-            let non_owner_count = count_non_owner_comments(pr, None);
+            let non_owner_count = count_non_owner_comments(&pr_with_comments, None);
 
             // Check if there are new comments since last poll
             let has_new = {
@@ -1221,8 +1262,17 @@ async fn collect_comment_notification_effects(
                 None => continue, // Not a coworker PR
             };
 
+        // Fetch PR details with comments on-demand
+        let pr_with_comments = match fetch_pr_comments(pr_number).await {
+            Ok(data) => data,
+            Err(e) => {
+                debug!("Failed to fetch comments for PR #{}: {}", pr_number, e);
+                continue;
+            }
+        };
+
         // Count non-owner comments
-        let non_owner_count = count_non_owner_comments(pr, Some(&owner));
+        let non_owner_count = count_non_owner_comments(&pr_with_comments, Some(&owner));
 
         // Check if there are new comments since last poll
         let has_new = {
