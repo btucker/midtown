@@ -2,12 +2,15 @@
   import { onMount } from 'svelte'
   import Channel from './lib/Channel.svelte'
   import ChannelList from './lib/ChannelList.svelte'
+  import ChannelHeader from './lib/ChannelHeader.svelte'
+  import Sidebar from './lib/Sidebar.svelte'
+  import DetailPanel from './lib/DetailPanel.svelte'
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
   import UsageBars from './lib/UsageBars.svelte'
   import AuthSwitcher from './lib/AuthSwitcher.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel } from './lib/store.js'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from './lib/api.js'
   import {
     pushSupported,
@@ -74,6 +77,10 @@
     } else {
       await subscribePush()
     }
+  }
+
+  function closeDetailPanel() {
+    detailPanelData.set(null)
   }
 </script>
 
@@ -161,8 +168,17 @@
       </button>
     </nav>
 
-    <div class="content">
+    <div class="content" data-detail-open={$detailPanelData !== null}>
       {#if activeView === 'board'}
+        <!-- Desktop: Sidebar component -->
+        <div class="desktop-sidebar">
+          <Sidebar
+            bind:projectDropdownOpen
+            onProjectSelect={selectProject}
+            onToggleProjectDropdown={toggleProjectDropdown}
+          />
+        </div>
+
         <!-- Mobile: overlay drawer + channel bar -->
         <div class="mobile-board-layout">
           <!-- Channel bar at top (mobile only) -->
@@ -194,9 +210,15 @@
 
           <!-- Main chat area -->
           <main class="channel-main">
+            <ChannelHeader />
             <Channel />
           </main>
         </div>
+
+        <!-- Detail panel (desktop only, shown on wide screens) -->
+        {#if $detailPanelData}
+          <DetailPanel panelData={$detailPanelData} onClose={closeDetailPanel} />
+        {/if}
       {:else if activeView === 'status'}
         <Status />
       {:else if activeView === 'tmux'}
@@ -233,9 +255,15 @@
     flex-direction: column;
     height: 100vh;
     height: 100dvh;
-    max-width: 600px;
-    margin: 0 auto;
     background: #0f0f0f;
+  }
+
+  /* Mobile: centered layout with max-width */
+  @media (max-width: 768px) {
+    main {
+      max-width: 600px;
+      margin: 0 auto;
+    }
   }
 
   header {
@@ -422,6 +450,13 @@
     flex-shrink: 0;
   }
 
+  /* Hide tab navigation on desktop (sidebar replaces it) */
+  @media (min-width: 769px) {
+    nav {
+      display: none;
+    }
+  }
+
   nav button {
     flex: 1;
     padding: 13px;
@@ -451,7 +486,36 @@
     flex-direction: column;
   }
 
-  /* Mobile board layout */
+  /* Desktop: three-column grid layout */
+  @media (min-width: 769px) {
+    .content {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      grid-template-areas: 'sidebar main';
+    }
+  }
+
+  /* Show detail panel on wide screens when panel is open */
+  @media (min-width: 1025px) {
+    .content[data-detail-open='true'] {
+      grid-template-columns: 260px 1fr 340px;
+      grid-template-areas: 'sidebar main detail';
+    }
+  }
+
+  /* Desktop sidebar wrapper */
+  .desktop-sidebar {
+    display: none;
+  }
+
+  @media (min-width: 769px) {
+    .desktop-sidebar {
+      display: block;
+      grid-area: sidebar;
+    }
+  }
+
+  /* Board layout container */
   .mobile-board-layout {
     display: flex;
     flex: 1;
@@ -460,16 +524,36 @@
     flex-direction: column;
   }
 
-  /* Mobile channel bar (hidden on desktop) */
+  /* Desktop: hide mobile layout, show only channel-main in grid */
+  @media (min-width: 769px) {
+    .mobile-board-layout {
+      display: contents; /* Allow grid children to participate in parent grid */
+    }
+
+    /* Hide mobile-specific elements on desktop */
+    .mobile-board-layout .mobile-channel-bar,
+    .mobile-board-layout .board-sidebar,
+    .mobile-board-layout .sidebar-overlay {
+      display: none;
+    }
+  }
+
+  /* Mobile channel bar (mobile only) */
   .mobile-channel-bar {
     display: none;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    padding-top: calc(12px + env(safe-area-inset-top, 0px));
-    background: #1a1a1a;
-    border-bottom: 2px solid #2a2a2a;
-    flex-shrink: 0;
+  }
+
+  @media (max-width: 768px) {
+    .mobile-channel-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      padding-top: calc(12px + env(safe-area-inset-top, 0px));
+      background: #1a1a1a;
+      border-bottom: 2px solid #2a2a2a;
+      flex-shrink: 0;
+    }
   }
 
   .channel-menu-btn {
@@ -527,6 +611,19 @@
     border-right: 2px solid #2a2a2a;
   }
 
+  /* Desktop: permanent sidebar in grid */
+  @media (min-width: 769px) {
+    .board-sidebar {
+      grid-area: sidebar;
+      width: 260px;
+      position: static;
+      transform: none;
+      box-shadow: none;
+      backdrop-filter: none;
+      background: #0f0f0f;
+    }
+  }
+
   .sidebar-scroll {
     flex: 1;
     overflow-y: auto;
@@ -537,6 +634,13 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Desktop: main panel in grid */
+  @media (min-width: 769px) {
+    .channel-main {
+      grid-area: main;
+    }
   }
 
   /* Responsive: mobile layout */
