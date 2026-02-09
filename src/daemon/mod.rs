@@ -1428,7 +1428,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let (chat_monitor_shutdown_tx, chat_monitor_shutdown_rx) = watch::channel(false);
     if config.chat_monitor_enabled {
         let state = Arc::clone(&state);
-        let channel_path = state.channel_router.default_channel().unwrap().channel_file_path().to_path_buf();
+        let channel_path = state
+            .channel_router
+            .default_channel()
+            .unwrap()
+            .channel_file_path()
+            .to_path_buf();
         tokio::spawn(async move {
             chat::chat_monitor_loop(state, channel_path, chat_monitor_shutdown_rx).await;
         });

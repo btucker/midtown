@@ -869,12 +869,7 @@ impl Clone for ChannelRouter {
         Self {
             base_dir: self.base_dir.clone(),
             default_channel_name: self.default_channel_name.clone(),
-            channels: std::sync::Mutex::new(
-                self.channels
-                    .lock()
-                    .unwrap()
-                    .clone()
-            ),
+            channels: std::sync::Mutex::new(self.channels.lock().unwrap().clone()),
         }
     }
 }
@@ -1747,11 +1742,29 @@ mod tests {
 
         // Clone should have access to the same cached channel
         assert_eq!(router2.open_channels().len(), 1);
-        assert!(router2.open_channels().contains(&"test-channel".to_string()));
+        assert!(
+            router2
+                .open_channels()
+                .contains(&"test-channel".to_string())
+        );
 
         // Both routers can send to the channel
-        router.send(&Message::for_channel("test-channel", "agent2", "Msg2", MessageType::Text)).unwrap();
-        router2.send(&Message::for_channel("test-channel", "agent3", "Msg3", MessageType::Text)).unwrap();
+        router
+            .send(&Message::for_channel(
+                "test-channel",
+                "agent2",
+                "Msg2",
+                MessageType::Text,
+            ))
+            .unwrap();
+        router2
+            .send(&Message::for_channel(
+                "test-channel",
+                "agent3",
+                "Msg3",
+                MessageType::Text,
+            ))
+            .unwrap();
 
         let channel = router.get_channel("test-channel").unwrap();
         let messages = read_all_with_retry(&channel, 5).unwrap();
