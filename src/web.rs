@@ -838,7 +838,24 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 .into_iter()
                 .map(|cw| {
                     // Look up current task from task storage (case-insensitive)
-                    let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
+                    let mut current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
+
+                    // If no task in storage, check if this coworker is working on a PR
+                    // via the worktree registry (reviewers and PR handoffs have no task_id)
+                    if current_task.is_none()
+                        && let Some(assignment) =
+                            persistent_state.worktree_registry.get_by_coworker(&cw.name)
+                        && let Some(pr_num) = assignment.pr_number
+                    {
+                        // Format the task description based on whether this is a reviewer
+                        // (task_id is None for reviewers) or a PR handoff (has a task_id)
+                        current_task = if assignment.task_id.is_none() {
+                            Some(format!("reviewing PR #{}", pr_num))
+                        } else {
+                            Some(format!("working on PR #{}", pr_num))
+                        };
+                    }
+
                     serde_json::json!({
                         "name": cw.name,
                         "status": cw.status.to_string(),
