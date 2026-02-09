@@ -116,7 +116,7 @@ impl Message {
             from: from.into(),
             content: content.into(),
             message_type,
-            channel: Some("midtown".to_string()),
+            channel: None,
             source_channel: None,
         }
     }
