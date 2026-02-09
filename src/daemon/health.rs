@@ -454,6 +454,173 @@ pub(super) async fn check_and_restart_stuck_coworkers(
     effects
 }
 
+/// Detect reviewers whose headless process has been stuck (no events for
+/// `REVIEWER_STUCK_DURATION`), kill them, and respawn with the same PR assignment.
+///
+/// Uses the same exclusion logic as task stuck detection but checks reviewer
+/// PR assignments instead of in-progress tasks. Implements backoff via
+/// `restart_count` — after `MAX_REVIEWER_RESTARTS`, posts an escalation
+/// warning and stops retrying.
+pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    if snap.active_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let restarts = crate::rules::decide_stuck_reviewer_restarts(
+        &snap.headless_process_health,
+        &snap.reviewer_pr_assignments,
+        &snap.reviewer_restart_counts,
+        &snap.usage_limited_coworkers,
+        &snap.api_error_coworkers,
+        &snap.attached_coworkers,
+        snap.now_utc,
+        REVIEWER_STUCK_DURATION,
+        MAX_REVIEWER_RESTARTS,
+    );
+
+    let mut effects = Vec::new();
+    for restart in restarts {
+        let new_restart_count = restart.restart_count + 1;
+
+        info!(
+            "Reviewer {} stuck reviewing PR #{} (no events for {}s, restart {}/{})",
+            restart.name,
+            restart.pr_number,
+            REVIEWER_STUCK_DURATION.as_secs(),
+            new_restart_count,
+            MAX_REVIEWER_RESTARTS,
+        );
+
+        // Shut down the stuck reviewer
+        effects.push(Effect::ShutdownCoworker {
+            name: restart.name.clone(),
+            message: String::new(),
+        });
+
+        // Respawn with incremented restart count
+        let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);
+        let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
+
+        let mut config =
+            crate::launch::LaunchConfig::reviewer(restart.name.clone(), restart.pr_number);
+        config.working_dir = Some(wt_path.clone());
+
+        effects.push(Effect::EnsureWorktree {
+            worktree_id: worktree_id.clone(),
+            path: wt_path,
+        });
+
+        let on_success = vec![
+            Effect::BindCoworkerToWorktree {
+                worktree_id,
+                coworker: restart.name.clone(),
+            },
+            Effect::BroadcastCoworkerUpdate {
+                name: restart.name.clone(),
+                status: "running".to_string(),
+                current_task: Some(format!("reviewing PR #{}", restart.pr_number)),
+            },
+            Effect::AssignReviewer {
+                pr_number: restart.pr_number,
+                reviewer_name: restart.name.clone(),
+                source: crate::github_state::AssignmentSource::Manual,
+                restart_count: new_restart_count,
+            },
+        ];
+
+        let on_failure = vec![Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
+                restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
+            ),
+            channel: None,
+        }];
+
+        effects.push(Effect::SpawnCoworkerWithCallbacks {
+            config,
+            on_success,
+            on_failure,
+        });
+
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🔄 Restarted stuck reviewer {} for PR #{} (no events for {}s, attempt {}/{})",
+                restart.name,
+                restart.pr_number,
+                REVIEWER_STUCK_DURATION.as_secs(),
+                new_restart_count,
+                MAX_REVIEWER_RESTARTS,
+            ),
+            channel: None,
+        });
+    }
+
+    // Check for reviewers that have hit the restart limit and emit escalation warnings.
+    // These are reviewers whose restart_count >= MAX_REVIEWER_RESTARTS that were
+    // filtered out by decide_stuck_reviewer_restarts(). We detect them by checking
+    // for alive, stuck reviewers with maxed-out restart counts.
+    let stuck_threshold = chrono::Duration::from_std(REVIEWER_STUCK_DURATION).unwrap_or_default();
+    for (name, health) in &snap.headless_process_health {
+        if !health.is_alive {
+            continue;
+        }
+        let pr_number = match snap.reviewer_pr_assignments.get(name) {
+            Some(pr) => *pr,
+            None => continue,
+        };
+        let restart_count = snap
+            .reviewer_restart_counts
+            .get(&pr_number)
+            .copied()
+            .unwrap_or(0);
+        if restart_count < MAX_REVIEWER_RESTARTS {
+            continue;
+        }
+        // Check if actually stuck (same criteria as the pure function)
+        let last_event = match health.last_event_at {
+            Some(t) => t,
+            None => continue,
+        };
+        if snap.now_utc.signed_duration_since(last_event) < stuck_threshold {
+            continue;
+        }
+        // Skip if already excluded
+        if snap.usage_limited_coworkers.contains(&name.to_lowercase())
+            || snap.api_error_coworkers.contains(&name.to_lowercase())
+            || snap.attached_coworkers.contains(&name.to_lowercase())
+            || health.has_running_subagent
+            || health.has_pending_tool
+        {
+            continue;
+        }
+
+        warn!(
+            "Reviewer {} stuck on PR #{} after {} restarts — escalating to lead",
+            name, pr_number, restart_count
+        );
+
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🚨 Reviewer {} is stuck on PR #{} after {} restart attempts. \
+                 Manual intervention needed — the reviewer keeps getting stuck on this PR.",
+                name, pr_number, restart_count
+            ),
+            channel: None,
+        });
+        effects.push(Effect::NudgeLead {
+            message: format!(
+                "Reviewer {} is stuck on PR #{} after {} restarts. Please investigate.",
+                name, pr_number, restart_count
+            ),
+        });
+    }
+
+    effects
+}
+
 /// Check headless coworker process health for usage/rate limit detection.
 /// If detected, schedule a nudge for when the limit expires.
 ///
@@ -899,6 +1066,7 @@ mod tests {
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: true,
             // Set nudge time in the past so it fires

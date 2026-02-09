@@ -135,6 +135,9 @@ pub enum Effect {
         pr_number: u64,
         reviewer_name: String,
         source: crate::github_state::AssignmentSource,
+        /// How many times this reviewer has been restarted for this PR.
+        /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
+        restart_count: u32,
     },
     /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
     ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
@@ -686,9 +689,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 pr_number,
                 reviewer_name,
                 source,
+                restart_count,
             } => {
                 let mut ps = state.persistent_state.lock().await;
-                ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                if restart_count > 0 {
+                    ps.github.assign_reviewer_with_restart_count(
+                        pr_number,
+                        &reviewer_name,
+                        source,
+                        restart_count,
+                    );
+                } else {
+                    ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon-state.json: {}", e);
                 }

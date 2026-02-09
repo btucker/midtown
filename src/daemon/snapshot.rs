@@ -147,6 +147,9 @@ pub struct WorldSnapshot {
     /// Count of open PRs that need review (not draft, no Claude review, no formal review).
     /// Used by task dispatch to prioritize reviews over new task pickup.
     pub prs_needing_review: usize,
+    /// PR number → restart count for reviewer assignments.
+    /// Used by stuck reviewer detection to implement backoff.
+    pub reviewer_restart_counts: HashMap<u64, u32>,
     /// GitHub API rate limit state (GraphQL and REST quotas).
     /// Used by adaptive throttling to reduce polling frequency when quotas run low.
     pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
@@ -337,7 +340,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .collect();
 
     // ── Reviewer state ──────────────────────────────────────────────────
-    let (active_reviewers, reviewer_pr_assignments) = {
+    let (active_reviewers, reviewer_pr_assignments, reviewer_restart_counts) = {
         let ps = state.persistent_state.lock().await;
         let reviewers = ps.github.active_reviewers();
         // Collect reviewer → PR assignments for all active coworkers
@@ -349,7 +352,15 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
                     .map(|pr| (cw.name.clone(), pr))
             })
             .collect();
-        (reviewers, assignments)
+        // Collect PR → restart_count for stuck reviewer backoff
+        let restart_counts: HashMap<u64, u32> = ps
+            .github
+            .pr_reviewers
+            .iter()
+            .filter(|(_, a)| a.restart_count > 0)
+            .map(|(pr, a)| (*pr, a.restart_count))
+            .collect();
+        (reviewers, assignments, restart_counts)
     };
 
     // Pre-check review status for all assigned PRs so decision logic doesn't need API calls
@@ -469,6 +480,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         reviewer_pr_assignments,
         reviewed_prs,
         prs_needing_review,
+        reviewer_restart_counts,
         github_rate_limit,
         freshly_fetched_rate_limit: None,
         coworkers_with_unblocked_deps,
@@ -571,6 +583,7 @@ mod tests {
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
@@ -654,6 +667,7 @@ mod tests {
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
