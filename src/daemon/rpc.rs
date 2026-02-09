@@ -218,7 +218,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
             match (name, question) {
                 (Some(name), Some(question)) => {
-                    handle_coworker_asking(request.id, name, question, state)
+                    handle_coworker_asking(request.id, name, question, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -1237,7 +1237,7 @@ async fn handle_coworker_nudge(
 /// 1. Posts the question to the channel
 /// 2. Nudges the Lead with the question
 /// 3. Marks the coworker as waiting for feedback
-fn handle_coworker_asking(
+async fn handle_coworker_asking(
     id: RequestId,
     name: &str,
     question: &str,
@@ -1245,7 +1245,7 @@ fn handle_coworker_asking(
 ) -> Response {
     // Post question to channel
     let msg = Message::text(name, format!("Question for Lead: {}", question));
-    if let Err(e) = state.send_and_broadcast(&msg) {
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
         error!("Failed to post question to channel: {}", e);
     }
 
@@ -2773,10 +2773,12 @@ async fn handle_session_attach(id: RequestId, target: &str, state: &DaemonState)
     );
 
     // Post to channel
-    let _ = state.send_and_broadcast(&Message::system(format!(
-        "Attached to {} — headless paused, interactive tmux session active",
-        name
-    )));
+    let _ = state
+        .send_and_broadcast_async(&Message::system(format!(
+            "Attached to {} — headless paused, interactive tmux session active",
+            name
+        )))
+        .await;
 
     Response::success(
         id,
@@ -2853,10 +2855,12 @@ async fn handle_session_detach(id: RequestId, name: &str, state: &DaemonState) -
                 name, session_id
             );
 
-            let _ = state.send_and_broadcast(&Message::system(format!(
-                "Detached from {} — headless session resumed",
-                name
-            )));
+            let _ = state
+                .send_and_broadcast_async(&Message::system(format!(
+                    "Detached from {} — headless session resumed",
+                    name
+                )))
+                .await;
 
             state.broadcast_coworker_update(&name, "running", None);
 
