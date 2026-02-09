@@ -419,18 +419,26 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             ),
         );
 
+        // Look up the task's channel from the snapshot
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == restart.task_id)
+            .and_then(|t| t.channel.clone());
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            restart.name.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::Fresh,
+            Some(prompt),
+        );
+        config.channel = channel.clone();
+
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
         });
-        effects.push(Effect::SpawnCoworker(
-            crate::launch::LaunchConfig::coworker(
-                restart.name.clone(),
-                state.repo_name.clone(),
-                crate::launch::SessionMode::Fresh,
-                Some(prompt),
-            ),
-        ));
+        effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
@@ -439,7 +447,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                 COWORKER_STUCK_DURATION.as_secs(),
                 restart.task_id
             ),
-            channel: None,
+            channel,
         });
     }
 
@@ -680,18 +688,26 @@ pub(super) async fn check_and_respawn_dead_processes(
             ),
         );
 
+        // Look up the task's channel from the snapshot
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == *task_id)
+            .and_then(|t| t.channel.clone());
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            name.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::Fresh,
+            Some(prompt),
+        );
+        config.channel = channel.clone();
+
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
         });
-        effects.push(Effect::SpawnCoworker(
-            crate::launch::LaunchConfig::coworker(
-                name.clone(),
-                state.repo_name.clone(),
-                crate::launch::SessionMode::Fresh,
-                Some(prompt),
-            ),
-        ));
+        effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {
             category: "process_respawn".to_string(),
             key: name.clone(),
@@ -702,7 +718,7 @@ pub(super) async fn check_and_respawn_dead_processes(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
                 name, exit_code, task_id
             ),
-            channel: None,
+            channel,
         });
     }
 
