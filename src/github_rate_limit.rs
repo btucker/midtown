@@ -5,7 +5,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::process::Command;
 use tracing::{debug, warn};
 
 /// GitHub API rate limit state for both GraphQL and REST quotas.
@@ -98,11 +97,15 @@ struct QuotaResponse {
 }
 
 impl GitHubRateLimit {
-    /// Fetch current rate limit state from the GitHub API.
+    /// Fetch current rate limit state from the GitHub API (async).
     ///
+    /// Uses `tokio::process::Command` to avoid blocking the async runtime.
     /// Returns `None` if the API call fails or cannot be parsed.
-    pub fn fetch() -> Option<Self> {
-        let output = Command::new("gh").args(["api", "rate_limit"]).output();
+    pub async fn fetch() -> Option<Self> {
+        let output = tokio::process::Command::new("gh")
+            .args(["api", "rate_limit"])
+            .output()
+            .await;
 
         let output = match output {
             Ok(o) if o.status.success() => o,

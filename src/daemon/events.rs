@@ -78,7 +78,8 @@ pub async fn evaluate_tick(
         }
         DaemonEvent::PrPollTick => {
             // PR polling: check open PRs for issues, spawn reviewers, clean up merged worktrees.
-            // When GitHub API quota is critically low (< 5%), skip non-essential polling.
+            // When GitHub API quota is critically low (< 5%), skip API-calling PR polling
+            // but still run pure cleanup functions that only read from the snapshot.
             let mut effects = Vec::new();
 
             if snap.github_rate_limit.is_critical() {
@@ -94,60 +95,93 @@ pub async fn evaluate_tick(
                         tracing::warn!("PR poll error: {}", e);
                     }
                 }
-                effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
             }
+
+            // Always run pure cleanup — reads only from WorldSnapshot, no API calls.
+            // Must run even during rate limiting to prevent orphaned worktrees.
+            effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
 
             dedup_spawn_effects(effects)
         }
         DaemonEvent::RateLimitCheckTick => {
-            // Fetch GitHub API rate limits and update persistent state.
-            // This runs independently of PR polling to track quota consumption.
-            let mut effects = Vec::new();
-            if let Some(rate_limit) = crate::github_rate_limit::GitHubRateLimit::fetch() {
-                // Check if state changed (low → critical, critical → recovered, etc.)
-                let was_critical = snap.github_rate_limit.is_critical();
-                let was_low = snap.github_rate_limit.is_low();
-                let now_critical = rate_limit.is_critical();
-                let now_low = rate_limit.is_low();
-
-                // Warn when entering critical state (< 5%)
-                if now_critical && !was_critical {
-                    effects.push(Effect::PostSystemMessage {
-                        message: format!(
-                            "⚠️ GitHub API quota critical ({}). PR polling paused until reset at {}.",
-                            rate_limit.summary(),
-                            rate_limit.graphql.reset_time().format("%H:%M UTC")
-                        ),
-                    });
-                    effects.push(Effect::RecordCooldown {
-                        category: "rate_limit_critical".to_string(),
-                        key: "throttle_warning".to_string(),
-                    });
-                }
-                // Warn when entering low state (< 20%)
-                else if now_low && !was_low && !now_critical {
-                    effects.push(Effect::PostSystemMessage {
-                        message: format!(
-                            "⚠️ GitHub API quota low ({}). Consider reducing manual gh commands.",
-                            rate_limit.summary()
-                        ),
-                    });
-                }
-                // Post recovery message when quota resets
-                else if was_critical && !now_critical {
-                    effects.push(Effect::PostSystemMessage {
-                        message: format!(
-                            "✅ GitHub API quota recovered ({}). PR polling resumed.",
-                            rate_limit.summary()
-                        ),
-                    });
-                }
-
-                effects.push(Effect::UpdateRateLimit(rate_limit));
-            }
-            effects
+            // Pure decision logic: compare freshly fetched rate limits (from snapshot)
+            // against previous state to detect transitions and emit effects.
+            // The actual API fetch happens in run_tick() during snapshot collection.
+            evaluate_rate_limit_check(snap)
         }
     }
+}
+
+/// Pure decision function for rate limit state transitions.
+///
+/// Compares `snap.freshly_fetched_rate_limit` (the new data from GitHub API)
+/// against `snap.github_rate_limit` (the previous persisted state) and emits
+/// appropriate warning, recovery, or update effects.
+///
+/// This function performs no I/O — all data comes from the immutable snapshot.
+fn evaluate_rate_limit_check(snap: &WorldSnapshot) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    let Some(rate_limit) = &snap.freshly_fetched_rate_limit else {
+        return effects;
+    };
+
+    let was_critical = snap.github_rate_limit.is_critical();
+    let was_low = snap.github_rate_limit.is_low();
+    let now_critical = rate_limit.is_critical();
+    let now_low = rate_limit.is_low();
+
+    // Warn when entering critical state (< 5%)
+    if now_critical && !was_critical {
+        effects.push(Effect::PostSystemMessage {
+            message: format!(
+                "⚠️ GitHub API quota critical ({}). PR polling paused until reset at {}.",
+                rate_limit.summary(),
+                rate_limit.graphql.reset_time().format("%H:%M UTC")
+            ),
+        });
+        effects.push(Effect::RecordCooldown {
+            category: "rate_limit_critical".to_string(),
+            key: "throttle_warning".to_string(),
+        });
+    }
+    // Warn when entering low state (< 20%)
+    else if now_low && !was_low && !now_critical {
+        effects.push(Effect::PostSystemMessage {
+            message: format!(
+                "⚠️ GitHub API quota low ({}). Consider reducing manual gh commands.",
+                rate_limit.summary()
+            ),
+        });
+        effects.push(Effect::RecordCooldown {
+            category: "rate_limit_low".to_string(),
+            key: "throttle_warning".to_string(),
+        });
+    }
+    // Post recovery message when fully recovered (was critical/low, now normal)
+    else if was_critical && !now_critical && !now_low {
+        effects.push(Effect::PostSystemMessage {
+            message: format!(
+                "✅ GitHub API quota recovered ({}). PR polling resumed.",
+                rate_limit.summary()
+            ),
+        });
+    } else if was_critical && !now_critical && now_low {
+        // Transitioning from critical to low — polling resumes but still constrained
+        effects.push(Effect::PostSystemMessage {
+            message: format!(
+                "⬆️ GitHub API quota improved ({}) — PR polling resumed, but quota still low.",
+                rate_limit.summary()
+            ),
+        });
+    } else if was_low && !now_low && !was_critical {
+        // Transitioning from low to normal (was low but not critical)
+        effects.push(Effect::PostSystemMessage {
+            message: format!("✅ GitHub API quota recovered ({}).", rate_limit.summary()),
+        });
+    }
+
+    effects.push(Effect::UpdateRateLimit(rate_limit.clone()));
+    effects
 }
 
 /// Deduplicate spawn effects by coworker name.
@@ -267,6 +301,207 @@ fn is_registry_effect(effect: &Effect) -> bool {
 mod tests {
     use super::*;
     use crate::launch::{CoworkerRole, LaunchConfig, SessionMode, TaskMode};
+
+    // ── Rate limit decision tests ──────────────────────────────────────
+
+    /// Create a GitHubRateLimit with the given remaining percentage (0-100).
+    fn make_rate_limit(remaining_pct: u32) -> crate::github_rate_limit::GitHubRateLimit {
+        let remaining = (5000 * remaining_pct) / 100;
+        let used = 5000 - remaining;
+        crate::github_rate_limit::GitHubRateLimit {
+            graphql: crate::github_rate_limit::QuotaState {
+                limit: 5000,
+                used,
+                remaining,
+                reset: 0,
+            },
+            core: crate::github_rate_limit::QuotaState {
+                limit: 5000,
+                used: 0,
+                remaining: 5000,
+                reset: 0,
+            },
+            last_updated: chrono::Utc::now(),
+        }
+    }
+
+    /// Create a minimal WorldSnapshot with the given previous and fresh rate limits.
+    fn make_rate_limit_snapshot(
+        previous: crate::github_rate_limit::GitHubRateLimit,
+        fresh: Option<crate::github_rate_limit::GitHubRateLimit>,
+    ) -> WorldSnapshot {
+        use std::collections::{HashMap, HashSet};
+        WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            github_rate_limit: previous,
+            freshly_fetched_rate_limit: fresh,
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+        }
+    }
+
+    /// Count effects matching PostSystemMessage.
+    fn count_system_messages(effects: &[Effect]) -> usize {
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::PostSystemMessage { .. }))
+            .count()
+    }
+
+    /// Extract the message text from a PostSystemMessage effect.
+    fn get_system_message(effects: &[Effect], idx: usize) -> &str {
+        let msgs: Vec<&str> = effects
+            .iter()
+            .filter_map(|e| {
+                if let Effect::PostSystemMessage { message } = e {
+                    Some(message.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        msgs[idx]
+    }
+
+    /// Count effects matching RecordCooldown.
+    fn count_cooldowns(effects: &[Effect]) -> usize {
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RecordCooldown { .. }))
+            .count()
+    }
+
+    fn has_update_rate_limit(effects: &[Effect]) -> bool {
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::UpdateRateLimit(_)))
+    }
+
+    #[test]
+    fn test_rate_limit_no_fresh_data_returns_empty() {
+        let snap = make_rate_limit_snapshot(make_rate_limit(100), None);
+        let effects = evaluate_rate_limit_check(&snap);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn test_rate_limit_normal_to_normal_just_updates() {
+        let snap = make_rate_limit_snapshot(make_rate_limit(80), Some(make_rate_limit(75)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 0);
+        assert!(has_update_rate_limit(&effects));
+    }
+
+    #[test]
+    fn test_rate_limit_normal_to_low_warns_with_cooldown() {
+        let snap = make_rate_limit_snapshot(make_rate_limit(25), Some(make_rate_limit(15)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 1);
+        assert!(get_system_message(&effects, 0).contains("low"));
+        assert_eq!(count_cooldowns(&effects), 1);
+        assert!(has_update_rate_limit(&effects));
+    }
+
+    #[test]
+    fn test_rate_limit_normal_to_critical_warns_with_cooldown() {
+        let snap = make_rate_limit_snapshot(make_rate_limit(25), Some(make_rate_limit(3)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 1);
+        assert!(get_system_message(&effects, 0).contains("critical"));
+        assert_eq!(count_cooldowns(&effects), 1);
+        assert!(has_update_rate_limit(&effects));
+    }
+
+    #[test]
+    fn test_rate_limit_critical_to_normal_full_recovery() {
+        let snap = make_rate_limit_snapshot(make_rate_limit(3), Some(make_rate_limit(80)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 1);
+        assert!(get_system_message(&effects, 0).contains("recovered"));
+        assert!(get_system_message(&effects, 0).contains("resumed"));
+        assert!(has_update_rate_limit(&effects));
+    }
+
+    #[test]
+    fn test_rate_limit_critical_to_low_partial_recovery() {
+        // Issue #5: Critical → low should NOT say "recovered", should indicate partial improvement
+        let snap = make_rate_limit_snapshot(make_rate_limit(3), Some(make_rate_limit(15)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 1);
+        let msg = get_system_message(&effects, 0);
+        assert!(
+            msg.contains("improved"),
+            "Should say 'improved', not 'recovered': {}",
+            msg
+        );
+        assert!(msg.contains("still low"), "Should note still low: {}", msg);
+        assert!(has_update_rate_limit(&effects));
+    }
+
+    #[test]
+    fn test_rate_limit_low_to_normal_recovery() {
+        let snap = make_rate_limit_snapshot(make_rate_limit(15), Some(make_rate_limit(80)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 1);
+        assert!(get_system_message(&effects, 0).contains("recovered"));
+        assert!(has_update_rate_limit(&effects));
+    }
+
+    #[test]
+    fn test_rate_limit_staying_critical_no_new_warning() {
+        // Already critical, still critical → no new warning, just update
+        let snap = make_rate_limit_snapshot(make_rate_limit(3), Some(make_rate_limit(2)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 0);
+        assert_eq!(count_cooldowns(&effects), 0);
+        assert!(has_update_rate_limit(&effects));
+    }
+
+    #[test]
+    fn test_rate_limit_staying_low_no_new_warning() {
+        // Already low, still low → no new warning, just update
+        let snap = make_rate_limit_snapshot(make_rate_limit(15), Some(make_rate_limit(12)));
+        let effects = evaluate_rate_limit_check(&snap);
+        assert_eq!(count_system_messages(&effects), 0);
+        assert_eq!(count_cooldowns(&effects), 0);
+        assert!(has_update_rate_limit(&effects));
+    }
 
     fn make_spawn(name: &str) -> Effect {
         Effect::SpawnCoworker(LaunchConfig {

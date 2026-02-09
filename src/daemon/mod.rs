@@ -1119,7 +1119,12 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
 
 /// Run the full snapshot→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
-    let snap = snapshot::collect_world_snapshot(state).await;
+    let mut snap = snapshot::collect_world_snapshot(state).await;
+    // For RateLimitCheckTick, fetch fresh rate limit data during the snapshot phase
+    // (I/O belongs here, not in the pure evaluate_tick decision phase).
+    if matches!(event, events::DaemonEvent::RateLimitCheckTick) {
+        snap.freshly_fetched_rate_limit = crate::github_rate_limit::GitHubRateLimit::fetch().await;
+    }
     let tick_effects = events::evaluate_tick(event, &snap, state).await;
     effects::execute_effects(tick_effects, state).await;
 }
@@ -1130,7 +1135,11 @@ async fn collect_and_evaluate(
     event: &events::DaemonEvent,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    let snap = snapshot::collect_world_snapshot(state).await;
+    let mut snap = snapshot::collect_world_snapshot(state).await;
+    // For RateLimitCheckTick, fetch fresh rate limit data during the snapshot phase
+    if matches!(event, events::DaemonEvent::RateLimitCheckTick) {
+        snap.freshly_fetched_rate_limit = crate::github_rate_limit::GitHubRateLimit::fetch().await;
+    }
     events::evaluate_tick(event, &snap, state).await
 }
 
