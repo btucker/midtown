@@ -489,3 +489,33 @@ export async function switchAuthProfile(profile) {
     authSwitching.set(false)
   }
 }
+
+// Upload a file (image or document) to the daemon.
+// Returns { ok: true, path, filename } on success, or { ok: false, error } on failure.
+export async function uploadFile(file) {
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const res = await fetch(`${getApiBase()}/upload`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      return { ok: true, path: data.path, filename: data.filename }
+    }
+
+    let errorMsg = `Upload failed (${res.status})`
+    try {
+      const body = await res.json()
+      if (body.error) errorMsg = body.error
+    } catch (_) { /* response not JSON */ }
+    console.error('Upload failed:', errorMsg)
+    return { ok: false, error: errorMsg }
+  } catch (err) {
+    console.error('Failed to upload file:', err)
+    return { ok: false, error: 'Network error' }
+  }
+}

@@ -1,6 +1,6 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus } from './store.js'
-  import { sendMessage } from './api.js'
+  import { sendMessage, uploadFile } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
@@ -9,6 +9,8 @@
   let messagesContainer = $state(null)
   let autoScroll = $state(true)
   let selectedTask = $state(null)
+  let pendingFile = $state(null)
+  let uploading = $state(false)
 
   // Filter messages by active channel
   let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
@@ -186,12 +188,62 @@
     }
   })
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault()
-    if (inputText.trim()) {
+
+    // If there's a pending file, upload it first
+    if (pendingFile && !uploading) {
+      uploading = true
+      const result = await uploadFile(pendingFile)
+      uploading = false
+
+      if (result.ok) {
+        // Send message to lead with file path
+        const message = inputText.trim()
+          ? `${inputText.trim()}\n\n[Attached: ${result.path}]`
+          : `[Attached file: ${result.filename}]\nPlease read: ${result.path}`
+
+        sendMessage(message)
+        inputText = ''
+        pendingFile = null
+      } else {
+        alert(`Upload failed: ${result.error}`)
+        return
+      }
+    } else if (inputText.trim()) {
       sendMessage(inputText.trim())
       inputText = ''
     }
+  }
+
+  function handlePaste(e) {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    for (const item of items) {
+      // Check for image types
+      if (item.type.startsWith('image/')) {
+        e.preventDefault()
+        const file = item.getAsFile()
+        if (file) {
+          pendingFile = file
+        }
+        return
+      }
+      // Check for files (PDFs, etc.)
+      if (item.kind === 'file') {
+        e.preventDefault()
+        const file = item.getAsFile()
+        if (file) {
+          pendingFile = file
+        }
+        return
+      }
+    }
+  }
+
+  function clearPendingFile() {
+    pendingFile = null
   }
 
   function handleKeyDown(e) {
@@ -319,13 +371,31 @@
   {/if}
 
   <form class="input-area" onsubmit={handleSubmit}>
-    <textarea
-      bind:value={inputText}
-      placeholder="Message to #{$activeChannel}..."
-      rows="1"
-      onkeydown={handleKeyDown}
-    ></textarea>
-    <button type="submit" disabled={!inputText.trim()}>Send</button>
+    {#if pendingFile}
+      <div class="file-preview">
+        {#if pendingFile.type.startsWith('image/')}
+          <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="preview-image" />
+        {:else}
+          <div class="preview-file">
+            <span class="file-icon">📄</span>
+            <span class="file-name">{pendingFile.name}</span>
+          </div>
+        {/if}
+        <button type="button" class="remove-file" onclick={clearPendingFile} aria-label="Remove file">×</button>
+      </div>
+    {/if}
+    <div class="input-row">
+      <textarea
+        bind:value={inputText}
+        placeholder="Message to #{$activeChannel}..."
+        rows="1"
+        onkeydown={handleKeyDown}
+        onpaste={handlePaste}
+      ></textarea>
+      <button type="submit" disabled={!inputText.trim() && !pendingFile || uploading}>
+        {uploading ? 'Uploading...' : 'Send'}
+      </button>
+    </div>
   </form>
 </div>
 
@@ -645,11 +715,78 @@
   /* Input area */
   .input-area {
     display: flex;
+    flex-direction: column;
     gap: 8px;
     padding: 12px;
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     background: #262626;
     border-top: 1px solid #3a3a3a;
+  }
+
+  /* File preview */
+  .file-preview {
+    position: relative;
+    display: inline-block;
+    max-width: 200px;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    padding: 8px;
+    background: #1c1c1c;
+  }
+
+  .preview-image {
+    max-width: 100%;
+    max-height: 120px;
+    border-radius: 4px;
+    display: block;
+  }
+
+  .preview-file {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #d0d0d0;
+  }
+
+  .file-icon {
+    font-size: 1.5rem;
+  }
+
+  .file-name {
+    font-size: 0.85rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .remove-file {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    font-size: 1.2rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border: 1px solid #3a3a3a;
+  }
+
+  .remove-file:hover {
+    background: rgba(255, 87, 87, 0.8);
+    border-color: #ff5f5f;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 8px;
+    width: 100%;
   }
 
   textarea {

@@ -7,7 +7,7 @@
 use axum::{
     Json, Router,
     extract::{
-        Query, State,
+        DefaultBodyLimit, Multipart, Query, State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
@@ -379,6 +379,8 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/auth/profiles", get(api_auth_profiles))
         .route("/api/auth/switch", post(api_auth_switch))
         .route("/api/usage", get(api_usage))
+        .route("/api/upload", post(api_upload))
+        .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -1255,6 +1257,114 @@ async fn api_usage() -> Result<impl IntoResponse, StatusCode> {
         }))),
         None => Err(StatusCode::NO_CONTENT),
     }
+}
+
+/// Upload a file (image or document) from the web UI.
+///
+/// Accepts multipart/form-data with a file field. Saves the file to
+/// `~/.midtown/projects/<repo>/uploads/<timestamp>-<filename>` and returns
+/// the absolute path for the lead to read.
+///
+/// Files are stored with a timestamp prefix to avoid collisions and allow
+/// easy chronological sorting.
+async fn api_upload(
+    State(state): State<Arc<WebState>>,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    // Create uploads directory if it doesn't exist
+    let uploads_dir = crate::paths::projects_dir_for_repo(&state.config.repo).join("uploads");
+    if let Err(e) = tokio::fs::create_dir_all(&uploads_dir).await {
+        error!("Failed to create uploads directory: {}", e);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Failed to create uploads directory" })),
+        ));
+    }
+
+    // Process the multipart upload
+    loop {
+        let field: axum::extract::multipart::Field<'_> = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => {
+                error!("Failed to read multipart field: {}", e);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({ "error": "Invalid multipart data" })),
+                ));
+            }
+        };
+
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name != "file" {
+            continue;
+        }
+
+        let filename = field
+            .file_name()
+            .map(|s: &str| s.to_string())
+            .unwrap_or_else(|| "upload".to_string());
+
+        // Validate filename (prevent directory traversal)
+        if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": "Invalid filename" })),
+            ));
+        }
+
+        let data = match field.bytes().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                error!("Failed to read file data: {}", e);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({ "error": "Failed to read file data" })),
+                ));
+            }
+        };
+
+        // Enforce max file size (10MB)
+        const MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
+        if data.len() > MAX_FILE_SIZE {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                axum::Json(serde_json::json!({ "error": "File too large (max 10MB)" })),
+            ));
+        }
+
+        // Generate timestamped filename
+        let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let safe_filename = format!("{}-{}", timestamp, filename);
+        let file_path = uploads_dir.join(&safe_filename);
+
+        // Write file to disk
+        if let Err(e) = tokio::fs::write(&file_path, &data).await {
+            error!("Failed to write uploaded file: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": "Failed to save file" })),
+            ));
+        }
+
+        info!(
+            "Uploaded file: {} ({} bytes) -> {}",
+            filename,
+            data.len(),
+            file_path.display()
+        );
+
+        // Return the absolute path so the lead can read it
+        return Ok(axum::Json(serde_json::json!({
+            "path": file_path.to_string_lossy().to_string(),
+            "filename": safe_filename,
+        })));
+    }
+
+    Err((
+        StatusCode::BAD_REQUEST,
+        axum::Json(serde_json::json!({ "error": "No file provided" })),
+    ))
 }
 
 /// WebSocket upgrade handler

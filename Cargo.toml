@@ -34,7 +34,7 @@ fs2 = "0.4"
 once_cell = "1.21"
 
 # Webhook HTTP server
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 tower-http = { version = "0.6", features = ["trace", "fs", "cors"] }
 
 # Webhook signature verification
@@ -78,7 +78,7 @@ ntest = "0.9"  # Test utilities including timeout attribute
 # Web E2E test dependencies
 tokio-tungstenite = "0.26"  # WebSocket client for E2E tests
 futures-util = "0.3"  # Stream extensions for WebSocket handling
-reqwest = { version = "0.12", features = ["rustls-tls", "json", "blocking"], default-features = false }  # HTTP client with blocking for tests
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "blocking", "multipart"], default-features = false }  # HTTP client with blocking for tests
 
 # Git hooks - runs on cargo test
 [dev-dependencies.cargo-husky]
