@@ -180,6 +180,10 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
+    /// Accumulator for mouse wheel scroll events (0-2).
+    /// Mouse wheels send multiple events per physical scroll, so we accumulate
+    /// fractional scrolls: 3 events = 1 line of movement for smoother scrolling.
+    mouse_scroll_accumulator: u8,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
     /// Mermaid diagram sources visible in the current render pass (indexed from 1 in the UI).
@@ -249,6 +253,7 @@ impl App {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: None,
@@ -533,6 +538,24 @@ impl App {
             self.scroll_offset -= 1;
             // No longer at top when scrolling down
             self.intentionally_at_top = false;
+        }
+    }
+
+    /// Mouse wheel scroll up (slower than keyboard - 3 events = 1 line)
+    pub fn mouse_scroll_up(&mut self) {
+        self.mouse_scroll_accumulator += 1;
+        if self.mouse_scroll_accumulator >= 3 {
+            self.mouse_scroll_accumulator = 0;
+            self.scroll_up();
+        }
+    }
+
+    /// Mouse wheel scroll down (slower than keyboard - 3 events = 1 line)
+    pub fn mouse_scroll_down(&mut self) {
+        self.mouse_scroll_accumulator += 1;
+        if self.mouse_scroll_accumulator >= 3 {
+            self.mouse_scroll_accumulator = 0;
+            self.scroll_down();
         }
     }
 
@@ -1436,6 +1459,7 @@ pub(super) mod tests {
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: None,
@@ -1840,6 +1864,74 @@ pub(super) mod tests {
         assert!(
             app.is_at_max_scroll(),
             "page_up to max should set intentionally_at_top"
+        );
+    }
+
+    #[test]
+    fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
+        // Mouse wheel scrolling should be slower than keyboard scrolling for smoother UX.
+        // Mouse wheels send multiple events per physical scroll, so we use fractional
+        // scrolling: 3 wheel events = 1 line of movement.
+        let messages: VecDeque<Message> = (0..30)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "user".to_string(),
+                content: format!("message {}", i),
+                timestamp: Utc::now(),
+                message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            visible_height: 10,
+            ..test_app()
+        };
+
+        // Start at bottom
+        assert_eq!(app.scroll_offset, 0);
+
+        // Keyboard scroll up: should move 1 line per call
+        app.scroll_up();
+        assert_eq!(app.scroll_offset, 1, "Keyboard scroll should move 1 line");
+
+        // Reset
+        app.scroll_offset = 0;
+
+        // Mouse wheel scroll up: should take 3 events to move 1 line
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset, 0,
+            "First wheel event shouldn't scroll yet"
+        );
+
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset, 0,
+            "Second wheel event shouldn't scroll yet"
+        );
+
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset, 1,
+            "Third wheel event should complete 1 line of scroll"
+        );
+
+        // Fourth event starts accumulating for next line
+        app.mouse_scroll_up();
+        assert_eq!(app.scroll_offset, 1, "Fourth wheel event accumulates");
+
+        // Test mouse wheel scroll down
+        app.mouse_scroll_down();
+        assert_eq!(app.scroll_offset, 1, "First down event accumulates");
+
+        app.mouse_scroll_down();
+        app.mouse_scroll_down();
+        assert_eq!(
+            app.scroll_offset, 0,
+            "Three down events should scroll back 1 line"
         );
     }
 }
