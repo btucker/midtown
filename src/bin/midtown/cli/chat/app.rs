@@ -566,8 +566,6 @@ impl App {
         self.intentionally_at_top = false;
     }
 
-    /// Toggle selection mode (disables mouse capture for text selection)
-    /// Note: No keyboard shortcut currently bound to this - reserved for future use
     /// Cycle focus between panes: Board → Chat → InputBar → Board
     pub fn cycle_focus(&mut self) {
         self.focused_pane = match self.focused_pane {
