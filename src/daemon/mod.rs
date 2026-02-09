@@ -1443,8 +1443,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     orphan_check_interval.tick().await;
 
     // Timer for periodic GitHub API rate limit checks (every 2 minutes)
-    let mut rate_limit_check_interval =
-        tokio::time::interval(std::time::Duration::from_secs(120));
+    let mut rate_limit_check_interval = tokio::time::interval(std::time::Duration::from_secs(120));
     // Skip the first tick (which fires immediately)
     rate_limit_check_interval.tick().await;
     info!("GitHub rate limit check interval set to 120s");
