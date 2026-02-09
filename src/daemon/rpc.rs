@@ -92,10 +92,31 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
     };
 
-    debug!("Received request: method={}", request.method);
+    debug!(
+        "Received request: method={}, id={:?}",
+        request.method, request.id
+    );
+
+    // Clone request ID for cache operations (it will be moved during dispatch)
+    let request_id_for_cache = request.id.clone();
+
+    // Check cache for idempotent response (within 60 second TTL)
+    {
+        let now = std::time::Instant::now();
+        let cache = state.rpc_response_cache.lock().await;
+        if let Some((cached_response, timestamp)) = cache.get(&request_id_for_cache)
+            && now.duration_since(*timestamp).as_secs() < 60
+        {
+            debug!(
+                "Cache hit for request id={:?}, returning cached response",
+                request_id_for_cache
+            );
+            return cached_response.clone();
+        }
+    }
 
     // Dispatch based on method
-    match request.method.as_str() {
+    let response = match request.method.as_str() {
         "ping" => Response::success(request.id, serde_json::json!("pong")),
 
         "version" => Response::success(
@@ -517,7 +538,18 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             warn!("Unknown method: {}", request.method);
             Response::error(request.id, RpcError::method_not_found())
         }
+    };
+
+    // Cache the response for idempotency (60 second TTL)
+    {
+        let mut cache = state.rpc_response_cache.lock().await;
+        cache.insert(
+            request_id_for_cache,
+            (response.clone(), std::time::Instant::now()),
+        );
     }
+
+    response
 }
 
 // ============================================================================

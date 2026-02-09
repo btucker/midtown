@@ -449,6 +449,13 @@ pub(crate) struct DaemonState {
     /// Owns the child processes and provides spawn/nudge/shutdown primitives.
     /// Used by `spawn_coworker()` and effect handlers for coworker lifecycle.
     pub(crate) session_manager: sessions::SessionManager,
+    /// Response cache for RPC idempotency.
+    ///
+    /// Caches responses by request ID for 60 seconds to prevent duplicate execution
+    /// when clients retry after timeouts. This transforms RPC from "at-least-once"
+    /// to "exactly-once" semantics.
+    rpc_response_cache:
+        Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
 }
 
 impl DaemonState {
@@ -613,6 +620,7 @@ impl DaemonState {
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
+            rpc_response_cache: Mutex::new(HashMap::new()),
         })
     }
 
