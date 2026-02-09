@@ -814,6 +814,37 @@ pub fn content_has_output(content: &str) -> bool {
     content.lines().any(|line| !line.trim().is_empty())
 }
 
+/// Get the cursor position (x, y) from a tmux pane.
+///
+/// Returns `Some((x, y))` where x is the column and y is the row (0-indexed),
+/// or `None` if the query fails.
+pub fn get_cursor_position(target: &str) -> Option<(u16, u16)> {
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            target,
+            "#{cursor_x} #{cursor_y}",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let x = parts[0].parse::<u16>().ok()?;
+    let y = parts[1].parse::<u16>().ok()?;
+    Some((x, y))
+}
+
 /// Check whether the human has typed text into the Claude Code input prompt.
 ///
 /// Inspects the last few lines of pane content for the `❯` prompt symbol.
@@ -821,8 +852,14 @@ pub fn content_has_output(content: &str) -> bool {
 /// the human is currently typing. Returns `false` if the prompt is empty
 /// or no prompt is visible (e.g., Claude is processing).
 ///
+/// If `cursor_x` is provided, uses it as ground truth for empty input detection.
+/// Claude Code renders placeholder text (like "How can I help you?") when idle,
+/// which appears as regular text in `capture-pane` output. The cursor position
+/// reveals the truth: if cursor_x is small (right after the prompt), the input
+/// is actually empty regardless of visible placeholder text.
+///
 /// Used by the daemon to avoid nudging the lead while they're mid-sentence.
-pub fn has_input_text(pane_content: &str) -> bool {
+pub fn has_input_text(pane_content: &str, cursor_x: Option<u16>) -> bool {
     // Skip trailing blank lines (tmux pads the pane with empty lines),
     // then find the MOST RECENT line containing the ❯ prompt.
     // Only check that line — older prompt lines in scrollback are irrelevant.
@@ -835,6 +872,23 @@ pub fn has_input_text(pane_content: &str) -> bool {
     if let Some(line) = prompt_line
         && let Some(pos) = line.find('❯')
     {
+        // If we have cursor position, use it as ground truth.
+        // The prompt symbol "❯ " is 2 characters (1 for ❯, 1 for space).
+        // If the cursor is at or near that position, input is empty even if
+        // placeholder text is visible.
+        if let Some(x) = cursor_x {
+            // Cursor position is in terminal columns. The prompt typically looks like:
+            // "❯ " (prompt + space) at the start of the line.
+            // Account for any leading whitespace before the prompt.
+            let prompt_end_x = (pos + '❯'.len_utf8() + 1) as u16; // +1 for space after ❯
+
+            // If cursor is at or very close to prompt end, input is empty.
+            // Allow small tolerance (within 2 columns) for edge cases.
+            if x <= prompt_end_x + 2 {
+                return false;
+            }
+        }
+
         let after_prompt = &line[pos + '❯'.len_utf8()..];
         return !after_prompt.trim().is_empty();
     }
@@ -855,7 +909,11 @@ pub fn wait_for_empty_input(target: &str, timeout: std::time::Duration) -> bool 
 
     loop {
         if let Some(content) = capture_pane(target) {
-            if !has_input_text(&content) {
+            // Query cursor position to detect placeholder text.
+            // If cursor is at the prompt, input is empty even if placeholder is visible.
+            let cursor_x = get_cursor_position(target).map(|(x, _)| x);
+
+            if !has_input_text(&content, cursor_x) {
                 return true;
             }
         } else {
@@ -931,7 +989,9 @@ pub fn wait_for_nudge_safe(
         };
 
         // Check 1: No input text → safe to nudge
-        if !has_input_text(&content) {
+        // Query cursor position to detect placeholder text.
+        let cursor_x = get_cursor_position(target).map(|(x, _)| x);
+        if !has_input_text(&content, cursor_x) {
             tracing::debug!("Input empty, safe to nudge");
             return true;
         }
@@ -2488,28 +2548,28 @@ Claude is now processing the request
     fn test_has_input_text_empty_prompt() {
         // Just a prompt with nothing after it — input is empty
         let pane = "Some previous output\n❯ ";
-        assert!(!has_input_text(pane));
+        assert!(!has_input_text(pane, None));
     }
 
     #[test]
     fn test_has_input_text_prompt_no_space() {
         // Prompt with no trailing space — still empty
         let pane = "Some output\n❯";
-        assert!(!has_input_text(pane));
+        assert!(!has_input_text(pane, None));
     }
 
     #[test]
     fn test_has_input_text_with_typed_text() {
         // User has typed something after the prompt
         let pane = "Some output\n❯ please add a feature that";
-        assert!(has_input_text(pane));
+        assert!(has_input_text(pane, None));
     }
 
     #[test]
     fn test_has_input_text_no_prompt_at_all() {
         // No prompt visible — treat as not having input text (safe to nudge)
         let pane = "Claude is working on your request...\nProcessing...";
-        assert!(!has_input_text(pane));
+        assert!(!has_input_text(pane, None));
     }
 
     #[test]
@@ -2519,7 +2579,7 @@ Claude is now processing the request
         // Here "Output line 2" is the most recent non-blank line (no prompt),
         // so we look for the nearest prompt line — it has text.
         let pane = "Output line 1\n❯ some typed text\nOutput line 2";
-        assert!(has_input_text(pane));
+        assert!(has_input_text(pane, None));
     }
 
     #[test]
@@ -2527,20 +2587,53 @@ Claude is now processing the request
         // Old prompt had text, new prompt is empty — should be false
         // (the human already submitted, now on a fresh prompt)
         let pane = "❯ old command that was submitted\nSome output\n❯ ";
-        assert!(!has_input_text(pane));
+        assert!(!has_input_text(pane, None));
     }
 
     #[test]
     fn test_has_input_text_blank_lines_after_prompt() {
         // Prompt followed by blank lines — still empty input
         let pane = "Output\n❯ \n\n";
-        assert!(!has_input_text(pane));
+        assert!(!has_input_text(pane, None));
     }
 
     #[test]
     fn test_has_input_text_only_whitespace_after_prompt() {
         let pane = "Output\n❯    ";
-        assert!(!has_input_text(pane));
+        assert!(!has_input_text(pane, None));
+    }
+
+    #[test]
+    fn test_has_input_text_placeholder_without_cursor() {
+        // Bug scenario: Claude Code shows placeholder text "How can I help you?"
+        // Without cursor position, we can't distinguish it from real input.
+        let pane = "Output\n❯ How can I help you?";
+        // Without cursor info, this looks like typed text
+        assert!(has_input_text(pane, None));
+    }
+
+    #[test]
+    fn test_has_input_text_placeholder_with_cursor_at_prompt() {
+        // Fix: With cursor position showing cursor is at the prompt,
+        // we know "How can I help you?" is just placeholder text.
+        let pane = "Output\n❯ How can I help you?";
+        // Cursor at x=2 (right after "❯ ") means input is actually empty
+        assert!(!has_input_text(pane, Some(2)));
+    }
+
+    #[test]
+    fn test_has_input_text_real_input_with_cursor_past_prompt() {
+        // Real user input: cursor has moved past the prompt position.
+        let pane = "Output\n❯ please add a feature";
+        // Cursor at x=10 means the user has typed something
+        assert!(has_input_text(pane, Some(10)));
+    }
+
+    #[test]
+    fn test_has_input_text_empty_prompt_with_cursor_confirmation() {
+        // Empty prompt confirmed by cursor position
+        let pane = "Output\n❯ ";
+        assert!(!has_input_text(pane, Some(2)));
     }
 
     // --- ClaudeLaunchConfig tests ---
