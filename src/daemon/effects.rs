@@ -16,6 +16,16 @@ pub enum Effect {
     SpawnCoworker(crate::launch::LaunchConfig),
     /// Shut down a running coworker with a message.
     ShutdownCoworker { name: String, message: String },
+    /// Shut down a coworker with conditional follow-up effects on success.
+    ///
+    /// On success, `on_success` effects are executed. On failure, nothing extra
+    /// happens (the shutdown failure is logged). This allows RPC handlers to
+    /// post channel messages and broadcast status updates only when shutdown succeeds.
+    ShutdownCoworkerWithCallbacks {
+        name: String,
+        message: String,
+        on_success: Vec<Effect>,
+    },
     /// Nudge a coworker by sending a message to their headless session.
     NudgeCoworker { name: String, message: String },
     /// Nudge the Lead by sending a message to their tmux pane.
@@ -316,6 +326,59 @@ fn merge_callbacks_into_existing(
     Some(additional_callbacks)
 }
 
+/// Perform the core shutdown operations for a coworker.
+///
+/// Returns `Ok(())` if shutdown succeeds, `Err(())` if any step fails.
+/// This helper is shared by `Effect::ShutdownCoworker` and
+/// `Effect::ShutdownCoworkerWithCallbacks`.
+async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) -> Result<(), ()> {
+    // Send goodbye message via headless stdin, then shut down the session
+    if !message.is_empty()
+        && let Err(e) = state.session_manager.send_message(name, message).await
+    {
+        warn!("Failed to send shutdown message to {}: {}", name, e);
+    }
+    if let Err(e) = state.session_manager.shutdown(name).await {
+        warn!("Failed to shut down headless session {}: {}", name, e);
+        return Err(());
+    }
+    info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
+
+    // Remove from CoworkerManager tracking (without touching tmux)
+    state.coworkers.deregister(name);
+    // Record stop time for workflow features that need to track coworker lifecycle
+    {
+        let mut stop_times = state.coworker_stop_times.write().unwrap();
+        stop_times.insert(name.to_lowercase(), chrono::Utc::now());
+    }
+    // Clean up unified coworker record (health, workflow phase, etc.)
+    {
+        let mut records = state.coworker_records.write().await;
+        records.remove(name);
+    }
+    // Clear cooldown entries for this coworker (prevents stale state on respawn)
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.clear_for_key(name);
+    }
+    // Clear any pending nudge for this coworker
+    state.clear_pending_nudge(name);
+    // Clear task assignment tracking (coworker is no longer active)
+    state.clear_coworker_assignments(name);
+    // Unbind from worktree registry (worktree persists for build cache reuse)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry.unbind_coworker(name);
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!(
+                "Failed to save daemon state after unbinding coworker: {}",
+                e
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Execute a list of effects against the daemon state.
 ///
 /// This is the imperative shell — the only place where side effects happen.
@@ -345,48 +408,25 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     message_preview = %message.chars().take(50).collect::<String>(),
                     "SHUTDOWN_COWORKER: executing shutdown effect"
                 );
-
-                // Send goodbye message via headless stdin, then shut down the session
-                if !message.is_empty()
-                    && let Err(e) = state.session_manager.send_message(&name, &message).await
-                {
-                    warn!("Failed to send shutdown message to {}: {}", name, e);
-                }
-                if let Err(e) = state.session_manager.shutdown(&name).await {
-                    warn!("Failed to shut down headless session {}: {}", name, e);
-                } else {
-                    info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
-                }
-                // Remove from CoworkerManager tracking (without touching tmux)
-                state.coworkers.deregister(&name);
-                // Record stop time for workflow features that need to track coworker lifecycle
-                {
-                    let mut stop_times = state.coworker_stop_times.write().unwrap();
-                    stop_times.insert(name.to_lowercase(), chrono::Utc::now());
-                }
-                // Clean up unified coworker record (health, workflow phase, etc.)
-                {
-                    let mut records = state.coworker_records.write().await;
-                    records.remove(&name);
-                }
-                // Clear cooldown entries for this coworker (prevents stale state on respawn)
-                {
-                    let mut cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.clear_for_key(&name);
-                }
-                // Clear any pending nudge for this coworker
-                state.clear_pending_nudge(&name);
-                // Clear task assignment tracking (coworker is no longer active)
-                state.clear_coworker_assignments(&name);
-                // Unbind from worktree registry (worktree persists for build cache reuse)
-                {
-                    let mut ps = state.persistent_state.lock().await;
-                    ps.worktree_registry.unbind_coworker(&name);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                        warn!(
-                            "Failed to save daemon state after unbinding coworker: {}",
-                            e
-                        );
+                let _ = shutdown_coworker_impl(&name, &message, state).await;
+            }
+            Effect::ShutdownCoworkerWithCallbacks {
+                name,
+                message,
+                on_success,
+            } => {
+                info!(
+                    coworker = %name,
+                    message_preview = %message.chars().take(50).collect::<String>(),
+                    "SHUTDOWN_COWORKER_WITH_CALLBACKS: executing shutdown effect"
+                );
+                match shutdown_coworker_impl(&name, &message, state).await {
+                    Ok(()) => {
+                        info!(coworker = %name, "SHUTDOWN_COWORKER_WITH_CALLBACKS: executing on_success callbacks");
+                        Box::pin(execute_effects(on_success, state)).await;
+                    }
+                    Err(()) => {
+                        warn!(coworker = %name, "SHUTDOWN_COWORKER_WITH_CALLBACKS: shutdown failed, skipping on_success callbacks");
                     }
                 }
             }

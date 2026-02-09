@@ -490,10 +490,11 @@ impl DaemonState {
 
     /// Record a coworker's stop time for orphan recovery grace period.
     ///
-    /// Must be called whenever a coworker is shut down outside the Effect system
-    /// (e.g., RPC idle/break handlers). Without this, the next TaskDispatchTick
-    /// sees the coworker's in_progress task as orphaned and falsely respawns them.
-    /// See #874.
+    /// Called internally by `Effect::ShutdownCoworker` and
+    /// `Effect::ShutdownCoworkerWithCallbacks`. Also called when a coworker
+    /// exits unexpectedly (signal handler cleanup). Without this, the next
+    /// TaskDispatchTick sees the coworker's in_progress task as orphaned and
+    /// falsely respawns them. See #874.
     fn record_coworker_stop_time(&self, name: &str) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
         stop_times.insert(name.to_lowercase(), chrono::Utc::now());

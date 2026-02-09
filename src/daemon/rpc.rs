@@ -1031,23 +1031,24 @@ async fn handle_coworker_report_state(
     if phase == crate::coworker_state::WorkflowPhase::Idle {
         // Check if coworker is tracked (should be, since they're reporting state)
         if state.coworkers.get(name).is_some() {
-            // Build shutdown effects instead of doing shutdown inline.
+            // Build shutdown effect with conditional follow-up effects.
+            // The channel message and WebSocket broadcast only execute if shutdown succeeds.
             // This ensures all cleanup steps (cooldowns, pending nudges, worktree unbinding)
             // stay in sync with Effect::ShutdownCoworker in effects.rs.
-            let shutdown_effects = vec![
-                effects::Effect::ShutdownCoworker {
-                    name: name.to_string(),
-                    message: String::new(), // No goodbye message needed for idle shutdown
-                },
-                effects::Effect::PostSystemMessage {
-                    message: format!("☕ {} reported idle, taking a break", name),
-                },
-                effects::Effect::BroadcastCoworkerUpdate {
-                    name: name.to_string(),
-                    status: "stopped".to_string(),
-                    current_task: None,
-                },
-            ];
+            let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
+                name: name.to_string(),
+                message: String::new(), // No goodbye message needed for idle shutdown
+                on_success: vec![
+                    effects::Effect::PostSystemMessage {
+                        message: format!("☕ {} reported idle, taking a break", name),
+                    },
+                    effects::Effect::BroadcastCoworkerUpdate {
+                        name: name.to_string(),
+                        status: "stopped".to_string(),
+                        current_task: None,
+                    },
+                ],
+            }];
 
             effects::execute_effects(shutdown_effects, state).await;
 
