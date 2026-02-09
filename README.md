@@ -362,9 +362,10 @@ midtown auth login --profile personal
 
 # List profiles
 midtown auth list
-# Profiles:
-#   work - authenticated
-#   personal (active) - authenticated
+# Account                Status         Session  Resets   Weekly  Resets
+# ─────────────────────  ─────────────  ───────  ───────  ──────  ──────
+# work@example.com       authenticated  45%      3h 20m   62%     125h 20m
+# personal (active)      authenticated  78%      1h 15m   81%     98h 15m
 
 # Switch to work account
 midtown auth switch work

@@ -45,6 +45,19 @@ pub fn handle(cmd: &AuthCommand) -> Result<Response, String> {
     }
 }
 
+/// Format a reset time as a relative duration (e.g., "2h 15m")
+fn format_reset_time(resets: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = resets.signed_duration_since(now);
+    let hours = duration.num_hours();
+    let minutes = duration.num_minutes() % 60;
+    if hours > 0 {
+        format!("{}h {}m", hours, minutes)
+    } else {
+        format!("{}m", minutes)
+    }
+}
+
 fn handle_login(profile: &str) -> Result<Response, String> {
     let profile_dir = midtown::auth::ensure_profile_dir(profile)
         .map_err(|e| format!("Failed to create profile directory: {}", e))?;
@@ -120,75 +133,112 @@ fn handle_list() -> Result<Response, String> {
         let marker = if *name == current { " (active)" } else { "" };
         let status = midtown::auth::profile_status(name);
 
-        let (cred_status, usage_str, resets_str) = match status {
-            Some(s) if s.has_credentials => {
-                // Find usage data for this profile
-                let usage = usage_results
-                    .iter()
-                    .find(|(n, _)| n == name)
-                    .and_then(|(_, u)| u.as_ref());
+        let (email, cred_status, session_str, session_reset_str, weekly_str, weekly_reset_str) =
+            match status {
+                Some(s) if s.has_credentials => {
+                    // Find usage data for this profile
+                    let usage = usage_results
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .and_then(|(_, u)| u.as_ref());
 
-                match usage {
-                    Some(data) => {
-                        // Show the more restrictive limit (higher utilization)
-                        let (util, resets) = if data.session_util >= data.week_util {
-                            (data.session_util, data.session_resets)
-                        } else {
-                            (data.week_util, data.week_resets)
-                        };
+                    match usage {
+                        Some(data) => {
+                            let email_display = data
+                                .account_email
+                                .as_ref()
+                                .map(|e| format!("{}{}", e, marker))
+                                .unwrap_or_else(|| format!("{}{}", name, marker));
 
-                        let usage_display = format!("{:.0}% used", util);
+                            // Format session (5-hour) usage
+                            let session_display = format!("{:.0}%", data.session_util);
+                            let session_reset_display = format_reset_time(data.session_resets);
 
-                        // Format reset time as relative (e.g., "2h 15m")
-                        let now = chrono::Utc::now();
-                        let duration = resets.signed_duration_since(now);
-                        let hours = duration.num_hours();
-                        let minutes = duration.num_minutes() % 60;
-                        let reset_display = if hours > 0 {
-                            format!("{}h {}m", hours, minutes)
-                        } else {
-                            format!("{}m", minutes)
-                        };
+                            // Format weekly (7-day) usage
+                            let weekly_display = format!("{:.0}%", data.week_util);
+                            let weekly_reset_display = format_reset_time(data.week_resets);
 
-                        ("authenticated", usage_display, reset_display)
+                            (
+                                email_display,
+                                "authenticated".to_string(),
+                                session_display,
+                                session_reset_display,
+                                weekly_display,
+                                weekly_reset_display,
+                            )
+                        }
+                        None => (
+                            format!("{}{}", name, marker),
+                            "authenticated".to_string(),
+                            "unavailable".to_string(),
+                            "-".to_string(),
+                            "unavailable".to_string(),
+                            "-".to_string(),
+                        ),
                     }
-                    None => ("authenticated", "unavailable".to_string(), "-".to_string()),
                 }
-            }
-            Some(_) => ("not authenticated", "-".to_string(), "-".to_string()),
-            None => ("unknown", "-".to_string(), "-".to_string()),
-        };
+                Some(_) => (
+                    format!("{}{}", name, marker),
+                    "not authenticated".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                ),
+                None => (
+                    format!("{}{}", name, marker),
+                    "unknown".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                ),
+            };
 
         rows.push((
-            format!("{}{}", name, marker),
-            cred_status.to_string(),
-            usage_str,
-            resets_str,
+            email,
+            cred_status,
+            session_str,
+            session_reset_str,
+            weekly_str,
+            weekly_reset_str,
         ));
     }
 
     // Calculate column widths
-    let max_profile = rows
+    let max_email = rows
         .iter()
-        .map(|(p, _, _, _)| p.len())
+        .map(|(e, _, _, _, _, _)| e.len())
         .max()
         .unwrap_or(0)
-        .max("Profile".len());
+        .max("Account".len());
     let max_status = rows
         .iter()
-        .map(|(_, s, _, _)| s.len())
+        .map(|(_, s, _, _, _, _)| s.len())
         .max()
         .unwrap_or(0)
         .max("Status".len());
-    let max_usage = rows
+    let max_session = rows
         .iter()
-        .map(|(_, _, u, _)| u.len())
+        .map(|(_, _, ss, _, _, _)| ss.len())
         .max()
         .unwrap_or(0)
-        .max("Usage".len());
-    let max_resets = rows
+        .max("Session".len());
+    let max_session_reset = rows
         .iter()
-        .map(|(_, _, _, r)| r.len())
+        .map(|(_, _, _, sr, _, _)| sr.len())
+        .max()
+        .unwrap_or(0)
+        .max("Resets".len());
+    let max_weekly = rows
+        .iter()
+        .map(|(_, _, _, _, ws, _)| ws.len())
+        .max()
+        .unwrap_or(0)
+        .max("Weekly".len());
+    let max_weekly_reset = rows
+        .iter()
+        .map(|(_, _, _, _, _, wr)| wr.len())
         .max()
         .unwrap_or(0)
         .max("Resets".len());
@@ -196,36 +246,46 @@ fn handle_list() -> Result<Response, String> {
     // Format table
     let mut lines = Vec::new();
     lines.push(format!(
-        "{:<width_p$}  {:<width_s$}  {:<width_u$}  {:<width_r$}",
-        "Profile",
+        "{:<width_e$}  {:<width_s$}  {:<width_ss$}  {:<width_sr$}  {:<width_ws$}  {:<width_wr$}",
+        "Account",
         "Status",
-        "Usage",
+        "Session",
         "Resets",
-        width_p = max_profile,
+        "Weekly",
+        "Resets",
+        width_e = max_email,
         width_s = max_status,
-        width_u = max_usage,
-        width_r = max_resets,
+        width_ss = max_session,
+        width_sr = max_session_reset,
+        width_ws = max_weekly,
+        width_wr = max_weekly_reset,
     ));
 
     lines.push(format!(
-        "{}  {}  {}  {}",
-        "─".repeat(max_profile),
+        "{}  {}  {}  {}  {}  {}",
+        "─".repeat(max_email),
         "─".repeat(max_status),
-        "─".repeat(max_usage),
-        "─".repeat(max_resets),
+        "─".repeat(max_session),
+        "─".repeat(max_session_reset),
+        "─".repeat(max_weekly),
+        "─".repeat(max_weekly_reset),
     ));
 
-    for (profile, status, usage, resets) in rows {
+    for (email, status, session, session_reset, weekly, weekly_reset) in rows {
         lines.push(format!(
-            "{:<width_p$}  {:<width_s$}  {:<width_u$}  {:<width_r$}",
-            profile,
+            "{:<width_e$}  {:<width_s$}  {:<width_ss$}  {:<width_sr$}  {:<width_ws$}  {:<width_wr$}",
+            email,
             status,
-            usage,
-            resets,
-            width_p = max_profile,
+            session,
+            session_reset,
+            weekly,
+            weekly_reset,
+            width_e = max_email,
             width_s = max_status,
-            width_u = max_usage,
-            width_r = max_resets,
+            width_ss = max_session,
+            width_sr = max_session_reset,
+            width_ws = max_weekly,
+            width_wr = max_weekly_reset,
         ));
     }
 
