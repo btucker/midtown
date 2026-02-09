@@ -1510,4 +1510,42 @@ name = "solo"
         assert!(template.contains("chat_layout"));
         assert!(template.contains("github_user"));
     }
+
+    #[test]
+    fn test_auth_profile_roundtrip() {
+        // Reproduce bug: auth_profile survives round-trip serialization
+        let toml = r#"
+[project]
+name = "midtown"
+repos = ["/path/to/repo"]
+primary_repo = "/path/to/repo"
+auth_profile = "ben@btucker.net"
+
+[default]
+
+[daemon]
+webhook_port = 47024
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).expect("Failed to parse config");
+
+        // Verify auth_profile was parsed
+        assert_eq!(
+            config.project.auth_profile.as_deref(),
+            Some("ben@btucker.net")
+        );
+
+        // Serialize back to TOML
+        let serialized = toml::to_string(&config).expect("Failed to serialize config");
+
+        // Parse again
+        let reparsed: FullProjectConfig =
+            toml::from_str(&serialized).expect("Failed to reparse config");
+
+        // Verify auth_profile survived the round-trip
+        assert_eq!(
+            reparsed.project.auth_profile.as_deref(),
+            Some("ben@btucker.net"),
+            "auth_profile was lost during serialization round-trip"
+        );
+    }
 }

@@ -731,17 +731,35 @@ async fn handle_auth_switch(
         );
     }
 
-    // Check if already on this profile (for this project)
-    let current = crate::auth::active_profile_for_project(&state.repo_name);
-    if current == profile {
-        return Response::success(
-            id,
-            serde_json::json!({
-                "success": true,
-                "message": format!("Already on profile '{}'", profile),
-                "switched": false,
-            }),
-        );
+    // Check if already on this profile
+    if all {
+        // For global switch, check the global current profile
+        let current = crate::auth::current_profile();
+        if current == profile {
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Already on profile '{}'", profile),
+                    "switched": false,
+                }),
+            );
+        }
+    } else {
+        // For per-project switch, check the project config's auth_profile (not the effective profile)
+        let path = crate::config::project_config_path(&state.repo_name);
+        if let Some(config) = crate::config::FullProjectConfig::load_from(&path)
+            && config.project.auth_profile.as_deref() == Some(profile)
+        {
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Already on profile '{}'", profile),
+                    "switched": false,
+                }),
+            );
+        }
     }
 
     // Switch the profile on disk
