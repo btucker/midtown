@@ -242,6 +242,9 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
     // Show tasks grouped under this channel
     let (pending, in_progress, _completed) = app.tasks_by_status();
 
+    // Calculate available width for wrapping (subtract 2 for borders)
+    let wrap_width = area.width.saturating_sub(2).max(20) as usize;
+
     // In Progress tasks
     for task in &in_progress {
         let status_marker = "● ";
@@ -255,10 +258,21 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
             "    {} #{} {}{}",
             status_marker, task.id, task.subject, owner_text
         );
-        lines.push(Line::from(vec![Span::styled(
-            task_line,
-            Style::default().fg(Color::Green),
-        )]));
+
+        // Pre-wrap the task line if it exceeds available width
+        let wrapped_lines = wrap_content(&task_line, wrap_width);
+        for (i, wrapped) in wrapped_lines.iter().enumerate() {
+            let text = if i == 0 {
+                wrapped.to_string()
+            } else {
+                // Continuation lines: indent to align with subject text
+                format!("        {}", wrapped.trim_start())
+            };
+            lines.push(Line::from(vec![Span::styled(
+                text,
+                Style::default().fg(Color::Green),
+            )]));
+        }
     }
 
     // Pending tasks
@@ -274,10 +288,21 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
             "    {} #{} {}{}",
             status_marker, task.id, task.subject, owner_text
         );
-        lines.push(Line::from(vec![Span::styled(
-            task_line,
-            Style::default().fg(Color::DarkGray),
-        )]));
+
+        // Pre-wrap the task line if it exceeds available width
+        let wrapped_lines = wrap_content(&task_line, wrap_width);
+        for (i, wrapped) in wrapped_lines.iter().enumerate() {
+            let text = if i == 0 {
+                wrapped.to_string()
+            } else {
+                // Continuation lines: indent to align with subject text
+                format!("        {}", wrapped.trim_start())
+            };
+            lines.push(Line::from(vec![Span::styled(
+                text,
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
     }
 
     // Render the panel
