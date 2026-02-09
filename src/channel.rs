@@ -854,6 +854,11 @@ impl ChannelRouter {
         self.get_channel(&self.default_channel_name)
     }
 
+    /// Get the default channel name.
+    pub fn default_channel_name(&self) -> &str {
+        &self.default_channel_name
+    }
+
     /// List all currently open (cached) channel names.
     ///
     /// Does not scan the filesystem - only returns channels that have been
