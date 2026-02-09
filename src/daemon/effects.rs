@@ -729,7 +729,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         pr_number, assignment.reviewer
                     );
                     if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                        warn!("Failed to save daemon-state.json after removing assignment: {}", e);
+                        warn!(
+                            "Failed to save daemon-state.json after removing assignment: {}",
+                            e
+                        );
                     }
                 } else {
                     debug!("No reviewer assignment to remove for PR #{}", pr_number);
