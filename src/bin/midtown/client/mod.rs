@@ -222,8 +222,16 @@ impl DaemonClient {
         self.send("coworker.list", None)
     }
 
+    /// Uses `send_raw()` instead of `send()` because the RPC response format
+    /// `{"success": true, "output": "..."}` doesn't match any `Response` enum variant.
     pub fn coworker_view(&self, name: &str) -> Result<Response, String> {
-        self.send("coworker.view", Some(serde_json::json!({ "name": name })))
+        let result = self.send_raw("coworker.view", Some(serde_json::json!({ "name": name })))?;
+        let output = result
+            .get("output")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "RPC response missing 'output' field".to_string())?
+            .to_string();
+        Ok(Response::message(output))
     }
 
     pub fn coworker_nudge(&self, name: &str, message: Option<&str>) -> Result<Response, String> {
