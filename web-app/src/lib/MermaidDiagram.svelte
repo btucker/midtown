@@ -1,13 +1,11 @@
 <script>
   import { getSelkie } from './selkie.js'
-  import BiggerPicture from 'bigger-picture'
-  import { onMount } from 'svelte'
+  import { getBiggerPicture, calculateFitToWidthScale } from './biggerPicture.js'
 
   let { code } = $props()
   let svgHtml = $state('')
   let error = $state('')
   let loading = $state(true)
-  let bp = null
 
   let counter = 0
 
@@ -62,22 +60,15 @@
     })
   })
 
-  onMount(() => {
-    // Initialize Bigger Picture with dark theme
-    bp = BiggerPicture({
-      target: document.body,
-    })
-
-    return () => {
-      if (bp) {
-        bp.close()
-        bp.$destroy()
-      }
-    }
-  })
-
   function handleExpand() {
-    if (!bp || !svgHtml) return
+    if (!svgHtml) return
+
+    const bp = getBiggerPicture()
+    if (!bp) return
+
+    // Calculate initial scale to fit SVG to 95% of viewport width
+    // This matches the fit-to-width behavior from the old MermaidModal
+    const scale = calculateFitToWidthScale(svgHtml)
 
     // Convert SVG to data URL and open in lightbox
     const dataUrl = svgToDataUrl(svgHtml)
@@ -85,6 +76,8 @@
       items: [{ img: dataUrl }],
       // Start at first (and only) item
       position: 0,
+      // Apply fit-to-width scale
+      scale: scale,
     })
   }
 </script>
