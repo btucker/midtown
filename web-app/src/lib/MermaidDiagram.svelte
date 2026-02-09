@@ -71,6 +71,7 @@
     return () => {
       if (bp) {
         bp.close()
+        bp.$destroy()
       }
     }
   })
@@ -96,7 +97,7 @@
     <pre class="mermaid-error-text">{error}</pre>
   </div>
 {:else}
-  <!-- svelte-ignore a11y_click_events_have_key_keys a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="mermaid-diagram" onclick={handleExpand} title="Click to expand">
     {@html svgHtml}
     <div class="expand-hint">Click to expand</div>

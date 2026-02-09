@@ -574,6 +574,8 @@
     height: 40px !important;
     border-radius: 50% !important;
     opacity: 1 !important;
+    top: calc(env(safe-area-inset-top, 0px) + 12px) !important;
+    right: calc(env(safe-area-inset-right, 0px) + 12px) !important;
   }
 
   :global(.bp-x:hover) {
