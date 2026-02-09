@@ -208,7 +208,6 @@
         pendingFile = null
       } else {
         alert(`Upload failed: ${result.error}`)
-        uploading = false
         return
       }
     } else if (inputText.trim()) {

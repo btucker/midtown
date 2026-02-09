@@ -451,6 +451,7 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Clickable channel (`#name`), task (`!N`), and PR (`#N`) references in messages
 - Insight cross-post highlighting with source channel attribution
 - Mermaid diagram rendering in chat messages
+- Image and document paste support (clipboard → inline preview → upload to lead)
 - Coworker status monitoring
 - Auth profile switching
 - Push notifications (W3C Push API with VAPID)

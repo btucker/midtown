@@ -7,7 +7,7 @@
 use axum::{
     Json, Router,
     extract::{
-        Multipart, Query, State,
+        DefaultBodyLimit, Multipart, Query, State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
@@ -380,6 +380,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/auth/switch", post(api_auth_switch))
         .route("/api/usage", get(api_usage))
         .route("/api/upload", post(api_upload))
+        .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
 

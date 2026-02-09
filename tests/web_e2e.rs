@@ -1494,6 +1494,77 @@ async fn test_api_upload_success() {
     std::mem::forget(fixture);
 }
 
+/// Test that /api/upload accepts files up to 10MB.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_api_upload_accepts_medium_files() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    // Create a 5MB file (within the 10MB limit)
+    let medium_content = vec![0u8; 5 * 1024 * 1024]; // 5MB
+    let client = reqwest::Client::new();
+
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(medium_content.clone())
+            .file_name("medium-file.bin")
+            .mime_str("application/octet-stream")
+            .unwrap(),
+    );
+
+    let response = client
+        .post(format!("{}/upload", fixture.api_base()))
+        .multipart(form)
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Request failed: {}", e);
+            fixture.async_cleanup().await;
+            std::mem::forget(fixture);
+            return;
+        }
+    };
+
+    assert!(
+        response.status().is_success(),
+        "Should accept 5MB file (got status {})",
+        response.status()
+    );
+
+    let body: serde_json::Value = response.json().await.expect("Should parse JSON response");
+    assert!(body.get("path").is_some(), "Response should contain 'path'");
+
+    let path = body.get("path").unwrap().as_str().unwrap();
+
+    // Verify file was written with correct size
+    let metadata = fs::metadata(path).expect("Should be able to stat uploaded file");
+    assert_eq!(
+        metadata.len(),
+        (5 * 1024 * 1024) as u64,
+        "File size should match"
+    );
+
+    // Clean up test file
+    let _ = fs::remove_file(path);
+
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
+
 /// Test that /api/upload rejects files that are too large.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Requires built binary
