@@ -629,3 +629,67 @@ fn batch_pr_reviewer_handling() {
     assert_eq!(counts.get("webhook"), Some(&1));
     assert_eq!(counts.get("polling"), Some(&1));
 }
+
+// =============================================================================
+// Tests: Ghost reviewer assignments (Bug #1032)
+// =============================================================================
+
+/// Test that ghost reviewer assignments from before a daemon restart
+/// are not counted toward the capacity limit when those reviewers are dead.
+///
+/// Bug scenario: After daemon restart, reviewer assignments persisted in
+/// daemon-state.json count against MAX_CONCURRENT_REVIEWS even though
+/// those coworker processes are dead. This blocks new reviewer spawns.
+#[test]
+fn ghost_reviewers_should_not_block_new_spawns() {
+    use std::collections::HashSet;
+
+    let mut state = GitHubState::default();
+
+    // Simulate pre-restart state: 3 reviewers were assigned
+    state.assign_reviewer(823, "columbus", AssignmentSource::Webhook);
+    state.assign_reviewer(824, "lexington", AssignmentSource::Webhook);
+    state.assign_reviewer(825, "york", AssignmentSource::Webhook);
+
+    // active_count should see all 3 as active (non-expired)
+    assert_eq!(
+        state.active_count(),
+        3,
+        "All 3 reviewers should be counted as active"
+    );
+
+    // After restart, only park is actually running.
+    // columbus, lexington, york are "ghost" assignments — persisted in JSON
+    // but their coworker processes are dead.
+    let active_coworkers: HashSet<String> = ["park"].iter().map(|s| s.to_string()).collect();
+
+    // The bug: active_count() doesn't know about liveness, so it still returns 3.
+    // This causes collect_reviewer_effects_with_source() to return early at
+    // the capacity check (line 1537-1542) before reaching the dead reviewer
+    // detection logic (line 1663-1731).
+
+    // What SHOULD happen: A liveness-aware count should return 0, since none of the
+    // assigned reviewers (columbus, lexington, york) are in active_coworkers.
+    let live_assignments: Vec<_> = state
+        .pr_reviewers
+        .values()
+        .filter(|a| active_coworkers.contains(&a.reviewer.to_lowercase()))
+        .collect();
+
+    assert_eq!(
+        live_assignments.len(),
+        0,
+        "None of the assigned reviewers are actually alive"
+    );
+
+    // This is the bug: active_count() doesn't filter by liveness, so new reviewers
+    // can't spawn until these ghost assignments expire (10 minutes).
+    assert_eq!(
+        state.active_count(),
+        3,
+        "BUG: active_count() still returns 3 even though all reviewers are dead"
+    );
+
+    // The fix will reconcile assignments with liveness BEFORE checking capacity,
+    // allowing the daemon to spawn replacements for these dead reviewers.
+}

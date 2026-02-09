@@ -1528,7 +1528,77 @@ async fn collect_reviewer_effects_with_source(
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
-    // Check rate limit
+    // FIRST: Prune dead reviewer assignments before checking capacity.
+    // This fixes Bug #1032: ghost reviewer assignments from before a daemon restart
+    // would count against MAX_CONCURRENT_REVIEWS even though those reviewers are dead.
+    // By checking liveness BEFORE the capacity check, we ensure only live reviewers count.
+    {
+        let active_names: HashSet<String> = state
+            .coworkers
+            .list()
+            .into_iter()
+            .map(|cw| cw.name.to_lowercase())
+            .collect();
+        let usage_limited_coworkers: HashSet<String> = {
+            let health = state.headless_health.read().unwrap();
+            health
+                .iter()
+                .filter_map(|(name, h)| {
+                    if h.has_usage_limit {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        let mut ps = state.persistent_state.lock().await;
+        let assignments: Vec<(u64, String)> = ps
+            .github
+            .pr_reviewers
+            .iter()
+            .map(|(pr, a)| (*pr, a.reviewer.clone()))
+            .collect();
+
+        for (pr_number, reviewer_name) in assignments {
+            let liveness = crate::rules::decide_reviewer_liveness(
+                &reviewer_name,
+                &active_names,
+                &usage_limited_coworkers,
+            );
+
+            match liveness {
+                crate::rules::ReviewerLivenessDecision::Active => {
+                    // Reviewer is alive, keep the assignment
+                }
+                crate::rules::ReviewerLivenessDecision::Dead => {
+                    debug!(
+                        "Pruning dead reviewer assignment: PR #{} was assigned to {} but reviewer is dead",
+                        pr_number, reviewer_name
+                    );
+                    ps.github.remove_assignment(pr_number);
+                }
+                crate::rules::ReviewerLivenessDecision::UsageLimited => {
+                    debug!(
+                        "Pruning usage-limited reviewer assignment: PR #{} was assigned to {} but reviewer is usage-limited",
+                        pr_number, reviewer_name
+                    );
+                    ps.github.remove_assignment(pr_number);
+                }
+            }
+        }
+
+        // Save the pruned state
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!(
+                "Failed to save daemon-state.json after pruning dead reviewers: {}",
+                e
+            );
+        }
+    }
+
+    // NOW check rate limit (after pruning dead reviewers)
     let current_review_count = {
         let ps = state.persistent_state.lock().await;
         ps.github.active_count()
