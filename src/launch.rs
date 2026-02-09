@@ -551,4 +551,26 @@ mod tests {
                 .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
         );
     }
+
+    #[test]
+    fn test_channel_routing_env_var() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        config.channel = Some("task-42".to_string());
+        let headless = config.to_headless_config();
+
+        // Verify MIDTOWN_CHANNEL env var is set
+        assert_eq!(
+            headless.env.get("MIDTOWN_CHANNEL"),
+            Some(&"task-42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_no_channel_routing_when_none() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let headless = config.to_headless_config();
+
+        // Verify MIDTOWN_CHANNEL env var is not set when channel is None
+        assert!(!headless.env.contains_key("MIDTOWN_CHANNEL"));
+    }
 }
