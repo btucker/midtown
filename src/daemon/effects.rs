@@ -34,7 +34,6 @@ pub enum Effect {
     ///
     /// Uses `SessionManager::spawn` with `SessionMode::ResumeSession` to
     /// restart a coworker from a previously saved session ID.
-    #[allow(dead_code)]
     ResumeCoworker {
         name: String,
         session_id: String,
