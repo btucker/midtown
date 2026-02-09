@@ -432,33 +432,35 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    overflow: hidden;
     position: relative;
   }
 
   .messages {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 16px;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-    font-size: 0.85rem;
-    line-height: 1.5;
+    padding: 14px 18px;
+    padding-bottom: 18px;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.88rem;
+    line-height: 1.55;
   }
 
   .empty-state {
     text-align: center;
-    color: #585858;
-    padding: 40px 20px;
+    color: #606060;
+    padding: 50px 22px;
     font-family: system-ui, -apple-system, sans-serif;
   }
 
   .empty-state .hint {
-    font-size: 0.875rem;
-    margin-top: 8px;
+    font-size: 0.9rem;
+    margin-top: 10px;
   }
 
   /* Blank line separator between different senders */
   .blank-line {
-    height: 0.75em;
+    height: 0.8em;
   }
 
   /* Author/sender header line */
@@ -468,30 +470,30 @@
     text-overflow: ellipsis;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
   }
 
   .sender-line.cross-post {
-    padding: 4px 8px;
-    margin: -4px -8px 4px;
+    padding: 5px 10px;
+    margin: -5px -10px 5px;
     border-left: 3px solid #af5faf;
-    background: rgba(175, 95, 175, 0.1);
-    border-radius: 4px;
+    background: rgba(175, 95, 175, 0.12);
+    border-radius: 5px;
   }
 
   .insight-star {
     color: #ffaf5f;
-    font-size: 1rem;
+    font-size: 1.05rem;
   }
 
   .cross-post-source {
     color: #5fafaf;
-    font-size: 0.85rem;
+    font-size: 0.88rem;
     font-weight: 600;
   }
 
   .sender-divider {
-    color: #585858;
+    color: #606060;
   }
 
   .sender-name {
@@ -499,12 +501,12 @@
   }
 
   .sender-task {
-    color: #585858;
+    color: #606060;
   }
 
   /* Mermaid diagram block (indented to match message gutter) */
   .mermaid-block {
-    margin-left: 4em;
+    margin-left: 4.2em;
   }
 
   /* Message line with timestamp gutter */
@@ -517,7 +519,7 @@
   .time-gutter {
     color: #4a4a4a;
     flex-shrink: 0;
-    width: 3.5em;
+    width: 3.7em;
     text-align: right;
     margin-right: 0.5em;
     user-select: none;
@@ -530,7 +532,7 @@
   }
 
   .message-text.dim-text {
-    color: #585858;
+    color: #606060;
   }
 
   .message-text :global(a),
@@ -568,20 +570,20 @@
   /* Inline code */
   .message-text :global(code),
   .action-text :global(code) {
-    background: #2a2a2a;
-    padding: 0.1em 0.4em;
+    background: #1a1a1a;
+    padding: 0.12em 0.45em;
     border-radius: 3px;
-    font-size: 0.9em;
+    font-size: 0.92em;
   }
 
   /* Code blocks */
   .message-text :global(pre),
   .action-text :global(pre) {
-    background: #2a2a2a;
-    padding: 8px 12px;
-    border-radius: 4px;
+    background: #1a1a1a;
+    padding: 10px 14px;
+    border-radius: 5px;
     overflow-x: auto;
-    margin: 4px 0;
+    margin: 5px 0;
   }
 
   .message-text :global(pre code),
@@ -589,7 +591,7 @@
     background: none;
     padding: 0;
     border-radius: 0;
-    font-size: 0.85em;
+    font-size: 0.88em;
   }
 
   /* Headings - scaled down for chat context */
@@ -601,7 +603,7 @@
   .action-text :global(h3) {
     font-size: 1em;
     font-weight: 700;
-    margin: 4px 0 2px;
+    margin: 5px 0 3px;
   }
 
   /* Lists */
@@ -609,23 +611,23 @@
   .message-text :global(ol),
   .action-text :global(ul),
   .action-text :global(ol) {
-    margin: 2px 0;
-    padding-left: 1.5em;
+    margin: 3px 0;
+    padding-left: 1.6em;
   }
 
   /* Blockquotes */
   .message-text :global(blockquote),
   .action-text :global(blockquote) {
     border-left: 2px solid #4a4a4a;
-    margin: 2px 0;
-    padding-left: 8px;
+    margin: 3px 0;
+    padding-left: 10px;
     color: #888;
   }
 
   /* Action messages (in sender's color) */
   .action-star {
     flex-shrink: 0;
-    margin-right: 0.25em;
+    margin-right: 0.3em;
   }
 
   .action-text {
@@ -637,15 +639,15 @@
   .typing-indicator {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 0;
-    margin-top: 4px;
+    gap: 7px;
+    padding: 5px 0;
+    margin-top: 5px;
     opacity: 0.7;
   }
 
   .typing-name {
     font-weight: 700;
-    font-size: 0.8rem;
+    font-size: 0.85rem;
   }
 
   .typing-dots {
@@ -688,39 +690,40 @@
   /* Scroll-to-bottom button */
   .scroll-to-bottom {
     position: absolute;
-    bottom: 80px;
-    right: 20px;
-    width: 36px;
-    height: 36px;
+    bottom: 90px;
+    right: 22px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
-    border: 1px solid #3a3a3a;
-    background: #262626;
+    border: 2px solid #2a2a2a;
+    background: #1a1a1a;
     color: #d0d0d0;
-    font-size: 1.1rem;
+    font-size: 1.2rem;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: opacity 0.2s;
-    opacity: 0.8;
+    transition: all 0.2s;
+    opacity: 0.85;
     z-index: 10;
   }
 
   .scroll-to-bottom:hover {
     opacity: 1;
-    border-color: #5fafaf;
-    color: #5fafaf;
+    border-color: #5faf5f;
+    color: #5faf5f;
   }
 
-  /* Input area */
+  /* Input area - FIXED at bottom with safe-area */
   .input-area {
     display: flex;
     flex-direction: column;
     gap: 8px;
     padding: 12px;
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-    background: #262626;
-    border-top: 1px solid #3a3a3a;
+    background: #1a1a1a;
+    border-top: 2px solid #2a2a2a;
+    flex-shrink: 0;
   }
 
   /* File preview */
@@ -791,47 +794,55 @@
 
   textarea {
     flex: 1;
-    padding: 12px 16px;
-    border: 1px solid #3a3a3a;
-    border-radius: 16px;
-    background: #1c1c1c;
+    padding: 13px 17px;
+    border: 2px solid #2a2a2a;
+    border-radius: 18px;
+    background: #0f0f0f;
     color: #d0d0d0;
-    font-size: 1rem;
+    font-size: 1.02rem;
     font-family: inherit;
     outline: none;
     resize: none;
-    min-height: 1.5em;
-    max-height: 8em;
+    min-height: 1.6em;
+    max-height: 9em;
     overflow-y: auto;
     field-sizing: content;
+    transition: border-color 0.2s;
   }
 
   textarea:focus {
-    border-color: #5fafaf;
+    border-color: #5faf5f;
   }
 
   textarea::placeholder {
-    color: #585858;
+    color: #606060;
   }
 
-  button {
-    padding: 12px 20px;
+  button[type="submit"] {
+    padding: 13px 22px;
     border: none;
-    border-radius: 24px;
-    background: #5fafaf;
-    color: #1c1c1c;
-    font-weight: 600;
+    border-radius: 26px;
+    background: #5faf5f;
+    color: #0a0a0a;
+    font-weight: 700;
     cursor: pointer;
-    transition: opacity 0.2s;
+    transition: all 0.2s;
+    font-size: 0.95rem;
+    letter-spacing: 0.01em;
   }
 
-  button:disabled {
-    opacity: 0.5;
+  button[type="submit"]:disabled {
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
-  button:hover:not(:disabled) {
-    opacity: 0.9;
+  button[type="submit"]:hover:not(:disabled) {
+    background: #6fc5c5;
+    transform: translateY(-1px);
+  }
+
+  button[type="submit"]:active:not(:disabled) {
+    transform: translateY(0);
   }
 
   /* Task detail modal (matches Kanban modal style) */
@@ -841,19 +852,19 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.75);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    padding: 16px;
+    padding: 18px;
   }
 
   .task-modal-content {
     background: #16213e;
-    border-radius: 8px;
-    padding: 16px;
-    max-width: 400px;
+    border-radius: 9px;
+    padding: 18px;
+    max-width: 420px;
     width: 100%;
     max-height: 80vh;
     overflow-y: auto;
@@ -863,14 +874,14 @@
 
   .task-modal-close {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 9px;
+    right: 9px;
     background: transparent;
     border: none;
     color: #666;
-    font-size: 1.5rem;
+    font-size: 1.6rem;
     cursor: pointer;
-    padding: 4px 8px;
+    padding: 5px 10px;
     line-height: 1;
     border-radius: 0;
   }
@@ -882,20 +893,20 @@
   .task-modal-header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
+    gap: 9px;
+    margin-bottom: 9px;
   }
 
   .task-modal-id {
     color: #00d9ff;
     font-family: ui-monospace, monospace;
-    font-size: 0.85rem;
+    font-size: 0.88rem;
   }
 
   .task-modal-status {
-    font-size: 0.7rem;
-    padding: 2px 8px;
-    border-radius: 12px;
+    font-size: 0.72rem;
+    padding: 3px 9px;
+    border-radius: 13px;
     background: #0f3460;
     color: #888;
     text-transform: capitalize;
@@ -903,17 +914,17 @@
 
   .task-modal-title {
     color: #eee;
-    font-size: 1rem;
+    font-size: 1.05rem;
     font-weight: 600;
-    margin: 0 0 12px 0;
-    line-height: 1.4;
+    margin: 0 0 13px 0;
+    line-height: 1.45;
   }
 
   .task-modal-description {
     color: #aaa;
-    font-size: 0.85rem;
-    line-height: 1.5;
-    margin: 0 0 12px 0;
+    font-size: 0.88rem;
+    line-height: 1.55;
+    margin: 0 0 13px 0;
     white-space: pre-wrap;
   }
 
@@ -924,9 +935,9 @@
 
   .task-modal-meta {
     display: flex;
-    gap: 8px;
-    font-size: 0.8rem;
-    margin-bottom: 4px;
+    gap: 9px;
+    font-size: 0.85rem;
+    margin-bottom: 5px;
   }
 
   .task-meta-label {
