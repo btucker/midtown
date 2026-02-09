@@ -1406,3 +1406,259 @@ async fn test_websocket_broadcast_to_multiple_clients() {
     fixture.async_cleanup().await;
     std::mem::forget(fixture);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// File Upload Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test that /api/upload accepts file uploads and returns correct path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_api_upload_success() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    // Create a test file
+    let test_content = b"Test image content";
+    let client = reqwest::Client::new();
+
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(test_content.to_vec())
+            .file_name("test-image.png")
+            .mime_str("image/png")
+            .unwrap(),
+    );
+
+    let response = client
+        .post(format!("{}/upload", fixture.api_base()))
+        .multipart(form)
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Upload request failed: {}", e);
+            fixture.async_cleanup().await;
+            std::mem::forget(fixture);
+            return;
+        }
+    };
+
+    assert!(response.status().is_success(), "Upload should return 200");
+
+    let body: serde_json::Value = response.json().await.expect("Should parse JSON response");
+
+    // Verify response contains path and filename
+    assert!(body.get("path").is_some(), "Response should contain 'path'");
+    assert!(
+        body.get("filename").is_some(),
+        "Response should contain 'filename'"
+    );
+
+    let path = body.get("path").unwrap().as_str().unwrap();
+    let filename = body.get("filename").unwrap().as_str().unwrap();
+
+    // Verify filename has timestamp prefix
+    assert!(
+        filename.contains("test-image.png"),
+        "Filename should preserve original name"
+    );
+    assert!(
+        filename.contains('-'),
+        "Filename should have timestamp prefix"
+    );
+
+    // Verify file was actually written
+    assert!(PathBuf::from(path).exists(), "Uploaded file should exist");
+
+    // Verify file content
+    let content = fs::read(path).expect("Should be able to read uploaded file");
+    assert_eq!(content, test_content, "File content should match");
+
+    // Clean up test file
+    let _ = fs::remove_file(path);
+
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
+
+/// Test that /api/upload rejects files that are too large.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_api_upload_rejects_large_files() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    // Create a file larger than 10MB
+    let large_content = vec![0u8; 11 * 1024 * 1024]; // 11MB
+    let client = reqwest::Client::new();
+
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(large_content)
+            .file_name("large-file.bin")
+            .mime_str("application/octet-stream")
+            .unwrap(),
+    );
+
+    let response = client
+        .post(format!("{}/upload", fixture.api_base()))
+        .multipart(form)
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Request failed: {}", e);
+            fixture.async_cleanup().await;
+            std::mem::forget(fixture);
+            return;
+        }
+    };
+
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+        "Should reject files larger than 10MB"
+    );
+
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
+
+/// Test that /api/upload rejects invalid filenames.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_api_upload_rejects_invalid_filenames() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    let test_content = b"Test content";
+    let client = reqwest::Client::new();
+
+    // Test directory traversal attempt
+    let invalid_filenames = vec![
+        "../etc/passwd",
+        "../../secret.txt",
+        "subdir/file.txt",
+        "evil\\..\\passwd",
+    ];
+
+    for filename in invalid_filenames {
+        let form = reqwest::multipart::Form::new().part(
+            "file",
+            reqwest::multipart::Part::bytes(test_content.to_vec())
+                .file_name(filename)
+                .mime_str("text/plain")
+                .unwrap(),
+        );
+
+        let response = client
+            .post(format!("{}/upload", fixture.api_base()))
+            .multipart(form)
+            .send()
+            .await;
+
+        let response = match response {
+            Ok(r) => r,
+            Err(_) => continue, // Network error, skip this test case
+        };
+
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "Should reject filename '{}'",
+            filename
+        );
+    }
+
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
+
+/// Test that /api/upload returns error when no file is provided.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_api_upload_no_file_error() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    let client = reqwest::Client::new();
+
+    // Send empty multipart form
+    let form = reqwest::multipart::Form::new();
+
+    let response = client
+        .post(format!("{}/upload", fixture.api_base()))
+        .multipart(form)
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Request failed: {}", e);
+            fixture.async_cleanup().await;
+            std::mem::forget(fixture);
+            return;
+        }
+    };
+
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "Should return 400 when no file is provided"
+    );
+
+    let body: serde_json::Value = response.json().await.expect("Should parse JSON");
+    assert!(
+        body.get("error").is_some(),
+        "Error response should contain error field"
+    );
+
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
