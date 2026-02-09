@@ -568,9 +568,7 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
-    effects.extend(
-        collect_stuck_condition_effects(state, &prs, &reviewed_prs, prs_needing_review).await,
-    );
+    effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
 
     // Detect stale CI checks and trigger re-runs
     effects.extend(collect_stale_check_effects(state, &prs).await);
@@ -819,14 +817,10 @@ fn pr_action_to_effects(
 /// (comment-based or formal), pre-collected before this function to keep
 /// decision logic free of async API calls.
 ///
-/// The `prs_needing_review` parameter is the pre-computed count of PRs that
-/// need review, calculated by the caller to maintain pure function behavior
-/// (no cache writes inside effect collection).
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
-    prs_needing_review: usize,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -1056,34 +1050,6 @@ async fn collect_stuck_condition_effects(
             } else {
                 tracker.clear(name, StuckConditionType::SilentCoworker);
             }
-        }
-    }
-
-    // --- Scenario 5: Review backlog ---
-    // prs_needing_review is passed in from the caller (computed and cached before
-    // calling this function to maintain pure function behavior).
-    {
-        let current_review_count = {
-            let ps = state.persistent_state.lock().await;
-            ps.github.active_count()
-        };
-
-        // Backlog exists when more PRs need review than we can handle
-        if prs_needing_review > MAX_CONCURRENT_REVIEWS
-            && current_review_count >= MAX_CONCURRENT_REVIEWS
-        {
-            tracker.track("backlog", StuckConditionType::ReviewBacklog);
-            if tracker.should_nudge("backlog", StuckConditionType::ReviewBacklog) {
-                let nudge = format!(
-                    "@lead {} PRs need review but I'm at the max concurrent review limit ({}/{}) — some PRs may wait longer than usual",
-                    prs_needing_review, current_review_count, MAX_CONCURRENT_REVIEWS,
-                );
-                effects.extend(stuck_nudge_effects(&nudge));
-                tracker.record_nudge("backlog", StuckConditionType::ReviewBacklog);
-                nudge_count += 1;
-            }
-        } else {
-            tracker.clear("backlog", StuckConditionType::ReviewBacklog);
         }
     }
 
@@ -1529,28 +1495,91 @@ async fn collect_reviewer_effects_with_source(
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
-    // Check rate limit
-    let current_review_count = {
-        let ps = state.persistent_state.lock().await;
-        ps.github.active_count()
-    };
+    // FIRST: Prune dead reviewer assignments (defensive cleanup).
+    // This removes stale assignments for coworkers that have stopped, are usage-limited,
+    // or whose name was reused for a dev coworker after restart.
+    // Without MAX_CONCURRENT_REVIEWS, this is purely cleanup to keep state tidy and prevent
+    // confusion about which PRs are actively being reviewed.
+    {
+        let coworker_list = state.coworkers.list();
+        let active_names: HashSet<String> = coworker_list
+            .iter()
+            .map(|cw| cw.name.to_lowercase())
+            .collect();
+        // Build the set of coworkers that are actually acting as reviewers.
+        // A coworker whose current_task starts with "reviewing" is a reviewer;
+        // one doing dev work has a different task. This catches the case where a
+        // reviewer died and the name was reused for a dev coworker after restart.
+        let active_reviewer_names: HashSet<String> = coworker_list
+            .iter()
+            .filter(|cw| {
+                cw.current_task
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("reviewing"))
+            })
+            .map(|cw| cw.name.to_lowercase())
+            .collect();
+        let usage_limited_coworkers: HashSet<String> = {
+            let health = state.headless_health.read().unwrap();
+            health
+                .iter()
+                .filter_map(|(name, h)| {
+                    if h.has_usage_limit {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
 
-    if current_review_count >= MAX_CONCURRENT_REVIEWS {
-        debug!(
-            "At max concurrent reviews ({}/{}), skipping auto-review spawn",
-            current_review_count, MAX_CONCURRENT_REVIEWS
-        );
-        return effects;
-    }
+        let mut ps = state.persistent_state.lock().await;
+        let assignments: Vec<(u64, String)> = ps
+            .github
+            .pr_reviewers
+            .iter()
+            .map(|(pr, a)| (*pr, a.reviewer.clone()))
+            .collect();
 
-    let reviews_available = MAX_CONCURRENT_REVIEWS - current_review_count;
-    let mut reviews_planned = 0;
+        for (pr_number, reviewer_name) in assignments {
+            let liveness = crate::rules::decide_reviewer_liveness(
+                &reviewer_name,
+                &active_names,
+                &usage_limited_coworkers,
+                &active_reviewer_names,
+            );
 
-    for pr in prs {
-        if reviews_planned >= reviews_available {
-            break;
+            match liveness {
+                crate::rules::ReviewerLivenessDecision::Active => {
+                    // Reviewer is alive and reviewing, keep the assignment
+                }
+                crate::rules::ReviewerLivenessDecision::Dead => {
+                    debug!(
+                        "Pruning dead reviewer assignment: PR #{} was assigned to {} but reviewer is dead or doing dev work",
+                        pr_number, reviewer_name
+                    );
+                    ps.github.remove_assignment(pr_number);
+                }
+                crate::rules::ReviewerLivenessDecision::UsageLimited => {
+                    debug!(
+                        "Pruning usage-limited reviewer assignment: PR #{} was assigned to {} but reviewer is usage-limited",
+                        pr_number, reviewer_name
+                    );
+                    ps.github.remove_assignment(pr_number);
+                }
+            }
         }
 
+        // Save the pruned state
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!(
+                "Failed to save daemon-state.json after pruning dead reviewers: {}",
+                e
+            );
+        }
+    }
+
+    for pr in prs {
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         if pr_number == 0 {
             continue;
@@ -1661,74 +1690,21 @@ async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if already assigned for review AND the reviewer is still active.
-        // If a reviewer was assigned but has since died/shut down, we should spawn
-        // a replacement rather than waiting for the assignment to expire.
+        // Check if already assigned for review.
+        // Dead/usage-limited reviewer assignments are pruned upfront (above),
+        // so any remaining assignment here has a live, active reviewer.
         {
             let ps = state.persistent_state.lock().await;
             if ps.github.is_assigned(pr_number) {
-                // Check if the assigned reviewer is still alive using pure decision logic
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    // Get active coworker names for liveness check
-                    let active_names: HashSet<String> = state
-                        .coworkers
-                        .list()
-                        .into_iter()
-                        .map(|cw| cw.name.to_lowercase())
-                        .collect();
-                    // Get usage limited coworkers from headless_health
-                    let usage_limited_coworkers: HashSet<String> = {
-                        let health = state.headless_health.read().unwrap();
-                        health
-                            .iter()
-                            .filter_map(|(name, h)| {
-                                if h.has_usage_limit {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect()
-                    };
-
-                    let liveness = crate::rules::decide_reviewer_liveness(
-                        reviewer_name,
-                        &active_names,
-                        &usage_limited_coworkers,
+                    debug!(
+                        "PR #{} already assigned to active reviewer {}",
+                        pr_number, reviewer_name
                     );
-
-                    match liveness {
-                        crate::rules::ReviewerLivenessDecision::Active => {
-                            debug!(
-                                "PR #{} already assigned to active reviewer {}",
-                                pr_number, reviewer_name
-                            );
-                            continue;
-                        }
-                        crate::rules::ReviewerLivenessDecision::Dead => {
-                            debug!(
-                                "PR #{} assigned to {} but reviewer is dead, will spawn replacement",
-                                pr_number, reviewer_name
-                            );
-                            // Don't clear assignment here - just proceed to spawn.
-                            // The spawn callback will replace the stale assignment when
-                            // the new reviewer is successfully spawned.
-                        }
-                        crate::rules::ReviewerLivenessDecision::UsageLimited => {
-                            debug!(
-                                "PR #{} assigned to {} but reviewer is usage-limited, will spawn replacement",
-                                pr_number, reviewer_name
-                            );
-                            // Don't clear assignment here - just proceed to spawn.
-                            // The spawn callback will replace the stale assignment when
-                            // the new reviewer is successfully spawned.
-                        }
-                    }
                 } else {
-                    // Assignment exists but no reviewer name - shouldn't happen, but skip anyway
                     debug!("PR #{} has assignment but no reviewer name", pr_number);
-                    continue;
                 }
+                continue;
             }
         }
 
@@ -1822,8 +1798,6 @@ async fn collect_reviewer_effects_with_source(
             on_success,
             on_failure,
         });
-
-        reviews_planned += 1;
     }
 
     effects
