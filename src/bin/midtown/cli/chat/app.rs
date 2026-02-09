@@ -570,6 +570,8 @@ impl App {
     }
 
     /// Toggle selection mode (disables mouse capture for text selection)
+    /// Note: No keyboard shortcut currently bound to this - reserved for future use
+    #[allow(dead_code)]
     pub fn toggle_selection_mode(&mut self) {
         self.selection_mode = !self.selection_mode;
     }
