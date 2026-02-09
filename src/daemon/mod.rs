@@ -1451,6 +1451,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Recover coworker workflow state from their state files across daemon restarts.
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
+    // Recover headless sessions from previous daemon run (session survival).
+    startup::recover_headless_sessions(
+        &repo_name,
+        &state.persistent_state,
+        &state.session_manager,
+        &state.coworkers,
+        &state.coworker_records,
+    )
+    .await;
+
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let mut sigterm = signal(SignalKind::terminate())?;
