@@ -716,7 +716,7 @@ fn pr_action_to_effects(
                 Effect::BroadcastCoworkerUpdate {
                     name: owner.clone(),
                     status: "running".to_string(),
-                    current_task: None,
+                    current_task: Some(format!("working on PR #{}", pr_number)),
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
@@ -1347,7 +1347,7 @@ fn comment_action_to_effects(
                 Effect::BroadcastCoworkerUpdate {
                     name: owner.clone(),
                     status: "running".to_string(),
-                    current_task: None,
+                    current_task: Some(format!("responding to feedback on PR #{}", pr_number)),
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
@@ -1464,7 +1464,7 @@ fn handoff_to_coworker_effects(
         Effect::BroadcastCoworkerUpdate {
             name: assignee.to_string(),
             status: "running".to_string(),
-            current_task: None,
+            current_task: Some(format!("working on PR #{}", pr_num)),
         },
         Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -1793,7 +1793,7 @@ async fn collect_reviewer_effects_with_source(
             Effect::BroadcastCoworkerUpdate {
                 name: reviewer_name.clone(),
                 status: "running".to_string(),
-                current_task: None,
+                current_task: Some(format!("reviewing PR #{}", pr_number)),
             },
             Effect::AssignReviewer {
                 pr_number,
@@ -1877,7 +1877,7 @@ fn review_complete_action_to_effects(
                 Effect::BroadcastCoworkerUpdate {
                     name: owner.clone(),
                     status: "running".to_string(),
-                    current_task: None,
+                    current_task: Some(format!("responding to feedback on PR #{}", pr_number)),
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
