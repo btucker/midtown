@@ -463,9 +463,10 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             // Collect and return the full WorldSnapshot for debugging/testing.
             // Debug context (channel messages, daemon logs) is only populated here,
             // not during normal tick collection, to avoid I/O overhead on the hot path.
+            let default_channel = state.channel_router.default_channel().unwrap();
             let snapshot = super::snapshot::collect_world_snapshot(state)
                 .await
-                .with_debug_context(&state.channel);
+                .with_debug_context(&default_channel);
             match serde_json::to_value(&snapshot) {
                 Ok(value) => Response::success(request.id, value),
                 Err(e) => Response::error(
@@ -1723,9 +1724,18 @@ pub(super) async fn handle_channel_post(
 
 /// Handle channel.read RPC method.
 fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Response {
+    // Read from the default (main) channel
+    let default_channel = match state.channel_router.default_channel() {
+        Ok(ch) => ch,
+        Err(e) => {
+            error!("Failed to get default channel: {}", e);
+            return Response::error(id, RpcError::new(-32603, e.to_string()));
+        }
+    };
+
     let messages = if all {
         // Read all messages
-        match state.channel.read_all() {
+        match default_channel.read_all() {
             Ok(msgs) => msgs,
             Err(e) => {
                 error!("Failed to read channel: {}", e);
@@ -1734,7 +1744,7 @@ fn handle_channel_read(id: RequestId, all: bool, state: &DaemonState) -> Respons
         }
     } else {
         // Read recent messages (last 20)
-        match state.channel.read_all() {
+        match default_channel.read_all() {
             Ok(msgs) => {
                 let total = msgs.len();
                 if total > 20 {

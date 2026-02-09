@@ -2569,19 +2569,19 @@ mod tests {
         let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
             .expect("worktree manager");
         let cm = crate::coworker::CoworkerManager::new("test-session", wm);
-        let channel_dir = temp_dir.path().join("channel");
-        std::fs::create_dir_all(&channel_dir).expect("channel dir");
-        let channel = crate::channel::Channel::new(&channel_dir, "midtown").expect("channel");
 
         // Leak temp_dir so it survives the test
+        let base_dir = temp_dir.path().to_path_buf();
         std::mem::forget(temp_dir);
+
+        let channel_router = crate::ChannelRouter::new(&base_dir, "test-repo");
 
         DaemonState::new(
             "/tmp/test.sock".into(),
             cm,
             "test-repo".to_string(),
             vec![],
-            channel,
+            channel_router,
             None,
             10,
             None,
