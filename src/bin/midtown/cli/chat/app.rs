@@ -214,6 +214,9 @@ const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 /// Shorter retry interval when usage fetch fails (15 seconds)
 const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Number of lines to scroll per mouse wheel event
+const SCROLL_STEP: usize = 3;
+
 impl App {
     pub fn new() -> Self {
         // Use detect_repo_name() which correctly handles worktrees by using
@@ -514,11 +517,11 @@ impl App {
         (pending, in_progress, completed)
     }
 
-    /// Scroll up one line
+    /// Scroll up by SCROLL_STEP lines
     pub fn scroll_up(&mut self) {
         let max_scroll = self.max_scroll();
         if self.scroll_offset < max_scroll {
-            self.scroll_offset += 1;
+            self.scroll_offset = (self.scroll_offset + SCROLL_STEP).min(max_scroll);
         }
         // Mark as intentionally at top if we've scrolled to max
         if self.scroll_offset >= max_scroll {
@@ -527,10 +530,10 @@ impl App {
         self.maybe_load_more_history();
     }
 
-    /// Scroll down one line
+    /// Scroll down by SCROLL_STEP lines
     pub fn scroll_down(&mut self) {
         if self.scroll_offset > 0 {
-            self.scroll_offset -= 1;
+            self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_STEP);
             // No longer at top when scrolling down
             self.intentionally_at_top = false;
         }
