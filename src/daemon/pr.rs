@@ -3844,6 +3844,7 @@ mod tests {
             running_coworkers: vec![],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "test".to_string(),
             repo_name: "test-repo".to_string(),
             coworker_start_times: HashMap::new(),

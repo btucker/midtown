@@ -21,6 +21,9 @@ pub(crate) struct CoworkerSnapshot {
     pub name: String,
     pub started_at: DateTime<Utc>,
     pub isolated_tasks: bool,
+    /// Claude Code session UUID, if known. Enables session-first lookups
+    /// alongside name-based lookups during the multi-session migration.
+    pub session_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,6 +1568,7 @@ mod tests {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
             isolated_tasks: false,
+            session_id: None,
         }
     }
 
@@ -1573,6 +1577,7 @@ mod tests {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
             isolated_tasks: true,
+            session_id: None,
         }
     }
 

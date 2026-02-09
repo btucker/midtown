@@ -1054,6 +1054,7 @@ mod tests {
             running_coworkers: vec![running.clone()],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),

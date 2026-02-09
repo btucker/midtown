@@ -85,6 +85,9 @@ pub struct WorldSnapshot {
     pub coworker_snapshots: Vec<CoworkerSnapshot>,
     /// Lowercase names of running coworkers (for fast lookup).
     pub active_names: HashSet<String>,
+    /// Session IDs of active coworkers (for session-first lookups).
+    /// Populated alongside `active_names` during snapshot collection.
+    pub active_session_ids: HashSet<String>,
     /// Tmux session name (e.g., "midtown-projectname").
     pub session_name: String,
     /// Coworker start times keyed by lowercase name.
@@ -233,6 +236,20 @@ pub fn read_daemon_log_tail(num_lines: usize) -> Vec<String> {
 }
 
 impl WorldSnapshot {
+    /// Get all session IDs for a given coworker name.
+    ///
+    /// Returns the session IDs of active coworkers with the specified name.
+    /// Useful for backward-compat lookups during the transition from name-keyed
+    /// to session-keyed state.
+    #[allow(dead_code)]
+    pub fn sessions_for_name(&self, name: &str) -> Vec<String> {
+        self.active_coworkers
+            .iter()
+            .filter(|cw| cw.name.eq_ignore_ascii_case(name))
+            .filter_map(|cw| cw.session_id.clone())
+            .collect()
+    }
+
     /// Populate debug context fields (channel messages and daemon logs).
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during
@@ -268,6 +285,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
             name: cw.name.clone(),
             started_at: cw.started_at,
             isolated_tasks: cw.isolated_tasks,
+            session_id: cw.session_id.clone(),
         })
         .collect();
 
@@ -283,6 +301,21 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         // Only add if the session is alive (per SessionManager's internal tracking)
         if state.session_manager.is_alive(&name).await {
             active_names.insert(name.to_lowercase());
+        }
+    }
+
+    // Collect active session IDs from all coworkers that have a known session_id.
+    // First from CoworkerManager (which has session_id on the Coworker struct),
+    // then from SessionManager for headless sessions that may have reported their
+    // session_id via the init StreamEvent.
+    let mut active_session_ids: HashSet<String> = active_coworkers
+        .iter()
+        .filter(|cw| active_names.contains(&cw.name.to_lowercase()))
+        .filter_map(|cw| cw.session_id.clone())
+        .collect();
+    for name in &active_names {
+        if let Some(sid) = state.session_manager.get_session_id(name).await {
+            active_session_ids.insert(sid);
         }
     }
 
@@ -469,6 +502,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         running_coworkers,
         coworker_snapshots,
         active_names,
+        active_session_ids,
         session_name,
         coworker_start_times,
         coworker_stop_times,
@@ -573,6 +607,7 @@ mod tests {
             running_coworkers: vec![],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: stop_times.clone(),
@@ -658,6 +693,7 @@ mod tests {
             running_coworkers: vec![],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),
@@ -765,5 +801,166 @@ mod tests {
         assert!(headless_active_names.contains("york"));
         assert!(!headless_active_names.contains("madison")); // stopped, not active
         assert_eq!(headless_active_names.len(), 2);
+    }
+
+    /// Test that sessions_for_name returns session IDs for coworkers matching a name.
+    #[test]
+    fn test_sessions_for_name() {
+        use crate::coworker::{Coworker, CoworkerStatus};
+
+        let snapshot = WorldSnapshot {
+            active_coworkers: vec![
+                Coworker {
+                    name: "lexington".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp/lex1".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: Some("session-aaa".to_string()),
+                    isolated_tasks: false,
+                    model: "sonnet".to_string(),
+                },
+                Coworker {
+                    name: "park".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp/park1".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: Some("session-bbb".to_string()),
+                    isolated_tasks: false,
+                    model: "sonnet".to_string(),
+                },
+                Coworker {
+                    name: "lexington".to_string(),
+                    status: CoworkerStatus::Running,
+                    working_dir: "/tmp/lex2".to_string(),
+                    started_at: Utc::now(),
+                    current_task: None,
+                    session_id: Some("session-ccc".to_string()),
+                    isolated_tasks: true,
+                    model: "sonnet".to_string(),
+                },
+            ],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        // "lexington" has two sessions
+        let lex_sessions = snapshot.sessions_for_name("lexington");
+        assert_eq!(lex_sessions.len(), 2);
+        assert!(lex_sessions.contains(&"session-aaa".to_string()));
+        assert!(lex_sessions.contains(&"session-ccc".to_string()));
+
+        // "park" has one session
+        let park_sessions = snapshot.sessions_for_name("park");
+        assert_eq!(park_sessions.len(), 1);
+        assert_eq!(park_sessions[0], "session-bbb");
+
+        // unknown name returns empty
+        let unknown = snapshot.sessions_for_name("broadway");
+        assert!(unknown.is_empty());
+    }
+
+    /// Test that active_session_ids is populated in WorldSnapshot serialization.
+    #[test]
+    fn test_active_session_ids_in_snapshot() {
+        let mut active_session_ids = HashSet::new();
+        active_session_ids.insert("session-aaa".to_string());
+        active_session_ids.insert("session-bbb".to_string());
+
+        let snapshot = WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids,
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        assert_eq!(snapshot.active_session_ids.len(), 2);
+        assert!(snapshot.active_session_ids.contains("session-aaa"));
+        assert!(snapshot.active_session_ids.contains("session-bbb"));
+
+        let json = serde_json::to_string(&snapshot).expect("should serialize");
+        assert!(json.contains("active_session_ids"));
     }
 }
