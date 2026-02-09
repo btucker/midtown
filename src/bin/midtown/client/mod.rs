@@ -167,20 +167,26 @@ impl DaemonClient {
 
     // Channel commands
 
-    pub fn channel_post(&self, message: &str) -> Result<Response, String> {
+    pub fn channel_post(&self, message: &str, channel: Option<&str>) -> Result<Response, String> {
         // Use MIDTOWN_AGENT env var for sender, defaulting to "lead"
         let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
-        self.channel_post_as(message, &from)
+        self.channel_post_as(message, &from, channel)
     }
 
     /// Post a message to the channel with an explicit sender.
     ///
     /// This is used by the TUI to post as "user" so the daemon can nudge the Lead.
-    pub fn channel_post_as(&self, message: &str, from: &str) -> Result<Response, String> {
-        self.send(
-            "channel.post",
-            Some(serde_json::json!({ "message": message, "from": from })),
-        )
+    pub fn channel_post_as(
+        &self,
+        message: &str,
+        from: &str,
+        channel: Option<&str>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "message": message, "from": from });
+        if let Some(ch) = channel {
+            params["channel"] = serde_json::Value::String(ch.to_string());
+        }
+        self.send("channel.post", Some(params))
     }
 
     pub fn channel_read(&self, all: bool) -> Result<Response, String> {

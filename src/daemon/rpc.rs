@@ -216,9 +216,12 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|p| p.get("from"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("lead");
+            let channel = params
+                .and_then(|p| p.get("channel"))
+                .and_then(|v| v.as_str());
 
             match message {
-                Some(msg) => handle_channel_post(request.id, from, msg, state).await,
+                Some(msg) => handle_channel_post(request.id, from, msg, channel, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -1538,10 +1541,14 @@ fn unescape_shell_artifacts(s: &str) -> String {
 /// For coworkers, the action text is also reflected in their tmux tab name.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
+///
+/// Accepts an optional `channel` parameter to post to topic channels.
+/// If not provided, defaults to the main channel.
 pub(super) async fn handle_channel_post(
     id: RequestId,
     from: &str,
     message: &str,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Clean up shell escaping artifacts (e.g. "\!" from bash history expansion escaping)
@@ -1584,12 +1591,9 @@ pub(super) async fn handle_channel_post(
         tracker.insert(key, now);
     }
 
-    let msg = Message::for_channel(
-        state.channel_router.default_channel_name(),
-        from,
-        content.clone(),
-        msg_type.clone(),
-    );
+    // Use provided channel or default to main channel
+    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+    let msg = Message::for_channel(channel_name, from, content.clone(), msg_type.clone());
 
     // Use async version to avoid blocking the runtime during file lock acquisition
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
