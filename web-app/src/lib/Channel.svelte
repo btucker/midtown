@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData } from './store.js'
   import { sendMessage, uploadFile } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -63,7 +63,7 @@
     }
   }
 
-  // Handle clicks on channel links, task links, and PR links
+  // Handle clicks on channel links, task links, PR links, and coworker links
   onMount(() => {
     function handleLinkClick(e) {
       const target = e.target
@@ -78,14 +78,57 @@
         const taskId = target.dataset.task
         const task = findTask(taskId)
         if (task) {
-          selectedTask = task
+          // Desktop (>1024px): use DetailPanel; Mobile: use modal
+          if (window.innerWidth > 1024) {
+            detailPanelData.set({ type: 'task', data: task })
+          } else {
+            selectedTask = task
+          }
         }
       } else if (target.classList.contains('pr-link')) {
         e.preventDefault()
         const prNum = target.dataset.pr
         const url = getPrUrl(prNum)
         if (url) {
-          window.open(url, '_blank', 'noopener')
+          // Desktop (>1024px): use DetailPanel; Mobile: open GitHub
+          if (window.innerWidth > 1024) {
+            // Find the PR data from kanban
+            const num = parseInt(prNum)
+            const pr = $kanbanData.review.find((p) => p.number === num)
+              || $kanbanData.done.find((p) => p.number === num)
+            if (pr) {
+              detailPanelData.set({
+                type: 'pr',
+                data: {
+                  number: pr.number,
+                  title: pr.title,
+                  author: pr.author,
+                  reviewer: pr.reviewer,
+                  status: pr.status,
+                  url: url,
+                },
+              })
+            }
+          } else {
+            window.open(url, '_blank', 'noopener')
+          }
+        }
+      } else if (target.classList.contains('coworker-link')) {
+        e.preventDefault()
+        const coworkerName = target.dataset.coworker
+        // Find the coworker in the store
+        const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
+        if (coworker && window.innerWidth > 1024) {
+          detailPanelData.set({
+            type: 'coworker',
+            data: {
+              name: coworker.name,
+              status: coworker.status,
+              current_task: coworker.current_task,
+              model: coworker.model,
+              started_at: coworker.started_at,
+            },
+          })
         }
       }
     }
@@ -573,6 +616,13 @@
   .message-text :global(a.pr-link),
   .action-text :global(a.pr-link) {
     color: #5f87af;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .message-text :global(a.coworker-link),
+  .action-text :global(a.coworker-link) {
+    color: #87d7d7;
     font-weight: 600;
     cursor: pointer;
   }

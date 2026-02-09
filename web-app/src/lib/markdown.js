@@ -126,6 +126,11 @@ export function renderContent(text) {
     return `[!${taskId}](task:${taskId})`
   })
 
+  // @coworker mentions (only on desktop where we can show detail panel)
+  safe = preserveAndReplace(safe, /@([a-z][a-z0-9-]*)\b/gi, (match, name) => {
+    return `[@${name}](coworker:${name})`
+  })
+
   // Restore preserved user-written markdown links and code blocks
   safe = safe.replace(/\x02PRESERVE(\d+)\x02/g, (_, i) => preservedItems[i])
 
@@ -149,13 +154,18 @@ export function renderContent(text) {
     return `<a href="#" class="pr-link" data-pr="${prNum}">${text}</a>`
   })
 
+  html = html.replace(/<a href="coworker:([^"]+)">([^<]*)<\/a>/g, (match, name, text) => {
+    return `<a href="#" class="coworker-link" data-coworker="${name}">${text}</a>`
+  })
+
   // Ensure all links open in new tabs
   html = html.replace(/<a /g, '<a target="_blank" rel="noopener" ')
 
-  // Restore target for internal channel/task/pr links (they shouldn't open new tabs)
+  // Restore target for internal channel/task/pr/coworker links (they shouldn't open new tabs)
   html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="channel-link")/g, '<a $1')
   html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="task-link")/g, '<a $1')
   html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="pr-link")/g, '<a $1')
+  html = html.replace(/<a target="_blank" rel="noopener" (href="#" class="coworker-link")/g, '<a $1')
 
   return html
 }
