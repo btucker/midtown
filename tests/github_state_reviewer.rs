@@ -635,13 +635,15 @@ fn batch_pr_reviewer_handling() {
 // =============================================================================
 
 /// Test that ghost reviewer assignments from before a daemon restart
-/// are not counted toward the capacity limit when those reviewers are dead.
+/// are pruned as part of defensive cleanup in collect_reviewer_effects_with_source().
 ///
-/// Bug scenario: After daemon restart, reviewer assignments persisted in
-/// daemon-state.json count against MAX_CONCURRENT_REVIEWS even though
-/// those coworker processes are dead. This blocks new reviewer spawns.
+/// Historical context: This test documented bug #1032 where ghost assignments
+/// counted against MAX_CONCURRENT_REVIEWS, blocking new reviewer spawns after
+/// daemon restart. The fix (removing MAX_CONCURRENT_REVIEWS entirely) eliminated
+/// the capacity issue, but the upfront pruning remains as defensive cleanup to
+/// keep state tidy and avoid confusion about which PRs are actively being reviewed.
 #[test]
-fn ghost_reviewers_should_not_block_new_spawns() {
+fn ghost_reviewers_are_pruned_during_reviewer_spawn() {
     use std::collections::HashSet;
 
     let mut state = GitHubState::default();
@@ -663,10 +665,9 @@ fn ghost_reviewers_should_not_block_new_spawns() {
     // but their coworker processes are dead.
     let active_coworkers: HashSet<String> = ["park"].iter().map(|s| s.to_string()).collect();
 
-    // The bug: active_count() doesn't know about liveness, so it still returns 3.
-    // This causes collect_reviewer_effects_with_source() to return early at
-    // the capacity check (line 1537-1542) before reaching the dead reviewer
-    // detection logic (line 1663-1731).
+    // active_count() doesn't know about liveness, so it still returns 3.
+    // The upfront pruning in collect_reviewer_effects_with_source() will detect
+    // these as dead and remove them before spawning new reviewers.
 
     // What SHOULD happen: A liveness-aware count should return 0, since none of the
     // assigned reviewers (columbus, lexington, york) are in active_coworkers.
@@ -682,14 +683,13 @@ fn ghost_reviewers_should_not_block_new_spawns() {
         "None of the assigned reviewers are actually alive"
     );
 
-    // This is the bug: active_count() doesn't filter by liveness, so new reviewers
-    // can't spawn until these ghost assignments expire (10 minutes).
+    // active_count() doesn't filter by liveness, so it returns 3.
+    // This is OK now — without MAX_CONCURRENT_REVIEWS, there's no capacity limit
+    // these ghost assignments are blocking. The upfront pruning in pr.rs will
+    // remove them as defensive cleanup before spawning new reviewers.
     assert_eq!(
         state.active_count(),
         3,
-        "BUG: active_count() still returns 3 even though all reviewers are dead"
+        "active_count() still returns 3 (doesn't filter by liveness)"
     );
-
-    // The fix will reconcile assignments with liveness BEFORE checking capacity,
-    // allowing the daemon to spawn replacements for these dead reviewers.
 }

@@ -567,9 +567,7 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
-    effects.extend(
-        collect_stuck_condition_effects(state, &prs, &reviewed_prs, prs_needing_review).await,
-    );
+    effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
 
     // Detect stale CI checks and trigger re-runs
     effects.extend(collect_stale_check_effects(state, &prs).await);
@@ -818,14 +816,10 @@ fn pr_action_to_effects(
 /// (comment-based or formal), pre-collected before this function to keep
 /// decision logic free of async API calls.
 ///
-/// The `prs_needing_review` parameter is the pre-computed count of PRs that
-/// need review, calculated by the caller to maintain pure function behavior
-/// (no cache writes inside effect collection).
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
-    prs_needing_review: usize,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -1055,34 +1049,6 @@ async fn collect_stuck_condition_effects(
             } else {
                 tracker.clear(name, StuckConditionType::SilentCoworker);
             }
-        }
-    }
-
-    // --- Scenario 5: Review backlog ---
-    // prs_needing_review is passed in from the caller (computed and cached before
-    // calling this function to maintain pure function behavior).
-    {
-        let current_review_count = {
-            let ps = state.persistent_state.lock().await;
-            ps.github.active_count()
-        };
-
-        // Backlog exists when more PRs need review than we can handle
-        if prs_needing_review > MAX_CONCURRENT_REVIEWS
-            && current_review_count >= MAX_CONCURRENT_REVIEWS
-        {
-            tracker.track("backlog", StuckConditionType::ReviewBacklog);
-            if tracker.should_nudge("backlog", StuckConditionType::ReviewBacklog) {
-                let nudge = format!(
-                    "@lead {} PRs need review but I'm at the max concurrent review limit ({}/{}) — some PRs may wait longer than usual",
-                    prs_needing_review, current_review_count, MAX_CONCURRENT_REVIEWS,
-                );
-                effects.extend(stuck_nudge_effects(&nudge));
-                tracker.record_nudge("backlog", StuckConditionType::ReviewBacklog);
-                nudge_count += 1;
-            }
-        } else {
-            tracker.clear("backlog", StuckConditionType::ReviewBacklog);
         }
     }
 
@@ -1528,10 +1494,10 @@ async fn collect_reviewer_effects_with_source(
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
-    // FIRST: Prune dead reviewer assignments before checking capacity.
-    // This fixes Bug #1032: ghost reviewer assignments from before a daemon restart
-    // would count against MAX_CONCURRENT_REVIEWS even though those reviewers are dead.
-    // By checking liveness BEFORE the capacity check, we ensure only live reviewers count.
+    // FIRST: Prune dead reviewer assignments (defensive cleanup).
+    // This removes stale assignments for coworkers that have stopped or are usage-limited.
+    // Without MAX_CONCURRENT_REVIEWS, this is purely cleanup to keep state tidy and prevent
+    // confusion about which PRs are actively being reviewed.
     {
         let active_names: HashSet<String> = state
             .coworkers
@@ -1598,28 +1564,7 @@ async fn collect_reviewer_effects_with_source(
         }
     }
 
-    // NOW check rate limit (after pruning dead reviewers)
-    let current_review_count = {
-        let ps = state.persistent_state.lock().await;
-        ps.github.active_count()
-    };
-
-    if current_review_count >= MAX_CONCURRENT_REVIEWS {
-        debug!(
-            "At max concurrent reviews ({}/{}), skipping auto-review spawn",
-            current_review_count, MAX_CONCURRENT_REVIEWS
-        );
-        return effects;
-    }
-
-    let reviews_available = MAX_CONCURRENT_REVIEWS - current_review_count;
-    let mut reviews_planned = 0;
-
     for pr in prs {
-        if reviews_planned >= reviews_available {
-            break;
-        }
-
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         if pr_number == 0 {
             continue;
@@ -1891,8 +1836,6 @@ async fn collect_reviewer_effects_with_source(
             on_success,
             on_failure,
         });
-
-        reviews_planned += 1;
     }
 
     effects

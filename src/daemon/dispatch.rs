@@ -977,12 +977,8 @@ pub(super) fn spawn_for_pending_tasks(
     let unserved_prs = snap.prs_needing_review.saturating_sub(prs_with_reviewers);
     if unserved_prs > 0 {
         debug!(
-            "PR review state: {} unserved PR(s) need review ({} total, {} already have reviewers), {}/{} active reviewers — task dispatch proceeds independently",
-            unserved_prs,
-            snap.prs_needing_review,
-            prs_with_reviewers,
-            active_review_count,
-            MAX_CONCURRENT_REVIEWS
+            "PR review state: {} unserved PR(s) need review ({} total, {} already have reviewers), {} active reviewers — task dispatch proceeds independently",
+            unserved_prs, snap.prs_needing_review, prs_with_reviewers, active_review_count
         );
     }
 
