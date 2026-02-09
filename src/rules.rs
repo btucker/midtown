@@ -1237,18 +1237,24 @@ pub(crate) struct OrphanRecovery {
 /// An orphaned task is `in_progress` but its owner is not active.
 /// Returns at most ONE recovery action (rate-limited to one per tick).
 ///
-/// Skips recovery when the owner recently stopped (within grace period)
-/// and has an open PR without review feedback — they are correctly on break
-/// waiting for review. However, killed/dead coworkers (not in recently_stopped)
-/// are recovered even without review feedback. CI failures on PRs are
-/// handled separately by the webhook/PR poll pathway and do not need
-/// orphan recovery to intervene.
+/// Skips recovery when the owner recently stopped (within grace period),
+/// regardless of PR status. This covers two cases:
+/// 1. Coworker finished work and went idle → shutdown, but the task hasn't
+///    been marked done yet. The grace period prevents false recovery.
+/// 2. Coworker opened a PR and went on break waiting for review. They're
+///    correctly idle and should not be recovered until the grace period expires.
+///
+/// After the grace period expires (or if the coworker was killed/crashed and
+/// never recorded in recently_stopped), recovery fires unconditionally. This
+/// ensures dead coworkers are always recovered — even if they have an open PR
+/// without review feedback. CI failures on open PRs are handled separately
+/// by the webhook/PR poll pathway.
 pub(crate) fn decide_orphan_recovery(
     in_progress: &[(String, String, String)], // (task_id, task_subject, owner)
     active_names: &HashSet<String>,
     at_dev_limit: bool,
-    _coworkers_with_open_prs: &HashSet<String>,
-    _review_feedback_pr_coworkers: &HashSet<String>,
+    coworkers_with_open_prs: &HashSet<String>,
+    review_feedback_pr_coworkers: &HashSet<String>,
     recently_stopped: &HashSet<String>,
     attached_coworkers: &HashSet<String>,
 ) -> Option<OrphanRecovery> {
@@ -1278,16 +1284,18 @@ pub(crate) fn decide_orphan_recovery(
         // When a coworker completes work and goes idle → shutdown, the task may
         // not yet be marked done. Without this grace period, orphan recovery
         // would immediately respawn the coworker for a task they already finished.
-        //
-        // This also handles the case where a coworker cleanly went on break while
-        // waiting for PR review — they're correctly idle and should not be recovered
-        // until the grace period expires.
-        //
-        // After the grace period (or if the coworker was killed/crashed), any orphan
-        // task is fair game for recovery, regardless of PR status. Dead coworkers
-        // don't come back on their own — we need to recover them even if their PR
-        // hasn't been reviewed yet.
         if recently_stopped.contains(&owner_lower) {
+            continue;
+        }
+        // Skip coworkers with open PRs who are awaiting review (no review feedback yet).
+        // Even if the grace period has expired, recovering creates a loop:
+        // spawn → coworker sees PR exists → goes idle → shutdown → recovery fires again.
+        //
+        // However, if the coworker has review feedback, they need to be recovered to
+        // address it (handled by the PR pathway, but orphan recovery shouldn't block).
+        if coworkers_with_open_prs.contains(&owner_lower)
+            && !review_feedback_pr_coworkers.contains(&owner_lower)
+        {
             continue;
         }
         // Found an orphan — return the first one (rate-limited)
@@ -3811,16 +3819,15 @@ mod tests {
     }
 
     #[test]
-    fn orphan_recovery_recovers_killed_coworker_with_open_pr() {
-        // Bug (task !961): When a coworker is killed (e.g., by auth switch) while
-        // their PR is still open without review feedback, they should be recovered.
-        // Current behavior: orphan recovery permanently skips them because they have
-        // an open PR without review feedback, even though they're not "waiting for
-        // review" — they're DEAD.
+    fn orphan_recovery_skips_killed_coworker_with_open_pr() {
+        // When a coworker is killed (e.g., by auth switch) while their PR is open
+        // without review feedback, orphan recovery should NOT spawn them because:
+        // 1. The PR is already open — the work is done
+        // 2. If spawned, they'd see the PR exists and go idle again (loop)
         //
-        // The fix: only skip if the coworker is in recently_stopped (cleanly stopped
-        // within grace period). If they're not in recently_stopped, they're stuck/dead
-        // and should be recovered even if the PR doesn't have review feedback yet.
+        // The daemon should instead auto-complete the task when it detects a PR
+        // is open for an in_progress task. Orphan recovery is not the right pathway
+        // for task completion — that's handled by PR management.
         let tasks = vec![(
             "952".to_string(),
             "Fix PR handling".to_string(),
@@ -3840,12 +3847,12 @@ mod tests {
             &recently_stopped,
             &HashSet::new(),
         );
-        // SHOULD recover — coworker is dead/stuck, not waiting for review
+        // Should NOT recover — PR is open, work is done. Task should be auto-completed
+        // by PR management pathway, not orphan recovery.
         assert!(
-            result.is_some(),
-            "Should recover killed coworker even if PR is open without review feedback"
+            result.is_none(),
+            "Should not recover killed coworker if PR is open (work already done)"
         );
-        assert_eq!(result.unwrap().task_id, "952");
     }
 
     #[test]
@@ -3875,6 +3882,47 @@ mod tests {
         assert!(
             result.is_none(),
             "Should not recover coworker who recently stopped and is awaiting review"
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_skips_coworker_after_grace_period_with_open_pr() {
+        // Regression test for task !1011: When a coworker opens a PR and goes idle,
+        // after the 40s grace period expires, they're no longer in recently_stopped.
+        // Without this check, orphan recovery fires, spawns the coworker, who sees
+        // the PR exists and goes idle again → infinite loop.
+        //
+        // Observed with amsterdam on task !1008:
+        // 1. amsterdam opens PR #810, goes idle
+        // 2. Grace period (40s) passes → no longer in recently_stopped
+        // 3. Daemon recovers as "orphan" → amsterdam spawns
+        // 4. amsterdam sees PR exists, goes idle, shuts down
+        // 5. Repeat step 2 → loop
+        let tasks = vec![(
+            "1008".to_string(),
+            "Add web UI channel switching".to_string(),
+            "amsterdam".to_string(),
+        )];
+        let active = set(&[]); // amsterdam not active (shut down after grace period)
+        let coworkers_with_open_prs = set(&["amsterdam"]); // PR #810 is open
+        let review_feedback = set(&[]); // no review feedback yet
+        let recently_stopped = set(&[]); // NOT in recently_stopped (grace period expired)
+
+        let result = decide_orphan_recovery(
+            &tasks,
+            &active,
+            false,
+            &coworkers_with_open_prs,
+            &review_feedback,
+            &recently_stopped,
+            &HashSet::new(),
+        );
+        // Should NOT recover — even though grace period expired, the coworker has an
+        // open PR awaiting review. Recovering would create a loop because the coworker
+        // would spawn, see the PR exists, and go idle again.
+        assert!(
+            result.is_none(),
+            "Should not recover coworker with open PR even after grace period (creates loop)"
         );
     }
 

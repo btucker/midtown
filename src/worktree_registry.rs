@@ -187,6 +187,15 @@ impl WorktreeRegistry {
             .and_then(|wt_id| self.assignments.get(wt_id))
     }
 
+    /// Look up a worktree by branch name.
+    ///
+    /// This is more precise than `get_by_coworker` when a coworker has multiple
+    /// worktrees (one per task). Used when linking PRs to worktrees by matching
+    /// the PR's headRefName to the worktree's branch_name.
+    pub fn get_by_branch(&self, branch: &str) -> Option<&WorktreeAssignment> {
+        self.assignments.values().find(|a| a.branch_name == branch)
+    }
+
     /// Look up a worktree by its ID.
     pub fn get(&self, worktree_id: &str) -> Option<&WorktreeAssignment> {
         self.assignments.get(worktree_id)
@@ -535,5 +544,50 @@ mod tests {
         assert!(loaded.get_by_task("42").is_some());
         assert!(loaded.get_by_coworker("lexington").is_some());
         assert!(loaded.get_by_pr(123).is_some());
+    }
+
+    #[test]
+    fn test_registry_get_by_branch_finds_correct_worktree() {
+        let mut registry = WorktreeRegistry::new();
+
+        // Simulate a coworker with multiple task worktrees
+        let task_948 = WorktreeAssignment {
+            worktree_id: "task-948-old-work".to_string(),
+            branch_name: "task-948-old-work".to_string(),
+            task_id: Some("948".to_string()),
+            current_coworker: Some("amsterdam".to_string()),
+            pr_number: None,
+            created_at: Utc::now(),
+        };
+
+        let task_1011 = WorktreeAssignment {
+            worktree_id: "task-1011-fix-bug".to_string(),
+            branch_name: "task-1011-fix-bug".to_string(),
+            task_id: Some("1011".to_string()),
+            current_coworker: Some("amsterdam".to_string()),
+            pr_number: None,
+            created_at: Utc::now(),
+        };
+
+        registry.assign_worktree(task_948).unwrap();
+        registry.assign_worktree(task_1011).unwrap();
+
+        // get_by_coworker can only return ONE worktree (whichever was bound last)
+        // This is the bug: it's ambiguous which worktree belongs to the coworker
+        let by_coworker = registry.get_by_coworker("amsterdam");
+        assert!(by_coworker.is_some());
+
+        // But get_by_branch should find the exact worktree we want
+        let by_branch = registry.get_by_branch("task-1011-fix-bug");
+        assert!(by_branch.is_some());
+        assert_eq!(by_branch.unwrap().worktree_id, "task-1011-fix-bug");
+
+        // Simulate opening a PR on task-1011's branch
+        // The fix: use branch-based lookup instead of get_by_coworker
+        registry.set_pr_number("task-1011-fix-bug", 813);
+
+        let by_pr = registry.get_by_pr(813).unwrap();
+        assert_eq!(by_pr.worktree_id, "task-1011-fix-bug");
+        assert_eq!(by_pr.pr_number, Some(813));
     }
 }

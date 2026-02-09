@@ -717,13 +717,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut ps = state.persistent_state.lock().await;
                 ps.github
                     .store_pr_author_session(pr_number, &session_id, &branch, &author);
-                // Link the PR to the worktree if one exists for this coworker
-                if let Some(assignment) = ps.worktree_registry.get_by_coworker(&author) {
+                // Link the PR to the worktree by matching branch name.
+                // Use get_by_branch instead of get_by_coworker because coworkers can have
+                // multiple worktrees (one per task), and we need to match the exact branch.
+                if let Some(assignment) = ps.worktree_registry.get_by_branch(&branch) {
                     let wt_id = assignment.worktree_id.clone();
                     ps.worktree_registry.set_pr_number(&wt_id, pr_number);
                     debug!(
-                        "Linked PR #{} to worktree {} (author: {})",
-                        pr_number, wt_id, author
+                        "Linked PR #{} to worktree {} via branch {} (author: {})",
+                        pr_number, wt_id, branch, author
                     );
                 }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
