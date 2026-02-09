@@ -1,9 +1,5 @@
 <script>
-  import { createEventDispatcher } from 'svelte'
-
   let { panelData = null, onClose = () => {} } = $props()
-
-  const dispatch = createEventDispatcher()
 
   function handleClose() {
     onClose()

@@ -455,7 +455,11 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Coworker status monitoring
 - Auth profile switching
 - Push notifications (W3C Push API with VAPID)
-- Responsive mobile layout: hamburger menu with slide-out sidebar and overlay backdrop on narrow viewports
+- Responsive layout with three breakpoints:
+  - **Mobile (≤768px)**: Tab navigation, hamburger menu with slide-out sidebar, modal popups for task/PR details
+  - **Tablet (769–1024px)**: Permanent sidebar replaces tab navigation, two-column grid layout
+  - **Desktop (≥1025px)**: Three-column Slack-inspired layout with sidebar, main channel, and toggleable detail panel for tasks, PRs, and coworker info
+- Clickable `@coworker` mentions in messages open coworker detail panel on desktop
 
 ### Reminders
 

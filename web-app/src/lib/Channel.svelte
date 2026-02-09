@@ -24,15 +24,21 @@
     return pr ? pr.status : null
   }
 
+  // Find a PR by number across all kanban columns that contain PR data.
+  // PRs appear in 'review' (open) and 'done' (merged) columns.
+  function findPr(prNum) {
+    const num = parseInt(prNum)
+    return $kanbanData.review.find((p) => p.number === num)
+      || $kanbanData.done.find((p) => p.number === num)
+      || null
+  }
+
   // Build GitHub PR URL (multi-repo aware).
   // Looks up the PR in kanbanData to find its repo, then resolves via
   // repoStatuses. Falls back to the primary repo if no match is found.
   // Returns null if repo full name is unavailable.
   function getPrUrl(prNum) {
-    const num = parseInt(prNum)
-    // Search open and merged PRs for this number
-    const pr = $kanbanData.review.find((p) => p.number === num)
-      || $kanbanData.done.find((p) => p.number === num)
+    const pr = findPr(prNum)
     // If the PR has a repo label, resolve it via repoStatuses (multi-repo)
     if (pr?.repo && $repoStatuses.length > 0) {
       const info = $repoStatuses.find((r) => r.label === pr.repo)
@@ -78,8 +84,8 @@
         const taskId = target.dataset.task
         const task = findTask(taskId)
         if (task) {
-          // Desktop (>1024px): use DetailPanel; Mobile: use modal
-          if (window.innerWidth > 1024) {
+          // Desktop (>= 1025px): use DetailPanel; Mobile/tablet: use modal
+          if (window.innerWidth >= 1025) {
             detailPanelData.set({ type: 'task', data: task })
           } else {
             selectedTask = task
@@ -90,12 +96,9 @@
         const prNum = target.dataset.pr
         const url = getPrUrl(prNum)
         if (url) {
-          // Desktop (>1024px): use DetailPanel; Mobile: open GitHub
-          if (window.innerWidth > 1024) {
-            // Find the PR data from kanban
-            const num = parseInt(prNum)
-            const pr = $kanbanData.review.find((p) => p.number === num)
-              || $kanbanData.done.find((p) => p.number === num)
+          // Desktop (>= 1025px): use DetailPanel if PR data available, else open GitHub
+          if (window.innerWidth >= 1025) {
+            const pr = findPr(prNum)
             if (pr) {
               detailPanelData.set({
                 type: 'pr',
@@ -108,6 +111,9 @@
                   url: url,
                 },
               })
+            } else {
+              // PR not in kanban data — fall back to opening GitHub
+              window.open(url, '_blank', 'noopener')
             }
           } else {
             window.open(url, '_blank', 'noopener')
@@ -118,7 +124,7 @@
         const coworkerName = target.dataset.coworker
         // Find the coworker in the store
         const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
-        if (coworker && window.innerWidth > 1024) {
+        if (coworker && window.innerWidth >= 1025) {
           detailPanelData.set({
             type: 'coworker',
             data: {
