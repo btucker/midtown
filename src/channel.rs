@@ -261,8 +261,17 @@ impl Channel {
             .into());
         }
 
+        // Set channel field if it's None (allows Message::new() to be channel-agnostic)
+        let message_to_write = if message.channel.is_none() {
+            let mut msg = message.clone();
+            msg.channel = Some(self.channel_name.clone());
+            msg
+        } else {
+            message.clone()
+        };
+
         // Serialize and append
-        let mut json = serde_json::to_string(message)?;
+        let mut json = serde_json::to_string(&message_to_write)?;
         json.push('\n');
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
