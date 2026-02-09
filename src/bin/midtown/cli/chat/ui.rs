@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use midtown::{Message, MessageType};
@@ -311,7 +311,7 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         .title("Board")
         .style(Style::default().fg(Color::White));
 
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+    let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
 
     hyperlinks
@@ -480,15 +480,13 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
 
     let (pending, in_progress, _completed) = app.tasks_by_status();
 
-    // Calculate the inner width available for text (accounting for borders: -2)
-    let column_width = columns[0].width.saturating_sub(2) as usize;
-
     // Backlog column (pending tasks) - wrapped text items
+    let col0_width = columns[0].width.saturating_sub(2).max(1) as usize;
     let backlog_items: Vec<KanbanItem> = pending
         .iter()
         .map(|t| {
             let text = format!("#{} {}", t.id, t.subject);
-            let lines = wrap_kanban_text(&text, column_width);
+            let lines = wrap_kanban_text(&text, col0_width);
             KanbanItem {
                 lines,
                 url: None,
@@ -499,11 +497,12 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
     draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
 
     // In Progress column (with owner and duration) - wrapped text items
+    let col1_width = columns[1].width.saturating_sub(2).max(1) as usize;
     let in_progress_items: Vec<KanbanItem> = in_progress
         .iter()
         .map(|t| {
             let text = format!("#{} {}", t.id, t.subject);
-            let mut lines = wrap_kanban_text(&text, column_width);
+            let mut lines = wrap_kanban_text(&text, col1_width);
 
             let owner = t.owner.as_deref().unwrap_or("?");
             let duration = t
@@ -531,6 +530,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
     let mut hyperlinks = Vec::new();
 
     // Review column (open PRs with repo#XX format, CI status dot, author/reviewer) - wrapped items
+    let col2_width = columns[2].width.saturating_sub(2).max(1) as usize;
     let review_items: Vec<KanbanItem> = app
         .prs
         .iter()
@@ -549,7 +549,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 pr.task_id,
                 pr.task_name.as_deref(),
             );
-            let mut lines = wrap_kanban_text(&text, column_width);
+            let mut lines = wrap_kanban_text(&text, col2_width);
 
             let pr_age = format_duration_minutes(pr.created_at);
             let pr_line = format!("  └ PR #{} {}", pr.number, pr_age);
@@ -581,6 +581,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
     hyperlinks.extend(review_hyperlinks);
 
     // Done column (merged PRs with repo#XX format) - wrapped items, reverse chronological, max 10
+    let col3_width = columns[3].width.saturating_sub(2).max(1) as usize;
     let done_items: Vec<KanbanItem> = app
         .merged_prs
         .iter()
@@ -593,7 +594,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 .map(|r| format!("[{}] ", r))
                 .unwrap_or_default();
             let text = format!("{}PR#{} {}", repo_badge, pr.number, pr.title);
-            let lines = wrap_kanban_text(&text, column_width);
+            let lines = wrap_kanban_text(&text, col3_width);
             KanbanItem {
                 lines,
                 url: Some(url),
@@ -845,7 +846,7 @@ fn extract_identifier(s: &str) -> Option<String> {
 /// Wrap a kanban item's text to fit within the column width
 ///
 /// Returns a vector of owned strings (since wrap_line returns string slices).
-/// The first line is the full text as-is, subsequent lines are wrapped portions.
+/// Text is wrapped to fit within the given width, splitting at word boundaries when possible.
 #[allow(dead_code)]
 fn wrap_kanban_text(text: &str, width: usize) -> Vec<String> {
     wrap_line(text, width)
