@@ -1107,6 +1107,18 @@ fn validate_github_repo_access(github_user: &str, workdir: &PathBuf) -> crate::R
         return Ok(());
     }
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Rate limit errors are transient — warn but don't block daemon startup.
+    if stderr.contains("rate limit") {
+        warn!(
+            "GitHub API rate limit exceeded — skipping repo access validation for user '{}'. \
+             Access will be validated on the next successful API call.",
+            github_user
+        );
+        return Ok(());
+    }
+
     // Get the repo name for a better error message (even if access check failed)
     let repo_name = std::process::Command::new("git")
         .current_dir(workdir)
@@ -1120,7 +1132,6 @@ fn validate_github_repo_access(github_user: &str, workdir: &PathBuf) -> crate::R
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
     Err(crate::Error::Rpc {
         code: -32603,
         message: format!(
