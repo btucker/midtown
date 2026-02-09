@@ -15,7 +15,14 @@ pub enum Effect {
     /// Spawn a coworker using a typed launch configuration.
     SpawnCoworker(crate::launch::LaunchConfig),
     /// Shut down a running coworker with a message.
-    ShutdownCoworker { name: String, message: String },
+    ShutdownCoworker {
+        name: String,
+        message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        /// When `None`, targets by name (legacy behavior).
+        #[allow(dead_code)]
+        session_id: Option<String>,
+    },
     /// Shut down a coworker with conditional follow-up effects on success.
     ///
     /// On success, `on_success` effects are executed. On failure, nothing extra
@@ -24,10 +31,19 @@ pub enum Effect {
     ShutdownCoworkerWithCallbacks {
         name: String,
         message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        #[allow(dead_code)]
+        session_id: Option<String>,
         on_success: Vec<Effect>,
     },
     /// Nudge a coworker by sending a message to their headless session.
-    NudgeCoworker { name: String, message: String },
+    NudgeCoworker {
+        name: String,
+        message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        #[allow(dead_code)]
+        session_id: Option<String>,
+    },
     /// Nudge the Lead by sending a message to their tmux pane.
     NudgeLead { message: String },
     /// Resume a stopped headless coworker session.
@@ -94,6 +110,9 @@ pub enum Effect {
     NudgeCoworkerWithCallbacks {
         name: String,
         message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        #[allow(dead_code)]
+        session_id: Option<String>,
         on_success: Vec<Effect>,
     },
     /// Spawn a coworker for a pending task.
@@ -291,6 +310,7 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::NudgeCoworkerWithCallbacks {
                 ref name,
                 message,
+                session_id,
                 on_success,
             } => {
                 let key = name.to_lowercase();
@@ -317,6 +337,7 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 result.push(Effect::NudgeCoworkerWithCallbacks {
                     name: name.clone(),
                     message,
+                    session_id,
                     on_success,
                 });
             }
@@ -432,7 +453,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::ShutdownCoworker { name, message } => {
+            Effect::ShutdownCoworker { name, message, .. } => {
                 info!(
                     coworker = %name,
                     message_preview = %message.chars().take(50).collect::<String>(),
@@ -444,6 +465,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 name,
                 message,
                 on_success,
+                ..
             } => {
                 info!(
                     coworker = %name,
@@ -460,7 +482,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::NudgeCoworker { name, message } => {
+            Effect::NudgeCoworker { name, message, .. } => {
                 match state.session_manager.send_message(&name, &message).await {
                     Ok(()) => {
                         // Record pending nudge for attribution tracking
@@ -587,6 +609,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 name,
                 message,
                 on_success,
+                ..
             } => {
                 // Extract task IDs from on_success RecordTaskAssignment effects
                 // to clear their in-flight markers after the nudge completes.
@@ -1215,14 +1238,17 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "first nudge".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "second nudge".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "third nudge".into(),
+                session_id: None,
             },
         ];
 
@@ -1242,6 +1268,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "CI green".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::Approved,
@@ -1250,6 +1277,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "review complete".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::ReviewComplete,
@@ -1258,6 +1286,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "merge conflict".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::MergeConflict,
@@ -1295,14 +1324,17 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge riverside".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "broadway".into(),
                 message: "nudge broadway".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "duplicate riverside".into(),
+                session_id: None,
             },
         ];
 
@@ -1321,10 +1353,12 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "plain nudge".into(),
+                session_id: None,
             },
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "callback nudge".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::Approved,
@@ -1356,6 +1390,7 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge 1".into(),
+                session_id: None,
             },
             Effect::RecordCooldown {
                 category: "test".into(),
@@ -1364,6 +1399,7 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge 2".into(),
+                session_id: None,
             },
             Effect::PostToChannel {
                 sender: "midtown".into(),
@@ -1384,10 +1420,12 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "Riverside".into(),
                 message: "nudge 1".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge 2".into(),
+                session_id: None,
             },
         ];
 
@@ -1403,6 +1441,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - CI checks passed".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::Approved,
@@ -1411,6 +1450,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - Review complete".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::ReviewComplete,
@@ -1419,6 +1459,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - Merge conflict".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::MergeConflict,
@@ -1427,6 +1468,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - Green with feedback".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::GreenWithFeedback,

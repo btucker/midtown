@@ -3514,6 +3514,7 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
             effects::Effect::NudgeCoworkerWithCallbacks {
                 name: "pleasant".to_string(),
                 message: "task prompt".to_string(),
+                session_id: None,
                 on_success: vec![effects::Effect::RecordTaskAssignment {
                     coworker: "pleasant".to_string(),
                     task_id: "873".to_string(),

@@ -701,6 +701,7 @@ fn pr_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1038,6 +1039,7 @@ async fn collect_stuck_condition_effects(
                         effects.push(Effect::NudgeCoworker {
                             name: name.clone(),
                             message: nudge_msg,
+                            session_id: None,
                         });
                         // Post to channel so it's visible
                         effects.push(Effect::PostSystemMessage {
@@ -1349,6 +1351,7 @@ fn comment_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1818,6 +1821,7 @@ fn review_complete_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,

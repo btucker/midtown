@@ -372,6 +372,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
+            session_id: None,
         });
     }
 
@@ -437,6 +438,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
+            session_id: None,
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
@@ -495,6 +497,7 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
+            session_id: None,
         });
 
         // Respawn with incremented restart count
@@ -717,6 +720,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
             message: "continue".to_string(),
+            session_id: None,
         });
     }
 
@@ -779,6 +783,7 @@ pub(super) fn check_and_nudge_api_errors(
         effects.push(Effect::NudgeCoworker {
             name: name.clone(),
             message: "The API error may have cleared. Try continuing your work.".to_string(),
+            session_id: None,
         });
         effects.push(Effect::RecordCooldown {
             category: "api_error_nudge".to_string(),
@@ -881,6 +886,7 @@ pub(super) async fn check_and_respawn_dead_processes(
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
+            session_id: None,
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {
