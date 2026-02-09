@@ -855,6 +855,15 @@ impl DaemonState {
     fn send_and_broadcast(&self, message: &Message) -> crate::Result<()> {
         self.channel_router.send(message)?;
         self.broadcast_web_update(web::channel_message_update(message));
+
+        // Cross-post insights from topic channels to main channel
+        if helpers::should_cross_post_insight(message, &self.repo_name)
+            && let Err(e) = self.cross_post_insight_to_main_sync(message)
+        {
+            warn!("Failed to cross-post insight to main channel: {}", e);
+            // Don't fail the original send if cross-posting fails
+        }
+
         Ok(())
     }
 
@@ -949,6 +958,29 @@ impl DaemonState {
                 )));
             }
         }
+
+        // Broadcast the cross-posted message to WebSocket clients
+        self.broadcast_web_update(web::channel_message_update(&cross_post));
+
+        Ok(())
+    }
+
+    /// Synchronous version of cross_post_insight_to_main for use in non-async contexts.
+    ///
+    /// Creates a new message with the same content but sent to the main channel,
+    /// with source_channel set to the original topic channel name.
+    fn cross_post_insight_to_main_sync(&self, original: &Message) -> crate::Result<()> {
+        // Create cross-posted message with source_channel attribution
+        let mut cross_post = Message::for_channel(
+            &self.repo_name,
+            &original.from,
+            &original.content,
+            original.message_type.clone(),
+        );
+        cross_post.source_channel = Some(original.channel_name().to_string());
+
+        // Send to main channel using the router (synchronous)
+        self.channel_router.send(&cross_post)?;
 
         // Broadcast the cross-posted message to WebSocket clients
         self.broadcast_web_update(web::channel_message_update(&cross_post));
