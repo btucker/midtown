@@ -456,6 +456,12 @@ pub(crate) struct DaemonState {
     /// to "exactly-once" semantics.
     rpc_response_cache:
         Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
+    /// Kanban data cache with 30s TTL.
+    ///
+    /// Stores the full kanban GraphQL response (PRs, merged PRs, repos) keyed by
+    /// a hash of the repo paths. Integrated into DaemonState (rather than a global
+    /// static) so the daemon can inspect and clean it up alongside other caches.
+    kanban_cache: rpc::KanbanCache,
 }
 
 impl DaemonState {
@@ -516,6 +522,8 @@ impl DaemonState {
         let now = std::time::Instant::now();
         let mut cache = self.rpc_response_cache.lock().await;
         cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+        // Also clean up expired kanban cache entries
+        self.kanban_cache.cleanup();
     }
 
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
@@ -633,6 +641,7 @@ impl DaemonState {
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
+            kanban_cache: rpc::KanbanCache::new(),
         })
     }
 
