@@ -872,25 +872,34 @@ pub fn has_input_text(pane_content: &str, cursor_x: Option<u16>) -> bool {
     if let Some(line) = prompt_line
         && let Some(pos) = line.find('❯')
     {
-        // If we have cursor position, use it as ground truth.
-        // The prompt symbol "❯ " is 2 characters (1 for ❯, 1 for space).
-        // If the cursor is at or near that position, input is empty even if
-        // placeholder text is visible.
-        if let Some(x) = cursor_x {
-            // Cursor position is in terminal columns. The prompt typically looks like:
-            // "❯ " (prompt + space) at the start of the line.
-            // Account for any leading whitespace before the prompt.
-            let prompt_end_x = (pos + '❯'.len_utf8() + 1) as u16; // +1 for space after ❯
+        let after_prompt = &line[pos + '❯'.len_utf8()..];
+        let text_present = !after_prompt.trim().is_empty();
 
-            // If cursor is at or very close to prompt end, input is empty.
-            // Allow small tolerance (within 2 columns) for edge cases.
-            if x <= prompt_end_x + 2 {
-                return false;
+        // If there's visible text after the prompt, check cursor position to
+        // disambiguate placeholder text from real user input.
+        // Placeholder text (like "How can I help you?") appears as regular text
+        // but the cursor stays at the prompt. Real user input moves the cursor.
+        if text_present {
+            if let Some(x) = cursor_x {
+                // Cursor position is in terminal columns. The prompt typically looks like:
+                // "❯ " (prompt + space) at the start of the line.
+                // Account for any leading whitespace before the prompt.
+                let prompt_end_x = (pos + '❯'.len_utf8() + 1) as u16; // +1 for space after ❯
+
+                // If cursor is at or very close to prompt end, the visible text is
+                // placeholder text, not real input. Allow small tolerance (within 2
+                // columns) for edge cases.
+                if x <= prompt_end_x + 2 {
+                    return false;
+                }
             }
+            // Text is visible and cursor isn't at prompt (or cursor unavailable)
+            // → real user input
+            return true;
         }
 
-        let after_prompt = &line[pos + '❯'.len_utf8()..];
-        return !after_prompt.trim().is_empty();
+        // No visible text after prompt → empty input
+        return false;
     }
 
     false
