@@ -35,3 +35,6 @@ web-app/node_modules/
 
 # Legacy coworker state file (runtime state, not source code)
 state.json
+
+# Captured snapshots staging area (move to tests/fixtures/snapshot/ when writing tests)
+tests/fixtures/snapshot/captured/

@@ -184,10 +184,10 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
         )
     })?;
 
-    // Create fixtures directory in the repo
-    let fixtures_dir = find_fixtures_dir()?;
-    std::fs::create_dir_all(&fixtures_dir)
-        .map_err(|e| format!("Failed to create fixtures dir: {}", e))?;
+    // Create captured snapshots directory (gitignored staging area)
+    let capture_dir = find_capture_dir()?;
+    std::fs::create_dir_all(&capture_dir)
+        .map_err(|e| format!("Failed to create capture dir: {}", e))?;
 
     // Generate unique filename: snapshot-<label>-<timestamp>.json
     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
@@ -195,7 +195,7 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
         Some(l) => format!("snapshot-{}-{}.json", l, timestamp),
         None => format!("snapshot-{}.json", timestamp),
     };
-    let path = fixtures_dir.join(&filename);
+    let path = capture_dir.join(&filename);
 
     // Pretty-print the JSON
     let content = serde_json::to_string_pretty(snapshot)
@@ -241,20 +241,23 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
     println!("  Daemon log lines: {}", daemon_log_count);
     println!("  File size: {} bytes", content.len());
     println!();
-    println!("Use this fixture in tests by loading from:");
-    println!("  tests/fixtures/snapshot/{}", filename);
+    println!("To use in a test, move it to the fixtures directory:");
+    println!(
+        "  mv tests/fixtures/snapshot/captured/{} tests/fixtures/snapshot/",
+        filename
+    );
 
     Ok(())
 }
 
-/// Find the fixtures directory by locating the repo root.
-fn find_fixtures_dir() -> Result<std::path::PathBuf, String> {
+/// Find the captured snapshots directory (gitignored staging area).
+fn find_capture_dir() -> Result<std::path::PathBuf, String> {
     if let Ok(cwd) = std::env::current_dir() {
         let mut dir = cwd.as_path();
         loop {
             // Look for Cargo.toml as marker for repo root
             if dir.join("Cargo.toml").exists() {
-                return Ok(dir.join("tests/fixtures/snapshot"));
+                return Ok(dir.join("tests/fixtures/snapshot/captured"));
             }
             match dir.parent() {
                 Some(parent) => dir = parent,
