@@ -646,14 +646,24 @@
     background: currentColor !important;
   }
 
-  :global(.bp-lr) {
+  :global(.bp-prev),
+  :global(.bp-next) {
     background: #2a2a2a !important;
     border: 1px solid #4a4a4a !important;
     color: #d0d0d0 !important;
     opacity: 1 !important;
   }
 
-  :global(.bp-lr:hover) {
+  :global(.bp-prev) {
+    left: env(safe-area-inset-left, 0px) !important;
+  }
+
+  :global(.bp-next) {
+    right: env(safe-area-inset-right, 0px) !important;
+  }
+
+  :global(.bp-prev:hover),
+  :global(.bp-next:hover) {
     background: #303030 !important;
     border-color: #5fafaf !important;
     color: #5fafaf !important;
