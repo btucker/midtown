@@ -634,16 +634,18 @@ fn batch_pr_reviewer_handling() {
 // Tests: Ghost reviewer assignments (Bug #1032)
 // =============================================================================
 
-/// Test that ghost reviewer assignments from before a daemon restart
-/// are pruned as part of defensive cleanup in collect_reviewer_effects_with_source().
+/// Test that ghost reviewer assignments from before a daemon restart are pruned
+/// by the decide_reviewer_liveness logic used in collect_reviewer_effects_with_source().
 ///
-/// Historical context: This test documented bug #1032 where ghost assignments
-/// counted against MAX_CONCURRENT_REVIEWS, blocking new reviewer spawns after
-/// daemon restart. The fix (removing MAX_CONCURRENT_REVIEWS entirely) eliminated
-/// the capacity issue, but the upfront pruning remains as defensive cleanup to
-/// keep state tidy and avoid confusion about which PRs are actively being reviewed.
+/// This exercises the actual fix path: for each ghost assignment, decide_reviewer_liveness
+/// returns Dead, and the pruning loop removes the assignment from GitHubState.
+///
+/// Historical context: Bug #1032 — ghost assignments survived restart and blocked
+/// new reviewer spawns. The upfront pruning in pr.rs calls decide_reviewer_liveness
+/// for each assignment, removes Dead/UsageLimited ones, then proceeds to spawn.
 #[test]
-fn ghost_reviewers_are_pruned_during_reviewer_spawn() {
+fn ghost_reviewers_are_pruned_via_liveness_check() {
+    use midtown::rules::{ReviewerLivenessDecision, decide_reviewer_liveness};
     use std::collections::HashSet;
 
     let mut state = GitHubState::default();
@@ -653,43 +655,90 @@ fn ghost_reviewers_are_pruned_during_reviewer_spawn() {
     state.assign_reviewer(824, "lexington", AssignmentSource::Webhook);
     state.assign_reviewer(825, "york", AssignmentSource::Webhook);
 
-    // active_count should see all 3 as active (non-expired)
-    assert_eq!(
-        state.active_count(),
-        3,
-        "All 3 reviewers should be counted as active"
-    );
+    assert_eq!(state.active_count(), 3);
 
-    // After restart, only park is actually running.
+    // After restart, only park is actually running (as a dev coworker).
     // columbus, lexington, york are "ghost" assignments — persisted in JSON
     // but their coworker processes are dead.
-    let active_coworkers: HashSet<String> = ["park"].iter().map(|s| s.to_string()).collect();
+    let active_names: HashSet<String> = ["park"].iter().map(|s| s.to_string()).collect();
+    let usage_limited: HashSet<String> = HashSet::new();
+    let active_reviewers: HashSet<String> = HashSet::new(); // no one is reviewing
 
-    // active_count() doesn't know about liveness, so it still returns 3.
-    // The upfront pruning in collect_reviewer_effects_with_source() will detect
-    // these as dead and remove them before spawning new reviewers.
-
-    // What SHOULD happen: A liveness-aware count should return 0, since none of the
-    // assigned reviewers (columbus, lexington, york) are in active_coworkers.
-    let live_assignments: Vec<_> = state
+    // Exercise the fix path: decide_reviewer_liveness for each assignment,
+    // then prune Dead ones (mirrors the upfront pruning in pr.rs).
+    let assignments: Vec<(u64, String)> = state
         .pr_reviewers
-        .values()
-        .filter(|a| active_coworkers.contains(&a.reviewer.to_lowercase()))
+        .iter()
+        .map(|(pr, a)| (*pr, a.reviewer.clone()))
         .collect();
 
-    assert_eq!(
-        live_assignments.len(),
-        0,
-        "None of the assigned reviewers are actually alive"
-    );
+    for (pr_number, reviewer_name) in assignments {
+        let liveness = decide_reviewer_liveness(
+            &reviewer_name,
+            &active_names,
+            &usage_limited,
+            &active_reviewers,
+        );
 
-    // active_count() doesn't filter by liveness, so it returns 3.
-    // This is OK now — without MAX_CONCURRENT_REVIEWS, there's no capacity limit
-    // these ghost assignments are blocking. The upfront pruning in pr.rs will
-    // remove them as defensive cleanup before spawning new reviewers.
+        assert_eq!(
+            liveness,
+            ReviewerLivenessDecision::Dead,
+            "Ghost reviewer {} for PR #{} should be Dead",
+            reviewer_name,
+            pr_number,
+        );
+
+        // Prune the dead assignment (same as pr.rs upfront pruning)
+        state.remove_assignment(pr_number);
+    }
+
+    // After pruning, all ghost assignments should be gone
     assert_eq!(
         state.active_count(),
-        3,
-        "active_count() still returns 3 (doesn't filter by liveness)"
+        0,
+        "All ghost assignments should be pruned"
+    );
+    assert!(!state.is_assigned(823));
+    assert!(!state.is_assigned(824));
+    assert!(!state.is_assigned(825));
+}
+
+/// Test that a dev coworker whose name matches a ghost reviewer assignment
+/// is correctly identified as Dead (not Active).
+///
+/// Scenario: Before restart, "columbus" was assigned to review PR #823.
+/// After restart, "columbus" is respawned as a dev coworker working on a task.
+/// The ghost assignment should be pruned because the current "columbus" is not reviewing.
+#[test]
+fn dev_coworker_matching_ghost_reviewer_is_pruned() {
+    use midtown::rules::{ReviewerLivenessDecision, decide_reviewer_liveness};
+    use std::collections::HashSet;
+
+    let mut state = GitHubState::default();
+
+    // Pre-restart: columbus was reviewing PR #823
+    state.assign_reviewer(823, "columbus", AssignmentSource::Webhook);
+
+    // After restart: columbus is alive but doing dev work, not reviewing
+    let active_names: HashSet<String> = ["columbus"].iter().map(|s| s.to_string()).collect();
+    let usage_limited: HashSet<String> = HashSet::new();
+    let active_reviewers: HashSet<String> = HashSet::new(); // columbus is NOT reviewing
+
+    let liveness =
+        decide_reviewer_liveness("columbus", &active_names, &usage_limited, &active_reviewers);
+
+    assert_eq!(
+        liveness,
+        ReviewerLivenessDecision::Dead,
+        "Dev coworker matching ghost reviewer should be Dead (not Active)"
+    );
+
+    // Prune the dead assignment
+    state.remove_assignment(823);
+
+    assert_eq!(
+        state.active_count(),
+        0,
+        "Ghost assignment for dev coworker should be pruned"
     );
 }
