@@ -879,6 +879,13 @@ pub fn has_input_text(pane_content: &str, cursor_x: Option<u16>) -> bool {
         // disambiguate placeholder text from real user input.
         // Placeholder text (like "How can I help you?") appears as regular text
         // but the cursor stays at the prompt. Real user input moves the cursor.
+        //
+        // Key characteristics of placeholder text:
+        // 1. Cursor stays at prompt position (not after the visible text)
+        // 2. Text is relatively long (placeholder messages are typically >15 chars)
+        //
+        // For short text at prompt position, trust the text (could be typing that
+        // hasn't updated cursor yet, like in bash `read` scenarios).
         if text_present {
             if let Some(x) = cursor_x {
                 // Cursor position is in terminal columns. We need to calculate the
@@ -891,15 +898,19 @@ pub fn has_input_text(pane_content: &str, cursor_x: Option<u16>) -> bool {
                 // After the prompt: "❯ " (prompt symbol + space)
                 let prompt_end_x = (prompt_col + 1 + 1) as u16; // +1 for ❯, +1 for space
 
-                // If cursor is at or very close to prompt end, the visible text is
-                // placeholder text, not real input. Allow small tolerance (within 2
-                // columns) for edge cases.
-                if x <= prompt_end_x + 2 {
-                    return false;
+                // Only treat as placeholder if:
+                // - Cursor is at prompt end (not moved with text)
+                // - AND text is long enough to be a placeholder message (>15 chars)
+                // Short text at prompt position is likely real typing in progress.
+                if x == prompt_end_x {
+                    let text_len = after_prompt.trim().chars().count();
+                    if text_len > 15 {
+                        // Long text with cursor at prompt → placeholder
+                        return false;
+                    }
                 }
             }
-            // Text is visible and cursor isn't at prompt (or cursor unavailable)
-            // → real user input
+            // Text is visible and either cursor moved or text is short → real user input
             return true;
         }
 
