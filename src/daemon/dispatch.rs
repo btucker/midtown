@@ -89,6 +89,13 @@ pub(super) fn check_and_recover_orphans(
         recovery.task_id, recovery.owner
     );
 
+    // Look up task channel for routing lifecycle messages
+    let task_channel = snap
+        .all_tasks
+        .iter()
+        .find(|t| t.id == recovery.task_id)
+        .and_then(|t| t.channel.clone());
+
     let prompt = format_task_prompt(
         &recovery.task_id,
         &format!(
@@ -160,6 +167,7 @@ pub(super) fn check_and_recover_orphans(
             key: "global".to_string(),
         },
         Effect::PostToChannel {
+            channel: task_channel.clone(),
             sender: "midtown".to_string(),
             message: format!(
                 "♻️ Recovered coworker {} for orphaned task !{}",
@@ -182,6 +190,7 @@ pub(super) fn check_and_recover_orphans(
                 repo_name: snap.repo_name.clone(),
             },
             Effect::PostToChannel {
+                channel: task_channel,
                 sender: "midtown".to_string(),
                 message: format!(
                     "🔄 Task !{} reset to pending - {} could not be respawned (backing off for {}s)",
@@ -242,8 +251,13 @@ pub(super) async fn gather_discovered_coworker_nudges(state: &DaemonState) -> Ve
             .collect()
     };
 
+    // Build task channel map for routing lifecycle messages
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+    let task_channels: HashMap<String, Option<String>> =
+        all_tasks.into_iter().map(|t| (t.id, t.channel)).collect();
+
     // Build effects using pure decision function
-    decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs)
+    decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs, &task_channels)
 }
 
 /// Build effects for nudging discovered coworkers based on their task/review assignments.
@@ -254,6 +268,7 @@ fn decide_discovered_coworker_nudges(
     discovered: &[String],
     owner_tasks: &HashMap<String, (String, String)>,
     reviewer_prs: &HashMap<String, u64>,
+    task_channels: &HashMap<String, Option<String>>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -280,6 +295,7 @@ fn decide_discovered_coworker_nudges(
                 message: prompt,
             });
             effects.push(Effect::PostToChannel {
+                channel: task_channels.get(task_id).and_then(|c| c.clone()),
                 sender: "midtown".to_string(),
                 message: format!(
                     "♻️ Nudged discovered coworker {} to resume task !{}",
@@ -299,6 +315,7 @@ fn decide_discovered_coworker_nudges(
                 message: prompt,
             });
             effects.push(Effect::PostToChannel {
+                channel: None,
                 sender: "midtown".to_string(),
                 message: format!(
                     "♻️ Nudged discovered reviewer {} to resume PR #{} review",
@@ -371,6 +388,13 @@ pub(super) fn check_for_duplicate_task_workers(
             workers
         );
 
+        // Look up task channel for routing lifecycle message
+        let task_channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .and_then(|t| t.channel.clone());
+
         // Sort workers by start time (earliest first)
         // Workers not found in active list go to the end (will be killed)
         let mut workers_with_times: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = workers
@@ -413,6 +437,7 @@ pub(super) fn check_for_duplicate_task_workers(
                 message: String::new(),
             });
             effects.push(Effect::PostToChannel {
+                channel: task_channel.clone(),
                 sender: "midtown".to_string(),
                 message: format!(
                     "🔪 Killed duplicate worker {} on task !{} ({}) - {} started earlier",
@@ -738,6 +763,7 @@ pub(super) fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
     // Post channel messages for worktrees auto-cleaned via gh CLI fallback.
     for name in &data.gh_cleaned {
         effects.push(Effect::PostToChannel {
+            channel: None,
             sender: "midtown".to_string(),
             message: format!(
                 "🧹 Auto-cleaned orphaned worktree for {} (PR was merged)",
@@ -796,6 +822,12 @@ pub(super) fn spawn_for_pending_tasks(
     // with pre-existing tasks or tasks where the Lead manually set an owner.
     let pending_with_owners = &snap.pending_tasks_with_owners;
     for (task_id, task_subject, owner) in pending_with_owners.iter() {
+        // Look up the task channel for routing lifecycle messages
+        let task_channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == *task_id)
+            .and_then(|t| t.channel.clone());
         // Skip tasks whose referenced PR is already merged. These are stale —
         // the work is done (PR merged) but the task wasn't auto-completed.
         if let Some(pr_num_str) = crate::tasks::extract_pr_number(task_subject)
@@ -939,6 +971,7 @@ pub(super) fn spawn_for_pending_tasks(
                         current_task: None,
                     },
                     Effect::PostToChannel {
+                        channel: task_channel.clone(),
                         sender: "midtown".to_string(),
                         message: daemon_messages::called_in_pending_task(
                             o,
@@ -1204,6 +1237,7 @@ pub(super) fn spawn_for_pending_tasks(
                         task_id: task.id.clone(),
                     },
                     Effect::PostToChannel {
+                        channel: task.channel.clone(),
                         sender: "midtown".to_string(),
                         message: channel_msg,
                     },
@@ -1271,6 +1305,7 @@ pub(super) fn spawn_for_pending_tasks(
                     current_task: None,
                 },
                 Effect::PostToChannel {
+                    channel: task.channel.clone(),
                     sender: "midtown".to_string(),
                     message: channel_msg,
                 },
@@ -1307,6 +1342,7 @@ pub(super) fn build_task_completion_effects(
     pr_title: &str,
     pr_number: u64,
     repo_name: &str,
+    task_channel: Option<String>,
 ) -> Vec<Effect> {
     let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(pr_title) else {
         return vec![];
@@ -1323,6 +1359,7 @@ pub(super) fn build_task_completion_effects(
             repo_name: repo_name.to_string(),
         },
         Effect::PostToChannel {
+            channel: task_channel,
             sender: "midtown".to_string(),
             message: format!(
                 "✅ Auto-completed task !{} (PR #{} merged)",
@@ -1579,8 +1616,12 @@ mod tests {
 
     #[test]
     fn test_build_task_completion_effects_with_task_id() {
-        let effects =
-            build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo");
+        let effects = build_task_completion_effects(
+            "feat: Add auth endpoint [Midtown #42]",
+            123,
+            "myrepo",
+            None,
+        );
 
         assert_eq!(effects.len(), 3, "Should return 3 effects");
 
@@ -1607,10 +1648,15 @@ mod tests {
 
         // Verify PostToChannel effect
         match &effects[2] {
-            Effect::PostToChannel { sender, message } => {
+            Effect::PostToChannel {
+                sender,
+                message,
+                channel,
+            } => {
                 assert_eq!(sender, "midtown");
                 assert!(message.contains("42"));
                 assert!(message.contains("123"));
+                assert_eq!(channel, &None);
             }
             _ => panic!("Third effect should be PostToChannel"),
         }
@@ -1618,7 +1664,7 @@ mod tests {
 
     #[test]
     fn test_build_task_completion_effects_without_task_id() {
-        let effects = build_task_completion_effects("feat: Add auth endpoint", 123, "myrepo");
+        let effects = build_task_completion_effects("feat: Add auth endpoint", 123, "myrepo", None);
 
         assert!(
             effects.is_empty(),
@@ -1628,12 +1674,20 @@ mod tests {
 
     #[test]
     fn test_build_task_completion_effects_message_says_merged() {
-        let effects =
-            build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo");
+        let effects = build_task_completion_effects(
+            "feat: Add auth endpoint [Midtown #42]",
+            123,
+            "myrepo",
+            None,
+        );
 
         // Verify the channel message says "merged" not "opened"
         match &effects[2] {
-            Effect::PostToChannel { sender, message } => {
+            Effect::PostToChannel {
+                sender,
+                message,
+                channel: _,
+            } => {
                 assert_eq!(sender, "midtown");
                 assert!(
                     message.contains("merged"),
@@ -1803,7 +1857,12 @@ mod tests {
 
     #[test]
     fn test_discovered_nudges_empty() {
-        let effects = decide_discovered_coworker_nudges(&[], &HashMap::new(), &HashMap::new());
+        let effects = decide_discovered_coworker_nudges(
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(effects.is_empty());
     }
 
@@ -1817,7 +1876,12 @@ mod tests {
         );
         let reviewer_prs = HashMap::new();
 
-        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        let effects = decide_discovered_coworker_nudges(
+            &discovered,
+            &owner_tasks,
+            &reviewer_prs,
+            &HashMap::new(),
+        );
         // NudgeCoworker + PostToChannel
         assert_eq!(effects.len(), 2);
         match &effects[0] {
@@ -1828,7 +1892,11 @@ mod tests {
             _ => panic!("Expected NudgeCoworker"),
         }
         match &effects[1] {
-            Effect::PostToChannel { sender, message } => {
+            Effect::PostToChannel {
+                sender,
+                message,
+                channel: _,
+            } => {
                 assert_eq!(sender, "midtown");
                 assert!(message.contains("lexington"));
                 assert!(message.contains("task !42"));
@@ -1844,7 +1912,12 @@ mod tests {
         let mut reviewer_prs = HashMap::new();
         reviewer_prs.insert("park".to_string(), 99);
 
-        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        let effects = decide_discovered_coworker_nudges(
+            &discovered,
+            &owner_tasks,
+            &reviewer_prs,
+            &HashMap::new(),
+        );
         // NudgeCoworker + PostToChannel
         assert_eq!(effects.len(), 2);
         match &effects[0] {
@@ -1867,7 +1940,12 @@ mod tests {
         let owner_tasks = HashMap::new();
         let reviewer_prs = HashMap::new();
 
-        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        let effects = decide_discovered_coworker_nudges(
+            &discovered,
+            &owner_tasks,
+            &reviewer_prs,
+            &HashMap::new(),
+        );
         assert!(
             effects.is_empty(),
             "Coworker with no task or review should produce no effects"
@@ -1889,7 +1967,12 @@ mod tests {
         let mut reviewer_prs = HashMap::new();
         reviewer_prs.insert("park".to_string(), 99);
 
-        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        let effects = decide_discovered_coworker_nudges(
+            &discovered,
+            &owner_tasks,
+            &reviewer_prs,
+            &HashMap::new(),
+        );
         // lexington: NudgeCoworker + PostToChannel = 2
         // park: NudgeCoworker + PostToChannel = 2
         // broadway: nothing = 0
@@ -1909,7 +1992,12 @@ mod tests {
         let mut reviewer_prs = HashMap::new();
         reviewer_prs.insert("lexington".to_string(), 99);
 
-        let effects = decide_discovered_coworker_nudges(&discovered, &owner_tasks, &reviewer_prs);
+        let effects = decide_discovered_coworker_nudges(
+            &discovered,
+            &owner_tasks,
+            &reviewer_prs,
+            &HashMap::new(),
+        );
         assert_eq!(effects.len(), 2);
         // Should nudge about the task, not the review
         match &effects[0] {

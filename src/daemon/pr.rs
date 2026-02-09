@@ -720,6 +720,7 @@ fn pr_action_to_effects(
                     current_task: Some(format!("working on PR #{}", pr_number)),
                 },
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: daemon_messages::called_in_pr_issue(
                         &owner,
@@ -741,6 +742,7 @@ fn pr_action_to_effects(
 
             let on_failure = vec![
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: format!(
                         "PR #{} ({}) owned by {} - {}: {} (call-in failed)",
@@ -785,6 +787,7 @@ fn pr_action_to_effects(
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message,
                 },
@@ -1350,6 +1353,7 @@ fn comment_action_to_effects(
                     current_task: Some(format!("responding to feedback on PR #{}", pr_number)),
                 },
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: crate::daemon_messages::called_in_review_feedback(
                         &owner,
@@ -1370,6 +1374,7 @@ fn comment_action_to_effects(
 
             let on_failure = vec![
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: format!(
                         "PR #{} ({}) owned by {} - review comment: {} (call-in failed)",
@@ -1413,6 +1418,7 @@ fn comment_action_to_effects(
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message,
                 },
@@ -1465,6 +1471,7 @@ fn handoff_to_coworker_effects(
             current_task: Some(format!("working on PR #{}", pr_number)),
         },
         Effect::PostToChannel {
+            channel: None,
             sender: "midtown".to_string(),
             message: format!(
                 "{} is taking over PR #{} from {} ({})",
@@ -1479,6 +1486,7 @@ fn handoff_to_coworker_effects(
 
     let on_failure = vec![
         Effect::PostToChannel {
+            channel: None,
             sender: "midtown".to_string(),
             message: format!(
                 "Failed to hand off PR #{} ({}) to {} - {}",
@@ -1799,6 +1807,7 @@ async fn collect_reviewer_effects_with_source(
                 source,
             },
             Effect::PostToChannel {
+                channel: None,
                 sender: "midtown".to_string(),
                 message: daemon_messages::called_in_reviewer(
                     &reviewer_name,
@@ -1809,6 +1818,7 @@ async fn collect_reviewer_effects_with_source(
         ];
 
         let on_failure = vec![Effect::PostToChannel {
+            channel: None,
             sender: "midtown".to_string(),
             message: format!(
                 "⚠️ Failed to spawn reviewer for PR #{} ({})",
@@ -1878,6 +1888,7 @@ fn review_complete_action_to_effects(
                     current_task: Some(format!("responding to feedback on PR #{}", pr_number)),
                 },
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: daemon_messages::called_in_review_feedback(
                         &owner,
@@ -1898,6 +1909,7 @@ fn review_complete_action_to_effects(
 
             let on_failure = vec![
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: format!(
                         "PR #{} ({}) owned by {} - review complete: {} (call-in failed)",
@@ -1941,6 +1953,7 @@ fn review_complete_action_to_effects(
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message,
                 },

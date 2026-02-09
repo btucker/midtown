@@ -1713,10 +1713,21 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
                     // Auto-complete task when PR title contains [Midtown #XX]
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
+                        // Look up task channel for routing the completion message
+                        let task_channel = if let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(&pr_merged_info.title) {
+                            crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
+                                .iter()
+                                .find(|t| t.id == task_id.to_string())
+                                .and_then(|t| t.channel.clone())
+                        } else {
+                            None
+                        };
+
                         let completion_effects = dispatch::build_task_completion_effects(
                             &pr_merged_info.title,
                             pr_merged_info.pr_number,
                             &state.repo_name,
+                            task_channel,
                         );
                         if !completion_effects.is_empty() {
                             effects::execute_effects(completion_effects, &state).await;

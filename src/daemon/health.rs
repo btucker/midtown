@@ -328,6 +328,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
                 );
                 // Don't shutdown - post a warning to the channel so the team knows
                 effects.push(Effect::PostToChannel {
+                    channel: None,
                     sender: "system".to_string(),
                     message: format!(
                         "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
@@ -359,6 +360,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
 
         // Post system message, broadcast status, and shut down
         effects.push(Effect::PostToChannel {
+            channel: None,
             sender: "system".to_string(),
             message: shutdown_msg,
         });
@@ -430,6 +432,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             ),
         ));
         effects.push(Effect::PostToChannel {
+            channel: None,
             sender: "midtown".to_string(),
             message: format!(
                 "🔄 Restarted stuck coworker {} (no events for {}s) — resuming task !{}",
@@ -483,6 +486,7 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
     vec![
         Effect::SetUsageLimitNudge { at: nudge_time },
         Effect::PostToChannel {
+            channel: None,
             sender: "system".to_string(),
             message: format!(
                 "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~15m when it resets.",
@@ -516,6 +520,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
     let mut effects = vec![
         Effect::ClearUsageLimitNudge,
         Effect::PostToChannel {
+            channel: None,
             sender: "system".to_string(),
             message: format!(
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
@@ -610,6 +615,7 @@ pub(super) fn check_and_nudge_api_errors(
         effects.insert(
             0,
             Effect::PostToChannel {
+            channel: None,
                 sender: "system".to_string(),
                 message: format!(
                     "⚠️ Widespread API errors affecting {} coworkers: {}. Will periodically nudge to retry.",
@@ -691,6 +697,7 @@ pub(super) async fn check_and_respawn_dead_processes(
             key: name.clone(),
         });
         effects.push(Effect::PostToChannel {
+            channel: None,
             sender: "midtown".to_string(),
             message: format!(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
@@ -742,6 +749,7 @@ fn effects_for_fired_reminders(
             reminder.trigger, reminder.message
         );
         effects.push(Effect::PostToChannel {
+            channel: None,
             sender: "system".to_string(),
             message: message.clone(),
         });

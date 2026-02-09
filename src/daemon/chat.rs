@@ -221,10 +221,12 @@ fn mention_action_to_effects(
             vec![Effect::SpawnCoworkerWithCallbacks {
                 config,
                 on_success: vec![Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: format!("Called in {} in response to @mention", name),
                 }],
                 on_failure: vec![Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: format!("Failed to call in {} for @mention", name),
                 }],
@@ -234,6 +236,7 @@ fn mention_action_to_effects(
             debug!("{}", reason);
             if reason.contains("dev limit") {
                 vec![Effect::PostToChannel {
+                    channel: None,
                     sender: "midtown".to_string(),
                     message: format!(
                         "Cannot call in {} for @mention: dev coworkers limit reached",
