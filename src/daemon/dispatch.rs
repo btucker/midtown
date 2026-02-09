@@ -1332,6 +1332,44 @@ pub(super) fn build_task_completion_effects(
     ]
 }
 
+/// Build effects to auto-complete a task when its PR is opened.
+///
+/// This is a pure function that extracts the task ID from a PR title
+/// (looking for `[Midtown !XX]`) and returns the effects needed to:
+/// 1. Mark the task as completed
+/// 2. Clear the task from other tasks' `blockedBy` arrays
+/// 3. Post a notification to the channel
+///
+/// Returns an empty vector if no task ID is found in the title.
+pub(super) fn build_task_completion_effects_for_opened(
+    pr_title: &str,
+    pr_number: u64,
+    repo_name: &str,
+) -> Vec<Effect> {
+    let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(pr_title) else {
+        return vec![];
+    };
+
+    let task_id_str = task_id.to_string();
+    vec![
+        Effect::CompleteTask {
+            task_id: task_id_str.clone(),
+            repo_name: repo_name.to_string(),
+        },
+        Effect::ClearBlockedBy {
+            completed_task_id: task_id_str.clone(),
+            repo_name: repo_name.to_string(),
+        },
+        Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "✅ Auto-completed task !{} (PR #{} opened)",
+                task_id, pr_number
+            ),
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1648,6 +1686,69 @@ mod tests {
             }
             _ => panic!("Third effect should be PostToChannel"),
         }
+    }
+
+    #[test]
+    fn test_build_task_completion_effects_for_opened_with_task_id() {
+        let effects = build_task_completion_effects_for_opened(
+            "feat: Add auth endpoint [Midtown !42]",
+            123,
+            "myrepo",
+        );
+
+        assert_eq!(effects.len(), 3, "Should return 3 effects");
+
+        // Verify CompleteTask effect
+        match &effects[0] {
+            Effect::CompleteTask { task_id, repo_name } => {
+                assert_eq!(task_id, "42");
+                assert_eq!(repo_name, "myrepo");
+            }
+            _ => panic!("First effect should be CompleteTask"),
+        }
+
+        // Verify ClearBlockedBy effect
+        match &effects[1] {
+            Effect::ClearBlockedBy {
+                completed_task_id,
+                repo_name,
+            } => {
+                assert_eq!(completed_task_id, "42");
+                assert_eq!(repo_name, "myrepo");
+            }
+            _ => panic!("Second effect should be ClearBlockedBy"),
+        }
+
+        // Verify PostToChannel effect says "opened"
+        match &effects[2] {
+            Effect::PostToChannel { sender, message } => {
+                assert_eq!(sender, "midtown");
+                assert!(
+                    message.contains("opened"),
+                    "Message should say 'opened', got: {}",
+                    message
+                );
+                assert!(
+                    !message.contains("merged"),
+                    "Message should not say 'merged', got: {}",
+                    message
+                );
+                assert!(message.contains("42"));
+                assert!(message.contains("123"));
+            }
+            _ => panic!("Third effect should be PostToChannel"),
+        }
+    }
+
+    #[test]
+    fn test_build_task_completion_effects_for_opened_without_task_id() {
+        let effects =
+            build_task_completion_effects_for_opened("feat: Add auth endpoint", 123, "myrepo");
+
+        assert!(
+            effects.is_empty(),
+            "Should return empty vec when no task ID in title"
+        );
     }
 
     // ======================================================================

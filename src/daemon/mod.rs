@@ -1581,8 +1581,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         }
                     }
 
-                    // NOTE: Task auto-completion has been moved to the PR merged handler
-                    // to avoid completing tasks before review feedback is addressed and CI passes.
+                    // Auto-complete task when PR is opened (task !XXX in title)
+                    // This prevents orphan recovery from incorrectly trying to reassign work
+                    // that's already complete and under review.
+                    let completion_effects = dispatch::build_task_completion_effects_for_opened(
+                        &pr_opened.title,
+                        pr_opened.pr_number,
+                        &state.repo_name,
+                    );
+                    pr_effects.extend(completion_effects);
 
                     if !pr_effects.is_empty() {
                         effects::execute_effects(pr_effects, &state).await;
