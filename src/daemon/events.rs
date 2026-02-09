@@ -78,7 +78,8 @@ pub async fn evaluate_tick(
         }
         DaemonEvent::PrPollTick => {
             // PR polling: check open PRs for issues, spawn reviewers, clean up merged worktrees.
-            // When GitHub API quota is critically low (< 5%), skip non-essential polling.
+            // When GitHub API quota is critically low (< 5%), skip API-calling polls but still
+            // run pure cleanup logic (doesn't make API calls, just reads snapshot state).
             let mut effects = Vec::new();
 
             if snap.github_rate_limit.is_critical() {
@@ -94,16 +95,19 @@ pub async fn evaluate_tick(
                         tracing::warn!("PR poll error: {}", e);
                     }
                 }
-                effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
             }
+
+            // Always run merged PR cleanup (pure function, no API calls)
+            effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
 
             dedup_spawn_effects(effects)
         }
         DaemonEvent::RateLimitCheckTick => {
-            // Fetch GitHub API rate limits and update persistent state.
-            // This runs independently of PR polling to track quota consumption.
+            // Evaluate freshly fetched GitHub API rate limits against previous state.
+            // The rate limit data was fetched before snapshot collection and passed in
+            // via snap.freshly_fetched_rate_limit.
             let mut effects = Vec::new();
-            if let Some(rate_limit) = crate::github_rate_limit::GitHubRateLimit::fetch() {
+            if let Some(rate_limit) = &snap.freshly_fetched_rate_limit {
                 // Check if state changed (low → critical, critical → recovered, etc.)
                 let was_critical = snap.github_rate_limit.is_critical();
                 let was_low = snap.github_rate_limit.is_low();
@@ -132,18 +136,41 @@ pub async fn evaluate_tick(
                             rate_limit.summary()
                         ),
                     });
+                    effects.push(Effect::RecordCooldown {
+                        category: "rate_limit_low".to_string(),
+                        key: "throttle_warning".to_string(),
+                    });
                 }
-                // Post recovery message when quota resets
+                // Post recovery/improvement messages for state transitions
                 else if was_critical && !now_critical {
+                    if now_low {
+                        // Critical → low (improved but still low)
+                        effects.push(Effect::PostSystemMessage {
+                            message: format!(
+                                "⬆️ GitHub API quota improved ({}) — PR polling resumed, but quota still low.",
+                                rate_limit.summary()
+                            ),
+                        });
+                    } else {
+                        // Critical → normal (fully recovered)
+                        effects.push(Effect::PostSystemMessage {
+                            message: format!(
+                                "✅ GitHub API quota recovered ({}). PR polling resumed.",
+                                rate_limit.summary()
+                            ),
+                        });
+                    }
+                } else if was_low && !was_critical && !now_low && !now_critical {
+                    // Low → normal (recovered from low state)
                     effects.push(Effect::PostSystemMessage {
                         message: format!(
-                            "✅ GitHub API quota recovered ({}). PR polling resumed.",
+                            "✅ GitHub API quota recovered ({}).",
                             rate_limit.summary()
                         ),
                     });
                 }
 
-                effects.push(Effect::UpdateRateLimit(rate_limit));
+                effects.push(Effect::UpdateRateLimit(rate_limit.clone()));
             }
             effects
         }

@@ -150,6 +150,10 @@ pub struct WorldSnapshot {
     /// GitHub API rate limit state (GraphQL and REST quotas).
     /// Used by adaptive throttling to reduce polling frequency when quotas run low.
     pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
+    /// Freshly fetched rate limit data (only populated during RateLimitCheckTick).
+    /// This carries the new rate limit state from the API fetch to the decision phase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freshly_fetched_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -466,6 +470,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         reviewed_prs,
         prs_needing_review,
         github_rate_limit,
+        freshly_fetched_rate_limit: None,
         coworkers_with_unblocked_deps,
         usage_limit_nudge_scheduled,
         usage_limit_nudge_at,
@@ -582,6 +587,7 @@ mod tests {
             now_utc: Utc::now(),
             repo_name: "test-repo".to_string(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         assert_eq!(snapshot.coworker_stop_times.len(), 2);
@@ -664,6 +670,7 @@ mod tests {
             now_utc: Utc::now(),
             repo_name: "test-repo".to_string(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         assert!(snapshot.channel_messages.is_empty());

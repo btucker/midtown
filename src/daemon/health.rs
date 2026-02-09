@@ -892,6 +892,7 @@ mod tests {
             now_utc: chrono::Utc::now(),
             repo_name: "test-repo".to_string(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         let effects = maybe_nudge_usage_limit_expiry(&snap);
