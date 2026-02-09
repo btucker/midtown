@@ -1533,6 +1533,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Recover coworker workflow state from their state files across daemon restarts.
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
+    // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
+    // This must run BEFORE session recovery to clean up processes before spawning new ones.
+    startup::kill_zombie_claude_processes();
+
     // Recover headless coworker sessions from persisted state (session survival).
     // This kills orphaned processes and spawns with --resume to continue previous work.
     let recovery_effects =

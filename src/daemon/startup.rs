@@ -39,6 +39,49 @@ pub async fn recover_coworker_records(
     }
 }
 
+/// Scan for and kill any orphaned Claude headless processes not tracked by the daemon.
+///
+/// This cleanup runs on daemon startup to remove zombie processes left behind
+/// from crashes or unclean shutdowns.
+pub fn kill_zombie_claude_processes() {
+    info!("Scanning for zombie Claude headless processes...");
+
+    // Find all claude processes running in headless mode
+    let output = match std::process::Command::new("pgrep")
+        .args(["-f", "claude.*headless"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            // pgrep returns non-zero if no processes found - this is normal
+            return;
+        }
+        Err(e) => {
+            warn!("Failed to run pgrep: {}", e);
+            return;
+        }
+    };
+
+    let pids = String::from_utf8_lossy(&output.stdout);
+    let zombie_pids: Vec<&str> = pids.lines().filter(|line| !line.is_empty()).collect();
+
+    if zombie_pids.is_empty() {
+        return;
+    }
+
+    info!(
+        "Found {} zombie Claude process(es), killing...",
+        zombie_pids.len()
+    );
+    for pid in zombie_pids {
+        info!("Killing zombie process: {}", pid);
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid)
+            .output();
+    }
+}
+
 /// Recover headless coworker sessions from persisted state after daemon restart.
 ///
 /// For each saved session:
