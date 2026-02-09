@@ -140,13 +140,15 @@ fn handle_list() -> Result<Response, String> {
     let mut results = results.lock().unwrap().clone();
     results.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Format as a table
+    // Format as a table with separate session and weekly columns
     let mut lines = Vec::new();
     lines.push(format!(
-        "{:<20} {:<18} {:<25} {}",
-        "Profile", "Status", "Usage", "Resets"
+        "{:<20} {:<18} {:<14} {:<10} {:<14} {}",
+        "Profile", "Status", "Session", "Resets", "Weekly", "Resets"
     ));
     lines.push("-".repeat(90));
+
+    let now = chrono::Utc::now();
 
     for (name, is_current, has_credentials, usage) in results {
         let marker = if is_current { " (active)" } else { "" };
@@ -158,32 +160,31 @@ fn handle_list() -> Result<Response, String> {
             "not authenticated"
         };
 
-        let (usage_str, resets_str) = if let Some(usage_data) = usage {
-            // Use session (5-hour) utilization as the primary metric
-            let pct = usage_data.session_util;
-            let usage_display = format!("{:.0}%", pct);
+        let (session_usage, session_resets, week_usage, week_resets) =
+            if let Some(usage_data) = usage {
+                let session_display = format!("{:.0}%", usage_data.session_util);
+                let session_resets_display = format_reset_duration(now, usage_data.session_resets);
+                let week_display = format!("{:.0}%", usage_data.week_util);
+                let week_resets_display = format_reset_duration(now, usage_data.week_resets);
 
-            // Calculate time until reset
-            let now = chrono::Utc::now();
-            let duration = usage_data.session_resets.signed_duration_since(now);
-            let hours = duration.num_hours();
-            let minutes = duration.num_minutes() % 60;
-            let resets_display = if hours > 0 {
-                format!("{}h {}m", hours, minutes)
+                (
+                    session_display,
+                    session_resets_display,
+                    week_display,
+                    week_resets_display,
+                )
             } else {
-                format!("{}m", minutes)
+                (
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                )
             };
 
-            (usage_display, resets_display)
-        } else if has_credentials {
-            ("unavailable".to_string(), "-".to_string())
-        } else {
-            ("-".to_string(), "-".to_string())
-        };
-
         lines.push(format!(
-            "{:<20} {:<18} {:<25} {}",
-            profile_name, status, usage_str, resets_str
+            "{:<20} {:<18} {:<14} {:<10} {:<14} {}",
+            profile_name, status, session_usage, session_resets, week_usage, week_resets
         ));
     }
 
@@ -242,10 +243,87 @@ fn handle_status() -> Result<Response, String> {
     }
 }
 
+/// Format a duration until a reset time as a human-readable string.
+///
+/// Returns "now" if the reset time is in the past (negative duration),
+/// otherwise formats as "Xh Ym" or "Ym".
+fn format_reset_duration(
+    now: chrono::DateTime<chrono::Utc>,
+    resets: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let duration = resets.signed_duration_since(now);
+    let total_minutes = duration.num_minutes().max(0);
+    if total_minutes == 0 {
+        "now".to_string()
+    } else if total_minutes >= 60 {
+        let hours = total_minutes / 60;
+        let minutes = total_minutes % 60;
+        format!("{}h {}m", hours, minutes)
+    } else {
+        format!("{}m", total_minutes)
+    }
+}
+
 fn handle_remove(profile: &str) -> Result<Response, String> {
     midtown::auth::remove_profile(profile).map_err(|e| e.to_string())?;
 
     Ok(Response::Message {
         message: format!("Removed profile '{}'.", profile),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Duration, Utc};
+
+    #[test]
+    fn test_format_reset_duration_past_time_shows_now() {
+        // Reset time 5 minutes in the past (clock skew, cached data, or just-reset limit)
+        let now = Utc::now();
+        let resets = now - Duration::minutes(5);
+        let result = format_reset_duration(now, resets);
+        assert_eq!(result, "now");
+        assert!(!result.contains('-'), "should not contain negative sign");
+    }
+
+    #[test]
+    fn test_format_reset_duration_exactly_now() {
+        let now = Utc::now();
+        let result = format_reset_duration(now, now);
+        assert_eq!(result, "now");
+    }
+
+    #[test]
+    fn test_format_reset_duration_minutes_only() {
+        let now: DateTime<Utc> = DateTime::parse_from_rfc3339("2026-02-09T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let resets: DateTime<Utc> = DateTime::parse_from_rfc3339("2026-02-09T12:45:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = format_reset_duration(now, resets);
+        assert_eq!(result, "45m");
+    }
+
+    #[test]
+    fn test_format_reset_duration_hours_and_minutes() {
+        let now: DateTime<Utc> = DateTime::parse_from_rfc3339("2026-02-09T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let resets: DateTime<Utc> = DateTime::parse_from_rfc3339("2026-02-09T14:23:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = format_reset_duration(now, resets);
+        assert_eq!(result, "2h 23m");
+    }
+
+    #[test]
+    fn test_format_reset_duration_far_past_shows_now() {
+        // Reset time 2 hours in the past — should still show "now"
+        let now = Utc::now();
+        let resets = now - Duration::hours(2);
+        let result = format_reset_duration(now, resets);
+        assert_eq!(result, "now");
+    }
 }
