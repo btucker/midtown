@@ -448,11 +448,11 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
         },
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => {
-                app.scroll_up();
+                app.mouse_scroll_up();
                 EventResult::Continue
             }
             MouseEventKind::ScrollDown => {
-                app.scroll_down();
+                app.mouse_scroll_down();
                 EventResult::Continue
             }
             _ => EventResult::Continue,
