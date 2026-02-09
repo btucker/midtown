@@ -262,6 +262,19 @@ pub(super) async fn poll_prs_for_issues(
                 && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
         })
         .collect();
+    // Build session ID set for same reviewer-subset — enables session-based matching
+    // in cleanup_expired_preserving when assignments carry a reviewer_session_id.
+    let running_reviewer_session_ids: HashSet<String> = snap
+        .running_coworkers
+        .iter()
+        .filter(|c| {
+            review_branch_owners.contains(&c.name)
+                && !snap
+                    .usage_limited_coworkers
+                    .contains(&c.name.to_lowercase())
+        })
+        .filter_map(|c| c.session_id.clone())
+        .collect();
 
     // Get list of idle coworkers for handoff decisions
     let idle_coworkers: Vec<String> = {
@@ -332,8 +345,10 @@ pub(super) async fn poll_prs_for_issues(
     }
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .cleanup_expired_preserving(&running_coworker_names);
+        ps.github.cleanup_expired_preserving(
+            &running_coworker_names,
+            Some(&running_reviewer_session_ids),
+        );
         ps.github.cleanup_stale_webhook_events();
     }
     {
@@ -421,8 +436,10 @@ pub(super) async fn poll_prs_for_issues(
             .collect();
         let mut ps = state.persistent_state.lock().await;
         ps.github.cleanup_closed_prs(&open_pr_numbers);
-        ps.github
-            .cleanup_expired_preserving(&running_coworker_names);
+        ps.github.cleanup_expired_preserving(
+            &running_coworker_names,
+            Some(&running_reviewer_session_ids),
+        );
         if let Err(e) = ps.save_for_repo(&state.repo_name) {
             warn!("Failed to save daemon-state.json after cleanup: {}", e);
         }
@@ -1744,6 +1761,7 @@ async fn collect_reviewer_effects_with_source(
             reviewer_name: reviewer_name.clone(),
             source,
             restart_count: 0,
+            reviewer_session_id: None,
         });
 
         let on_success = vec![

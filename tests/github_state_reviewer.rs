@@ -406,7 +406,7 @@ fn cleanup_preserves_running_coworker_assignments() {
 
     // Only riverside is still running
     let running: HashSet<String> = ["riverside".to_string()].into_iter().collect();
-    state.cleanup_expired_preserving(&running);
+    state.cleanup_expired_preserving(&running, None);
 
     // riverside's assignment preserved, columbus's removed
     assert!(
@@ -705,7 +705,7 @@ fn cleanup_expired_preserving_handles_name_reuse() {
     // The running_coworker_names passed to cleanup_expired_preserving should only
     // include coworkers bound to review worktrees, so columbus is NOT in the set.
     let running_reviewers: HashSet<String> = HashSet::new(); // columbus excluded (dev work)
-    state.cleanup_expired_preserving(&running_reviewers);
+    state.cleanup_expired_preserving(&running_reviewers, None);
 
     // The expired assignment should be removed because columbus is not a reviewer
     assert!(
@@ -732,7 +732,7 @@ fn cleanup_expired_preserving_keeps_active_reviewer() {
 
     // york is still running AND bound to a review worktree
     let running_reviewers: HashSet<String> = ["york".to_string()].into_iter().collect();
-    state.cleanup_expired_preserving(&running_reviewers);
+    state.cleanup_expired_preserving(&running_reviewers, None);
 
     // Assignment should be preserved (york is actively reviewing)
     assert!(

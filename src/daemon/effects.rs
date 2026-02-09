@@ -156,6 +156,9 @@ pub enum Effect {
         /// How many times this reviewer has been restarted for this PR.
         /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
         restart_count: u32,
+        /// Claude session ID for the reviewer, if known.
+        #[allow(dead_code)]
+        reviewer_session_id: Option<String>,
     },
     /// Remove a reviewer assignment for a specific PR.
     ///
@@ -728,6 +731,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 reviewer_name,
                 source,
                 restart_count,
+                reviewer_session_id,
             } => {
                 let mut ps = state.persistent_state.lock().await;
                 if restart_count > 0 {
@@ -739,6 +743,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 } else {
                     ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                }
+                // Set the session ID if provided (assign_reviewer* methods don't take it yet)
+                if let Some(sid) = reviewer_session_id
+                    && let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number)
+                {
+                    assignment.reviewer_session_id = Some(sid);
                 }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon-state.json: {}", e);

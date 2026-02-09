@@ -528,6 +528,7 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
                 reviewer_name: restart.name.clone(),
                 source: crate::github_state::AssignmentSource::Manual,
                 restart_count: new_restart_count,
+                reviewer_session_id: None,
             },
         ];
 
