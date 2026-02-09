@@ -359,6 +359,9 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                                 .filter_map(|v| v.as_str().map(String::from))
                                 .collect()
                         });
+                    let channel = params
+                        .and_then(|p| p.get("channel"))
+                        .and_then(|v| v.as_str());
 
                     handle_task_update(
                         request.id,
@@ -367,6 +370,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         status,
                         description,
                         blocked_by.as_deref(),
+                        channel,
                         state,
                     )
                 }
@@ -1399,6 +1403,7 @@ fn generate_active_form(subject: &str) -> String {
 }
 
 /// Handle task.update RPC — update specific fields on a task directly.
+#[allow(clippy::too_many_arguments)]
 fn handle_task_update(
     id: RequestId,
     task_id: &str,
@@ -1406,6 +1411,7 @@ fn handle_task_update(
     status: Option<&str>,
     description: Option<&str>,
     blocked_by: Option<&[String]>,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Validate status if provided
@@ -1424,6 +1430,7 @@ fn handle_task_update(
         status,
         description,
         blocked_by,
+        channel,
     ) {
         return Response::error(
             id,
@@ -1524,6 +1531,7 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
             &repo_name,
             Some(from),
             Some("in_progress"),
+            None,
             None,
             None,
         ) {
