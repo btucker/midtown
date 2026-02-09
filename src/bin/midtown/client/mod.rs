@@ -277,6 +277,7 @@ impl DaemonClient {
         subject: &str,
         description: &str,
         blocked_by: Option<&[String]>,
+        channel: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -284,6 +285,9 @@ impl DaemonClient {
         });
         if let Some(bb) = blocked_by {
             params["blocked_by"] = serde_json::json!(bb);
+        }
+        if let Some(ch) = channel {
+            params["channel"] = serde_json::json!(ch);
         }
         self.send("task.create", Some(params))
     }

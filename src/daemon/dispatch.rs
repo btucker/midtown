@@ -1938,6 +1938,7 @@ mod tests {
                 owner: None,
                 blocked_by: vec![],
                 description: None,
+                channel: None,
                 created_at: Some(SystemTime::now()),
             }],
             tasks_with_worktrees: HashSet::new(), // Task not in registry yet
@@ -2424,6 +2425,7 @@ mod tests {
                 owner: None,
                 blocked_by: vec![],
                 description: None,
+                channel: None,
                 created_at: Some(SystemTime::now()),
             }],
             tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
