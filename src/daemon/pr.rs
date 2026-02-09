@@ -243,13 +243,24 @@ pub(super) async fn poll_prs_for_issues(
     // Get running coworkers for cleanup_expired_preserving, which removes timed-out
     // reviewer assignments but preserves those for still-running reviewers (i.e., reviews
     // that are taking longer than the timeout but the reviewer is still actively working).
-    // Exclude usage-limited coworkers: they're running but can't complete reviews,
-    // so their expired assignments should be cleaned up to allow reassignment.
+    // Only include coworkers that own a review worktree branch — if a reviewer name was
+    // reused for dev work after restart, the stale assignment should expire naturally
+    // rather than being preserved by the dev coworker's presence.
+    // Also exclude usage-limited coworkers: they can't complete reviews.
+    let review_branch_owners: HashSet<String> = snap
+        .worktree_branch_owners
+        .iter()
+        .filter(|(branch, _)| branch.starts_with("review-pr-"))
+        .map(|(_, owner)| owner.clone())
+        .collect();
     let running_coworker_names: HashSet<String> = snap
         .running_coworkers
         .iter()
         .map(|c| c.name.clone())
-        .filter(|name| !snap.usage_limited_coworkers.contains(&name.to_lowercase()))
+        .filter(|name| {
+            review_branch_owners.contains(name)
+                && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
+        })
         .collect();
 
     // Get list of idle coworkers for handoff decisions
@@ -1553,90 +1564,6 @@ async fn collect_reviewer_effects_with_source(
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
-    // FIRST: Prune dead reviewer assignments (defensive cleanup).
-    // This removes stale assignments for coworkers that have stopped, are usage-limited,
-    // or whose name was reused for a dev coworker after restart.
-    // Without MAX_CONCURRENT_REVIEWS, this is purely cleanup to keep state tidy and prevent
-    // confusion about which PRs are actively being reviewed.
-    {
-        let coworker_list = state.coworkers.list();
-        let active_names: HashSet<String> = coworker_list
-            .iter()
-            .map(|cw| cw.name.to_lowercase())
-            .collect();
-        // Build the set of coworkers that are actually acting as reviewers.
-        // A coworker whose current_task starts with "reviewing" is a reviewer;
-        // one doing dev work has a different task. This catches the case where a
-        // reviewer died and the name was reused for a dev coworker after restart.
-        let active_reviewer_names: HashSet<String> = coworker_list
-            .iter()
-            .filter(|cw| {
-                cw.current_task
-                    .as_deref()
-                    .is_some_and(|t| t.starts_with("reviewing"))
-            })
-            .map(|cw| cw.name.to_lowercase())
-            .collect();
-        let usage_limited_coworkers: HashSet<String> = {
-            let health = state.headless_health.read().unwrap();
-            health
-                .iter()
-                .filter_map(|(name, h)| {
-                    if h.has_usage_limit {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
-        let mut ps = state.persistent_state.lock().await;
-        let assignments: Vec<(u64, String)> = ps
-            .github
-            .pr_reviewers
-            .iter()
-            .map(|(pr, a)| (*pr, a.reviewer.clone()))
-            .collect();
-
-        for (pr_number, reviewer_name) in assignments {
-            let liveness = crate::rules::decide_reviewer_liveness(
-                &reviewer_name,
-                &active_names,
-                &usage_limited_coworkers,
-                &active_reviewer_names,
-            );
-
-            match liveness {
-                crate::rules::ReviewerLivenessDecision::Active => {
-                    // Reviewer is alive and reviewing, keep the assignment
-                }
-                crate::rules::ReviewerLivenessDecision::Dead => {
-                    debug!(
-                        "Pruning dead reviewer assignment: PR #{} was assigned to {} but reviewer is dead or doing dev work",
-                        pr_number, reviewer_name
-                    );
-                    ps.github.remove_assignment(pr_number);
-                }
-                crate::rules::ReviewerLivenessDecision::UsageLimited => {
-                    debug!(
-                        "Pruning usage-limited reviewer assignment: PR #{} was assigned to {} but reviewer is usage-limited",
-                        pr_number, reviewer_name
-                    );
-                    ps.github.remove_assignment(pr_number);
-                }
-            }
-        }
-
-        // Save the pruned state
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-            warn!(
-                "Failed to save daemon-state.json after pruning dead reviewers: {}",
-                e
-            );
-        }
-    }
-
     for pr in prs {
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         if pr_number == 0 {
@@ -1749,8 +1676,8 @@ async fn collect_reviewer_effects_with_source(
         }
 
         // Check if already assigned for review.
-        // Dead/usage-limited reviewer assignments are pruned upfront (above),
-        // so any remaining assignment here has a live, active reviewer.
+        // Stale assignments are cleaned up by cleanup_expired_preserving() during
+        // the PR poll cycle, so any remaining assignment here is still valid.
         {
             let ps = state.persistent_state.lock().await;
             if ps.github.is_assigned(pr_number) {

@@ -679,115 +679,65 @@ fn batch_pr_reviewer_handling() {
 }
 
 // =============================================================================
-// Tests: Ghost reviewer assignments (Bug #1032)
+// Tests: Ghost reviewer assignments — name reuse handled by cleanup
 // =============================================================================
 
-/// Test that ghost reviewer assignments from before a daemon restart are pruned
-/// by the decide_reviewer_liveness logic used in collect_reviewer_effects_with_source().
+/// Test that cleanup_expired_preserving handles the name-reuse case correctly.
 ///
-/// This exercises the actual fix path: for each ghost assignment, decide_reviewer_liveness
-/// returns Dead, and the pruning loop removes the assignment from GitHubState.
-///
-/// Historical context: Bug #1032 — ghost assignments survived restart and blocked
-/// new reviewer spawns. The upfront pruning in pr.rs calls decide_reviewer_liveness
-/// for each assignment, removes Dead/UsageLimited ones, then proceeds to spawn.
+/// Scenario: "columbus" was assigned to review PR #823 and the assignment timed out.
+/// After restart, "columbus" is respawned as a dev coworker (no review worktree).
+/// cleanup_expired_preserving should NOT preserve the expired assignment because
+/// columbus is not in the running_coworker_names set (filtered to review worktree owners).
 #[test]
-fn ghost_reviewers_are_pruned_via_liveness_check() {
-    use midtown::rules::{ReviewerLivenessDecision, decide_reviewer_liveness};
-    use std::collections::HashSet;
-
-    let mut state = GitHubState::default();
-
-    // Simulate pre-restart state: 3 reviewers were assigned
-    state.assign_reviewer(823, "columbus", AssignmentSource::Webhook);
-    state.assign_reviewer(824, "lexington", AssignmentSource::Webhook);
-    state.assign_reviewer(825, "york", AssignmentSource::Webhook);
-
-    assert_eq!(state.active_count(), 3);
-
-    // After restart, only park is actually running (as a dev coworker).
-    // columbus, lexington, york are "ghost" assignments — persisted in JSON
-    // but their coworker processes are dead.
-    let active_names: HashSet<String> = ["park"].iter().map(|s| s.to_string()).collect();
-    let usage_limited: HashSet<String> = HashSet::new();
-    let active_reviewers: HashSet<String> = HashSet::new(); // no one is reviewing
-
-    // Exercise the fix path: decide_reviewer_liveness for each assignment,
-    // then prune Dead ones (mirrors the upfront pruning in pr.rs).
-    let assignments: Vec<(u64, String)> = state
-        .pr_reviewers
-        .iter()
-        .map(|(pr, a)| (*pr, a.reviewer.clone()))
-        .collect();
-
-    for (pr_number, reviewer_name) in assignments {
-        let liveness = decide_reviewer_liveness(
-            &reviewer_name,
-            &active_names,
-            &usage_limited,
-            &active_reviewers,
-        );
-
-        assert_eq!(
-            liveness,
-            ReviewerLivenessDecision::Dead,
-            "Ghost reviewer {} for PR #{} should be Dead",
-            reviewer_name,
-            pr_number,
-        );
-
-        // Prune the dead assignment (same as pr.rs upfront pruning)
-        state.remove_assignment(pr_number);
-    }
-
-    // After pruning, all ghost assignments should be gone
-    assert_eq!(
-        state.active_count(),
-        0,
-        "All ghost assignments should be pruned"
-    );
-    assert!(!state.is_assigned(823));
-    assert!(!state.is_assigned(824));
-    assert!(!state.is_assigned(825));
-}
-
-/// Test that a dev coworker whose name matches a ghost reviewer assignment
-/// is correctly identified as Dead (not Active).
-///
-/// Scenario: Before restart, "columbus" was assigned to review PR #823.
-/// After restart, "columbus" is respawned as a dev coworker working on a task.
-/// The ghost assignment should be pruned because the current "columbus" is not reviewing.
-#[test]
-fn dev_coworker_matching_ghost_reviewer_is_pruned() {
-    use midtown::rules::{ReviewerLivenessDecision, decide_reviewer_liveness};
-    use std::collections::HashSet;
-
+fn cleanup_expired_preserving_handles_name_reuse() {
     let mut state = GitHubState::default();
 
     // Pre-restart: columbus was reviewing PR #823
     state.assign_reviewer(823, "columbus", AssignmentSource::Webhook);
 
-    // After restart: columbus is alive but doing dev work, not reviewing
-    let active_names: HashSet<String> = ["columbus"].iter().map(|s| s.to_string()).collect();
-    let usage_limited: HashSet<String> = HashSet::new();
-    let active_reviewers: HashSet<String> = HashSet::new(); // columbus is NOT reviewing
+    // Expire the assignment (simulate time passing beyond timeout)
+    if let Some(a) = state.pr_reviewers.get_mut(&823) {
+        a.assigned_at =
+            Utc::now() - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+    }
 
-    let liveness =
-        decide_reviewer_liveness("columbus", &active_names, &usage_limited, &active_reviewers);
+    // After restart, columbus is running but as a dev coworker (no review worktree).
+    // The running_coworker_names passed to cleanup_expired_preserving should only
+    // include coworkers bound to review worktrees, so columbus is NOT in the set.
+    let running_reviewers: HashSet<String> = HashSet::new(); // columbus excluded (dev work)
+    state.cleanup_expired_preserving(&running_reviewers);
 
-    assert_eq!(
-        liveness,
-        ReviewerLivenessDecision::Dead,
-        "Dev coworker matching ghost reviewer should be Dead (not Active)"
+    // The expired assignment should be removed because columbus is not a reviewer
+    assert!(
+        !state.pr_reviewers.contains_key(&823),
+        "Expired assignment for dev-reused coworker should be cleaned up"
     );
+}
 
-    // Prune the dead assignment
-    state.remove_assignment(823);
+/// Test that cleanup_expired_preserving preserves active reviewer assignments.
+///
+/// If a reviewer is still running with a review worktree, their expired assignment
+/// should be preserved (and refreshed) to avoid losing track of active reviews.
+#[test]
+fn cleanup_expired_preserving_keeps_active_reviewer() {
+    let mut state = GitHubState::default();
 
-    assert_eq!(
-        state.active_count(),
-        0,
-        "Ghost assignment for dev coworker should be pruned"
+    state.assign_reviewer(824, "york", AssignmentSource::Webhook);
+
+    // Expire the assignment
+    if let Some(a) = state.pr_reviewers.get_mut(&824) {
+        a.assigned_at =
+            Utc::now() - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+    }
+
+    // york is still running AND bound to a review worktree
+    let running_reviewers: HashSet<String> = ["york".to_string()].into_iter().collect();
+    state.cleanup_expired_preserving(&running_reviewers);
+
+    // Assignment should be preserved (york is actively reviewing)
+    assert!(
+        state.pr_reviewers.contains_key(&824),
+        "Active reviewer's assignment should be preserved"
     );
 }
 
