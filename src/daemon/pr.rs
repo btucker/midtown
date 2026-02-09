@@ -1805,6 +1805,17 @@ async fn collect_reviewer_effects_with_source(
             path: wt_path.clone(),
         });
 
+        // Reserve the reviewer assignment BEFORE spawning to prevent race conditions.
+        // If multiple events (webhooks, polling) trigger spawns for the same PR
+        // before any spawn completes, they would all pass the is_assigned() check.
+        // By assigning immediately, subsequent calls see the reservation and skip spawning.
+        effects.push(Effect::AssignReviewer {
+            pr_number,
+            reviewer_name: reviewer_name.clone(),
+            source,
+            restart_count: 0,
+        });
+
         let on_success = vec![
             // Register the review worktree assignment
             Effect::RegisterWorktreeAssignment {
@@ -1827,12 +1838,6 @@ async fn collect_reviewer_effects_with_source(
                 status: "running".to_string(),
                 current_task: Some(format!("reviewing PR #{}", pr_number)),
             },
-            Effect::AssignReviewer {
-                pr_number,
-                reviewer_name: reviewer_name.clone(),
-                source,
-                restart_count: 0,
-            },
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: daemon_messages::called_in_reviewer(
@@ -1844,15 +1849,19 @@ async fn collect_reviewer_effects_with_source(
             },
         ];
 
-        let on_failure = vec![Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "⚠️ Failed to spawn reviewer for PR #{} ({})",
-                pr_number,
-                truncate_str(title, 40),
-            ),
-            channel: None,
-        }];
+        let on_failure = vec![
+            // Clean up the optimistic assignment we made before spawning
+            Effect::RemoveReviewerAssignment { pr_number },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "⚠️ Failed to spawn reviewer for PR #{} ({})",
+                    pr_number,
+                    truncate_str(title, 40),
+                ),
+                channel: None,
+            },
+        ];
 
         effects.push(Effect::SpawnCoworkerWithCallbacks {
             config,

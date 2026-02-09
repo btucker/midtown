@@ -138,6 +138,11 @@ pub enum Effect {
         /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
         restart_count: u32,
     },
+    /// Remove a reviewer assignment for a specific PR.
+    ///
+    /// Used when a reviewer spawn fails after the assignment was already recorded
+    /// (optimistic assignment to prevent race conditions).
+    RemoveReviewerAssignment { pr_number: u64 },
     /// Record that a reviewer escalation warning has been posted for a PR.
     ///
     /// Prevents the escalation warning from firing every tick. The in-memory
@@ -714,6 +719,23 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon-state.json: {}", e);
+                }
+            }
+            Effect::RemoveReviewerAssignment { pr_number } => {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(assignment) = ps.github.remove_assignment(pr_number) {
+                    debug!(
+                        "Removed reviewer assignment for PR #{} (was assigned to {})",
+                        pr_number, assignment.reviewer
+                    );
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save daemon-state.json after removing assignment: {}",
+                            e
+                        );
+                    }
+                } else {
+                    debug!("No reviewer assignment to remove for PR #{}", pr_number);
                 }
             }
             Effect::PostSystemMessage { message } => {
