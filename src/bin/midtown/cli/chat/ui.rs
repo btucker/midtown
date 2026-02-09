@@ -14,7 +14,7 @@ use ratatui::{
 
 use midtown::{Message, MessageType};
 
-use super::app::{App, CiStatus, RepoStatus};
+use super::app::{App, CiStatus, KanbanTask, RepoStatus};
 use super::mermaid::{self, ContentSegment, MermaidCache};
 
 /// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
@@ -247,27 +247,8 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
 
     // In Progress tasks
     for task in &in_progress {
-        let status_marker = "● ";
-        let owner_text = if let Some(ref owner) = task.owner {
-            format!(" [{}]", owner)
-        } else {
-            String::new()
-        };
-
-        let task_line = format!(
-            "    {} #{} {}{}",
-            status_marker, task.id, task.subject, owner_text
-        );
-
-        // Pre-wrap the task line if it exceeds available width
-        let wrapped_lines = wrap_content(&task_line, wrap_width);
-        for (i, wrapped) in wrapped_lines.iter().enumerate() {
-            let text = if i == 0 {
-                wrapped.to_string()
-            } else {
-                // Continuation lines: indent to align with subject text
-                format!("        {}", wrapped.trim_start())
-            };
+        let wrapped = wrap_task_line("● ", task, wrap_width);
+        for text in wrapped {
             lines.push(Line::from(vec![Span::styled(
                 text,
                 Style::default().fg(Color::Green),
@@ -277,27 +258,8 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
 
     // Pending tasks
     for task in &pending {
-        let status_marker = "○ ";
-        let owner_text = if let Some(ref owner) = task.owner {
-            format!(" [{}]", owner)
-        } else {
-            String::new()
-        };
-
-        let task_line = format!(
-            "    {} #{} {}{}",
-            status_marker, task.id, task.subject, owner_text
-        );
-
-        // Pre-wrap the task line if it exceeds available width
-        let wrapped_lines = wrap_content(&task_line, wrap_width);
-        for (i, wrapped) in wrapped_lines.iter().enumerate() {
-            let text = if i == 0 {
-                wrapped.to_string()
-            } else {
-                // Continuation lines: indent to align with subject text
-                format!("        {}", wrapped.trim_start())
-            };
+        let wrapped = wrap_task_line("○ ", task, wrap_width);
+        for text in wrapped {
             lines.push(Line::from(vec![Span::styled(
                 text,
                 Style::default().fg(Color::DarkGray),
@@ -1369,6 +1331,57 @@ fn build_action_timestamp_line(
     Line::from(spans)
 }
 
+/// Wrap a task line for the board sidebar, with continuation lines indented
+/// to align with the subject text start position.
+///
+/// The task line format is: `"    {marker} #{id} {subject}{owner}"`.
+/// The indent for continuation lines is computed dynamically from the prefix
+/// length so it always aligns regardless of task ID digit count.
+/// Continuation lines are wrapped to `wrap_width - indent_len` so the total
+/// line length (indent + content) never exceeds `wrap_width`.
+fn wrap_task_line(status_marker: &str, task: &KanbanTask, wrap_width: usize) -> Vec<String> {
+    let owner_text = if let Some(ref owner) = task.owner {
+        format!(" [{}]", owner)
+    } else {
+        String::new()
+    };
+
+    // Build the prefix: "    ● #123 " — everything before the subject
+    // Matches the original format "    {} #{} {}{}" used in the rendering code
+    let prefix = format!("    {} #{} ", status_marker, task.id);
+    let prefix_len = prefix.chars().count();
+
+    // Build the full first line
+    let first_line = format!("{}{}{}", prefix, task.subject, owner_text);
+
+    let first_char_count = first_line.chars().count();
+    if first_char_count <= wrap_width {
+        return vec![first_line];
+    }
+
+    // Wrap the full first line at wrap_width
+    let mut result = Vec::new();
+    let first_segments = wrap_line(&first_line, wrap_width);
+    if let Some(first) = first_segments.first() {
+        result.push(first.to_string());
+    }
+
+    // Continuation lines: indent to align with subject, wrap to fit
+    let indent: String = " ".repeat(prefix_len);
+    let continuation_width = wrap_width.saturating_sub(prefix_len).max(10);
+
+    for segment in first_segments.iter().skip(1) {
+        let trimmed = segment.trim_start();
+        // Re-wrap this segment in case it's still too long after indenting
+        let sub_segments = wrap_line(trimmed, continuation_width);
+        for sub in sub_segments {
+            result.push(format!("{}{}", indent, sub.trim_start()));
+        }
+    }
+
+    result
+}
+
 /// Wrap content text into lines that fit the given width
 fn wrap_content(content: &str, width: usize) -> Vec<String> {
     let mut result = Vec::new();
@@ -1689,6 +1702,7 @@ fn format_reset_time(resets_at: &DateTime<Utc>, is_session: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::app::TaskStatus;
     use super::*;
 
     #[test]
@@ -3367,6 +3381,111 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_wrap_task_line_no_wrap_needed() {
+        let task = KanbanTask {
+            id: "1".to_string(),
+            subject: "Short task".to_string(),
+            owner: None,
+            status: TaskStatus::Pending,
+            modified_at: None,
+        };
+        let result = wrap_task_line("○ ", &task, 50);
+        // Format: "    {marker} #{id} {subject}" where marker="○ "
+        assert_eq!(result, vec!["    ○  #1 Short task"]);
+    }
+
+    #[test]
+    fn test_wrap_task_line_continuation_lines_fit_within_width() {
+        // Test park's issue #1: continuation lines must not exceed wrap_width
+        let task = KanbanTask {
+            id: "42".to_string(),
+            subject: "This is a very long task subject that should wrap to multiple lines within the panel".to_string(),
+            owner: Some("columbus".to_string()),
+            status: TaskStatus::InProgress,
+            modified_at: None,
+        };
+        let wrap_width = 50;
+        let result = wrap_task_line("● ", &task, wrap_width);
+
+        assert!(result.len() > 1, "Should produce multiple lines");
+        for (i, line) in result.iter().enumerate() {
+            let char_count = line.chars().count();
+            assert!(
+                char_count <= wrap_width,
+                "Line {} has {} chars, exceeds wrap_width {}: {:?}",
+                i,
+                char_count,
+                wrap_width,
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrap_task_line_indent_aligns_with_subject_start() {
+        // Test park's issue #2: continuation indent must match subject start position
+        // Format: "    {marker} #{id} {subject}" where marker="● " (2 chars)
+        // For #1:    prefix = "    ● " + " #1 "  → "    ●  #1 "    = 10 chars
+        // For #123:  prefix = "    ● " + " #123 " → "    ●  #123 "  = 12 chars
+        // For #1025: prefix = "    ● " + " #1025 " → "    ●  #1025 " = 13 chars
+        for (task_id, expected_prefix_len) in [("1", 10), ("123", 12), ("1025", 13)] {
+            let task = KanbanTask {
+                id: task_id.to_string(),
+                subject: "A very long task subject that will definitely need to wrap to a second line in a narrow panel".to_string(),
+                owner: None,
+                status: TaskStatus::InProgress,
+                modified_at: None,
+            };
+            let result = wrap_task_line("● ", &task, 40);
+
+            assert!(
+                result.len() > 1,
+                "Task #{} should wrap at width 40",
+                task_id
+            );
+
+            // The first line starts with the prefix
+            let first_line = &result[0];
+            let prefix = format!("    ●  #{} ", task_id);
+            assert!(
+                first_line.starts_with(&prefix),
+                "First line should start with prefix {:?}, got {:?}",
+                prefix,
+                first_line
+            );
+
+            // Continuation lines should be indented to align with subject
+            for (i, line) in result.iter().skip(1).enumerate() {
+                let leading_spaces = line.len() - line.trim_start().len();
+                assert_eq!(
+                    leading_spaces,
+                    expected_prefix_len,
+                    "Task #{}: continuation line {} has {} spaces indent, expected {} (to align with subject). Line: {:?}",
+                    task_id,
+                    i + 1,
+                    leading_spaces,
+                    expected_prefix_len,
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_wrap_task_line_with_owner_wraps_correctly() {
+        let task = KanbanTask {
+            id: "99".to_string(),
+            subject: "Task with owner text".to_string(),
+            owner: Some("lexington".to_string()),
+            status: TaskStatus::InProgress,
+            modified_at: None,
+        };
+        // Width big enough for no wrap
+        let result = wrap_task_line("● ", &task, 80);
+        assert_eq!(result, vec!["    ●  #99 Task with owner text [lexington]"]);
     }
 
     #[test]
