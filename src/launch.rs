@@ -82,6 +82,10 @@ pub struct LaunchConfig {
     /// Optional channel for routing coworker messages. When set, coworkers will
     /// post to this channel by default instead of the main channel.
     pub channel: Option<String>,
+    /// Auth profile directory to use as `CLAUDE_CONFIG_DIR`.
+    /// When set, overrides the default `current_profile_dir()` resolution.
+    /// Callers should resolve this from project config before constructing.
+    pub auth_profile_dir: Option<PathBuf>,
 }
 
 /// The shell command string and generated session ID (if fresh).
@@ -118,6 +122,7 @@ impl LaunchConfig {
             working_dir: None,
             model: "sonnet".to_string(),
             channel: None,
+            auth_profile_dir: None,
         }
     }
 
@@ -140,6 +145,7 @@ impl LaunchConfig {
             working_dir: None,
             model: "opus".to_string(),
             channel: None,
+            auth_profile_dir: None,
         }
     }
 
@@ -185,6 +191,7 @@ impl LaunchConfig {
             working_dir: None,
             model: "opus".to_string(),
             channel: None,
+            auth_profile_dir: None,
         }
     }
 
@@ -221,8 +228,11 @@ impl LaunchConfig {
             let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
             env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), task_list_id);
         }
-        // Set Claude config directory from the active auth profile
-        let config_dir = crate::auth::current_profile_dir();
+        // Set Claude config directory from the resolved auth profile
+        let config_dir = self
+            .auth_profile_dir
+            .clone()
+            .unwrap_or_else(crate::auth::current_profile_dir);
         env.insert(
             "CLAUDE_CONFIG_DIR".to_string(),
             config_dir.to_string_lossy().to_string(),
@@ -273,8 +283,11 @@ impl LaunchConfig {
             let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
             env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
         }
-        // Set Claude config directory from the active auth profile
-        let config_dir = crate::auth::current_profile_dir();
+        // Set Claude config directory from the resolved auth profile
+        let config_dir = self
+            .auth_profile_dir
+            .clone()
+            .unwrap_or_else(crate::auth::current_profile_dir);
         env_parts.push(format!("CLAUDE_CONFIG_DIR='{}'", config_dir.display()));
         // Must be a real shell env var — Claude Code blocklists this from settings.json
         if self.team_name.is_some() {

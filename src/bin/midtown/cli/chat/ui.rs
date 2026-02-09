@@ -1576,9 +1576,18 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let session_line =
-        render_usage_line("Session", usage.session_util, &usage.session_resets, true);
-    let week_line = render_usage_line("Week   ", usage.week_util, &usage.week_resets, false);
+    let session_line = render_usage_line(
+        "Session",
+        usage.session_util,
+        usage.session_resets.as_ref(),
+        true,
+    );
+    let week_line = render_usage_line(
+        "Week   ",
+        usage.week_util,
+        usage.week_resets.as_ref(),
+        false,
+    );
 
     let lines = vec![session_line, week_line];
     let paragraph = Paragraph::new(lines);
@@ -1591,7 +1600,7 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
 fn render_usage_line(
     label: &str,
     utilization: f64,
-    resets_at: &DateTime<Utc>,
+    resets_at: Option<&DateTime<Utc>>,
     is_session: bool,
 ) -> Line<'static> {
     let color = usage_color(utilization);
@@ -1606,8 +1615,13 @@ fn render_usage_line(
     let bar_filled: String = "█".repeat(filled);
     let bar_empty: String = "░".repeat(empty);
 
-    let estimate_text = estimate_time_to_full(utilization, resets_at, is_session);
-    let reset_text = format_reset_time(resets_at, is_session);
+    let (estimate_text, reset_text) = match resets_at {
+        Some(r) => (
+            estimate_time_to_full(utilization, r, is_session),
+            format_reset_time(r, is_session),
+        ),
+        None => ("—".to_string(), "—".to_string()),
+    };
 
     Line::from(vec![
         Span::styled(format!(" {label} "), Style::default().fg(Color::DarkGray)),

@@ -1134,7 +1134,13 @@ async fn api_push_unsubscribe(
 /// Returns a JSON array of `{name, is_current, has_credentials}`.
 async fn api_auth_profiles() -> Result<impl IntoResponse, StatusCode> {
     let profiles = tokio::task::spawn_blocking(|| {
-        let current = crate::auth::current_profile();
+        // Use project-aware profile resolution so "active" reflects the current project
+        let project = crate::paths::detect_repo_name().unwrap_or_default();
+        let current = if project.is_empty() {
+            crate::auth::current_profile()
+        } else {
+            crate::auth::active_profile_for_project(&project)
+        };
         let names = crate::auth::list_profiles().unwrap_or_default();
         names
             .into_iter()
@@ -1162,6 +1168,9 @@ async fn api_auth_profiles() -> Result<impl IntoResponse, StatusCode> {
 #[derive(Debug, Deserialize)]
 struct AuthSwitchRequest {
     profile: String,
+    /// When true, switch globally for all projects. Default: current project only.
+    #[serde(default)]
+    all: bool,
 }
 
 /// Switch the active auth profile via the daemon's RPC.
@@ -1182,6 +1191,7 @@ async fn api_auth_switch(
 
     let repo = state.config.repo.clone();
     let profile = body.profile;
+    let all = body.all;
 
     let result = tokio::task::spawn_blocking(move || {
         use std::io::{BufRead, BufReader, Write};
@@ -1196,7 +1206,7 @@ async fn api_auth_switch(
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "auth.switch",
-            "params": { "profile": profile },
+            "params": { "profile": profile, "all": all },
             "id": 1
         });
         writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {}", e))?;
@@ -1268,9 +1278,9 @@ async fn api_usage() -> Result<impl IntoResponse, StatusCode> {
     match data {
         Some(usage) => Ok(axum::Json(serde_json::json!({
             "session_util": usage.session_util,
-            "session_resets": usage.session_resets.to_rfc3339(),
+            "session_resets": usage.session_resets.map(|d| d.to_rfc3339()),
             "week_util": usage.week_util,
-            "week_resets": usage.week_resets.to_rfc3339(),
+            "week_resets": usage.week_resets.map(|d| d.to_rfc3339()),
             "account_email": usage.account_email,
         }))),
         None => Err(StatusCode::NO_CONTENT),

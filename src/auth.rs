@@ -28,7 +28,8 @@ pub const DEFAULT_PROFILE: &str = "default";
 /// Validate a profile name.
 ///
 /// Returns an error if the name contains path traversal characters or is invalid.
-/// Valid names contain only alphanumeric characters, hyphens, and underscores.
+/// Valid names contain alphanumeric characters, hyphens, underscores, `@`, and `.`
+/// (to support email addresses as profile names).
 pub fn validate_profile_name(name: &str) -> std::io::Result<()> {
     if name.is_empty() {
         return Err(std::io::Error::new(
@@ -37,34 +38,33 @@ pub fn validate_profile_name(name: &str) -> std::io::Result<()> {
         ));
     }
 
-    // Reject path traversal attempts
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
+    // Reject path traversal and dangerous characters
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains(' ')
+        || name.contains('\'')
+        || name.contains('"')
+        || name.contains('$')
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
-                "Profile name '{}' contains invalid characters. Use only alphanumeric characters, hyphens, and underscores.",
+                "Profile name '{}' contains invalid characters (/, \\, .., space, quotes, $).",
                 name
             ),
         ));
     }
 
-    // Reject absolute paths (starts with / on Unix)
-    if name.starts_with('/') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Profile name cannot be an absolute path",
-        ));
-    }
-
-    // Only allow safe characters: alphanumeric, hyphen, underscore
+    // Only allow safe characters: alphanumeric, hyphen, underscore, @, .
     if !name
         .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '.')
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
-                "Profile name '{}' contains invalid characters. Use only alphanumeric characters, hyphens, and underscores.",
+                "Profile name '{}' contains invalid characters. Use alphanumeric characters, hyphens, underscores, @, or dots.",
                 name
             ),
         ));
@@ -113,6 +113,29 @@ pub fn current_profile_dir() -> PathBuf {
     profile_dir(&current_profile())
 }
 
+/// Get the active auth profile for a specific project.
+///
+/// Resolution order:
+/// 1. Project config's `auth_profile` field
+/// 2. Global `~/.midtown/auth/current` file
+/// 3. `DEFAULT_PROFILE`
+pub fn active_profile_for_project(project: &str) -> String {
+    if let Some(config) = crate::config::FullProjectConfig::load(project)
+        && let Some(ref profile) = config.project.auth_profile
+    {
+        return profile.clone();
+    }
+    current_profile()
+}
+
+/// Get the config directory path for the active profile of a specific project.
+///
+/// This is what should be set as `CLAUDE_CONFIG_DIR` when spawning Claude
+/// for a specific project.
+pub fn active_profile_dir_for_project(project: &str) -> PathBuf {
+    profile_dir(&active_profile_for_project(project))
+}
+
 /// Set the active profile.
 ///
 /// Writes the profile name to `~/.midtown/auth/current`.
@@ -125,7 +148,7 @@ pub fn set_current_profile(name: &str) -> std::io::Result<()> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!(
-                "Profile '{}' does not exist. Create it first with: midtown auth login --profile {}",
+                "Profile '{}' does not exist. Create it first with: midtown auth login {}",
                 name, name
             ),
         ));
@@ -203,43 +226,6 @@ pub fn ensure_profile_dir(name: &str) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Migrate legacy E2E auth directory to the new profile system.
-///
-/// Moves `~/.midtown/claude-auth/` to `~/.midtown/auth/e2e/` if:
-/// - The legacy directory exists
-/// - The new profile doesn't already exist
-///
-/// After migration, sets 'e2e' as the current profile so existing workflows
-/// continue to use the migrated credentials.
-///
-/// Returns Ok(true) if migration was performed, Ok(false) if not needed.
-pub fn migrate_legacy_auth() -> std::io::Result<bool> {
-    let legacy_dir = midtown_base_dir().join("claude-auth");
-    let new_dir = profile_dir("e2e");
-
-    if !legacy_dir.exists() {
-        return Ok(false);
-    }
-
-    if new_dir.exists() {
-        // New profile already exists, don't overwrite
-        return Ok(false);
-    }
-
-    // Create parent directory
-    std::fs::create_dir_all(auth_base_dir())?;
-
-    // Move legacy to new location
-    std::fs::rename(&legacy_dir, &new_dir)?;
-
-    // Set 'e2e' as current profile so existing workflows use the migrated credentials
-    // This ensures coworkers spawn with the correct CLAUDE_CONFIG_DIR
-    let current_file = current_profile_file();
-    std::fs::write(current_file, "e2e\n")?;
-
-    Ok(true)
-}
-
 /// Get profile status information for display.
 pub struct ProfileStatus {
     pub name: String,
@@ -307,6 +293,14 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_profile_name_email_addresses() {
+        // Email addresses should be valid profile names
+        assert!(validate_profile_name("user@example.com").is_ok());
+        assert!(validate_profile_name("ben.tucker@company.io").is_ok());
+        assert!(validate_profile_name("test@test.co").is_ok());
+    }
+
+    #[test]
     fn test_validate_profile_name_empty() {
         assert!(validate_profile_name("").is_err());
     }
@@ -319,6 +313,8 @@ mod tests {
         assert!(validate_profile_name("foo/bar").is_err());
         assert!(validate_profile_name("/tmp/evil").is_err());
         assert!(validate_profile_name("foo\\bar").is_err());
+        // Double dots in email-like strings should also be rejected
+        assert!(validate_profile_name("user@evil..com").is_err());
     }
 
     #[test]

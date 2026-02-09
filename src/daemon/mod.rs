@@ -664,11 +664,20 @@ impl DaemonState {
             return Ok(());
         }
 
+        // Inject project-resolved auth profile if not already set
+        let config = if config.auth_profile_dir.is_none() {
+            let mut c = config.clone();
+            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(&self.repo_name));
+            c
+        } else {
+            config.clone()
+        };
+
         // Prepare worktree and augment config with additional dirs
         // Note: Worktree creation now happens via Effect::EnsureWorktree in the
         // decision layer (rules.rs), not inline here. This follows the effect-based
         // architecture: I/O goes through the Effect pipeline.
-        let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
+        let (working_dir, launch_config) = self.coworkers.prepare_spawn(&config)?;
 
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config();

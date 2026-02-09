@@ -3,7 +3,10 @@ use clap::Subcommand;
 #[derive(Subcommand, Debug, Clone)]
 pub enum E2eCommand {
     /// One-time auth setup: launch Claude with a dedicated config dir for OAuth login
-    Auth,
+    Auth {
+        /// Email address for the E2E profile (e.g., e2e@example.com)
+        email: String,
+    },
     /// Run containerized E2E tests
     Run {
         /// Test mode to run
@@ -36,29 +39,25 @@ pub enum E2eMode {
 
 pub fn handle(cmd: &E2eCommand) -> Result<(), String> {
     match cmd {
-        E2eCommand::Auth => handle_auth(),
+        E2eCommand::Auth { email } => handle_auth(email),
         E2eCommand::Run { mode, args } => handle_run(mode, args),
         E2eCommand::Capture { label } => handle_capture(label.as_deref()),
     }
 }
 
-fn handle_auth() -> Result<(), String> {
-    // Show deprecation warning
-    eprintln!("⚠️  DEPRECATED: 'midtown e2e auth' is deprecated.");
-    eprintln!("   Use 'midtown auth login --profile e2e' instead.");
-    eprintln!();
-
-    // Run migration if needed
-    if let Ok(true) = midtown::auth::migrate_legacy_auth() {
-        eprintln!("Note: Migrated existing auth to profile 'e2e'");
-        eprintln!();
+fn handle_auth(email: &str) -> Result<(), String> {
+    // Validate email format
+    if !email.contains('@') {
+        return Err(format!(
+            "Invalid email '{}'. Use an email address (e.g., e2e@example.com).",
+            email
+        ));
     }
 
-    // Delegate to the new auth system with 'e2e' profile
-    let auth_dir = midtown::auth::ensure_profile_dir("e2e")
+    let auth_dir = midtown::auth::ensure_profile_dir(email)
         .map_err(|e| format!("Failed to create auth directory: {}", e))?;
 
-    println!("Launching Claude with profile 'e2e'...");
+    println!("Launching Claude with E2E profile '{}'...", email);
     println!("Config dir: {}", auth_dir.display());
     println!();
     println!("Run /login inside the Claude session to authenticate.");
@@ -77,8 +76,6 @@ fn handle_auth() -> Result<(), String> {
     if status.success() {
         println!();
         println!("Auth setup complete. You can now run: midtown e2e run");
-        println!();
-        println!("Tip: Use 'midtown auth login --profile e2e' in the future.");
     } else {
         return Err(format!("Claude exited with status: {}", status));
     }

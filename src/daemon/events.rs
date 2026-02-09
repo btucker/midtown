@@ -309,6 +309,7 @@ mod tests {
             working_dir: None,
             model: "sonnet".to_string(),
             channel: None,
+            auth_profile_dir: None,
         })
     }
 
@@ -383,6 +384,7 @@ mod tests {
             working_dir: None,
             model: "sonnet".to_string(),
             channel: None,
+            auth_profile_dir: None,
         };
         Effect::SpawnCoworkerWithCallbacks {
             config,
@@ -405,6 +407,7 @@ mod tests {
             working_dir: None,
             model: "sonnet".to_string(),
             channel: None,
+            auth_profile_dir: None,
         };
         Effect::AssignAndSpawn {
             task_id: "1".to_string(),
@@ -467,6 +470,7 @@ mod tests {
             working_dir: None,
             model: "sonnet".to_string(),
             channel: None,
+            auth_profile_dir: None,
         };
 
         let config2 = config1.clone();
