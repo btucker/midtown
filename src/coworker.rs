@@ -11,6 +11,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::session_key::SessionKey;
 use crate::tmux;
 use crate::worktree::{WorktreeError, WorktreeManager};
 
@@ -104,6 +105,16 @@ fn default_model() -> String {
 }
 
 impl Coworker {
+    /// Get the SessionKey for this coworker, if a session ID is known.
+    ///
+    /// Returns `None` if `session_id` is `None` (e.g., provisional recovery entries
+    /// that haven't been registered yet).
+    pub fn session_key(&self) -> Option<SessionKey> {
+        self.session_id
+            .as_ref()
+            .map(|sid| SessionKey::new(&self.name, sid))
+    }
+
     /// Create a Coworker entry for recovery (tmux or headless session discovery).
     ///
     /// Used by `sync_with_tmux()` when a running session is found that isn't
@@ -631,6 +642,50 @@ impl CoworkerManager {
     pub fn get(&self, name: &str) -> Option<Coworker> {
         let coworkers = self.coworkers.read().unwrap();
         coworkers.get(name).cloned()
+    }
+
+    /// Get a coworker by session ID.
+    ///
+    /// Searches all tracked coworkers for one with a matching `session_id`.
+    /// This enables session-first lookups alongside existing name-based lookups,
+    /// bridging the transition to session-keyed architecture.
+    pub fn get_by_session_id(&self, session_id: &str) -> Option<Coworker> {
+        let coworkers = self.coworkers.read().unwrap();
+        coworkers
+            .values()
+            .find(|cw| cw.session_id.as_deref() == Some(session_id))
+            .cloned()
+    }
+
+    /// Get the SessionKey for a coworker by name.
+    ///
+    /// Returns a `SessionKey` combining the coworker's name and session ID.
+    /// Returns `None` if the coworker doesn't exist or has no session ID yet.
+    pub fn session_key(&self, name: &str) -> Option<SessionKey> {
+        let coworkers = self.coworkers.read().unwrap();
+        coworkers.get(name).and_then(|cw| {
+            cw.session_id
+                .as_ref()
+                .map(|sid| SessionKey::new(&cw.name, sid))
+        })
+    }
+
+    /// Get all SessionKeys for coworkers with a given name.
+    ///
+    /// Currently returns at most one (single-session-per-name), but this method
+    /// is designed for the multi-session future where a name can have multiple
+    /// concurrent sessions.
+    pub fn session_keys_for_name(&self, name: &str) -> Vec<SessionKey> {
+        let coworkers = self.coworkers.read().unwrap();
+        coworkers
+            .values()
+            .filter(|cw| cw.name == name)
+            .filter_map(|cw| {
+                cw.session_id
+                    .as_ref()
+                    .map(|sid| SessionKey::new(&cw.name, sid))
+            })
+            .collect()
     }
 
     /// Get the session ID for a coworker.

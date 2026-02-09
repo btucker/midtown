@@ -119,6 +119,9 @@ pub mod launch;
 // Agent teams mailbox writer (filesystem-based message delivery)
 pub mod mailbox;
 
+// Session key type for multi-session coworker identity
+pub mod session_key;
+
 // API usage data (session + weekly utilization from Anthropic OAuth API)
 pub mod usage;
 
@@ -126,6 +129,7 @@ pub use channel::{Channel, ChannelRouter};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};
+pub use session_key::SessionKey;
 pub use usage::{UsageData, fetch_usage_for_profile};
 pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};
 
