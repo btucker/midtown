@@ -512,6 +512,8 @@ fn update_task_owner_in_dir(
 ///
 /// Only fields that are `Some` are updated; `None` fields are left unchanged.
 /// This is the daemon's direct write path — no Lead proxy needed.
+///
+/// Supports updating: owner, status, description, blocked_by, channel.
 pub fn update_task_fields_for_repo(
     task_id: &str,
     repo_name: &str,
@@ -2654,5 +2656,103 @@ mod tests {
         let raw_json = std::fs::read_to_string(&task_file).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&raw_json).unwrap();
         assert_eq!(parsed["channel"], serde_json::json!("infra-deploy"));
+    }
+
+    #[test]
+    fn test_update_task_fields_in_dir_channel() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Create a task without a channel
+        let task = serde_json::json!({
+            "id": "900",
+            "subject": "Test channel update",
+            "status": "pending",
+            "owner": null
+        });
+        std::fs::write(
+            tasks_dir.join("900.json"),
+            serde_json::to_string(&task).unwrap(),
+        )
+        .unwrap();
+
+        // Update with a channel value
+        let updates = serde_json::json!({
+            "channel": "backend"
+        });
+        update_task_fields_in_dir(tasks_dir, "900", &updates).unwrap();
+
+        // Verify channel was persisted
+        let content = std::fs::read_to_string(tasks_dir.join("900.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["channel"], "backend");
+        assert_eq!(
+            parsed["subject"], "Test channel update",
+            "subject preserved"
+        );
+        assert_eq!(parsed["status"], "pending", "status preserved");
+    }
+
+    #[test]
+    fn test_update_task_fields_in_dir_channel_preserves_existing() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Create a task that already has a channel
+        let task = serde_json::json!({
+            "id": "901",
+            "subject": "Already channeled",
+            "status": "pending",
+            "owner": "lexington",
+            "channel": "frontend"
+        });
+        std::fs::write(
+            tasks_dir.join("901.json"),
+            serde_json::to_string(&task).unwrap(),
+        )
+        .unwrap();
+
+        // Update only status — channel should be preserved
+        let updates = serde_json::json!({
+            "status": "in_progress"
+        });
+        update_task_fields_in_dir(tasks_dir, "901", &updates).unwrap();
+
+        let content = std::fs::read_to_string(tasks_dir.join("901.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            parsed["channel"], "frontend",
+            "channel preserved when not in updates"
+        );
+        assert_eq!(parsed["status"], "in_progress", "status updated");
+    }
+
+    #[test]
+    fn test_update_task_fields_in_dir_channel_overwrite() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // Create a task with an existing channel
+        let task = serde_json::json!({
+            "id": "902",
+            "subject": "Channel reassign",
+            "status": "pending",
+            "channel": "frontend"
+        });
+        std::fs::write(
+            tasks_dir.join("902.json"),
+            serde_json::to_string(&task).unwrap(),
+        )
+        .unwrap();
+
+        // Update channel to a different value
+        let updates = serde_json::json!({
+            "channel": "backend"
+        });
+        update_task_fields_in_dir(tasks_dir, "902", &updates).unwrap();
+
+        let content = std::fs::read_to_string(tasks_dir.join("902.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["channel"], "backend", "channel updated to new value");
     }
 }
