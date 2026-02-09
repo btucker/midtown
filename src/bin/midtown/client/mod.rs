@@ -170,6 +170,9 @@ impl DaemonClient {
     pub fn channel_post(&self, message: &str, channel: Option<&str>) -> Result<Response, String> {
         // Use MIDTOWN_AGENT env var for sender, defaulting to "lead"
         let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+        // If no explicit channel provided, check MIDTOWN_CHANNEL env var
+        let default_channel = std::env::var("MIDTOWN_CHANNEL").ok();
+        let channel = channel.or(default_channel.as_deref());
         self.channel_post_as(message, &from, channel)
     }
 

@@ -107,6 +107,11 @@ pub(super) fn check_and_recover_orphans(
         Some(prompt),
     );
 
+    // Set channel from task if available
+    if let Some(task) = snap.all_tasks.iter().find(|t| t.id == recovery.task_id) {
+        config.channel = task.channel.clone();
+    }
+
     // Reuse existing worktree if one is registered for this task (reassignment case).
     // Otherwise, compute a new worktree_id from the task subject.
     let (worktree_id, needs_registration) =
@@ -165,6 +170,7 @@ pub(super) fn check_and_recover_orphans(
                 "♻️ Recovered coworker {} for orphaned task !{}",
                 recovery.owner, recovery.task_id
             ),
+            channel: None,
         },
     ];
 
@@ -189,6 +195,7 @@ pub(super) fn check_and_recover_orphans(
                     recovery.owner,
                     SPAWN_FAILURE_COOLDOWN.as_secs()
                 ),
+                channel: None,
             },
         ],
     });
@@ -285,6 +292,7 @@ fn decide_discovered_coworker_nudges(
                     "♻️ Nudged discovered coworker {} to resume task !{}",
                     name, task_id
                 ),
+                channel: None,
             });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
             let prompt = crate::agents::reviewer_resume_prompt(*pr_number);
@@ -304,6 +312,7 @@ fn decide_discovered_coworker_nudges(
                     "♻️ Nudged discovered reviewer {} to resume PR #{} review",
                     name, pr_number
                 ),
+                channel: None,
             });
         } else {
             debug!(
@@ -418,6 +427,7 @@ pub(super) fn check_for_duplicate_task_workers(
                     "🔪 Killed duplicate worker {} on task !{} ({}) - {} started earlier",
                     duplicate, task_id, task_subject, keeper
                 ),
+                channel: None,
             });
         }
     }
@@ -743,6 +753,7 @@ pub(super) fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
                 "🧹 Auto-cleaned orphaned worktree for {} (PR was merged)",
                 name
             ),
+            channel: None,
         });
     }
 
@@ -945,6 +956,7 @@ pub(super) fn spawn_for_pending_tasks(
                             &tid.to_string(),
                             config::get_personality(),
                         ),
+                        channel: None,
                     },
                 ];
 
@@ -1206,6 +1218,7 @@ pub(super) fn spawn_for_pending_tasks(
                     Effect::PostToChannel {
                         sender: "midtown".to_string(),
                         message: channel_msg,
+                        channel: task.channel.clone(),
                     },
                 ],
             });
@@ -1231,6 +1244,7 @@ pub(super) fn spawn_for_pending_tasks(
                 Some(prompt.clone()),
             );
             config.working_dir = Some(wt_path.clone());
+            config.channel = task.channel.clone();
 
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
@@ -1273,6 +1287,7 @@ pub(super) fn spawn_for_pending_tasks(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: channel_msg,
+                    channel: task.channel.clone(),
                 },
             ];
 
@@ -1328,6 +1343,7 @@ pub(super) fn build_task_completion_effects(
                 "✅ Auto-completed task !{} (PR #{} merged)",
                 task_id, pr_number
             ),
+            channel: None,
         },
     ]
 }
@@ -1607,7 +1623,9 @@ mod tests {
 
         // Verify PostToChannel effect
         match &effects[2] {
-            Effect::PostToChannel { sender, message } => {
+            Effect::PostToChannel {
+                sender, message, ..
+            } => {
                 assert_eq!(sender, "midtown");
                 assert!(message.contains("42"));
                 assert!(message.contains("123"));
@@ -1633,7 +1651,9 @@ mod tests {
 
         // Verify the channel message says "merged" not "opened"
         match &effects[2] {
-            Effect::PostToChannel { sender, message } => {
+            Effect::PostToChannel {
+                sender, message, ..
+            } => {
                 assert_eq!(sender, "midtown");
                 assert!(
                     message.contains("merged"),
@@ -1828,7 +1848,9 @@ mod tests {
             _ => panic!("Expected NudgeCoworker"),
         }
         match &effects[1] {
-            Effect::PostToChannel { sender, message } => {
+            Effect::PostToChannel {
+                sender, message, ..
+            } => {
                 assert_eq!(sender, "midtown");
                 assert!(message.contains("lexington"));
                 assert!(message.contains("task !42"));

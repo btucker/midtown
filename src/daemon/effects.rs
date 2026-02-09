@@ -55,7 +55,12 @@ pub enum Effect {
         summary: Option<String>,
     },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
-    PostToChannel { sender: String, message: String },
+    /// If `channel` is None, posts to the default "midtown" channel.
+    PostToChannel {
+        sender: String,
+        message: String,
+        channel: Option<String>,
+    },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
     PostSystemMessage { message: String },
     /// Broadcast a coworker status update to WebSocket clients.
@@ -500,8 +505,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::PostToChannel { sender, message } => {
-                let msg = Message::text(&sender, &message);
+            Effect::PostToChannel {
+                sender,
+                message,
+                channel,
+            } => {
+                let msg = if let Some(ch) = channel {
+                    Message::for_channel(&ch, &sender, &message, crate::message::MessageType::Text)
+                } else {
+                    Message::text(&sender, &message)
+                };
                 if let Err(e) = state.send_and_broadcast(&msg) {
                     warn!("Failed to post channel message: {}", e);
                 }
@@ -1287,6 +1300,7 @@ mod tests {
             Effect::PostToChannel {
                 sender: "midtown".into(),
                 message: "hello".into(),
+                channel: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
@@ -1303,6 +1317,7 @@ mod tests {
             Effect::PostToChannel {
                 sender: "midtown".into(),
                 message: "world".into(),
+                channel: None,
             },
         ];
 

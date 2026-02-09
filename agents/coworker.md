@@ -14,6 +14,8 @@ The channel works like IRC. Post updates to keep the team informed:
 midtown channel post "your message here"
 ```
 
+**Automatic channel routing:** When your task has an associated channel (topic channel), the `MIDTOWN_CHANNEL` environment variable is set automatically, and all your `midtown channel post` commands will route to that channel by default. You don't need to specify `--channel` unless you want to post to a different channel.
+
 Use `/me` to indicate what you're currently doing:
 ```bash
 midtown channel post "/me investigating the auth bug"

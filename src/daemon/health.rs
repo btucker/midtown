@@ -333,6 +333,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
                         "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
                         name, pr
                     ),
+                    channel: None,
                 });
                 (false, String::new())
             }
@@ -361,6 +362,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         effects.push(Effect::PostToChannel {
             sender: "system".to_string(),
             message: shutdown_msg,
+            channel: None,
         });
         effects.push(Effect::BroadcastCoworkerUpdate {
             name: name.clone(),
@@ -437,6 +439,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                 COWORKER_STUCK_DURATION.as_secs(),
                 restart.task_id
             ),
+            channel: None,
         });
     }
 
@@ -488,6 +491,7 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
                 "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~15m when it resets.",
                 detected_coworker
             ),
+            channel: None,
         },
     ]
 }
@@ -521,6 +525,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
                 snap.running_coworkers.len()
             ),
+            channel: None,
         },
     ];
 
@@ -616,6 +621,7 @@ pub(super) fn check_and_nudge_api_errors(
                     affected_count,
                     names.join(", ")
                 ),
+                channel: None,
             },
         );
     }
@@ -696,6 +702,7 @@ pub(super) async fn check_and_respawn_dead_processes(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
                 name, exit_code, task_id
             ),
+            channel: None,
         });
     }
 
@@ -744,6 +751,7 @@ fn effects_for_fired_reminders(
         effects.push(Effect::PostToChannel {
             sender: "system".to_string(),
             message: message.clone(),
+            channel: None,
         });
         effects.push(Effect::NudgeLead { message });
         fired_ids.push(reminder.id.clone());
