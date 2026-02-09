@@ -725,6 +725,7 @@ fn pr_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -748,6 +749,7 @@ fn pr_action_to_effects(
                         issue_type,
                         get_issue_action(issue_type)
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -785,6 +787,7 @@ fn pr_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1322,6 +1325,7 @@ fn comment_action_to_effects(
                         pr_number,
                         crate::config::get_personality(),
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1344,6 +1348,7 @@ fn comment_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComment)
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1381,6 +1386,7 @@ fn comment_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1436,6 +1442,7 @@ fn handoff_to_coworker_effects(
                 "{} is taking over PR #{} from {} ({})",
                 assignee, pr_number, original_author, context_suffix
             ),
+            channel: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -1453,6 +1460,7 @@ fn handoff_to_coworker_effects(
                 assignee,
                 message
             ),
+            channel: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -1781,6 +1789,7 @@ async fn collect_reviewer_effects_with_source(
                     pr_number,
                     config::get_personality(),
                 ),
+                channel: None,
             },
         ];
 
@@ -1791,6 +1800,7 @@ async fn collect_reviewer_effects_with_source(
                 pr_number,
                 truncate_str(title, 40),
             ),
+            channel: None,
         }];
 
         effects.push(Effect::SpawnCoworkerWithCallbacks {
@@ -1858,6 +1868,7 @@ fn review_complete_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1880,6 +1891,7 @@ fn review_complete_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComplete)
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1917,6 +1929,7 @@ fn review_complete_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,

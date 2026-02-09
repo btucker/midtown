@@ -333,6 +333,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
                         "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
                         name, pr
                     ),
+                    channel: None,
                 });
                 (false, String::new())
             }
@@ -361,6 +362,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         effects.push(Effect::PostToChannel {
             sender: "system".to_string(),
             message: shutdown_msg,
+            channel: None,
         });
         effects.push(Effect::BroadcastCoworkerUpdate {
             name: name.clone(),
@@ -417,18 +419,26 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             ),
         );
 
+        // Look up the task's channel from the snapshot
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == restart.task_id)
+            .and_then(|t| t.channel.clone());
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            restart.name.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::Fresh,
+            Some(prompt),
+        );
+        config.channel = channel.clone();
+
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
         });
-        effects.push(Effect::SpawnCoworker(
-            crate::launch::LaunchConfig::coworker(
-                restart.name.clone(),
-                state.repo_name.clone(),
-                crate::launch::SessionMode::Fresh,
-                Some(prompt),
-            ),
-        ));
+        effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
@@ -437,6 +447,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                 COWORKER_STUCK_DURATION.as_secs(),
                 restart.task_id
             ),
+            channel,
         });
     }
 
@@ -488,6 +499,7 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
                 "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~15m when it resets.",
                 detected_coworker
             ),
+            channel: None,
         },
     ]
 }
@@ -521,6 +533,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
                 snap.running_coworkers.len()
             ),
+            channel: None,
         },
     ];
 
@@ -616,6 +629,7 @@ pub(super) fn check_and_nudge_api_errors(
                     affected_count,
                     names.join(", ")
                 ),
+                channel: None,
             },
         );
     }
@@ -674,18 +688,26 @@ pub(super) async fn check_and_respawn_dead_processes(
             ),
         );
 
+        // Look up the task's channel from the snapshot
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == *task_id)
+            .and_then(|t| t.channel.clone());
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            name.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::Fresh,
+            Some(prompt),
+        );
+        config.channel = channel.clone();
+
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
         });
-        effects.push(Effect::SpawnCoworker(
-            crate::launch::LaunchConfig::coworker(
-                name.clone(),
-                state.repo_name.clone(),
-                crate::launch::SessionMode::Fresh,
-                Some(prompt),
-            ),
-        ));
+        effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {
             category: "process_respawn".to_string(),
             key: name.clone(),
@@ -696,6 +718,7 @@ pub(super) async fn check_and_respawn_dead_processes(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
                 name, exit_code, task_id
             ),
+            channel,
         });
     }
 
@@ -744,6 +767,7 @@ fn effects_for_fired_reminders(
         effects.push(Effect::PostToChannel {
             sender: "system".to_string(),
             message: message.clone(),
+            channel: None,
         });
         effects.push(Effect::NudgeLead { message });
         fired_ids.push(reminder.id.clone());

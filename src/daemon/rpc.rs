@@ -621,6 +621,7 @@ async fn handle_coworker_spawn(
         team_name: Some(team),
         working_dir: None,
         model: "sonnet".to_string(),
+        channel: None,
     };
 
     // Spawn via the headless path (creates worktree + headless session)

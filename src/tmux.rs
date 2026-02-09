@@ -1895,6 +1895,7 @@ pub fn spawn_lead(
         team_name: None, // Lead is human-facing, not an agent-teams member
         working_dir: None,
         model: "sonnet".to_string(),
+        channel: None,
     };
 
     // Allow tests/CI to override the lead command (claude isn't available in CI)
@@ -2679,6 +2680,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2713,6 +2715,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2751,6 +2754,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2785,6 +2789,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2815,6 +2820,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2847,6 +2853,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2873,6 +2880,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2905,6 +2913,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2943,6 +2952,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2971,6 +2981,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3001,6 +3012,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3027,6 +3039,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3055,6 +3068,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let retry = config.as_fresh_retry();
         assert_eq!(retry.session_mode, SessionMode::Fresh);
@@ -3149,6 +3163,7 @@ Claude is now processing the request
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
