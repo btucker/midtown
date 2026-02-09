@@ -765,20 +765,19 @@ fn pr_action_to_effects(
         PrAction::HandoffToCoworker {
             assignee,
             original_author,
-            pr_number: pr_num,
+            pr_number,
             branch,
             session_id,
             message,
         } => handoff_to_coworker_effects(
             &assignee,
             &original_author,
-            pr_num,
+            pr_number,
             &branch,
             session_id,
             &message,
             "resuming their session for full context",
             title,
-            pr_number,
             issue_type,
             state,
         ),
@@ -1394,20 +1393,19 @@ fn comment_action_to_effects(
         PrAction::HandoffToCoworker {
             assignee,
             original_author,
-            pr_number: pr_num,
+            pr_number,
             branch,
             session_id,
             message,
         } => handoff_to_coworker_effects(
             &assignee,
             &original_author,
-            pr_num,
+            pr_number,
             &branch,
             session_id,
             &message,
             "to address review feedback",
             title,
-            pr_number,
             issue_type,
             state,
         ),
@@ -1441,13 +1439,12 @@ fn comment_action_to_effects(
 fn handoff_to_coworker_effects(
     assignee: &str,
     original_author: &str,
-    pr_num: u64,
+    pr_number: u64,
     branch: &str,
     session_id: String,
     message: &str,
     context_suffix: &str,
     title: &str,
-    pr_number: u64,
     issue_type: PrIssueType,
     state: &DaemonState,
 ) -> Vec<Effect> {
@@ -1455,7 +1452,7 @@ fn handoff_to_coworker_effects(
         assignee.to_string(),
         state.repo_name.clone(),
         session_id,
-        pr_num,
+        pr_number,
         branch,
         original_author,
     );
@@ -1464,13 +1461,13 @@ fn handoff_to_coworker_effects(
         Effect::BroadcastCoworkerUpdate {
             name: assignee.to_string(),
             status: "running".to_string(),
-            current_task: Some(format!("working on PR #{}", pr_num)),
+            current_task: Some(format!("working on PR #{}", pr_number)),
         },
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
                 "{} is taking over PR #{} from {} ({})",
-                assignee, pr_num, original_author, context_suffix
+                assignee, pr_number, original_author, context_suffix
             ),
         },
         Effect::RecordPrNudge {
@@ -1484,7 +1481,7 @@ fn handoff_to_coworker_effects(
             sender: "midtown".to_string(),
             message: format!(
                 "Failed to hand off PR #{} ({}) to {} - {}",
-                pr_num,
+                pr_number,
                 truncate_str(title, 40),
                 assignee,
                 message
@@ -1924,20 +1921,19 @@ fn review_complete_action_to_effects(
         PrAction::HandoffToCoworker {
             assignee,
             original_author,
-            pr_number: pr_num,
+            pr_number,
             branch,
             session_id,
             message,
         } => handoff_to_coworker_effects(
             &assignee,
             &original_author,
-            pr_num,
+            pr_number,
             &branch,
             session_id,
             &message,
             "to address review feedback",
             title,
-            pr_number,
             issue_type,
             state,
         ),
