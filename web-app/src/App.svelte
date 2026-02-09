@@ -10,7 +10,7 @@
   import Kanban from './lib/Kanban.svelte'
   import UsageBars from './lib/UsageBars.svelte'
   import AuthSwitcher from './lib/AuthSwitcher.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData } from './lib/store.js'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, isWideScreen } from './lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from './lib/api.js'
   import {
     pushSupported,
@@ -61,7 +61,22 @@
     const projectInterval = setInterval(fetchProjects, 30000)
     // Check push notification status
     checkPushSubscription()
-    return () => clearInterval(projectInterval)
+
+    // Initialize and listen for viewport width changes
+    function updateViewportWidth() {
+      isWideScreen.set(window.innerWidth > 1024)
+    }
+
+    // Set initial value
+    updateViewportWidth()
+
+    // Add resize listener
+    window.addEventListener('resize', updateViewportWidth)
+
+    return () => {
+      clearInterval(projectInterval)
+      window.removeEventListener('resize', updateViewportWidth)
+    }
   })
 
   function selectProject(project) {

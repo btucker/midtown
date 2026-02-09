@@ -2,7 +2,7 @@
   import ChannelList from './ChannelList.svelte'
   import UsageBars from './UsageBars.svelte'
   import AuthSwitcher from './AuthSwitcher.svelte'
-  import { coworkers, projects, activeProject, connected, detailPanelData } from './store.js'
+  import { coworkers, projects, activeProject, connected, detailPanelData, isWideScreen } from './store.js'
   import {
     pushSupported,
     pushPermission,
@@ -45,7 +45,7 @@
 
   function handleCoworkerClick(coworker) {
     // Only open detail panel on desktop (>1024px)
-    if (window.innerWidth > 1024) {
+    if ($isWideScreen) {
       detailPanelData.set({
         type: 'coworker',
         data: {
