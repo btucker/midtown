@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use midtown::{Message, MessageType};
@@ -228,6 +228,9 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
     let mut lines = Vec::new();
     let hyperlinks = Vec::new();
 
+    // Calculate available width (subtract 2 for left/right borders)
+    let panel_width = area.width.saturating_sub(2) as usize;
+
     // Channel header: #midtown (X tasks)
     let task_count = app.tasks.len();
     let channel_header = format!("  #midtown ({})", task_count);
@@ -255,10 +258,22 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
             "    {} #{} {}{}",
             status_marker, task.id, task.subject, owner_text
         );
-        lines.push(Line::from(vec![Span::styled(
-            task_line,
-            Style::default().fg(Color::Green),
-        )]));
+
+        // Pre-wrap task line to fit panel width
+        let wrapped_lines = wrap_line(&task_line, panel_width);
+        for (i, wrapped) in wrapped_lines.iter().enumerate() {
+            let line_text = if i == 0 {
+                // First line: use as-is
+                wrapped.to_string()
+            } else {
+                // Continuation lines: add indent to align with task text
+                format!("        {}", wrapped.trim_start())
+            };
+            lines.push(Line::from(vec![Span::styled(
+                line_text,
+                Style::default().fg(Color::Green),
+            )]));
+        }
     }
 
     // Pending tasks
@@ -274,10 +289,22 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
             "    {} #{} {}{}",
             status_marker, task.id, task.subject, owner_text
         );
-        lines.push(Line::from(vec![Span::styled(
-            task_line,
-            Style::default().fg(Color::DarkGray),
-        )]));
+
+        // Pre-wrap task line to fit panel width
+        let wrapped_lines = wrap_line(&task_line, panel_width);
+        for (i, wrapped) in wrapped_lines.iter().enumerate() {
+            let line_text = if i == 0 {
+                // First line: use as-is
+                wrapped.to_string()
+            } else {
+                // Continuation lines: add indent to align with task text
+                format!("        {}", wrapped.trim_start())
+            };
+            lines.push(Line::from(vec![Span::styled(
+                line_text,
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
     }
 
     // Render the panel
@@ -286,7 +313,7 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         .title("Board")
         .style(Style::default().fg(Color::White));
 
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+    let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
 
     hyperlinks
