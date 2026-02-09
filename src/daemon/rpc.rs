@@ -1918,6 +1918,12 @@ async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
         .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
         .count();
 
+    // Get GitHub API rate limit state
+    let rate_limit = {
+        let ps = state.persistent_state.lock().await;
+        ps.github.rate_limit.clone()
+    };
+
     Response::success(
         id,
         serde_json::json!({
@@ -1933,6 +1939,23 @@ async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
             "pull_requests": pull_requests,
             "merged_prs": merged_prs,
             "recent_activity": recent_activity,
+            "github_rate_limit": {
+                "graphql": {
+                    "remaining": rate_limit.graphql.remaining,
+                    "limit": rate_limit.graphql.limit,
+                    "used": rate_limit.graphql.used,
+                    "reset": rate_limit.graphql.reset,
+                    "remaining_pct": (rate_limit.graphql.remaining_pct() * 100.0) as u32,
+                },
+                "rest": {
+                    "remaining": rate_limit.core.remaining,
+                    "limit": rate_limit.core.limit,
+                    "used": rate_limit.core.used,
+                    "reset": rate_limit.core.reset,
+                    "remaining_pct": (rate_limit.core.remaining_pct() * 100.0) as u32,
+                },
+                "summary": rate_limit.summary(),
+            },
         }),
     )
 }

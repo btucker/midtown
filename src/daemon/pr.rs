@@ -3902,6 +3902,8 @@ mod tests {
             is_at_coworker_limit: false,
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         let effects = collect_merged_pr_cleanup_effects(&snap);

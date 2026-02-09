@@ -1119,7 +1119,13 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
 
 /// Run the full snapshot→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
-    let snap = snapshot::collect_world_snapshot(state).await;
+    let mut snap = snapshot::collect_world_snapshot(state).await;
+
+    // For RateLimitCheckTick, fetch fresh rate limit data before evaluation
+    if matches!(event, events::DaemonEvent::RateLimitCheckTick) {
+        snap.freshly_fetched_rate_limit = crate::github_rate_limit::GitHubRateLimit::fetch().await;
+    }
+
     let tick_effects = events::evaluate_tick(event, &snap, state).await;
     effects::execute_effects(tick_effects, state).await;
 }
@@ -1448,6 +1454,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         tokio::time::interval(std::time::Duration::from_secs(ORPHAN_CHECK_INTERVAL_SECS));
     // Skip the first tick (which fires immediately)
     orphan_check_interval.tick().await;
+
+    // Timer for periodic GitHub API rate limit checks (every 2 minutes)
+    let mut rate_limit_check_interval = tokio::time::interval(std::time::Duration::from_secs(120));
+    // Skip the first tick (which fires immediately)
+    rate_limit_check_interval.tick().await;
+    info!("GitHub rate limit check interval set to 120s");
 
     // Timer for periodic channel rotation
     let mut channel_rotation_interval = interval(CHANNEL_ROTATION_CHECK_INTERVAL);
@@ -1914,6 +1926,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             // races with TaskDispatchTick - both now share the same snapshot.
             _ = pr_poll_interval.tick() => {
                 run_tick(&events::DaemonEvent::PrPollTick, &state).await;
+            }
+
+            // Periodic GitHub rate limit check: fetch current quotas and update state.
+            // Runs every 2 minutes to monitor API consumption for adaptive throttling.
+            _ = rate_limit_check_interval.tick() => {
+                run_tick(&events::DaemonEvent::RateLimitCheckTick, &state).await;
             }
 
             // Handle SIGTERM

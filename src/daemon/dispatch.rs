@@ -1978,6 +1978,8 @@ mod tests {
             is_at_coworker_limit: false,
             now_utc: chrono::Utc::now(),
             repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         let state = make_test_state();
@@ -2109,6 +2111,8 @@ mod tests {
             is_at_coworker_limit: false,
             now_utc: chrono::Utc::now(),
             repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         let state = make_test_state();
@@ -2203,6 +2207,8 @@ mod tests {
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
             repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         let state = make_test_state();
@@ -2320,6 +2326,8 @@ mod tests {
             is_at_dev_limit: false,
             now_utc: chrono::Utc::now(),
             repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         let state = make_test_state();
@@ -2458,6 +2466,8 @@ mod tests {
             is_at_coworker_limit: false,
             now_utc: chrono::Utc::now(),
             repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
         };
 
         let state = make_test_state();
