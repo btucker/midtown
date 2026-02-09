@@ -412,33 +412,30 @@ struct CreateChannelRequest {
 /// Returns 201 Created on success, 400 Bad Request if the name is invalid.
 ///
 /// Channel names must:
+/// Validate a channel name for use in API endpoints.
+///
+/// Channel names must:
 /// - Be non-empty
 /// - Contain only alphanumeric characters, hyphens, and underscores
-/// - Not be named "midtown" (reserved for the main channel)
-async fn api_channels_create(
-    State(state): State<Arc<WebState>>,
-    Json(body): Json<CreateChannelRequest>,
-) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
-    let channel_name = body.name.trim();
-
-    // Validate channel name
-    if channel_name.is_empty() {
+/// - Not be "midtown" (reserved for the main channel)
+fn validate_channel_name(name: &str) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+    if name.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": "Channel name cannot be empty" })),
         ));
     }
 
-    if channel_name == "midtown" {
+    if name == "midtown" {
         return Err((
             StatusCode::BAD_REQUEST,
             axum::Json(
-                serde_json::json!({ "error": "Cannot create channel named 'midtown' - this is reserved for the main channel" }),
+                serde_json::json!({ "error": "Cannot use reserved channel name 'midtown'" }),
             ),
         ));
     }
 
-    if !channel_name
+    if !name
         .chars()
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
@@ -449,6 +446,20 @@ async fn api_channels_create(
             ),
         ));
     }
+
+    Ok(())
+}
+
+/// - Be non-empty
+/// - Contain only alphanumeric characters, hyphens, and underscores
+/// - Not be named "midtown" (reserved for the main channel)
+async fn api_channels_create(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<CreateChannelRequest>,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    let channel_name = body.name.trim();
+
+    validate_channel_name(channel_name)?;
 
     // Create the channel (idempotent - returns existing channel if it already exists)
     let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
@@ -467,14 +478,37 @@ async fn api_channels_create(
     ))
 }
 
+/// Query parameters for channel history
+#[derive(Debug, Deserialize)]
+struct ChannelHistoryQuery {
+    /// Optional channel name to filter by. If not provided, returns all messages from the main channel.
+    channel: Option<String>,
+}
+
 /// Get channel message history
+///
+/// Accepts an optional `?channel=name` query parameter to load a specific channel.
+/// If not provided, returns messages from the main "midtown" channel.
 async fn api_channel_history(
     State(state): State<Arc<WebState>>,
+    Query(params): Query<ChannelHistoryQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let channel = Channel::for_repo(&state.config.repo).map_err(|e| {
-        error!("Failed to open channel: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let channel = if let Some(ref channel_name) = params.channel {
+        // Validate channel name to prevent path traversal
+        validate_channel_name(channel_name).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+        // Load a specific channel by name
+        Channel::for_repo_named(&state.config.repo, channel_name).map_err(|e| {
+            error!("Failed to open channel '{}': {}", channel_name, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    } else {
+        // Default: load the main channel
+        Channel::for_repo(&state.config.repo).map_err(|e| {
+            error!("Failed to open channel: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
 
     let messages = channel.read_all().map_err(|e| {
         error!("Failed to read channel: {}", e);
