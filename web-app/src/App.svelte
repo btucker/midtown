@@ -194,7 +194,7 @@
 
           <!-- Main chat area -->
           <main class="channel-main">
-            <Channel onChannelClick={closeSidebar} />
+            <Channel />
           </main>
         </div>
       {:else if activeView === 'status'}
@@ -466,6 +466,7 @@
     align-items: center;
     gap: 12px;
     padding: 12px 16px;
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
     background: #1a1a1a;
     border-bottom: 2px solid #2a2a2a;
     flex-shrink: 0;
