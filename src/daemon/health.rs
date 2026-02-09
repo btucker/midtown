@@ -1035,6 +1035,7 @@ mod tests {
         use std::collections::{HashMap, HashSet};
 
         let running = Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "lexington".to_string(),
             status: CoworkerStatus::Running,
             working_dir: "/tmp/test".to_string(),
@@ -1045,6 +1046,7 @@ mod tests {
             model: "sonnet".to_string(),
         };
         let stopping = Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "park".to_string(),
             status: CoworkerStatus::Stopping,
             working_dir: "/tmp/test".to_string(),

@@ -811,6 +811,7 @@ mod tests {
         let snapshot = WorldSnapshot {
             active_coworkers: vec![
                 Coworker {
+                    slot_id: uuid::Uuid::new_v4().to_string(),
                     name: "lexington".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp/lex1".to_string(),
@@ -821,6 +822,7 @@ mod tests {
                     model: "sonnet".to_string(),
                 },
                 Coworker {
+                    slot_id: uuid::Uuid::new_v4().to_string(),
                     name: "park".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp/park1".to_string(),
@@ -831,6 +833,7 @@ mod tests {
                     model: "sonnet".to_string(),
                 },
                 Coworker {
+                    slot_id: uuid::Uuid::new_v4().to_string(),
                     name: "lexington".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp/lex2".to_string(),

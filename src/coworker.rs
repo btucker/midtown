@@ -79,6 +79,10 @@ impl std::fmt::Display for CoworkerStatus {
 /// Information about a coworker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Coworker {
+    /// Daemon-generated UUID, used as the internal HashMap key.
+    /// Generated at spawn time, stable for the lifetime of the session.
+    #[serde(default = "default_slot_id")]
+    pub slot_id: String,
     /// Unique name (avenue name)
     pub name: String,
     /// Current status
@@ -98,6 +102,10 @@ pub struct Coworker {
     /// The Claude model this coworker is using (e.g., "sonnet", "opus", "haiku")
     #[serde(default = "default_model")]
     pub model: String,
+}
+
+fn default_slot_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 fn default_model() -> String {
@@ -122,6 +130,7 @@ impl Coworker {
     /// session_id) will be populated when the coworker registers via RPC.
     pub fn recovered(name: String, working_dir: String) -> Self {
         Self {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name,
             status: CoworkerStatus::Running,
             working_dir,
@@ -312,18 +321,10 @@ impl CoworkerManager {
             // Create a coworker entry
             // Assume not isolated (shared task list) for discovered coworkers - they were
             // likely regular coworkers. Isolated review coworkers go on a break when idle anyway.
-            let coworker = Coworker {
-                name: window_name.clone(),
-                status: CoworkerStatus::Running,
-                working_dir,
-                started_at: Utc::now(), // Unknown, use now as approximation
-                current_task: None,     // Will be discovered via task tracking
-                session_id: None,       // Will be set when coworker registers
-                isolated_tasks: false,
-                model: default_model(), // Unknown for discovered sessions, assume sonnet
-            };
+            let coworker = Coworker::recovered(window_name.clone(), working_dir);
+            let slot_id = coworker.slot_id.clone();
 
-            coworkers.insert(window_name.clone(), coworker);
+            coworkers.insert(slot_id, coworker);
             discovered_names.push(window_name.clone());
             tracing::info!("Discovered existing coworker: {}", window_name);
         }
@@ -348,10 +349,14 @@ impl CoworkerManager {
     pub fn next_available_name(&self) -> Option<String> {
         let coworkers = self.coworkers.read().unwrap();
 
+        // Collect names currently in use (scan values)
+        let used_names: std::collections::HashSet<&str> =
+            coworkers.values().map(|cw| cw.name.as_str()).collect();
+
         // Collect available primary avenue names
         let available: Vec<&str> = AVENUE_NAMES
             .iter()
-            .filter(|name| !coworkers.contains_key(**name))
+            .filter(|name| !used_names.contains(**name))
             .copied()
             .collect();
 
@@ -364,7 +369,7 @@ impl CoworkerManager {
         // Fall back to overflow names (also randomized)
         let overflow_available: Vec<&str> = OVERFLOW_NAMES
             .iter()
-            .filter(|name| !coworkers.contains_key(**name))
+            .filter(|name| !used_names.contains(**name))
             .copied()
             .collect();
 
@@ -464,19 +469,20 @@ impl CoworkerManager {
     /// This is the **tmux legacy path**. For headless coworkers, use
     /// `deregister()` after calling `SessionManager::shutdown()`.
     pub fn shutdown(&self, name: &str) -> crate::Result<()> {
-        // Update status to stopping
-        {
+        // Update status to stopping (find by name, scanning values)
+        let slot_id = {
             let mut coworkers = self.coworkers.write().unwrap();
-            if let Some(cw) = coworkers.get_mut(name) {
+            if let Some(cw) = coworkers.values_mut().find(|cw| cw.name == name) {
                 cw.status = CoworkerStatus::Stopping;
                 tracing::debug!("Coworker {} status: Running -> Stopping", name);
+                cw.slot_id.clone()
             } else {
                 return Err(crate::Error::Rpc {
                     code: -32602,
                     message: format!("Coworker not found: {}", name),
                 });
             }
-        }
+        };
 
         // Kill ALL tmux windows with this name — uses window IDs to handle
         // duplicates that accumulate when kill_window (name-based) fails with
@@ -490,10 +496,10 @@ impl CoworkerManager {
         // Clean up additional repo worktrees (multi-repo projects)
         self.cleanup_additional_worktrees(name);
 
-        // Remove from tracking
+        // Remove from tracking (by slot_id)
         {
             let mut coworkers = self.coworkers.write().unwrap();
-            coworkers.remove(name);
+            coworkers.remove(&slot_id);
         }
 
         if kill_result.is_ok() {
@@ -512,10 +518,16 @@ impl CoworkerManager {
         // Clean up additional repo worktrees (multi-repo projects)
         self.cleanup_additional_worktrees(name);
 
-        // Remove from tracking
+        // Remove from tracking (find slot_id by name, then remove)
         {
             let mut coworkers = self.coworkers.write().unwrap();
-            coworkers.remove(name);
+            let slot_id = coworkers
+                .values()
+                .find(|cw| cw.name == name)
+                .map(|cw| cw.slot_id.clone());
+            if let Some(slot_id) = slot_id {
+                coworkers.remove(&slot_id);
+            }
         }
 
         tracing::info!("Deregistered coworker {}", name);
@@ -525,7 +537,7 @@ impl CoworkerManager {
     pub fn shutdown_all(&self) -> crate::Result<()> {
         let names: Vec<String> = {
             let coworkers = self.coworkers.read().unwrap();
-            coworkers.keys().cloned().collect()
+            coworkers.values().map(|cw| cw.name.clone()).collect()
         };
 
         for name in names {
@@ -543,7 +555,7 @@ impl CoworkerManager {
     pub fn find_orphaned_worktree_names(&self) -> Vec<String> {
         let active_names: Vec<String> = {
             let coworkers = self.coworkers.read().unwrap();
-            coworkers.keys().cloned().collect()
+            coworkers.values().map(|cw| cw.name.clone()).collect()
         };
         self.worktree_manager.find_orphaned_worktrees(&active_names)
     }
@@ -564,7 +576,7 @@ impl CoworkerManager {
     pub fn cleanup_orphaned_worktrees(&self, max_per_tick: Option<usize>) -> Vec<String> {
         let active_names: Vec<String> = {
             let coworkers = self.coworkers.read().unwrap();
-            coworkers.keys().cloned().collect()
+            coworkers.values().map(|cw| cw.name.clone()).collect()
         };
 
         let orphaned = self.worktree_manager.find_orphaned_worktrees(&active_names);
@@ -638,10 +650,10 @@ impl CoworkerManager {
             .collect()
     }
 
-    /// Get a coworker by name.
+    /// Get a coworker by name (scans values, returns first match).
     pub fn get(&self, name: &str) -> Option<Coworker> {
         let coworkers = self.coworkers.read().unwrap();
-        coworkers.get(name).cloned()
+        coworkers.values().find(|cw| cw.name == name).cloned()
     }
 
     /// Get a coworker by session ID.
@@ -663,11 +675,14 @@ impl CoworkerManager {
     /// Returns `None` if the coworker doesn't exist or has no session ID yet.
     pub fn session_key(&self, name: &str) -> Option<SessionKey> {
         let coworkers = self.coworkers.read().unwrap();
-        coworkers.get(name).and_then(|cw| {
-            cw.session_id
-                .as_ref()
-                .map(|sid| SessionKey::new(&cw.name, sid))
-        })
+        coworkers
+            .values()
+            .find(|cw| cw.name == name)
+            .and_then(|cw| {
+                cw.session_id
+                    .as_ref()
+                    .map(|sid| SessionKey::new(&cw.name, sid))
+            })
     }
 
     /// Get all SessionKeys for coworkers with a given name.
@@ -696,7 +711,10 @@ impl CoworkerManager {
     /// author's session to preserve context.
     pub fn get_session_id(&self, name: &str) -> Option<String> {
         let coworkers = self.coworkers.read().unwrap();
-        coworkers.get(name).and_then(|cw| cw.session_id.clone())
+        coworkers
+            .values()
+            .find(|cw| cw.name == name)
+            .and_then(|cw| cw.session_id.clone())
     }
 
     /// Get the branch name checked out in a coworker's worktree.
@@ -1013,10 +1031,10 @@ impl CoworkerManager {
     ) -> crate::Result<(String, crate::launch::LaunchConfig)> {
         let name = &config.name;
 
-        // Check if already running
+        // Check if already running (scan values for name match)
         {
             let coworkers = self.coworkers.read().unwrap();
-            if coworkers.contains_key(name.as_str()) {
+            if coworkers.values().any(|cw| cw.name == *name) {
                 return Err(crate::Error::Rpc {
                     code: -32603,
                     message: format!("Coworker {} is already running", name),
@@ -1156,6 +1174,7 @@ impl CoworkerManager {
     /// exists with a non-None session_id).
     pub fn register(
         &self,
+        slot_id: &str,
         name: &str,
         working_dir: String,
         session_id: Option<String>,
@@ -1164,8 +1183,8 @@ impl CoworkerManager {
     ) -> crate::Result<()> {
         let mut coworkers = self.coworkers.write().unwrap();
 
-        // Check if an entry already exists
-        if let Some(existing) = coworkers.get(name) {
+        // Check if an entry already exists with this name
+        if let Some(existing) = coworkers.values().find(|cw| cw.name == name) {
             // If the existing entry has a session_id, it's a real concurrent spawn race.
             // Fail to prevent overwriting a legitimate registration.
             if existing.session_id.is_some() {
@@ -1179,14 +1198,17 @@ impl CoworkerManager {
             }
 
             // If session_id is None, this is a provisional recovery entry.
-            // Update it with the authoritative values from the spawn flow.
+            // Remove it and replace with the authoritative entry below.
+            let old_slot = existing.slot_id.clone();
             tracing::info!(
                 "Updating provisional recovery entry for {} with authoritative values",
                 name
             );
+            coworkers.remove(&old_slot);
         }
 
         let coworker = Coworker {
+            slot_id: slot_id.to_string(),
             name: name.to_string(),
             status: CoworkerStatus::Running,
             working_dir,
@@ -1196,9 +1218,9 @@ impl CoworkerManager {
             isolated_tasks,
             model,
         };
-        coworkers.insert(name.to_string(), coworker);
+        coworkers.insert(slot_id.to_string(), coworker);
 
-        tracing::info!("Registered coworker {}", name);
+        tracing::info!("Registered coworker {} (slot_id={})", name, slot_id);
         Ok(())
     }
 
@@ -1221,9 +1243,11 @@ impl CoworkerManager {
         let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &launch_config)?;
 
         let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
+        let slot_id = uuid::Uuid::new_v4().to_string();
 
         // Register with TOCTTOU race check
         if let Err(e) = self.register(
+            &slot_id,
             name,
             working_dir,
             Some(session_id),
@@ -1281,7 +1305,13 @@ impl CoworkerManager {
 
         // Remove coworkers whose windows are gone, but preserve headless sessions
         // (they don't have tmux windows but are still alive)
-        coworkers.retain(|name, _| active_windows.contains(name) || headless_names.contains(name));
+        coworkers
+            .retain(|_, cw| active_windows.contains(&cw.name) || headless_names.contains(&cw.name));
+
+        // Helper: check if a name is already tracked (scan values)
+        let has_name = |coworkers: &HashMap<String, Coworker>, name: &str| -> bool {
+            coworkers.values().any(|cw| cw.name == name)
+        };
 
         // Add coworkers whose windows exist but aren't tracked.
         // This prevents orphan cleanup from deleting worktrees for coworkers
@@ -1293,7 +1323,7 @@ impl CoworkerManager {
             }
 
             // Skip if already tracked
-            if coworkers.contains_key(window_name) {
+            if has_name(&coworkers, window_name) {
                 continue;
             }
 
@@ -1312,7 +1342,8 @@ impl CoworkerManager {
             let working_dir = worktree_path.to_string_lossy().to_string();
 
             let coworker = Coworker::recovered(window_name.clone(), working_dir);
-            coworkers.insert(window_name.clone(), coworker);
+            let slot_id = coworker.slot_id.clone();
+            coworkers.insert(slot_id, coworker);
             tracing::info!(
                 "Recovered undiscovered coworker from tmux: {} (preventing worktree deletion)",
                 window_name
@@ -1331,7 +1362,7 @@ impl CoworkerManager {
             }
 
             // Skip if already tracked
-            if coworkers.contains_key(headless_name) {
+            if has_name(&coworkers, headless_name) {
                 continue;
             }
 
@@ -1352,7 +1383,9 @@ impl CoworkerManager {
             // Create a PROVISIONAL coworker entry with session_id: None.
             // This signals to register() that it should update this entry
             // rather than fail with a "concurrent request" error.
+            let slot_id = uuid::Uuid::new_v4().to_string();
             let coworker = Coworker {
+                slot_id: slot_id.clone(),
                 name: headless_name.clone(),
                 status: CoworkerStatus::Running,
                 working_dir,
@@ -1362,7 +1395,7 @@ impl CoworkerManager {
                 isolated_tasks: false,          // PROVISIONAL - will be updated by register()
                 model: default_model(),         // PROVISIONAL - unknown for recovered sessions
             };
-            coworkers.insert(headless_name.clone(), coworker);
+            coworkers.insert(slot_id, coworker);
             tracing::info!(
                 "Recovered undiscovered headless coworker from SessionManager: {}",
                 headless_name
@@ -1388,10 +1421,11 @@ impl CoworkerManager {
     #[doc(hidden)]
     pub fn insert_for_testing(&self, coworker: Coworker) -> bool {
         let mut coworkers = self.coworkers.write().unwrap();
-        if coworkers.contains_key(&coworker.name) {
+        if coworkers.values().any(|cw| cw.name == coworker.name) {
             return false;
         }
-        coworkers.insert(coworker.name.clone(), coworker);
+        let slot_id = coworker.slot_id.clone();
+        coworkers.insert(slot_id, coworker);
         true
     }
 
@@ -1506,9 +1540,11 @@ mod tests {
         // Manually insert a coworker to simulate "lexington" being in use
         {
             let mut coworkers = manager.coworkers.write().unwrap();
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "lexington".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "lexington".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp".to_string(),
@@ -1538,9 +1574,11 @@ mod tests {
         {
             let mut coworkers = manager.coworkers.write().unwrap();
             for name in AVENUE_NAMES {
+                let slot_id = uuid::Uuid::new_v4().to_string();
                 coworkers.insert(
-                    name.to_string(),
+                    slot_id.clone(),
                     Coworker {
+                        slot_id,
                         name: name.to_string(),
                         status: CoworkerStatus::Running,
                         working_dir: "/tmp".to_string(),
@@ -1568,9 +1606,11 @@ mod tests {
         {
             let mut coworkers = manager.coworkers.write().unwrap();
             for name in AVENUE_NAMES.iter().chain(OVERFLOW_NAMES.iter()) {
+                let slot_id = uuid::Uuid::new_v4().to_string();
                 coworkers.insert(
-                    name.to_string(),
+                    slot_id.clone(),
                     Coworker {
+                        slot_id,
                         name: name.to_string(),
                         status: CoworkerStatus::Running,
                         working_dir: "/tmp".to_string(),
@@ -1616,9 +1656,11 @@ mod tests {
         // Manually insert a running coworker
         {
             let mut coworkers = manager.coworkers.write().unwrap();
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "lexington".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "lexington".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp".to_string(),
@@ -1891,9 +1933,11 @@ mod tests {
 
         {
             let mut coworkers = manager.coworkers.write().unwrap();
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "lexington".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "lexington".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp".to_string(),
@@ -1904,9 +1948,11 @@ mod tests {
                     model: "sonnet".to_string(),
                 },
             );
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "park".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "park".to_string(),
                     status: CoworkerStatus::Stopping,
                     working_dir: "/tmp".to_string(),
@@ -1917,9 +1963,11 @@ mod tests {
                     model: "sonnet".to_string(),
                 },
             );
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "madison".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "madison".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp".to_string(),
@@ -1951,9 +1999,11 @@ mod tests {
         // Insert a coworker into the HashMap
         {
             let mut coworkers = manager.coworkers.write().unwrap();
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "lexington".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "lexington".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp".to_string(),
@@ -2001,9 +2051,11 @@ mod tests {
         // Register a headless coworker (no tmux window)
         {
             let mut coworkers = manager.coworkers.write().unwrap();
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "madison".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "madison".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp".to_string(),
@@ -2029,7 +2081,7 @@ mod tests {
         // madison should still be tracked
         assert_eq!(manager.count(), 1);
         let coworkers = manager.coworkers.read().unwrap();
-        assert!(coworkers.contains_key("madison"));
+        assert!(coworkers.values().any(|cw| cw.name == "madison"));
     }
 
     #[test]
@@ -2072,10 +2124,10 @@ mod tests {
         );
         let coworkers = manager.coworkers.read().unwrap();
         assert!(
-            coworkers.contains_key("madison"),
+            coworkers.values().any(|cw| cw.name == "madison"),
             "madison should be in the coworkers map after recovery"
         );
-        let madison = coworkers.get("madison").unwrap();
+        let madison = coworkers.values().find(|cw| cw.name == "madison").unwrap();
         assert_eq!(madison.status, CoworkerStatus::Running);
     }
 
@@ -2110,9 +2162,11 @@ mod tests {
         // Register a coworker that has no tmux window AND is not in headless_names
         {
             let mut coworkers = manager.coworkers.write().unwrap();
+            let slot_id = uuid::Uuid::new_v4().to_string();
             coworkers.insert(
-                "park".to_string(),
+                slot_id.clone(),
                 Coworker {
+                    slot_id,
                     name: "park".to_string(),
                     status: CoworkerStatus::Running,
                     working_dir: "/tmp".to_string(),
@@ -2176,7 +2230,9 @@ mod tests {
         // The spawn flow now tries to register. This should NOT fail.
         // In the current buggy code, this will return an error because
         // the HashMap already has "lexington".
+        let new_slot_id = uuid::Uuid::new_v4().to_string();
         let result = manager.register(
+            &new_slot_id,
             "lexington",
             "/tmp/worktree".to_string(),
             Some("session-id-123".to_string()),

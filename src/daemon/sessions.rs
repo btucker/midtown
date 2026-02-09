@@ -35,6 +35,8 @@ pub enum SessionStatus {
 pub struct CoworkerSession {
     /// The running headless session (None if stopped).
     session: Option<HeadlessSession>,
+    /// Daemon-generated UUID, used as the HashMap key.
+    pub slot_id: String,
     /// Coworker name.
     pub name: String,
     /// Current session status.
@@ -63,7 +65,7 @@ pub struct CoworkerSession {
 }
 
 impl CoworkerSession {
-    fn new(name: String, session: HeadlessSession, repo: &str) -> Self {
+    fn new(slot_id: String, name: String, session: HeadlessSession, repo: &str) -> Self {
         let output_log_path = crate::paths::headless_output_file(repo, &name);
 
         // Open the log file in append mode, creating it if needed
@@ -84,6 +86,7 @@ impl CoworkerSession {
 
         Self {
             session: Some(session),
+            slot_id,
             name,
             status: SessionStatus::Starting,
             started_at: Utc::now(),
@@ -124,24 +127,16 @@ impl SessionManager {
     ///
     /// The `config` must have `cwd` set to the coworker's worktree path.
     /// If `initial_prompt` is provided, it's sent as the first user message.
-    ///
-    /// Returns the coworker name on success.
+    /// The `slot_id` is a daemon-generated UUID used as the HashMap key.
     pub async fn spawn(
         &self,
         name: &str,
+        slot_id: &str,
         config: &HeadlessConfig,
         initial_prompt: Option<&str>,
     ) -> Result<(), crate::Error> {
-        // Check for duplicate
-        {
-            let sessions = self.sessions.read().await;
-            if sessions.contains_key(name) {
-                return Err(crate::Error::Rpc {
-                    code: -32603,
-                    message: format!("Headless session '{}' already exists", name),
-                });
-            }
-        }
+        // No name-uniqueness check needed — slot_id is always unique (UUID).
+        // Multiple sessions with the same name are now allowed (keyed by slot_id).
 
         // Spawn the headless process
         let mut session = HeadlessSession::spawn(config).map_err(|e| crate::Error::Rpc {
@@ -167,24 +162,36 @@ impl SessionManager {
 
         let mut sessions = self.sessions.write().await;
         sessions.insert(
-            name.to_string(),
-            CoworkerSession::new(name.to_string(), session, &self.repo_name),
+            slot_id.to_string(),
+            CoworkerSession::new(
+                slot_id.to_string(),
+                name.to_string(),
+                session,
+                &self.repo_name,
+            ),
         );
 
-        info!("Spawned headless session for '{}'", name);
+        info!(
+            "Spawned headless session for '{}' (slot_id={})",
+            name, slot_id
+        );
         Ok(())
     }
 
-    /// Send a message (nudge) to a running coworker session.
+    /// Send a message (nudge) to a running coworker session (by name).
     ///
     /// This writes to the session's stdin via the stream-json input protocol.
     /// Unlike tmux send-keys, this doesn't require waiting for input stability.
+    /// Finds the first session matching the name.
     pub async fn send_message(&self, name: &str, message: &str) -> Result<(), crate::Error> {
         let mut sessions = self.sessions.write().await;
-        let cs = sessions.get_mut(name).ok_or_else(|| crate::Error::Rpc {
-            code: -32602,
-            message: format!("No headless session for '{}'", name),
-        })?;
+        let cs = sessions
+            .values_mut()
+            .find(|cs| cs.name == name)
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32602,
+                message: format!("No headless session for '{}'", name),
+            })?;
 
         let session = cs.session.as_mut().ok_or_else(|| crate::Error::Rpc {
             code: -32603,
@@ -203,7 +210,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Shut down a coworker session.
+    /// Shut down a coworker session (by name, finds first match).
     ///
     /// Kills the child process. The Claude Code session persists on disk
     /// (when `persist_session: true`) and can be resumed later.
@@ -211,10 +218,15 @@ impl SessionManager {
     /// Returns the session ID (if known) for potential resume.
     pub async fn shutdown(&self, name: &str) -> Result<Option<String>, crate::Error> {
         let mut sessions = self.sessions.write().await;
-        let cs = sessions.remove(name).ok_or_else(|| crate::Error::Rpc {
-            code: -32602,
-            message: format!("No headless session for '{}'", name),
-        })?;
+        let slot_id = sessions
+            .values()
+            .find(|cs| cs.name == name)
+            .map(|cs| cs.slot_id.clone())
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32602,
+                message: format!("No headless session for '{}'", name),
+            })?;
+        let cs = sessions.remove(&slot_id).unwrap();
 
         let session_id = cs.session_id.clone();
 
@@ -235,10 +247,11 @@ impl SessionManager {
     pub async fn shutdown_all(&self) -> usize {
         let mut sessions = self.sessions.write().await;
         let count = sessions.len();
-        let names: Vec<String> = sessions.keys().cloned().collect();
-        for name in &names {
-            if let Some(cs) = sessions.remove(name) {
+        let slot_ids: Vec<String> = sessions.keys().cloned().collect();
+        for slot_id in &slot_ids {
+            if let Some(cs) = sessions.remove(slot_id) {
                 let session_id = cs.session_id.clone();
+                let name = cs.name.clone();
                 drop(cs); // Drop triggers process kill
                 info!(
                     "Shut down headless session '{}' during daemon shutdown (session_id={:?})",
@@ -249,11 +262,12 @@ impl SessionManager {
         count
     }
 
-    /// Check if a coworker has a running session.
+    /// Check if a coworker has a running session (by name).
     pub async fn is_alive(&self, name: &str) -> bool {
         let sessions = self.sessions.read().await;
         sessions
-            .get(name)
+            .values()
+            .find(|cs| cs.name == name)
             .is_some_and(|cs| cs.session.is_some() && cs.status != SessionStatus::Stopped)
     }
 
@@ -280,12 +294,13 @@ impl SessionManager {
         // Collect (log_path, events) pairs for async writing after releasing the lock
         let mut events_to_log: Vec<(PathBuf, Vec<StreamEvent>)> = Vec::new();
 
-        for (name, cs) in sessions.iter_mut() {
+        for (_slot_id, cs) in sessions.iter_mut() {
             let session = match cs.session.as_mut() {
                 Some(s) => s,
                 None => continue,
             };
 
+            let name = &cs.name;
             let mut events = Vec::new();
 
             // Drain stderr first to prevent pipe buffer deadlock.
@@ -438,17 +453,21 @@ impl SessionManager {
         (all_events, stopped, stderr_by_name)
     }
 
-    /// Get the session ID for a coworker (if known).
+    /// Get the session ID for a coworker (if known, by name).
     pub async fn get_session_id(&self, name: &str) -> Option<String> {
         let sessions = self.sessions.read().await;
-        sessions.get(name).and_then(|cs| cs.session_id.clone())
+        sessions
+            .values()
+            .find(|cs| cs.name == name)
+            .and_then(|cs| cs.session_id.clone())
     }
 
-    /// Get the OS process ID for a coworker session (for zombie cleanup).
+    /// Get the OS process ID for a coworker session (by name, for zombie cleanup).
     pub async fn get_pid(&self, name: &str) -> Option<u32> {
         let sessions = self.sessions.read().await;
         sessions
-            .get(name)
+            .values()
+            .find(|cs| cs.name == name)
             .and_then(|cs| cs.session.as_ref())
             .and_then(|session| session.pid())
     }
@@ -476,7 +495,7 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let mut info_map = HashMap::new();
 
-        for (name, cs) in sessions.iter() {
+        for (_slot_id, cs) in sessions.iter() {
             if let (Some(session_id), Some(session)) = (&cs.session_id, &cs.session) {
                 let pid = session.pid();
                 let info = HeadlessSessionInfo {
@@ -489,7 +508,7 @@ impl SessionManager {
                     pr_number: None,     // To be filled by caller
                     working_dir: None,   // To be filled by caller
                 };
-                info_map.insert(name.clone(), info);
+                info_map.insert(cs.name.clone(), info);
             }
         }
 
@@ -503,9 +522,9 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let mut health = HashMap::new();
 
-        for (name, cs) in sessions.iter() {
+        for (_slot_id, cs) in sessions.iter() {
             health.insert(
-                name.clone(),
+                cs.name.clone(),
                 super::snapshot::ProcessHealth {
                     is_alive: cs.session.is_some() && cs.status != SessionStatus::Stopped,
                     last_event_at: cs.last_event_at,
@@ -524,7 +543,7 @@ impl SessionManager {
     /// List all managed session names (including stopped sessions pending cleanup).
     pub async fn list_names(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
-        sessions.keys().cloned().collect()
+        sessions.values().map(|cs| cs.name.clone()).collect()
     }
 
     /// List only alive session names (excludes stopped sessions pending cleanup).
@@ -536,9 +555,9 @@ impl SessionManager {
     pub async fn list_alive_names(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
         sessions
-            .iter()
-            .filter(|(_, cs)| cs.status != SessionStatus::Stopped)
-            .map(|(name, _)| name.clone())
+            .values()
+            .filter(|cs| cs.status != SessionStatus::Stopped)
+            .map(|cs| cs.name.clone())
             .collect()
     }
 
@@ -555,12 +574,13 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         let mut newly_stopped = Vec::new();
 
-        for (name, cs) in sessions.iter_mut() {
+        for (_slot_id, cs) in sessions.iter_mut() {
             // Only check sessions that we think are alive
             if cs.status == SessionStatus::Stopped {
                 continue;
             }
 
+            let name = &cs.name;
             let session = match cs.session.as_mut() {
                 Some(s) => s,
                 None => {
@@ -605,12 +625,20 @@ impl SessionManager {
         newly_stopped
     }
 
-    /// Remove a stopped session entry (cleanup after the coworker is fully shut down).
+    /// Remove a stopped session entry (cleanup after the coworker is fully shut down, by name).
     pub async fn remove(&self, name: &str) {
         let log_path = {
             let mut sessions = self.sessions.write().await;
-            let log_path = sessions.get(name).map(|cs| cs.output_log_path.clone());
-            sessions.remove(name);
+            let slot_id = sessions
+                .values()
+                .find(|cs| cs.name == name)
+                .map(|cs| cs.slot_id.clone());
+            let log_path = slot_id
+                .as_ref()
+                .and_then(|sid| sessions.get(sid).map(|cs| cs.output_log_path.clone()));
+            if let Some(ref sid) = slot_id {
+                sessions.remove(sid);
+            }
             log_path
         };
 
@@ -635,7 +663,7 @@ impl SessionManager {
         // Get the log path without holding the lock during file I/O
         let log_path = {
             let sessions = self.sessions.read().await;
-            let cs = sessions.get(name)?;
+            let cs = sessions.values().find(|cs| cs.name == name)?;
             cs.output_log_path.clone()
         };
 
@@ -693,10 +721,12 @@ mod tests {
     /// Insert a fake session entry for testing (no real process).
     async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionStatus) {
         let mut sessions = sm.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
         sessions.insert(
-            name.to_string(),
+            slot_id.clone(),
             CoworkerSession {
                 session: None,
+                slot_id,
                 name: name.to_string(),
                 status,
                 started_at: Utc::now(),
