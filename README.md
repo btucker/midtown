@@ -129,7 +129,7 @@ Attach to a headless coworker's session in an interactive tmux window for debugg
 
 | Command | Description |
 |---------|-------------|
-| `midtown task create <subject> --description <desc> [--blocked-by <ids>]` | Create a new task (optionally blocked by comma-separated task IDs) |
+| `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>]` | Create a new task (optionally blocked by task IDs, optionally routed to a channel) |
 | `midtown task list [--all]` | List tasks (pending/in-progress by default) |
 | `midtown task view <id>` | View task details |
 | `midtown task update <id> [--owner <name>] [--status <status>]` | Update a task |

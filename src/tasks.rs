@@ -2586,4 +2586,66 @@ mod tests {
         let task = tasks.iter().find(|t| t.id == id).unwrap();
         assert!(task.blocked_by.is_empty());
     }
+
+    #[test]
+    fn test_create_task_with_channel() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let id = create_task_in_dir(
+            temp_dir.path(),
+            "Channeled task",
+            "desc",
+            "Working",
+            "alice",
+            None,
+            Some("feature-auth"),
+        )
+        .unwrap();
+
+        let tasks = read_tasks_from_dir(&temp_dir.path().to_path_buf());
+        let task = tasks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(task.channel, Some("feature-auth".to_string()));
+    }
+
+    #[test]
+    fn test_create_task_with_none_channel() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let id = create_task_in_dir(
+            temp_dir.path(),
+            "No channel",
+            "desc",
+            "Working",
+            "alice",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let tasks = read_tasks_from_dir(&temp_dir.path().to_path_buf());
+        let task = tasks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(task.channel, None);
+    }
+
+    #[test]
+    fn test_create_task_channel_persisted_in_json() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let id = create_task_in_dir(
+            temp_dir.path(),
+            "Persisted channel",
+            "desc",
+            "Working",
+            "alice",
+            None,
+            Some("infra-deploy"),
+        )
+        .unwrap();
+
+        // Verify the raw JSON file contains the channel field
+        let task_file = temp_dir.path().join(format!("{id}.json"));
+        let raw_json = std::fs::read_to_string(&task_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(parsed["channel"], serde_json::json!("infra-deploy"));
+    }
 }
