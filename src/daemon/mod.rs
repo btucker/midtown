@@ -506,6 +506,18 @@ impl DaemonState {
         stop_times.insert(name.to_lowercase(), chrono::Utc::now());
     }
 
+    /// Remove expired entries from the RPC response cache.
+    ///
+    /// Called periodically during PR polling ticks, alongside other cleanup
+    /// operations (cooldowns, stale webhook events, etc.). Without this,
+    /// expired entries remain in the HashMap forever — their TTL is only
+    /// checked on read, but memory is never freed.
+    async fn cleanup_rpc_response_cache(&self) {
+        let now = std::time::Instant::now();
+        let mut cache = self.rpc_response_cache.lock().await;
+        cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+    }
+
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
     fn is_at_coworker_limit(&self) -> bool {
         self.coworkers.list().len() >= self.max_coworkers
