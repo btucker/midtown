@@ -1040,13 +1040,17 @@ async fn handle_coworker_report_state(
             let shutdown_result =
                 tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await;
 
-            if let Err(e) = state.session_manager.shutdown(name).await {
-                // Not an error for tmux-only coworkers — they have no headless session
-                tracing::debug!("Headless session shutdown for {}: {}", name, e);
-            }
-
             match shutdown_result {
                 Ok(Ok(())) => {
+                    // Shut down headless session (if any) after tmux shutdown succeeds.
+                    // Both paths are needed: coworkers.shutdown() kills tmux windows and removes
+                    // from CoworkerManager; session_manager.shutdown() kills the headless process.
+                    // Without the session_manager call, headless processes survive as zombies.
+                    if let Err(e) = state.session_manager.shutdown(name).await {
+                        // Not an error for tmux-only coworkers — they have no headless session
+                        tracing::debug!("Headless session shutdown for {}: {}", name, e);
+                    }
+
                     // Post channel message about the break (only after successful shutdown)
                     let break_msg = crate::message::Message::system(format!(
                         "☕ {} reported idle, taking a break",
@@ -1069,6 +1073,27 @@ async fn handle_coworker_report_state(
 
                     // Clear in-memory task assignment tracking (matches Effect::ShutdownCoworker)
                     state.clear_coworker_assignments(name);
+
+                    // Clear cooldown entries for this coworker (prevents stale state on respawn)
+                    {
+                        let mut cooldowns = state.cooldowns.lock().unwrap();
+                        cooldowns.clear_for_key(name);
+                    }
+
+                    // Clear any pending nudge for this coworker
+                    state.clear_pending_nudge(name);
+
+                    // Unbind from worktree registry (worktree persists for build cache reuse)
+                    {
+                        let mut ps = state.persistent_state.lock().await;
+                        ps.worktree_registry.unbind_coworker(name);
+                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                            warn!(
+                                "Failed to save daemon state after unbinding coworker: {}",
+                                e
+                            );
+                        }
+                    }
 
                     // Immediately trigger task dispatch so pending tasks get picked up
                     // without waiting for the next TaskDispatchTick (up to 5 seconds).
