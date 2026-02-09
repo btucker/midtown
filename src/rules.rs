@@ -1237,12 +1237,18 @@ pub(crate) struct OrphanRecovery {
 /// An orphaned task is `in_progress` but its owner is not active.
 /// Returns at most ONE recovery action (rate-limited to one per tick).
 ///
-/// Skips recovery when the owner recently stopped (within grace period)
-/// and has an open PR without review feedback — they are correctly on break
-/// waiting for review. However, killed/dead coworkers (not in recently_stopped)
-/// are recovered even without review feedback. CI failures on PRs are
-/// handled separately by the webhook/PR poll pathway and do not need
-/// orphan recovery to intervene.
+/// Skips recovery when the owner recently stopped (within grace period),
+/// regardless of PR status. This covers two cases:
+/// 1. Coworker finished work and went idle → shutdown, but the task hasn't
+///    been marked done yet. The grace period prevents false recovery.
+/// 2. Coworker opened a PR and went on break waiting for review. They're
+///    correctly idle and should not be recovered until the grace period expires.
+///
+/// After the grace period expires (or if the coworker was killed/crashed and
+/// never recorded in recently_stopped), recovery fires unconditionally. This
+/// ensures dead coworkers are always recovered — even if they have an open PR
+/// without review feedback. CI failures on open PRs are handled separately
+/// by the webhook/PR poll pathway.
 pub(crate) fn decide_orphan_recovery(
     in_progress: &[(String, String, String)], // (task_id, task_subject, owner)
     active_names: &HashSet<String>,
