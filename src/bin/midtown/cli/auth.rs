@@ -96,22 +96,137 @@ fn handle_list() -> Result<Response, String> {
     }
 
     let current = midtown::auth::current_profile();
-    let mut lines = Vec::new();
-    lines.push("Profiles:".to_string());
+
+    // Fetch usage data for all authenticated profiles in parallel
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
+    let usage_results: Vec<(String, Option<midtown::UsageData>)> = runtime.block_on(async {
+        let futures = profiles.iter().map(|name| {
+            let name = name.clone();
+            tokio::task::spawn_blocking(move || {
+                let usage = midtown::fetch_usage_for_profile(&name);
+                (name, usage)
+            })
+        });
+
+        let results = futures::future::join_all(futures).await;
+        results.into_iter().filter_map(|r| r.ok()).collect()
+    });
+
+    // Build table rows
+    let mut rows = Vec::new();
 
     for name in &profiles {
         let marker = if *name == current { " (active)" } else { "" };
         let status = midtown::auth::profile_status(name);
-        let cred_status = status
-            .map(|s| {
-                if s.has_credentials {
-                    "authenticated"
-                } else {
-                    "not authenticated"
+
+        let (cred_status, usage_str, resets_str) = match status {
+            Some(s) if s.has_credentials => {
+                // Find usage data for this profile
+                let usage = usage_results
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .and_then(|(_, u)| u.as_ref());
+
+                match usage {
+                    Some(data) => {
+                        // Show the more restrictive limit (higher utilization)
+                        let (util, resets) = if data.session_util >= data.week_util {
+                            (data.session_util, data.session_resets)
+                        } else {
+                            (data.week_util, data.week_resets)
+                        };
+
+                        let usage_display = format!("{:.0}% used", util);
+
+                        // Format reset time as relative (e.g., "2h 15m")
+                        let now = chrono::Utc::now();
+                        let duration = resets.signed_duration_since(now);
+                        let hours = duration.num_hours();
+                        let minutes = duration.num_minutes() % 60;
+                        let reset_display = if hours > 0 {
+                            format!("{}h {}m", hours, minutes)
+                        } else {
+                            format!("{}m", minutes)
+                        };
+
+                        ("authenticated", usage_display, reset_display)
+                    }
+                    None => ("authenticated", "unavailable".to_string(), "-".to_string()),
                 }
-            })
-            .unwrap_or("unknown");
-        lines.push(format!("  {}{} - {}", name, marker, cred_status));
+            }
+            Some(_) => ("not authenticated", "-".to_string(), "-".to_string()),
+            None => ("unknown", "-".to_string(), "-".to_string()),
+        };
+
+        rows.push((
+            format!("{}{}", name, marker),
+            cred_status.to_string(),
+            usage_str,
+            resets_str,
+        ));
+    }
+
+    // Calculate column widths
+    let max_profile = rows
+        .iter()
+        .map(|(p, _, _, _)| p.len())
+        .max()
+        .unwrap_or(0)
+        .max("Profile".len());
+    let max_status = rows
+        .iter()
+        .map(|(_, s, _, _)| s.len())
+        .max()
+        .unwrap_or(0)
+        .max("Status".len());
+    let max_usage = rows
+        .iter()
+        .map(|(_, _, u, _)| u.len())
+        .max()
+        .unwrap_or(0)
+        .max("Usage".len());
+    let max_resets = rows
+        .iter()
+        .map(|(_, _, _, r)| r.len())
+        .max()
+        .unwrap_or(0)
+        .max("Resets".len());
+
+    // Format table
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "{:<width_p$}  {:<width_s$}  {:<width_u$}  {:<width_r$}",
+        "Profile",
+        "Status",
+        "Usage",
+        "Resets",
+        width_p = max_profile,
+        width_s = max_status,
+        width_u = max_usage,
+        width_r = max_resets,
+    ));
+
+    lines.push(format!(
+        "{}  {}  {}  {}",
+        "─".repeat(max_profile),
+        "─".repeat(max_status),
+        "─".repeat(max_usage),
+        "─".repeat(max_resets),
+    ));
+
+    for (profile, status, usage, resets) in rows {
+        lines.push(format!(
+            "{:<width_p$}  {:<width_s$}  {:<width_u$}  {:<width_r$}",
+            profile,
+            status,
+            usage,
+            resets,
+            width_p = max_profile,
+            width_s = max_status,
+            width_u = max_usage,
+            width_r = max_resets,
+        ));
     }
 
     Ok(Response::Message {
