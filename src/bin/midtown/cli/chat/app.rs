@@ -180,9 +180,9 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
-    /// Accumulator for mouse wheel scroll events (0-2).
+    /// Accumulator for mouse wheel scroll events (0-4).
     /// Mouse wheels send multiple events per physical scroll, so we accumulate
-    /// fractional scrolls: 3 events = 1 line of movement for smoother scrolling.
+    /// fractional scrolls: 5 events = 1 line of movement for smoother scrolling.
     mouse_scroll_accumulator: u8,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
@@ -541,19 +541,19 @@ impl App {
         }
     }
 
-    /// Mouse wheel scroll up (slower than keyboard - 3 events = 1 line)
+    /// Mouse wheel scroll up (slower than keyboard - 5 events = 1 line)
     pub fn mouse_scroll_up(&mut self) {
         self.mouse_scroll_accumulator += 1;
-        if self.mouse_scroll_accumulator >= 3 {
+        if self.mouse_scroll_accumulator >= 5 {
             self.mouse_scroll_accumulator = 0;
             self.scroll_up();
         }
     }
 
-    /// Mouse wheel scroll down (slower than keyboard - 3 events = 1 line)
+    /// Mouse wheel scroll down (slower than keyboard - 5 events = 1 line)
     pub fn mouse_scroll_down(&mut self) {
         self.mouse_scroll_accumulator += 1;
-        if self.mouse_scroll_accumulator >= 3 {
+        if self.mouse_scroll_accumulator >= 5 {
             self.mouse_scroll_accumulator = 0;
             self.scroll_down();
         }
@@ -1871,7 +1871,7 @@ pub(super) mod tests {
     fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
         // Mouse wheel scrolling should be slower than keyboard scrolling for smoother UX.
         // Mouse wheels send multiple events per physical scroll, so we use fractional
-        // scrolling: 3 wheel events = 1 line of movement.
+        // scrolling: 5 wheel events = 1 line of movement.
         let messages: VecDeque<Message> = (0..30)
             .map(|i| Message {
                 id: i.to_string(),
@@ -1900,7 +1900,7 @@ pub(super) mod tests {
         // Reset
         app.scroll_offset = 0;
 
-        // Mouse wheel scroll up: should take 3 events to move 1 line
+        // Mouse wheel scroll up: should take 5 events to move 1 line
         app.mouse_scroll_up();
         assert_eq!(
             app.scroll_offset, 0,
@@ -1915,23 +1915,44 @@ pub(super) mod tests {
 
         app.mouse_scroll_up();
         assert_eq!(
-            app.scroll_offset, 1,
-            "Third wheel event should complete 1 line of scroll"
+            app.scroll_offset, 0,
+            "Third wheel event shouldn't scroll yet"
         );
 
-        // Fourth event starts accumulating for next line
         app.mouse_scroll_up();
-        assert_eq!(app.scroll_offset, 1, "Fourth wheel event accumulates");
+        assert_eq!(
+            app.scroll_offset, 0,
+            "Fourth wheel event shouldn't scroll yet"
+        );
+
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset, 1,
+            "Fifth wheel event should complete 1 line of scroll"
+        );
+
+        // Sixth event starts accumulating for next line
+        app.mouse_scroll_up();
+        assert_eq!(app.scroll_offset, 1, "Sixth wheel event accumulates");
 
         // Test mouse wheel scroll down
+        // Accumulator is at 1 from the sixth up event
         app.mouse_scroll_down();
-        assert_eq!(app.scroll_offset, 1, "First down event accumulates");
+        assert_eq!(app.scroll_offset, 1, "First down event accumulates (acc=2)");
 
         app.mouse_scroll_down();
+        assert_eq!(
+            app.scroll_offset, 1,
+            "Second down event accumulates (acc=3)"
+        );
+
+        app.mouse_scroll_down();
+        assert_eq!(app.scroll_offset, 1, "Third down event accumulates (acc=4)");
+
         app.mouse_scroll_down();
         assert_eq!(
             app.scroll_offset, 0,
-            "Three down events should scroll back 1 line"
+            "Fourth down event triggers scroll (acc=5)"
         );
     }
 }
