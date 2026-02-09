@@ -881,10 +881,15 @@ pub fn has_input_text(pane_content: &str, cursor_x: Option<u16>) -> bool {
         // but the cursor stays at the prompt. Real user input moves the cursor.
         if text_present {
             if let Some(x) = cursor_x {
-                // Cursor position is in terminal columns. The prompt typically looks like:
-                // "❯ " (prompt + space) at the start of the line.
-                // Account for any leading whitespace before the prompt.
-                let prompt_end_x = (pos + '❯'.len_utf8() + 1) as u16; // +1 for space after ❯
+                // Cursor position is in terminal columns. We need to calculate the
+                // terminal column position where input starts after the prompt.
+                // Count visible characters from the start of the line to get the
+                // terminal column position (not the string byte offset).
+                let before_prompt = &line[..pos];
+                // Each character takes 1 column, but handle Unicode properly
+                let prompt_col = before_prompt.chars().count();
+                // After the prompt: "❯ " (prompt symbol + space)
+                let prompt_end_x = (prompt_col + 1 + 1) as u16; // +1 for ❯, +1 for space
 
                 // If cursor is at or very close to prompt end, the visible text is
                 // placeholder text, not real input. Allow small tolerance (within 2
