@@ -130,8 +130,8 @@ export function switchProject(projectName, webhookPort) {
     fetchStatus()
     fetchUsage()
     connectWebSocket()
-    // Poll status every 10s to keep kanban board current
-    statusPollInterval = setInterval(fetchStatus, 10000)
+    // Poll status every 30s (matching daemon's kanban cache TTL)
+    statusPollInterval = setInterval(fetchStatus, 30000)
     // Poll usage every 2 minutes (matching TUI refresh interval)
     usagePollInterval = setInterval(fetchUsage, 120000)
   }

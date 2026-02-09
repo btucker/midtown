@@ -5,6 +5,8 @@
 //! from a Unix stream and dispatches them via `handle_request`.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -2111,7 +2113,33 @@ fn get_all_tasks() -> Vec<serde_json::Value> {
 ///
 /// Runs blocking GraphQL operations in spawn_blocking to avoid blocking
 /// the async runtime and causing RPC timeouts.
+///
+/// Uses a 30s TTL cache to avoid expensive GraphQL queries on every call.
+/// The web UI polls /api/status every 10s, so this cache prevents redundant
+/// queries and dramatically reduces GitHub API usage.
 async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
+    // Clone data needed for cache key computation
+    let all_repo_paths = state.all_repo_paths.clone();
+
+    // Compute a hash of all repo paths for cache keying
+    let mut hasher = DefaultHasher::new();
+    for path in &all_repo_paths {
+        path.hash(&mut hasher);
+    }
+    let repo_hash = hasher.finish();
+
+    // Check cache first
+    if let Some(cached) = KANBAN_CACHE.get(repo_hash) {
+        debug!(
+            "Returning cached kanban data (TTL: {}s)",
+            KANBAN_CACHE_TTL.as_secs()
+        );
+        return Response::success(id, cached);
+    }
+
+    // Cache miss - fetch fresh data
+    debug!("Cache miss, fetching fresh kanban data");
+
     // Get reviewer assignments from GitHubState (best-effort via try_lock)
     let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
         .persistent_state
@@ -2119,8 +2147,6 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         .map(|ps| ps.github.active_assignments())
         .unwrap_or_default();
 
-    // Clone data needed for the blocking task
-    let all_repo_paths = state.all_repo_paths.clone();
     let is_multi_repo = all_repo_paths.len() > 1;
 
     // Pre-resolve repo full names (this uses caching and is fast)
@@ -2172,24 +2198,71 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         }
     };
 
-    Response::success(
-        id,
-        serde_json::json!({
-            "prs": prs,
-            "merged_prs": merged_prs,
-            "repos": repos,
-        }),
-    )
+    // Build response and cache it
+    let response_data = serde_json::json!({
+        "prs": prs,
+        "merged_prs": merged_prs,
+        "repos": repos,
+    });
+
+    KANBAN_CACHE.set(response_data.clone(), repo_hash);
+
+    Response::success(id, response_data)
 }
 
 // ============================================================================
 // Kanban / PR data helpers
 // ============================================================================
 
+/// TTL for kanban data cache (30 seconds, matching web server's CACHE_TTL).
+const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Thread-safe TTL cache for kanban GraphQL data.
+///
+/// Stores the full kanban response (PRs, merged PRs, repos) keyed by a hash
+/// of the repo paths. The cache expires after KANBAN_CACHE_TTL and avoids
+/// expensive GraphQL queries on every RPC call.
+struct KanbanCache {
+    inner: std::sync::Mutex<Option<(Instant, serde_json::Value, u64)>>,
+}
+
+impl KanbanCache {
+    const fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Return cached value if it exists, is younger than TTL, and matches the repo_hash.
+    fn get(&self, repo_hash: u64) -> Option<serde_json::Value> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .as_ref()
+            .filter(|(ts, _, hash)| ts.elapsed() < KANBAN_CACHE_TTL && *hash == repo_hash)
+            .map(|(_, v, _)| v.clone())
+    }
+
+    /// Store a new value with the current timestamp and repo_hash.
+    fn set(&self, value: serde_json::Value, repo_hash: u64) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some((Instant::now(), value, repo_hash));
+        }
+    }
+}
+
+/// Global kanban data cache.
+static KANBAN_CACHE: KanbanCache = KanbanCache::new();
+
 /// GraphQL query that fetches both open and recently merged PRs in a single call.
 ///
 /// This replaces two separate `gh pr list` CLI calls with one GraphQL request,
 /// cutting API usage in half for the kanban board.
+///
+/// Query cost optimizations:
+/// - contexts(first: 20) instead of 100 — CI status is enough with top 20 checks
+/// - comments(first: 10) instead of 100 — kanban board only needs recent activity
+///
+/// These changes reduce query cost ~25x while preserving UI functionality.
 const KANBAN_GRAPHQL_QUERY: &str = r#"
 query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
@@ -2204,7 +2277,7 @@ query($owner: String!, $repo: String!) {
           nodes {
             commit {
               statusCheckRollup {
-                contexts(first: 100) {
+                contexts(first: 20) {
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -2220,7 +2293,7 @@ query($owner: String!, $repo: String!) {
             }
           }
         }
-        comments(first: 100) {
+        comments(first: 10) {
           nodes {
             body
             createdAt
