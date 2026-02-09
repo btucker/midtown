@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use crate::daemon::state::HeadlessSessionInfo;
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 
 /// Status of a managed headless session.
@@ -441,6 +442,58 @@ impl SessionManager {
     pub async fn get_session_id(&self, name: &str) -> Option<String> {
         let sessions = self.sessions.read().await;
         sessions.get(name).and_then(|cs| cs.session_id.clone())
+    }
+
+    /// Get the OS process ID for a coworker session (for zombie cleanup).
+    pub async fn get_pid(&self, name: &str) -> Option<u32> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .get(name)
+            .and_then(|cs| cs.session.as_ref())
+            .and_then(|session| session.pid())
+    }
+
+    /// Mark all sessions to be detached (not killed) on drop.
+    ///
+    /// Called during daemon shutdown to allow sessions to survive restarts.
+    /// The daemon will resume these sessions after restart using the persisted
+    /// session IDs.
+    pub async fn detach_all(&self) {
+        let mut sessions = self.sessions.write().await;
+        for cs in sessions.values_mut() {
+            if let Some(session) = cs.session.as_mut() {
+                session.detach_on_drop();
+            }
+        }
+    }
+
+    /// Collect HeadlessSessionInfo for all running sessions to persist before shutdown.
+    ///
+    /// Returns a HashMap keyed by coworker name, ready to be saved to persistent state.
+    /// The caller should supplement with task/PR/purpose info from CoworkerManager and
+    /// GitHub state, then save via `persistent_state.save_for_repo()`.
+    pub async fn collect_session_info(&self) -> HashMap<String, HeadlessSessionInfo> {
+        let sessions = self.sessions.read().await;
+        let mut info_map = HashMap::new();
+
+        for (name, cs) in sessions.iter() {
+            if let (Some(session_id), Some(session)) = (&cs.session_id, &cs.session) {
+                let pid = session.pid();
+                let info = HeadlessSessionInfo {
+                    session_id: session_id.clone(),
+                    last_active: cs.last_event_at.unwrap_or(cs.started_at),
+                    purpose: String::new(), // To be filled by caller
+                    pid,
+                    coworker_type: None, // To be filled by caller
+                    task_id: None,       // To be filled by caller
+                    pr_number: None,     // To be filled by caller
+                    working_dir: None,   // To be filled by caller
+                };
+                info_map.insert(name.clone(), info);
+            }
+        }
+
+        info_map
     }
 
     /// Collect health data for all sessions.

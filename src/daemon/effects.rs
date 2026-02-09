@@ -398,6 +398,12 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
 /// Before execution, nudge effects targeting the same coworker are deduplicated
 /// to prevent rapid-fire nudges within a single tick (e.g., when CI green,
 /// review complete, and merge conflict each independently nudge the same coworker).
+///
+/// Spawn effects (`AssignAndSpawn`, `SpawnCoworkerWithCallbacks`, `SpawnCoworker`,
+/// `EnsureWorktree`) are parallelized using `tokio::spawn` to avoid sequential
+/// blocking during startup when processing multiple pending tasks. Non-spawn effects
+/// execute sequentially as before. This keeps the daemon responsive to RPC requests
+/// during startup by avoiding long sequential pauses from worktree creation (1-5s each).
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     let effects = dedup_nudge_effects(effects);
     for effect in effects {
@@ -515,7 +521,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 } else {
                     Message::text(&sender, &message)
                 };
-                if let Err(e) = state.send_and_broadcast(&msg) {
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
                 }
             }
@@ -689,7 +695,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::PostSystemMessage { message } => {
                 let msg = Message::system(message);
-                if let Err(e) = state.send_and_broadcast(&msg) {
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post system message: {}", e);
                 }
             }
@@ -1011,7 +1017,7 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post workflow rerun message: {}", e);
         }
     } else {
@@ -1067,7 +1073,7 @@ async fn rebase_pr_on_main(state: &DaemonState, pr_number: u64, reason: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post branch update message: {}", e);
         }
     } else {
@@ -1113,7 +1119,7 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post auto-merge message: {}", e);
         }
     } else {
@@ -1130,7 +1136,7 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post auto-merge failure message: {}", e);
         }
     }

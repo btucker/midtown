@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels, coworkers, leadTyping, kanbanData, repoStatus, repoStatuses, daemonStatus, detailPanelData, isWideScreen } from './store.js'
   import { sendMessage, uploadFile } from './api.js'
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -85,7 +85,7 @@
         const task = findTask(taskId)
         if (task) {
           // Desktop (>= 1025px): use DetailPanel; Mobile/tablet: use modal
-          if (window.innerWidth >= 1025) {
+          if ($isWideScreen) {
             detailPanelData.set({ type: 'task', data: task })
           } else {
             selectedTask = task
@@ -97,7 +97,7 @@
         const url = getPrUrl(prNum)
         if (url) {
           // Desktop (>= 1025px): use DetailPanel if PR data available, else open GitHub
-          if (window.innerWidth >= 1025) {
+          if ($isWideScreen) {
             const pr = findPr(prNum)
             if (pr) {
               detailPanelData.set({
@@ -124,7 +124,7 @@
         const coworkerName = target.dataset.coworker
         // Find the coworker in the store
         const coworker = $coworkers.find((cw) => cw.name.toLowerCase() === coworkerName.toLowerCase())
-        if (coworker && window.innerWidth >= 1025) {
+        if (coworker && $isWideScreen) {
           detailPanelData.set({
             type: 'coworker',
             data: {

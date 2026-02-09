@@ -132,7 +132,7 @@ Attach to a headless coworker's session in an interactive tmux window for debugg
 | `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>]` | Create a new task (optionally blocked by task IDs, optionally routed to a channel) |
 | `midtown task list [--all]` | List tasks (pending/in-progress by default) |
 | `midtown task view <id>` | View task details |
-| `midtown task update <id> [--owner <name>] [--status <status>]` | Update a task |
+| `midtown task update <id> [--owner <name>] [--status <status>] [--channel <name>]` | Update a task |
 | `midtown task claim <id>` | Claim a task |
 | `midtown task done <id>` | Mark a task as completed |
 | `midtown task request <description>` | Request new work (posts to channel for lead) |
@@ -433,7 +433,9 @@ The `midtown chat` command opens a split-panel interface with:
 - Real-time channel message display
 - Mermaid diagram detection and rendering (via `selkie-rs` with content-hash caching)
 - Inline ASCII art for flowchart diagrams (press number keys to open SVG in browser)
+- **Type-anywhere UX**: Character keys auto-focus the input bar (like Slack/Discord)
 - Tab-based focus navigation (Board → Chat → InputBar)
+- Arrow keys, PageUp/PageDown, Home/End for scrolling
 - Mouse support for scrolling and navigation
 - Clickable hyperlinks via OSC 8 escape sequences
 - Real-time token usage and cost tracking

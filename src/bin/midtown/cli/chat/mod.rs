@@ -122,13 +122,6 @@ async fn run_app_async(
                         // Handle the first event
                         match handle_event(app, event) {
                             EventResult::Exit => return Ok(()),
-                            EventResult::ToggleSelectionMode => {
-                                if app.selection_mode {
-                                    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
-                                } else {
-                                    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
-                                }
-                            }
                             EventResult::OpenDiagramInBrowser(idx) => {
                                 open_diagram_in_browser(app, idx);
                             }
@@ -144,13 +137,6 @@ async fn run_app_async(
                         {
                             match handle_event(app, event) {
                                 EventResult::Exit => return Ok(()),
-                                EventResult::ToggleSelectionMode => {
-                                    if app.selection_mode {
-                                        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
-                                    } else {
-                                        let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
-                                    }
-                                }
                                 EventResult::OpenDiagramInBrowser(idx) => {
                                     open_diagram_in_browser(app, idx);
                                 }
@@ -187,9 +173,8 @@ async fn run_app_async(
             }
 
             // Auto-scroll back to bottom if user scrolled up and forgot
-            // Skip if in selection mode - user may be copying text
             _ = auto_scroll_interval.tick() => {
-                if app.scroll_offset > 0 && !app.selection_mode {
+                if app.scroll_offset > 0 {
                     app.scroll_to_bottom();
                 }
             }
@@ -322,8 +307,6 @@ enum EventResult {
     Continue,
     /// Exit the app
     Exit,
-    /// Toggle selection mode (needs to update terminal mouse capture)
-    ToggleSelectionMode,
     /// Open a diagram in the browser (0-based index into diagram_sources)
     OpenDiagramInBrowser(usize),
 }
@@ -334,7 +317,6 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
 
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') => EventResult::Exit,
             KeyCode::Esc => {
                 // Esc exits when in Board or Chat, clears input when in InputBar
                 if app.focused_pane == FocusedPane::InputBar {
@@ -345,26 +327,26 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     EventResult::Exit
                 }
             }
-            KeyCode::Char('s') => {
-                app.toggle_selection_mode();
-                EventResult::ToggleSelectionMode
-            }
             // Tab cycles focus: Board → Chat → InputBar → Board
             KeyCode::Tab => {
                 app.cycle_focus();
                 EventResult::Continue
             }
-            // Number keys 1-9 open the corresponding diagram in browser
+            // Number keys 1-9 open diagrams - only when diagrams exist
+            // This is checked BEFORE auto-focus to input to preserve diagram shortcuts
             KeyCode::Char(c @ '1'..='9') => {
                 let idx = (c as usize) - ('1' as usize); // 0-based
                 if idx < app.diagram_sources.len() {
+                    // Diagram exists, open it (don't insert into input)
                     EventResult::OpenDiagramInBrowser(idx)
                 } else {
+                    // No diagram at this index - treat as regular character input
+                    auto_focus_and_insert_char(app, c);
                     EventResult::Continue
                 }
             }
-            // Up/Down behavior depends on focused pane
-            KeyCode::Up | KeyCode::Char('k') => {
+            // Arrow keys for scrolling - don't auto-focus input
+            KeyCode::Up => {
                 match app.focused_pane {
                     FocusedPane::Board => {
                         // Navigate channel/task list (future implementation)
@@ -376,7 +358,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     }
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 match app.focused_pane {
                     FocusedPane::Board => {
                         // Navigate channel/task list (future implementation)
@@ -396,52 +378,53 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 app.page_down();
                 EventResult::Continue
             }
-            KeyCode::Home | KeyCode::Char('g') => {
+            KeyCode::Home => {
                 app.scroll_to_top();
                 EventResult::Continue
             }
-            KeyCode::End | KeyCode::Char('G') => {
+            KeyCode::End => {
                 app.scroll_to_bottom();
                 EventResult::Continue
             }
-            // Enter sends message when in InputBar
+            // Enter: auto-focus InputBar, send message if there's text
             KeyCode::Enter => {
-                if app.focused_pane == FocusedPane::InputBar && !app.input_text.is_empty() {
+                if app.focused_pane != FocusedPane::InputBar {
+                    app.focused_pane = FocusedPane::InputBar;
+                } else if !app.input_text.is_empty() {
                     // TODO: Post message to channel
                     app.input_text.clear();
                     app.input_cursor = 0;
                 }
                 EventResult::Continue
             }
-            // Character input when in InputBar
-            KeyCode::Char(c) => {
-                if app.focused_pane == FocusedPane::InputBar {
-                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
-                    app.input_text.insert(byte_idx, c);
-                    app.input_cursor += 1;
-                }
-                EventResult::Continue
-            }
-            // Backspace in InputBar
+            // Backspace: auto-focus if input has text, then delete
             KeyCode::Backspace => {
-                if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
-                    app.input_cursor -= 1;
-                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
-                    app.input_text.remove(byte_idx);
+                if !app.input_text.is_empty() && app.input_cursor == 0 {
+                    // Input has text but cursor is at start - auto-focus but don't delete
+                    app.focused_pane = FocusedPane::InputBar;
+                } else if !app.input_text.is_empty() || app.focused_pane == FocusedPane::InputBar {
+                    // Either input has text or already focused - auto-focus and delete
+                    app.focused_pane = FocusedPane::InputBar;
+                    if app.input_cursor > 0 {
+                        app.input_cursor -= 1;
+                        let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                        app.input_text.remove(byte_idx);
+                    }
                 }
                 EventResult::Continue
             }
-            // Delete in InputBar
+            // Delete: auto-focus if input has text, then delete forward
             KeyCode::Delete => {
-                if app.focused_pane == FocusedPane::InputBar
-                    && app.input_cursor < app.input_text.chars().count()
-                {
-                    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
-                    app.input_text.remove(byte_idx);
+                if !app.input_text.is_empty() || app.focused_pane == FocusedPane::InputBar {
+                    app.focused_pane = FocusedPane::InputBar;
+                    if app.input_cursor < app.input_text.chars().count() {
+                        let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+                        app.input_text.remove(byte_idx);
+                    }
                 }
                 EventResult::Continue
             }
-            // Left/Right for cursor movement in InputBar
+            // Left/Right for cursor movement - only when in InputBar
             KeyCode::Left => {
                 if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
                     app.input_cursor -= 1;
@@ -454,6 +437,11 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 {
                     app.input_cursor += 1;
                 }
+                EventResult::Continue
+            }
+            // All other character input: auto-focus InputBar and insert
+            KeyCode::Char(c) => {
+                auto_focus_and_insert_char(app, c);
                 EventResult::Continue
             }
             _ => EventResult::Continue,
@@ -471,6 +459,21 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
         },
         _ => EventResult::Continue,
     }
+}
+
+/// Auto-focus the InputBar and insert a character at the cursor position
+fn auto_focus_and_insert_char(app: &mut App, c: char) {
+    use app::FocusedPane;
+
+    // Switch focus to InputBar if not already there
+    if app.focused_pane != FocusedPane::InputBar {
+        app.focused_pane = FocusedPane::InputBar;
+    }
+
+    // Insert character at cursor position
+    let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
+    app.input_text.insert(byte_idx, c);
+    app.input_cursor += 1;
 }
 
 #[cfg(test)]
@@ -543,14 +546,46 @@ mod tests {
     }
 
     #[test]
-    fn test_quit_keys_exit() {
+    fn test_esc_exits() {
+        use app::FocusedPane;
         let mut app = test_app();
 
-        let result = handle_event(&mut app, key_press(KeyCode::Char('q')));
-        assert!(matches!(result, EventResult::Exit), "'q' should exit");
-
+        // Esc should exit when not in InputBar
         let result = handle_event(&mut app, key_press(KeyCode::Esc));
-        assert!(matches!(result, EventResult::Exit), "Esc should exit");
+        assert!(
+            matches!(result, EventResult::Exit),
+            "Esc should exit when not in InputBar"
+        );
+
+        // Esc should clear input when in InputBar
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "test".to_string();
+        let result = handle_event(&mut app, key_press(KeyCode::Esc));
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Esc should continue when in InputBar"
+        );
+        assert_eq!(app.input_text, "", "Esc should clear input text");
+    }
+
+    #[test]
+    fn test_q_key_inserts_into_input() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        // 'q' should now auto-focus and insert, not exit
+        let result = handle_event(&mut app, key_press(KeyCode::Char('q')));
+        assert!(
+            matches!(result, EventResult::Continue),
+            "'q' should continue, not exit"
+        );
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::InputBar,
+            "'q' should auto-focus InputBar"
+        );
+        assert_eq!(app.input_text, "q", "'q' should insert into input");
     }
 
     #[test]
@@ -564,5 +599,216 @@ mod tests {
             matches!(result, EventResult::Continue),
             "Number key with no diagrams should be Continue"
         );
+    }
+
+    #[test]
+    fn test_type_anywhere_letter_keys_auto_focus_input() {
+        use app::FocusedPane;
+        let mut app = test_app();
+
+        // Start with focus on Chat pane
+        app.focused_pane = FocusedPane::Chat;
+        assert!(app.input_text.is_empty(), "Input should start empty");
+
+        // Type a letter - should auto-focus InputBar and insert character
+        let result = handle_event(&mut app, key_press(KeyCode::Char('h')));
+        assert!(
+            matches!(result, EventResult::Continue),
+            "Letter key should continue"
+        );
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::InputBar,
+            "Focus should switch to InputBar"
+        );
+        assert_eq!(app.input_text, "h", "Character should be inserted");
+        assert_eq!(app.input_cursor, 1, "Cursor should advance");
+    }
+
+    #[test]
+    fn test_type_anywhere_from_board_pane() {
+        use app::FocusedPane;
+        let mut app = test_app();
+
+        // Start with focus on Board pane
+        app.focused_pane = FocusedPane::Board;
+
+        // Type characters - should auto-focus and insert
+        handle_event(&mut app, key_press(KeyCode::Char('t')));
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+        assert_eq!(app.input_text, "t");
+
+        handle_event(&mut app, key_press(KeyCode::Char('e')));
+        assert_eq!(app.input_text, "te");
+
+        handle_event(&mut app, key_press(KeyCode::Char('s')));
+        assert_eq!(app.input_text, "tes");
+
+        handle_event(&mut app, key_press(KeyCode::Char('t')));
+        assert_eq!(app.input_text, "test");
+    }
+
+    #[test]
+    fn test_punctuation_and_numbers_auto_focus() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        // Zero (not 1-9, so not diagram shortcut)
+        handle_event(&mut app, key_press(KeyCode::Char('0')));
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+        assert_eq!(app.input_text, "0");
+
+        // Punctuation
+        app.input_text.clear();
+        app.input_cursor = 0;
+        app.focused_pane = FocusedPane::Chat;
+
+        handle_event(&mut app, key_press(KeyCode::Char('!')));
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+        assert_eq!(app.input_text, "!");
+    }
+
+    #[test]
+    fn test_backspace_auto_focuses_when_input_has_text() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+        app.input_text = "hello".to_string();
+        app.input_cursor = 5;
+
+        // Backspace should auto-focus and delete
+        handle_event(&mut app, key_press(KeyCode::Backspace));
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+        assert_eq!(app.input_text, "hell");
+        assert_eq!(app.input_cursor, 4);
+    }
+
+    #[test]
+    fn test_backspace_no_effect_when_input_empty_and_not_focused() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+        assert!(app.input_text.is_empty());
+
+        // Backspace with empty input should not change focus
+        handle_event(&mut app, key_press(KeyCode::Backspace));
+        assert_eq!(app.focused_pane, FocusedPane::Chat);
+    }
+
+    #[test]
+    fn test_enter_auto_focuses_input_bar() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        // Enter should auto-focus InputBar
+        handle_event(&mut app, key_press(KeyCode::Enter));
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+    }
+
+    #[test]
+    fn test_enter_sends_message_when_input_has_text() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "test message".to_string();
+
+        handle_event(&mut app, key_press(KeyCode::Enter));
+        // Message sent, input cleared
+        assert_eq!(app.input_text, "");
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn test_arrow_keys_still_scroll_when_not_in_input() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        // Arrow keys should not auto-focus, they navigate
+        handle_event(&mut app, key_press(KeyCode::Up));
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Chat,
+            "Up arrow should not change focus"
+        );
+
+        handle_event(&mut app, key_press(KeyCode::Down));
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Chat,
+            "Down arrow should not change focus"
+        );
+    }
+
+    #[test]
+    fn test_page_keys_still_work_when_not_in_input() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        // PageUp/PageDown should not auto-focus
+        handle_event(&mut app, key_press(KeyCode::PageUp));
+        assert_eq!(app.focused_pane, FocusedPane::Chat);
+
+        handle_event(&mut app, key_press(KeyCode::PageDown));
+        assert_eq!(app.focused_pane, FocusedPane::Chat);
+    }
+
+    #[test]
+    fn test_diagram_shortcuts_still_work_without_auto_focus() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+        app.diagram_sources = vec!["graph TD\n  A-->B".into()];
+
+        // Number keys 1-9 for diagrams should NOT auto-focus input
+        let result = handle_event(&mut app, key_press(KeyCode::Char('1')));
+        assert!(matches!(result, EventResult::OpenDiagramInBrowser(0)));
+        assert_eq!(
+            app.focused_pane,
+            FocusedPane::Chat,
+            "Diagram shortcut should not change focus"
+        );
+        assert_eq!(
+            app.input_text, "",
+            "Diagram shortcut should not insert text"
+        );
+    }
+
+    #[test]
+    fn test_esc_clears_input_when_in_input_bar() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+        app.input_text = "test".to_string();
+        app.input_cursor = 4;
+
+        let result = handle_event(&mut app, key_press(KeyCode::Esc));
+        assert!(matches!(result, EventResult::Continue));
+        assert_eq!(app.input_text, "");
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn test_esc_exits_when_not_in_input_bar() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        let result = handle_event(&mut app, key_press(KeyCode::Esc));
+        assert!(matches!(result, EventResult::Exit));
+    }
+
+    #[test]
+    fn test_space_auto_focuses_input() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::Chat;
+
+        handle_event(&mut app, key_press(KeyCode::Char(' ')));
+        assert_eq!(app.focused_pane, FocusedPane::InputBar);
+        assert_eq!(app.input_text, " ");
     }
 }

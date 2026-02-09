@@ -55,6 +55,11 @@ or add the HTML comment anywhere in your comment:
 
 **Reviews are comment-based, not formal GitHub reviews.** All coworkers share the same GitHub user, so `gh pr review --approve` is meaningless. Post reviews as PR comments using `gh pr comment`. Authors merge their own PRs after review feedback is addressed.
 
+**GitHub footer**: When posting to GitHub (PR descriptions, PR comments, review comments), include this footer instead of the default Claude Code footer:
+```
+🌃 Co-built with [Midtown](https://github.com/btucker/midtown)
+```
+
 **CRITICAL: NEVER use @mentions in GitHub** (PR descriptions, comments, reviews). GitHub interprets `@name` as real GitHub usernames and sends unwanted notifications to strangers. This has already caused incidents. Use coworker names without the `@` prefix in all GitHub content. @mentions are ONLY for the IRC channel where the daemon routes them.
 
 - ❌ GitHub: "@park Addressed both issues" — this pings a real GitHub user named "park"

@@ -126,6 +126,7 @@ pub use channel::{Channel, ChannelRouter};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};
+pub use usage::{UsageData, fetch_usage_for_profile};
 pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};
 
 /// Resolve the `web-app/dist/` directory containing built static assets.

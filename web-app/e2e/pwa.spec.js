@@ -97,4 +97,33 @@ test.describe('PWA responsive layout', () => {
     await expect(page.locator('.kanban')).toBeVisible()
     await expect(page.locator('.messages')).toBeVisible()
   })
+
+  test('chat input is visible and within viewport on mobile', async ({ page }) => {
+    await mockAllRoutes(page)
+    // Use typical iPhone dimensions
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/')
+
+    // Navigate to Board view to see the channel
+    await page.click('nav button:has-text("Board")')
+
+    // Verify input area is visible
+    const inputArea = page.locator('.input-area')
+    await expect(inputArea).toBeVisible()
+
+    // Get the bounding box to ensure it's within viewport
+    const box = await inputArea.boundingBox()
+    expect(box).toBeTruthy()
+    if (box) {
+      // Input should be fully visible within viewport height
+      expect(box.y + box.height).toBeLessThanOrEqual(844)
+      // Input should not be pushed off the bottom
+      expect(box.y).toBeGreaterThanOrEqual(0)
+    }
+
+    // Verify textarea is visible and interactable
+    const textarea = page.locator('.input-area textarea')
+    await expect(textarea).toBeVisible()
+    await expect(textarea).toBeEnabled()
+  })
 })

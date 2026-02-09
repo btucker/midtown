@@ -165,8 +165,6 @@ pub struct App {
     repo_status_last_refresh: Instant,
     /// Receiver for async repo status from background thread
     repo_status_receiver: Option<Receiver<Vec<(RepoInfo, RepoStatus)>>>,
-    /// Selection mode - when true, mouse capture is disabled for text selection
-    pub selection_mode: bool,
     /// User display name from config (None = "user")
     pub user_display_name: Option<String>,
     /// Cached mapping of coworker name -> current task subject.
@@ -214,6 +212,9 @@ const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 /// Shorter retry interval when usage fetch fails (15 seconds)
 const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Number of lines to scroll per mouse wheel event
+const SCROLL_STEP: usize = 3;
+
 impl App {
     pub fn new() -> Self {
         // Use detect_repo_name() which correctly handles worktrees by using
@@ -244,7 +245,6 @@ impl App {
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
-            selection_mode: false,
             user_display_name: midtown::config::get_user_display_name(),
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
@@ -514,11 +514,11 @@ impl App {
         (pending, in_progress, completed)
     }
 
-    /// Scroll up one line
+    /// Scroll up by SCROLL_STEP lines
     pub fn scroll_up(&mut self) {
         let max_scroll = self.max_scroll();
         if self.scroll_offset < max_scroll {
-            self.scroll_offset += 1;
+            self.scroll_offset = (self.scroll_offset + SCROLL_STEP).min(max_scroll);
         }
         // Mark as intentionally at top if we've scrolled to max
         if self.scroll_offset >= max_scroll {
@@ -527,10 +527,10 @@ impl App {
         self.maybe_load_more_history();
     }
 
-    /// Scroll down one line
+    /// Scroll down by SCROLL_STEP lines
     pub fn scroll_down(&mut self) {
         if self.scroll_offset > 0 {
-            self.scroll_offset -= 1;
+            self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_STEP);
             // No longer at top when scrolling down
             self.intentionally_at_top = false;
         }
@@ -570,10 +570,7 @@ impl App {
     }
 
     /// Toggle selection mode (disables mouse capture for text selection)
-    pub fn toggle_selection_mode(&mut self) {
-        self.selection_mode = !self.selection_mode;
-    }
-
+    /// Note: No keyboard shortcut currently bound to this - reserved for future use
     /// Cycle focus between panes: Board → Chat → InputBar → Board
     pub fn cycle_focus(&mut self) {
         self.focused_pane = match self.focused_pane {
@@ -1431,7 +1428,6 @@ pub(super) mod tests {
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
-            selection_mode: false,
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,

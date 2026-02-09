@@ -99,6 +99,11 @@ impl Response {
             id,
         }
     }
+
+    /// Returns true if this response is an error.
+    pub fn is_error(&self) -> bool {
+        self.error.is_some()
+    }
 }
 
 /// JSON-RPC error object.
@@ -186,6 +191,15 @@ mod tests {
         assert!(json.contains("\"error\""));
         assert!(json.contains("-32601"));
         assert!(!json.contains("\"result\""));
+    }
+
+    #[test]
+    fn test_response_is_error() {
+        let success = Response::success(RequestId::Number(1), serde_json::json!("ok"));
+        assert!(!success.is_error());
+
+        let error = Response::error(RequestId::Number(2), RpcError::method_not_found());
+        assert!(error.is_error());
     }
 
     #[test]

@@ -41,6 +41,9 @@ pub enum TaskCommand {
         /// Set blocked-by task IDs (comma-separated)
         #[arg(long, value_delimiter = ',')]
         blocked_by: Option<Vec<String>>,
+        /// Set channel for coworker messages
+        #[arg(long)]
+        channel: Option<String>,
     },
     /// Mark a task as done
     Done {
@@ -94,12 +97,14 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             status,
             description,
             blocked_by,
+            channel,
         } => client.task_update(
             id,
             owner.as_deref(),
             status.as_deref(),
             description.as_deref(),
             blocked_by.as_deref(),
+            channel.as_deref(),
         ),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),

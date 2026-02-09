@@ -302,6 +302,7 @@ impl DaemonClient {
         status: Option<&str>,
         description: Option<&str>,
         blocked_by: Option<&[String]>,
+        channel: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "id": id });
         if let Some(o) = owner {
@@ -315,6 +316,9 @@ impl DaemonClient {
         }
         if let Some(bb) = blocked_by {
             params["blocked_by"] = serde_json::json!(bb);
+        }
+        if let Some(ch) = channel {
+            params["channel"] = serde_json::json!(ch);
         }
         self.send("task.update", Some(params))
     }
