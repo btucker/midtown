@@ -400,7 +400,7 @@ mod tests {
     fn test_common_prompt_included_in_lead() {
         let prompt = lead_system_prompt();
         assert!(
-            prompt.contains("DO NOT use @mentions in GitHub"),
+            prompt.contains("CRITICAL: NEVER use @mentions in GitHub"),
             "Lead prompt should include GitHub @mentions rule from common.md"
         );
         assert!(
@@ -417,7 +417,7 @@ mod tests {
     fn test_common_prompt_included_in_coworker() {
         let prompt = coworker_system_prompt("park");
         assert!(
-            prompt.contains("DO NOT use @mentions in GitHub"),
+            prompt.contains("CRITICAL: NEVER use @mentions in GitHub"),
             "Coworker prompt should include GitHub @mentions rule from common.md"
         );
         assert!(
