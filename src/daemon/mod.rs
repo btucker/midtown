@@ -692,14 +692,10 @@ impl DaemonState {
 
         // Register in the CoworkerManager tracking map
         // session_id is None initially — it arrives later via the init StreamEvent
-        let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
-        if let Err(e) = self.coworkers.register(
-            &name,
-            working_dir,
-            None,
-            isolated_tasks,
-            config.model.clone(),
-        ) {
+        if let Err(e) = self
+            .coworkers
+            .register(&name, working_dir, None, config.model.clone())
+        {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
             tracing::warn!(

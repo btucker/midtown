@@ -608,7 +608,6 @@ async fn handle_coworker_spawn(
         } else {
             crate::launch::SessionMode::Fresh
         },
-        task_mode: crate::launch::TaskMode::Isolated,
         role: crate::launch::CoworkerRole::Coworker,
         initial_prompt: prompt,
         additional_dirs: vec![],

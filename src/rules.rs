@@ -20,7 +20,6 @@ use chrono::{DateTime, Utc};
 pub(crate) struct CoworkerSnapshot {
     pub name: String,
     pub started_at: DateTime<Utc>,
-    pub isolated_tasks: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,16 +1500,12 @@ mod tests {
         CoworkerSnapshot {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
-            isolated_tasks: false,
         }
     }
 
+    // Legacy alias — all coworkers are now isolated
     fn cw_isolated(name: &str, minutes_old: i64) -> CoworkerSnapshot {
-        CoworkerSnapshot {
-            name: name.to_string(),
-            started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
-            isolated_tasks: true,
-        }
+        cw(name, minutes_old)
     }
 
     fn set(items: &[&str]) -> HashSet<String> {

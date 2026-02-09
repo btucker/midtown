@@ -293,13 +293,12 @@ fn is_registry_effect(effect: &Effect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::launch::{CoworkerRole, LaunchConfig, SessionMode, TaskMode};
+    use crate::launch::{CoworkerRole, LaunchConfig, SessionMode};
 
     fn make_spawn(name: &str) -> Effect {
         Effect::SpawnCoworker(LaunchConfig {
             name: name.to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt: None,
             additional_dirs: vec![],
@@ -372,7 +371,6 @@ mod tests {
         let config = LaunchConfig {
             name: name.to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt: None,
             additional_dirs: vec![],
@@ -393,7 +391,6 @@ mod tests {
         let config = LaunchConfig {
             name: name.to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt: None,
             additional_dirs: vec![],
@@ -454,7 +451,6 @@ mod tests {
         let config1 = LaunchConfig {
             name: "lexington".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt: None,
             additional_dirs: vec![],

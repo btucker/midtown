@@ -90,10 +90,6 @@ pub struct Coworker {
     pub current_task: Option<String>,
     /// Claude Code session ID (UUID) for task symlink management
     pub session_id: Option<String>,
-    /// Whether this coworker has an isolated task list (e.g., review coworkers)
-    /// Isolated coworkers are sent on a break immediately when they go idle.
-    #[serde(default)]
-    pub isolated_tasks: bool,
     /// The Claude model this coworker is using (e.g., "sonnet", "opus", "haiku")
     #[serde(default = "default_model")]
     pub model: String,
@@ -117,7 +113,6 @@ impl Coworker {
             started_at: chrono::Utc::now(), // Unknown, use now as approximation
             current_task: None,             // Will be discovered via task tracking
             session_id: None,               // Will be set when coworker registers
-            isolated_tasks: false,          // Assume shared task list (conservative default)
             model: default_model(),         // Default to sonnet for recovered sessions
         }
     }
@@ -308,7 +303,6 @@ impl CoworkerManager {
                 started_at: Utc::now(), // Unknown, use now as approximation
                 current_task: None,     // Will be discovered via task tracking
                 session_id: None,       // Will be set when coworker registers
-                isolated_tasks: false,
                 model: default_model(), // Unknown for discovered sessions, assume sonnet
             };
 
@@ -1093,7 +1087,7 @@ impl CoworkerManager {
     ///
     /// If an entry already exists with `session_id: None`, it's treated as a
     /// provisional recovery entry and is updated with the authoritative values
-    /// (session_id, isolated_tasks, working_dir). This allows `sync_with_tmux`
+    /// (session_id, working_dir). This allows `sync_with_tmux`
     /// recovery to create provisional entries without blocking legitimate
     /// registrations.
     ///
@@ -1104,7 +1098,6 @@ impl CoworkerManager {
         name: &str,
         working_dir: String,
         session_id: Option<String>,
-        isolated_tasks: bool,
         model: String,
     ) -> crate::Result<()> {
         let mut coworkers = self.coworkers.write().unwrap();
@@ -1138,7 +1131,6 @@ impl CoworkerManager {
             started_at: Utc::now(),
             current_task: None,
             session_id,
-            isolated_tasks,
             model,
         };
         coworkers.insert(name.to_string(), coworker);
@@ -1165,16 +1157,8 @@ impl CoworkerManager {
 
         let session_id = tmux::spawn_claude(&self.session_name, &working_dir, &launch_config)?;
 
-        let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
-
         // Register with TOCTTOU race check
-        if let Err(e) = self.register(
-            name,
-            working_dir,
-            Some(session_id),
-            isolated_tasks,
-            config.model.clone(),
-        ) {
+        if let Err(e) = self.register(name, working_dir, Some(session_id), config.model.clone()) {
             // Race condition: another spawn beat us to it. Clean up the tmux
             // window we just created and return an error.
             tracing::warn!(
@@ -1192,9 +1176,8 @@ impl CoworkerManager {
         }
 
         tracing::info!(
-            "Spawned coworker {} (isolated={}, session_mode={:?})",
+            "Spawned coworker {} (session_mode={:?})",
             name,
-            isolated_tasks,
             config.session_mode,
         );
 
@@ -1304,7 +1287,6 @@ impl CoworkerManager {
                 started_at: chrono::Utc::now(), // Unknown, use now as approximation
                 current_task: None,             // Will be discovered via task tracking
                 session_id: None,               // PROVISIONAL - signals register() can update
-                isolated_tasks: false,          // PROVISIONAL - will be updated by register()
                 model: default_model(),         // PROVISIONAL - unknown for recovered sessions
             };
             coworkers.insert(headless_name.clone(), coworker);
@@ -1460,7 +1442,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -1492,7 +1473,6 @@ mod tests {
                         started_at: Utc::now(),
                         current_task: None,
                         session_id: None,
-                        isolated_tasks: false,
                         model: "sonnet".to_string(),
                     },
                 );
@@ -1522,7 +1502,6 @@ mod tests {
                         started_at: Utc::now(),
                         current_task: None,
                         session_id: None,
-                        isolated_tasks: false,
                         model: "sonnet".to_string(),
                     },
                 );
@@ -1570,7 +1549,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -1845,7 +1823,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -1858,7 +1835,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -1871,7 +1847,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -1905,7 +1880,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -1955,7 +1929,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -2064,7 +2037,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: None,
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
             );
@@ -2116,7 +2088,6 @@ mod tests {
         assert_eq!(manager.count(), 1);
         let entry = manager.get("lexington").unwrap();
         assert_eq!(entry.name, "lexington");
-        assert!(!entry.isolated_tasks); // hardcoded by recovery
 
         // The spawn flow now tries to register. This should NOT fail.
         // In the current buggy code, this will return an error because
@@ -2125,7 +2096,6 @@ mod tests {
             "lexington",
             "/tmp/worktree".to_string(),
             Some("session-id-123".to_string()),
-            true,
             "sonnet".to_string(),
         );
 
@@ -2135,12 +2105,8 @@ mod tests {
             result.err()
         );
 
-        // Verify the entry was updated with the correct isolated_tasks value
+        // Verify the entry was updated correctly
         let entry = manager.get("lexington").unwrap();
-        assert!(
-            entry.isolated_tasks,
-            "isolated_tasks should be updated to true (from register call)"
-        );
         assert_eq!(
             entry.session_id,
             Some("session-id-123".to_string()),

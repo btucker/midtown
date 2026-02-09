@@ -261,7 +261,6 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|cw| CoworkerSnapshot {
             name: cw.name.clone(),
             started_at: cw.started_at,
-            isolated_tasks: cw.isolated_tasks,
         })
         .collect();
 
