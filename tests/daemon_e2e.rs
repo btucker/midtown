@@ -103,6 +103,8 @@ struct DaemonFixture {
     daemon_process: Option<Child>,
     /// Task directory for this test repo (~/.claude/tasks/midtown-<repo>/)
     tasks_dir: PathBuf,
+    /// Request ID counter for generating unique RPC request IDs
+    next_request_id: std::cell::Cell<u64>,
 }
 
 impl DaemonFixture {
@@ -175,6 +177,7 @@ impl DaemonFixture {
             pid_path,
             daemon_process: None,
             tasks_dir,
+            next_request_id: std::cell::Cell::new(1),
         })
     }
 
@@ -291,12 +294,16 @@ impl DaemonFixture {
         // Set read timeout to detect hangs
         stream.set_read_timeout(Some(timeout)).ok()?;
 
+        // Generate unique request ID to avoid cache collisions
+        let request_id = self.next_request_id.get();
+        self.next_request_id.set(request_id + 1);
+
         // Build JSON-RPC request
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
-            "id": 1
+            "id": request_id
         });
 
         // Send request
@@ -1755,6 +1762,8 @@ struct LiveDaemonFixture {
     started_daemon: bool,
     /// Path to the binary (release build preferred for realistic timing)
     binary_path: PathBuf,
+    /// Request ID counter for generating unique RPC request IDs
+    next_request_id: std::cell::Cell<u64>,
 }
 
 impl LiveDaemonFixture {
@@ -1784,6 +1793,7 @@ impl LiveDaemonFixture {
             socket_path,
             started_daemon: false,
             binary_path,
+            next_request_id: std::cell::Cell::new(1),
         })
     }
 
@@ -1843,11 +1853,15 @@ impl LiveDaemonFixture {
         let mut stream = self.connect()?;
         stream.set_read_timeout(Some(timeout)).ok()?;
 
+        // Generate unique request ID to avoid cache collisions
+        let request_id = self.next_request_id.get();
+        self.next_request_id.set(request_id + 1);
+
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
-            "id": 1
+            "id": request_id
         });
 
         let request_line = format!("{}\n", request);
