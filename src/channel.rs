@@ -810,7 +810,11 @@ impl ChannelRouter {
     /// If the message's channel is None or empty, uses the default channel name.
     /// Channels are opened lazily on first use and cached for subsequent sends.
     pub fn send(&self, message: &Message) -> Result<()> {
-        let channel_name = message.channel_name();
+        // Use the message's channel if set, otherwise use the router's default channel
+        let channel_name = message
+            .channel
+            .as_deref()
+            .unwrap_or(&self.default_channel_name);
 
         // Fast path: check if channel is already open
         {
