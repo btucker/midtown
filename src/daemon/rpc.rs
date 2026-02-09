@@ -709,6 +709,14 @@ async fn handle_auth_switch(
     all: bool,
     state: &DaemonState,
 ) -> Response {
+    // Validate the profile name format (defense-in-depth — CLI also validates)
+    if let Err(e) = crate::auth::validate_profile_name(profile) {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Invalid profile name: {}", e)),
+        );
+    }
+
     // Validate the profile exists
     if !crate::auth::profile_exists(profile) {
         return Response::error(

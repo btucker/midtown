@@ -561,6 +561,9 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
     // These are reviewers whose restart_count >= MAX_REVIEWER_RESTARTS that were
     // filtered out by decide_stuck_reviewer_restarts(). We detect them by checking
     // for alive, stuck reviewers with maxed-out restart counts.
+    //
+    // The escalation is only posted once per PR (tracked via reviewer_escalations_posted
+    // in WorldSnapshot) to prevent spamming the channel/lead on every tick.
     let stuck_threshold = chrono::Duration::from_std(REVIEWER_STUCK_DURATION).unwrap_or_default();
     for (name, health) in &snap.headless_process_health {
         if !health.is_alive {
@@ -570,6 +573,10 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
             Some(pr) => *pr,
             None => continue,
         };
+        // Skip if we've already posted an escalation for this PR
+        if snap.reviewer_escalations_posted.contains(&pr_number) {
+            continue;
+        }
         let restart_count = snap
             .reviewer_restart_counts
             .get(&pr_number)
@@ -616,6 +623,7 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
                 name, pr_number, restart_count
             ),
         });
+        effects.push(Effect::RecordReviewerEscalation { pr_number });
     }
 
     effects
@@ -1067,6 +1075,7 @@ mod tests {
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
             reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: true,
             // Set nudge time in the past so it fires

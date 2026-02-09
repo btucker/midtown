@@ -3879,6 +3879,7 @@ mod tests {
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
             reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,

@@ -150,6 +150,9 @@ pub struct WorldSnapshot {
     /// PR number → restart count for reviewer assignments.
     /// Used by stuck reviewer detection to implement backoff.
     pub reviewer_restart_counts: HashMap<u64, u32>,
+    /// PR numbers for which a reviewer escalation warning has already been posted.
+    /// Prevents the escalation warning from firing every tick after max restarts.
+    pub reviewer_escalations_posted: HashSet<u64>,
     /// GitHub API rate limit state (GraphQL and REST quotas).
     /// Used by adaptive throttling to reduce polling frequency when quotas run low.
     pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
@@ -363,6 +366,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         (reviewers, assignments, restart_counts)
     };
 
+    // ── Reviewer escalation tracking ──────────────────────────────────
+    let reviewer_escalations_posted: HashSet<u64> = {
+        let posted = state.reviewer_escalations_posted.lock().unwrap();
+        posted.clone()
+    };
+
     // Pre-check review status for all assigned PRs so decision logic doesn't need API calls
     let reviewed_prs = {
         let pr_numbers: Vec<u64> = reviewer_pr_assignments.values().copied().collect();
@@ -481,6 +490,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         reviewed_prs,
         prs_needing_review,
         reviewer_restart_counts,
+        reviewer_escalations_posted,
         github_rate_limit,
         freshly_fetched_rate_limit: None,
         coworkers_with_unblocked_deps,
@@ -584,6 +594,7 @@ mod tests {
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
             reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,
@@ -668,6 +679,7 @@ mod tests {
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
             reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,

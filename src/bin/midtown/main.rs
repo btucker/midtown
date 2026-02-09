@@ -696,8 +696,18 @@ fn main() {
     if let Commands::Claude { args } = &command {
         use std::os::unix::process::CommandExt;
 
-        let profile_dir = midtown::auth::current_profile_dir();
-        let profile = midtown::auth::current_profile();
+        // Use project-aware resolution when inside a project
+        let project = midtown::paths::detect_repo_name().unwrap_or_default();
+        let (profile, profile_dir) = if project.is_empty() {
+            (
+                midtown::auth::current_profile(),
+                midtown::auth::current_profile_dir(),
+            )
+        } else {
+            let p = midtown::auth::active_profile_for_project(&project);
+            let d = midtown::auth::profile_dir(&p);
+            (p, d)
+        };
 
         // Ensure the profile directory exists
         if !profile_dir.exists() {

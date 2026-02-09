@@ -38,6 +38,14 @@ pub fn validate_profile_name(name: &str) -> std::io::Result<()> {
         ));
     }
 
+    // Reject leading/trailing dots (hidden dirs on Unix, special on Windows)
+    if name.starts_with('.') || name.ends_with('.') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Profile name '{}' cannot start or end with a dot.", name),
+        ));
+    }
+
     // Reject path traversal and dangerous characters
     if name.contains('/')
         || name.contains('\\')

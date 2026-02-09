@@ -121,18 +121,18 @@ fn fetch_sorted_profiles() -> Result<Vec<ProfileRow>, String> {
     let current = midtown::auth::current_profile();
 
     // Fetch usage data for all authenticated profiles in parallel
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
-    let usage_results: Vec<(String, Option<midtown::UsageData>)> = runtime.block_on(async {
-        let futures = profiles.iter().map(|name| {
-            let name = name.clone();
-            tokio::task::spawn_blocking(move || {
-                let usage = midtown::fetch_usage_for_profile(&name);
-                (name, usage)
+    let usage_results: Vec<(String, Option<midtown::UsageData>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = profiles
+            .iter()
+            .map(|name| {
+                let name = name.clone();
+                s.spawn(move || {
+                    let usage = midtown::fetch_usage_for_profile(&name);
+                    (name, usage)
+                })
             })
-        });
-        let results = futures::future::join_all(futures).await;
-        results.into_iter().filter_map(|r| r.ok()).collect()
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
 
     let mut rows: Vec<ProfileRow> = profiles
@@ -268,7 +268,9 @@ fn handle_list() -> Result<Response, String> {
     }
 
     // Print the table first so usage details are visible above the selector
-    if !rows.is_empty() {
+    if rows.is_empty() {
+        println!("No profiles found.\n");
+    } else {
         println!("{}", format_table(&rows));
         println!();
     }
@@ -402,6 +404,22 @@ fn format_table(rows: &[ProfileRow]) -> String {
     lines.join("\n")
 }
 
+/// RAII guard that ensures raw mode is disabled even on panic.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn new() -> Result<Self, String> {
+        enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
 /// Run the interactive TUI selector inline below the cursor.
 fn run_interactive_selector(rows: &[ProfileRow]) -> Result<SelectorAction, String> {
     // Find current profile's index for pre-selection (or 0 for the "+ Add account" row)
@@ -412,7 +430,7 @@ fn run_interactive_selector(rows: &[ProfileRow]) -> Result<SelectorAction, Strin
     // +3 = 1 for "Add account" row + 2 for borders
     let viewport_height = rows.len() as u16 + 3;
 
-    enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
+    let _guard = RawModeGuard::new()?;
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::with_options(
@@ -433,9 +451,7 @@ fn run_interactive_selector(rows: &[ProfileRow]) -> Result<SelectorAction, Strin
         .set_cursor_position(ratatui::layout::Position::new(0, pos.y + viewport_height))
         .map_err(|e| format!("Failed to set cursor: {}", e))?;
 
-    // Restore terminal
-    disable_raw_mode().map_err(|e| format!("Failed to disable raw mode: {}", e))?;
-
+    // _guard dropped here restores terminal via disable_raw_mode()
     result
 }
 
@@ -449,7 +465,7 @@ fn run_scope_selector() -> Result<Option<bool>, String> {
     // +2 for borders
     let viewport_height = options.len() as u16 + 2;
 
-    enable_raw_mode().map_err(|e| format!("Failed to enable raw mode: {}", e))?;
+    let _guard = RawModeGuard::new()?;
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::with_options(
@@ -521,8 +537,7 @@ fn run_scope_selector() -> Result<Option<bool>, String> {
         .set_cursor_position(ratatui::layout::Position::new(0, pos.y + viewport_height))
         .map_err(|e| format!("Failed to set cursor: {}", e))?;
 
-    disable_raw_mode().map_err(|e| format!("Failed to disable raw mode: {}", e))?;
-
+    // _guard dropped here restores terminal via disable_raw_mode()
     result
 }
 
@@ -559,11 +574,13 @@ fn run_selector_loop(
                         if i == add_account_idx {
                             return Ok(SelectorAction::AddAccount);
                         }
-                        let row = &rows[i];
-                        if row.is_current {
-                            return Ok(SelectorAction::Cancel);
+                        if i < rows.len() {
+                            let row = &rows[i];
+                            if row.is_current {
+                                return Ok(SelectorAction::Cancel);
+                            }
+                            return Ok(SelectorAction::Switch(row.name.clone()));
                         }
-                        return Ok(SelectorAction::Switch(row.name.clone()));
                     }
                 }
                 KeyCode::Backspace | KeyCode::Delete => {

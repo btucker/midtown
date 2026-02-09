@@ -2841,6 +2841,25 @@ mod tests {
     }
 
     #[test]
+    fn test_render_usage_line_none_resets_at() {
+        let line = render_usage_line("Session", 0.0, None, true);
+        // Should still produce 6 spans with em-dash placeholders for estimate and reset
+        assert_eq!(line.spans.len(), 6);
+        let estimate = &line.spans[4].content;
+        let reset = &line.spans[5].content;
+        assert!(
+            estimate.contains('—'),
+            "Estimate should contain em-dash when resets_at is None: {:?}",
+            estimate
+        );
+        assert!(
+            reset.contains('—'),
+            "Reset should contain em-dash when resets_at is None: {:?}",
+            reset
+        );
+    }
+
+    #[test]
     fn test_format_reset_time_past_returns_now() {
         let past = Utc::now() - chrono::Duration::hours(1);
         assert_eq!(format_reset_time(&past, true), "now");
