@@ -1584,8 +1584,10 @@ pub(super) async fn handle_channel_post(
         tracker.insert(key, now);
     }
 
+    // Create message for the default (main) channel
+    let default_channel_name = state.channel_router.default_channel_name();
     let msg = Message::for_channel(
-        state.channel_router.default_channel_name(),
+        default_channel_name,
         from,
         content.clone(),
         msg_type.clone(),
