@@ -16,6 +16,9 @@ pub struct DaemonClient {
 /// Request ID counter for JSON-RPC correlation.
 static REQUEST_ID: AtomicI64 = AtomicI64::new(1);
 
+/// Process ID, cached at startup for request ID generation.
+static PID: std::sync::LazyLock<u32> = std::sync::LazyLock::new(std::process::id);
+
 /// JSON-RPC 2.0 request.
 #[derive(Debug, Serialize)]
 struct JsonRpcRequest {
@@ -23,16 +26,17 @@ struct JsonRpcRequest {
     method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<Value>,
-    id: i64,
+    id: String,
 }
 
 impl JsonRpcRequest {
     fn new(method: impl Into<String>, params: Option<Value>) -> Self {
+        let counter = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             jsonrpc: "2.0",
             method: method.into(),
             params,
-            id: REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            id: format!("{}-{}", *PID, counter),
         }
     }
 }
