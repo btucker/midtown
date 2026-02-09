@@ -519,6 +519,7 @@ pub fn update_task_fields_for_repo(
     status: Option<&str>,
     description: Option<&str>,
     blocked_by: Option<&[String]>,
+    channel: Option<&str>,
 ) -> Result<(), String> {
     use fs2::FileExt;
 
@@ -556,6 +557,9 @@ pub fn update_task_fields_for_repo(
     }
     if let Some(bb) = blocked_by {
         task["blockedBy"] = serde_json::json!(bb);
+    }
+    if let Some(ch) = channel {
+        task["channel"] = serde_json::json!(ch);
     }
 
     let updated_content = serde_json::to_string_pretty(&task)
@@ -856,7 +860,7 @@ pub fn ensure_task_in_shared_dir(
 /// Uses file-level locking to prevent lost updates when concurrent processes
 /// (daemon, hooks) modify the same task file simultaneously.
 ///
-/// Supports updating: status, owner, subject, description.
+/// Supports updating: status, owner, subject, description, channel.
 pub fn update_task_fields_in_dir(
     tasks_dir: &std::path::Path,
     task_id: &str,
@@ -893,6 +897,9 @@ pub fn update_task_fields_in_dir(
     }
     if let Some(description) = updates.get("description").and_then(|v| v.as_str()) {
         task["description"] = serde_json::json!(description);
+    }
+    if let Some(channel) = updates.get("channel").and_then(|v| v.as_str()) {
+        task["channel"] = serde_json::json!(channel);
     }
 
     let updated_content = serde_json::to_string_pretty(&task)
