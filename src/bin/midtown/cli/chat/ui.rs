@@ -2804,7 +2804,7 @@ mod tests {
     #[test]
     fn test_render_usage_line_produces_spans() {
         let resets_at = Utc::now() + chrono::Duration::hours(3);
-        let line = render_usage_line("Session", 50.0, &resets_at, true);
+        let line = render_usage_line("Session", 50.0, Some(&resets_at), true);
         // Should have 6 spans: label, filled bar, empty bar, pct, estimate, reset
         assert_eq!(line.spans.len(), 6);
     }
@@ -2813,7 +2813,7 @@ mod tests {
     fn test_render_usage_line_bar_proportions() {
         let resets_at = Utc::now();
         // At 50%, should have 10 filled (out of 20) and 10 empty
-        let line = render_usage_line("Test   ", 50.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 50.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 10);
@@ -2823,7 +2823,7 @@ mod tests {
     #[test]
     fn test_render_usage_line_zero_percent() {
         let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 0.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 0.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 0);
@@ -2833,7 +2833,7 @@ mod tests {
     #[test]
     fn test_render_usage_line_full_percent() {
         let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 100.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 100.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 20);
