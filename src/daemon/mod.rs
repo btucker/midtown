@@ -1631,7 +1631,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     debug!("Buffering CI success for batching: {} on {}", ci_check.check_name, ci_check.target);
                     let mut buffer = state.ci_notification_buffer.lock().await;
                     buffer.add(ci_check);
-                } else if let Err(e) = state.send_and_broadcast(&webhook_event.message) {
+                } else if let Err(e) = state.send_and_broadcast_async(&webhook_event.message).await {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
 
@@ -1697,7 +1697,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         pr_number, state.default_branch
                     );
                     let channel_msg = Message::text("system", channel_text);
-                    if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                    if let Err(e) = state.send_and_broadcast_async(&channel_msg).await {
                         warn!("Failed to post merge notification for PR #{}: {}", pr_number, e);
                     }
                     // Direct nudge includes the actionable instruction
@@ -1878,7 +1878,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     };
 
                     let msg = crate::message::Message::text("system", message_text);
-                    if let Err(e) = state.send_and_broadcast(&msg) {
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post session exit message for {}: {}", name, e);
                     }
                 }
@@ -1963,7 +1963,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                             let msg = Message::system(
                                 format!("Channel log rotated: {} old messages archived", archived)
                             );
-                            if let Err(e) = state.send_and_broadcast(&msg) {
+                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
                                 warn!("Failed to send rotation notification: {}", e);
                             }
                         }
@@ -1995,7 +1995,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     for batch in batched {
                         let msg = trackers::format_batched_ci_notification(&batch);
                         let message = Message::text("github", msg);
-                        if let Err(e) = state.send_and_broadcast(&message) {
+                        if let Err(e) = state.send_and_broadcast_async(&message).await {
                             error!("Failed to post batched CI notification: {}", e);
                         }
                     }
