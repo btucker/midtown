@@ -102,9 +102,7 @@ impl GitHubRateLimit {
     ///
     /// Returns `None` if the API call fails or cannot be parsed.
     pub fn fetch() -> Option<Self> {
-        let output = Command::new("gh")
-            .args(["api", "rate_limit"])
-            .output();
+        let output = Command::new("gh").args(["api", "rate_limit"]).output();
 
         let output = match output {
             Ok(o) if o.status.success() => o,

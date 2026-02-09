@@ -947,7 +947,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 ps.github.rate_limit = rate_limit.clone();
                 debug!("Updated GitHub rate limits: {}", rate_limit.summary());
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                    warn!("Failed to save daemon state after updating rate limit: {}", e);
+                    warn!(
+                        "Failed to save daemon state after updating rate limit: {}",
+                        e
+                    );
                 }
             }
         }
