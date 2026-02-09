@@ -297,6 +297,9 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect()
                 });
+            let channel = params
+                .and_then(|p| p.get("channel"))
+                .and_then(|v| v.as_str());
 
             match subject {
                 Some(subject) => {
@@ -305,6 +308,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         subject,
                         description,
                         blocked_by.as_deref(),
+                        channel,
                         state,
                     )
                     .await
@@ -1275,6 +1279,7 @@ async fn handle_task_create(
     subject: &str,
     description: &str,
     blocked_by: Option<&[String]>,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -1289,6 +1294,7 @@ async fn handle_task_create(
         "",
         &repo_name,
         blocked_by,
+        channel,
     ) {
         Ok(task_id) => {
             // Post to channel so team is aware

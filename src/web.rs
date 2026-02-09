@@ -689,6 +689,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "description": task.description,
                 "status": status,
                 "owner": task.owner,
+                "channel": task.channel,
             })
         })
         .collect();

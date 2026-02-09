@@ -16,6 +16,9 @@ pub enum TaskCommand {
         /// Set blocked-by task IDs (comma-separated)
         #[arg(long, value_delimiter = ',')]
         blocked_by: Option<Vec<String>>,
+        /// Optional channel to route coworker messages for this task
+        #[arg(long)]
+        channel: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -78,7 +81,13 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             subject,
             description,
             blocked_by,
-        } => client.task_create(subject, description, blocked_by.as_deref()),
+            channel,
+        } => client.task_create(
+            subject,
+            description,
+            blocked_by.as_deref(),
+            channel.as_deref(),
+        ),
         TaskCommand::Update {
             id,
             owner,
