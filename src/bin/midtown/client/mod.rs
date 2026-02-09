@@ -405,10 +405,10 @@ impl DaemonClient {
 
     // Auth commands
 
-    pub fn auth_switch(&self, profile: &str) -> Result<Response, String> {
+    pub fn auth_switch(&self, profile: &str, all: bool) -> Result<Response, String> {
         self.send(
             "auth.switch",
-            Some(serde_json::json!({ "profile": profile })),
+            Some(serde_json::json!({ "profile": profile, "all": all })),
         )
     }
 

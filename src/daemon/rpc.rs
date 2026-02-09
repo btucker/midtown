@@ -426,14 +426,17 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "auth.switch" => {
-            let profile = request
-                .params
-                .as_ref()
+            let params = request.params.as_ref();
+            let profile = params
                 .and_then(|p| p.get("profile"))
                 .and_then(|v| v.as_str());
+            let all = params
+                .and_then(|p| p.get("all"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             match profile {
-                Some(name) => handle_auth_switch(request.id, name, state).await,
+                Some(name) => handle_auth_switch(request.id, name, all, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -631,6 +634,7 @@ async fn handle_coworker_spawn(
         working_dir: None,
         model: "sonnet".to_string(),
         channel: None,
+        auth_profile_dir: None, // Resolved by spawn_coworker()
     };
 
     // Spawn via the headless path (creates worktree + headless session)
@@ -696,10 +700,23 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
 /// Handle auth.switch RPC method.
 ///
 /// Switches the active auth profile and re-launches all Claude instances:
-/// 1. Validates and switches the profile on disk
+/// 1. Validates and switches the profile on disk (project or global)
 /// 2. Shuts down all running coworkers (daemon will re-spawn for pending tasks)
 /// 3. Re-launches the lead window with the new credentials
-async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -> Response {
+async fn handle_auth_switch(
+    id: RequestId,
+    profile: &str,
+    all: bool,
+    state: &DaemonState,
+) -> Response {
+    // Validate the profile name format (defense-in-depth — CLI also validates)
+    if let Err(e) = crate::auth::validate_profile_name(profile) {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Invalid profile name: {}", e)),
+        );
+    }
+
     // Validate the profile exists
     if !crate::auth::profile_exists(profile) {
         return Response::error(
@@ -707,15 +724,15 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
             RpcError::new(
                 -32602,
                 format!(
-                    "Profile '{}' does not exist. Create it with: midtown auth login --profile {}",
+                    "Profile '{}' does not exist. Create it with: midtown auth login {}",
                     profile, profile
                 ),
             ),
         );
     }
 
-    // Check if already on this profile
-    let current = crate::auth::current_profile();
+    // Check if already on this profile (for this project)
+    let current = crate::auth::active_profile_for_project(&state.repo_name);
     if current == profile {
         return Response::success(
             id,
@@ -728,14 +745,32 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
     }
 
     // Switch the profile on disk
-    if let Err(e) = crate::auth::set_current_profile(profile) {
-        return Response::error(
-            id,
-            RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
-        );
+    if all {
+        // Global switch: update global current profile
+        if let Err(e) = crate::auth::set_current_profile(profile) {
+            return Response::error(
+                id,
+                RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
+            );
+        }
+    } else {
+        // Per-project switch: update this project's config
+        let path = crate::config::project_config_path(&state.repo_name);
+        let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
+        config.project.auth_profile = Some(profile.to_string());
+        if let Err(e) = config.save_to(&path) {
+            return Response::error(
+                id,
+                RpcError::new(-32603, format!("Failed to save project config: {}", e)),
+            );
+        }
     }
 
-    info!("Auth profile switched to '{}'", profile);
+    info!(
+        "Auth profile switched to '{}' ({})",
+        profile,
+        if all { "global" } else { "project" }
+    );
 
     // Shut down all running coworkers
     let running_coworkers: Vec<String> = state

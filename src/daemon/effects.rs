@@ -134,7 +134,16 @@ pub enum Effect {
         pr_number: u64,
         reviewer_name: String,
         source: crate::github_state::AssignmentSource,
+        /// How many times this reviewer has been restarted for this PR.
+        /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
+        restart_count: u32,
     },
+    /// Record that a reviewer escalation warning has been posted for a PR.
+    ///
+    /// Prevents the escalation warning from firing every tick. The in-memory
+    /// `reviewer_escalations_posted` set is checked via WorldSnapshot before
+    /// emitting escalation effects.
+    RecordReviewerEscalation { pr_number: u64 },
     /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
     ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
     /// Re-run a GitHub Actions workflow that appears to be stuck.
@@ -673,6 +682,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut tracker = state.pr_issue_tracker.lock().await;
                 tracker.record_nudge(pr_number, issue_type);
             }
+            Effect::RecordReviewerEscalation { pr_number } => {
+                let mut posted = state.reviewer_escalations_posted.lock().unwrap();
+                posted.insert(pr_number);
+                debug!("Recorded reviewer escalation for PR #{}", pr_number);
+            }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 state.record_task_assignment(&coworker, &task_id);
             }
@@ -685,9 +699,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 pr_number,
                 reviewer_name,
                 source,
+                restart_count,
             } => {
                 let mut ps = state.persistent_state.lock().await;
-                ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                if restart_count > 0 {
+                    ps.github.assign_reviewer_with_restart_count(
+                        pr_number,
+                        &reviewer_name,
+                        source,
+                        restart_count,
+                    );
+                } else {
+                    ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon-state.json: {}", e);
                 }

@@ -102,6 +102,11 @@ pub struct PrReviewerAssignment {
     /// Optional webhook delivery ID for debugging/telemetry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_event_id: Option<String>,
+    /// How many times this reviewer has been restarted for the same PR.
+    /// Used by stuck reviewer detection to implement backoff — after
+    /// `MAX_REVIEWER_RESTARTS`, no further restarts are attempted.
+    #[serde(default)]
+    pub restart_count: u32,
 }
 
 /// Tracks the Claude session associated with a PR author.
@@ -170,6 +175,7 @@ impl GitHubState {
             assigned_at: Utc::now(),
             source,
             webhook_event_id: None,
+            restart_count: 0,
         };
         self.pr_reviewers.insert(pr_number, assignment);
     }
@@ -188,6 +194,29 @@ impl GitHubState {
             assigned_at: Utc::now(),
             source,
             webhook_event_id,
+            restart_count: 0,
+        };
+        self.pr_reviewers.insert(pr_number, assignment);
+    }
+
+    /// Assign a reviewer to a PR with a specific restart count.
+    ///
+    /// Used by stuck reviewer detection to preserve the restart count across
+    /// restarts, enabling backoff after repeated failures.
+    pub fn assign_reviewer_with_restart_count(
+        &mut self,
+        pr_number: u64,
+        reviewer: &str,
+        source: AssignmentSource,
+        restart_count: u32,
+    ) {
+        let assignment = PrReviewerAssignment {
+            pr_number,
+            reviewer: reviewer.to_string(),
+            assigned_at: Utc::now(),
+            source,
+            webhook_event_id: None,
+            restart_count,
         };
         self.pr_reviewers.insert(pr_number, assignment);
     }

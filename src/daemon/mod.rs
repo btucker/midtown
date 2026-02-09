@@ -420,6 +420,13 @@ pub(crate) struct DaemonState {
     /// from being posted to the channel multiple times. Resets on daemon restart,
     /// which is acceptable because transcript cursors prevent re-extraction.
     insight_hashes: std::sync::Mutex<HashSet<u64>>,
+    /// PR numbers for which a reviewer escalation warning has been posted.
+    ///
+    /// Prevents the escalation warning (stuck reviewer after max restarts) from
+    /// firing every tick. Once posted, the PR number is added here and the warning
+    /// is not repeated. Resets on daemon restart, which is acceptable because
+    /// reviewer assignments also reset.
+    reviewer_escalations_posted: std::sync::Mutex<HashSet<u64>>,
     /// In-memory deduplication for reviewer `[Review Note]` channel messages.
     ///
     /// Tracks (reviewer, PR number) → timestamp of first note. When a reviewer
@@ -636,6 +643,7 @@ impl DaemonState {
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
+            reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
@@ -664,11 +672,20 @@ impl DaemonState {
             return Ok(());
         }
 
+        // Inject project-resolved auth profile if not already set
+        let config = if config.auth_profile_dir.is_none() {
+            let mut c = config.clone();
+            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(&self.repo_name));
+            c
+        } else {
+            config.clone()
+        };
+
         // Prepare worktree and augment config with additional dirs
         // Note: Worktree creation now happens via Effect::EnsureWorktree in the
         // decision layer (rules.rs), not inline here. This follows the effect-based
         // architecture: I/O goes through the Effect pipeline.
-        let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
+        let (working_dir, launch_config) = self.coworkers.prepare_spawn(&config)?;
 
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config();

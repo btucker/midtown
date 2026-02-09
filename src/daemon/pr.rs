@@ -1831,6 +1831,7 @@ async fn collect_reviewer_effects_with_source(
                 pr_number,
                 reviewer_name: reviewer_name.clone(),
                 source,
+                restart_count: 0,
             },
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -3927,6 +3928,8 @@ mod tests {
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,

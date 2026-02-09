@@ -92,6 +92,11 @@ pub struct ProjectMetadata {
     /// channel, and other singleton resources.
     #[serde(default)]
     pub primary_repo: Option<String>,
+
+    /// Auth profile to use for this project (email address).
+    /// When set, overrides the global `~/.midtown/auth/current` profile.
+    #[serde(default)]
+    pub auth_profile: Option<String>,
 }
 
 impl ProjectMetadata {
@@ -201,6 +206,7 @@ impl FullProjectConfig {
                 name: Some(name.to_string()),
                 repos: vec![repo_path.to_string()],
                 primary_repo: Some(repo_path.to_string()),
+                auth_profile: None,
             },
             default: ProjectConfig {
                 max_coworkers: Some(8),
@@ -500,6 +506,7 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
             || full.default.max_coworkers.is_some()
             || full.default.personality.is_some()
             || full.project.name.is_some()
+            || full.project.auth_profile.is_some()
             || full.daemon.github_user.is_some()
         {
             return Some(full.default);

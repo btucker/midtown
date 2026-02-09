@@ -1471,7 +1471,8 @@ pub(super) mod tests {
     #[test]
     fn test_mouse_scroll_accumulator() {
         // Test that mouse wheel scrolling requires multiple events per line
-        // for smooth scrolling (reduces scroll speed compared to keyboard)
+        // for smooth scrolling (reduces scroll speed compared to keyboard).
+        // Each 8 mouse events triggers one scroll_up/down which moves by SCROLL_STEP.
         let mut app = test_app();
 
         // Add enough messages to make scrolling possible
@@ -1484,7 +1485,7 @@ pub(super) mod tests {
         // Start at the bottom (scroll_offset = 0)
         app.scroll_offset = 0;
 
-        // Test scroll up: should require 8 events to scroll 1 line
+        // Test scroll up: should require 8 events to scroll SCROLL_STEP lines
         let initial_offset = app.scroll_offset;
 
         // First 7 events should not scroll
@@ -1496,11 +1497,11 @@ pub(super) mod tests {
             "Should not scroll with <8 events"
         );
 
-        // 8th event should trigger scroll
+        // 8th event should trigger scroll by SCROLL_STEP
         app.mouse_scroll_up();
         assert_eq!(
             app.scroll_offset,
-            initial_offset + 1,
+            initial_offset + SCROLL_STEP,
             "Should scroll after 8 events"
         );
 
@@ -1510,14 +1511,14 @@ pub(super) mod tests {
         }
         assert_eq!(
             app.scroll_offset,
-            initial_offset + 1,
+            initial_offset + SCROLL_STEP,
             "Should not scroll with <8 events after reset"
         );
 
         app.mouse_scroll_up();
         assert_eq!(
             app.scroll_offset,
-            initial_offset + 2,
+            initial_offset + SCROLL_STEP * 2,
             "Should scroll after another 8 events"
         );
 
@@ -1528,7 +1529,7 @@ pub(super) mod tests {
         }
         assert_eq!(
             app.scroll_offset,
-            current_offset - 1,
+            current_offset - SCROLL_STEP,
             "Scroll down should work after 8 events"
         );
     }
@@ -1932,7 +1933,8 @@ pub(super) mod tests {
     fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
         // Mouse wheel scrolling should be slower than keyboard scrolling for smoother UX.
         // Mouse wheels send multiple events per physical scroll, so we use fractional
-        // scrolling: 8 wheel events = 1 line of movement.
+        // scrolling: 8 wheel events = SCROLL_STEP lines of movement.
+        // Keyboard scrolls SCROLL_STEP per call; mouse needs 8 events per SCROLL_STEP.
         let messages: VecDeque<Message> = (0..30)
             .map(|i| Message {
                 id: i.to_string(),
@@ -1954,14 +1956,17 @@ pub(super) mod tests {
         // Start at bottom
         assert_eq!(app.scroll_offset, 0);
 
-        // Keyboard scroll up: should move 1 line per call
+        // Keyboard scroll up: should move SCROLL_STEP lines per call
         app.scroll_up();
-        assert_eq!(app.scroll_offset, 1, "Keyboard scroll should move 1 line");
+        assert_eq!(
+            app.scroll_offset, SCROLL_STEP,
+            "Keyboard scroll should move SCROLL_STEP lines"
+        );
 
         // Reset
         app.scroll_offset = 0;
 
-        // Mouse wheel scroll up: should take 8 events to move 1 line
+        // Mouse wheel scroll up: should take 8 events to move SCROLL_STEP lines
         for i in 1..=7 {
             app.mouse_scroll_up();
             assert_eq!(app.scroll_offset, 0, "Event {} shouldn't scroll yet", i);
@@ -1969,13 +1974,16 @@ pub(super) mod tests {
 
         app.mouse_scroll_up();
         assert_eq!(
-            app.scroll_offset, 1,
-            "Eighth wheel event should complete 1 line of scroll"
+            app.scroll_offset, SCROLL_STEP,
+            "Eighth wheel event should complete SCROLL_STEP lines of scroll"
         );
 
-        // Ninth event starts accumulating for next line
+        // Ninth event starts accumulating for next batch
         app.mouse_scroll_up();
-        assert_eq!(app.scroll_offset, 1, "Ninth wheel event accumulates");
+        assert_eq!(
+            app.scroll_offset, SCROLL_STEP,
+            "Ninth wheel event accumulates"
+        );
 
         // Test mouse wheel scroll down
         // Accumulator is at 1 from the ninth up event
@@ -1983,7 +1991,7 @@ pub(super) mod tests {
             app.mouse_scroll_down();
             assert_eq!(
                 app.scroll_offset,
-                1,
+                SCROLL_STEP,
                 "Down event {} accumulates (acc={})",
                 i,
                 i + 1

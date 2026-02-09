@@ -8,16 +8,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Usage data from the Anthropic API.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageData {
     /// Session (5-hour window) utilization percentage (0-100)
     pub session_util: f64,
-    /// When the session window resets
-    pub session_resets: DateTime<Utc>,
+    /// When the session window resets (None if no active session)
+    pub session_resets: Option<DateTime<Utc>>,
     /// Weekly (7-day window) utilization percentage (0-100)
     pub week_util: f64,
-    /// When the weekly window resets
-    pub week_resets: DateTime<Utc>,
+    /// When the weekly window resets (None if no active window)
+    pub week_resets: Option<DateTime<Utc>>,
     /// Account email from OAuth credentials (if available)
     pub account_email: Option<String>,
 }
@@ -32,7 +32,7 @@ struct UsageResponse {
 #[derive(Deserialize)]
 struct UsageWindow {
     utilization: f64,
-    resets_at: String,
+    resets_at: Option<String>,
 }
 
 /// OAuth credentials extracted from macOS Keychain.
@@ -133,32 +133,77 @@ pub fn fetch_usage(token: &str, account_email: Option<String>) -> Option<UsageDa
 
     let data: UsageResponse = resp.json().ok()?;
 
-    let five_hour = data.five_hour?;
-    let seven_day = data.seven_day?;
+    let (session_util, session_resets) = match data.five_hour {
+        Some(w) => {
+            let resets = w
+                .resets_at
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            (w.utilization, resets)
+        }
+        None => (0.0, None),
+    };
 
-    let session_resets = DateTime::parse_from_rfc3339(&five_hour.resets_at)
-        .ok()?
-        .with_timezone(&Utc);
-    let week_resets = DateTime::parse_from_rfc3339(&seven_day.resets_at)
-        .ok()?
-        .with_timezone(&Utc);
+    let (week_util, week_resets) = match data.seven_day {
+        Some(w) => {
+            let resets = w
+                .resets_at
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            (w.utilization, resets)
+        }
+        None => (0.0, None),
+    };
 
     Some(UsageData {
-        session_util: five_hour.utilization,
+        session_util,
         session_resets,
-        week_util: seven_day.utilization,
+        week_util,
         week_resets,
         account_email,
     })
 }
 
-/// Fetch usage data using credentials from the macOS Keychain for a specific profile.
+/// How long cached usage data is considered fresh (5 minutes).
+const USAGE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Path to the usage cache file for a profile.
+fn usage_cache_path(profile: &str) -> std::path::PathBuf {
+    crate::auth::profile_dir(profile).join("usage_cache.json")
+}
+
+/// Read cached usage data if it exists and is fresh.
+fn read_usage_cache(profile: &str) -> Option<UsageData> {
+    let path = usage_cache_path(profile);
+    let metadata = std::fs::metadata(&path).ok()?;
+    let age = metadata.modified().ok()?.elapsed().ok()?;
+    if age > USAGE_CACHE_TTL {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+/// Write usage data to the cache file.
+fn write_usage_cache(profile: &str, data: &UsageData) {
+    let path = usage_cache_path(profile);
+    if let Ok(json) = serde_json::to_string(data) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Fetch usage data for a profile, using a 60-second file cache.
 ///
-/// Combines credential retrieval and API fetch into a single call.
-/// Returns `None` if credentials are unavailable or the API call fails.
+/// Returns cached data if fresh, otherwise fetches from the Anthropic API
+/// and updates the cache.
 pub fn fetch_usage_for_profile(profile: &str) -> Option<UsageData> {
+    if let Some(cached) = read_usage_cache(profile) {
+        return Some(cached);
+    }
     let creds = get_oauth_credentials_for_profile(profile)?;
-    fetch_usage(&creds.token, creds.email)
+    let data = fetch_usage(&creds.token, creds.email)?;
+    write_usage_cache(profile, &data);
+    Some(data)
 }
 
 /// Fetch usage data using credentials from the macOS Keychain.
@@ -178,13 +223,17 @@ mod tests {
     fn test_usage_data_serialization() {
         let data = UsageData {
             session_util: 43.2,
-            session_resets: DateTime::parse_from_rfc3339("2026-02-05T22:59:00Z")
-                .unwrap()
-                .with_timezone(&Utc),
+            session_resets: Some(
+                DateTime::parse_from_rfc3339("2026-02-05T22:59:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
             week_util: 52.1,
-            week_resets: DateTime::parse_from_rfc3339("2026-02-11T15:59:00Z")
-                .unwrap()
-                .with_timezone(&Utc),
+            week_resets: Some(
+                DateTime::parse_from_rfc3339("2026-02-11T15:59:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
             account_email: Some("test@example.com".to_string()),
         };
 
@@ -192,5 +241,95 @@ mod tests {
         assert!(json.contains("43.2"));
         assert!(json.contains("52.1"));
         assert!(json.contains("test@example.com"));
+    }
+
+    /// Test that fetch_usage correctly parses API responses where resets_at is null.
+    ///
+    /// The Anthropic usage API returns `resets_at: null` when utilization is 0%
+    /// (no active session window). Previously, `UsageWindow.resets_at` was a
+    /// non-optional `String`, causing the entire response deserialization to fail.
+    #[test]
+    fn test_usage_response_with_null_resets_at() {
+        // This is the actual shape returned by the API when an account has
+        // 0% session utilization — resets_at is null, not absent.
+        let json = r#"{
+            "five_hour": {
+                "utilization": 0.0,
+                "resets_at": null
+            },
+            "seven_day": {
+                "utilization": 12.5,
+                "resets_at": "2026-02-11T15:59:00Z"
+            }
+        }"#;
+
+        let data: UsageResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(data.five_hour.as_ref().unwrap().utilization, 0.0);
+        assert!(data.five_hour.as_ref().unwrap().resets_at.is_none());
+
+        assert_eq!(data.seven_day.as_ref().unwrap().utilization, 12.5);
+        assert_eq!(
+            data.seven_day.as_ref().unwrap().resets_at.as_deref(),
+            Some("2026-02-11T15:59:00Z")
+        );
+    }
+
+    /// Test that both windows can have null resets_at.
+    #[test]
+    fn test_usage_response_both_null_resets() {
+        let json = r#"{
+            "five_hour": {
+                "utilization": 0.0,
+                "resets_at": null
+            },
+            "seven_day": {
+                "utilization": 0.0,
+                "resets_at": null
+            }
+        }"#;
+
+        let data: UsageResponse = serde_json::from_str(json).unwrap();
+
+        assert!(data.five_hour.as_ref().unwrap().resets_at.is_none());
+        assert!(data.seven_day.as_ref().unwrap().resets_at.is_none());
+    }
+
+    /// Test that missing windows (null at top level) are handled.
+    #[test]
+    fn test_usage_response_missing_windows() {
+        let json = r#"{
+            "five_hour": null,
+            "seven_day": null
+        }"#;
+
+        let data: UsageResponse = serde_json::from_str(json).unwrap();
+
+        assert!(data.five_hour.is_none());
+        assert!(data.seven_day.is_none());
+    }
+
+    /// Test UsageData round-trip serialization with None resets.
+    #[test]
+    fn test_usage_data_serialization_with_none_resets() {
+        let data = UsageData {
+            session_util: 0.0,
+            session_resets: None,
+            week_util: 12.5,
+            week_resets: Some(
+                DateTime::parse_from_rfc3339("2026-02-11T15:59:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            account_email: Some("test@example.com".to_string()),
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        let roundtrip: UsageData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtrip.session_util, 0.0);
+        assert!(roundtrip.session_resets.is_none());
+        assert_eq!(roundtrip.week_util, 12.5);
+        assert!(roundtrip.week_resets.is_some());
     }
 }

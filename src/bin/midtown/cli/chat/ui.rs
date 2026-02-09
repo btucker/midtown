@@ -1576,9 +1576,18 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let session_line =
-        render_usage_line("Session", usage.session_util, &usage.session_resets, true);
-    let week_line = render_usage_line("Week   ", usage.week_util, &usage.week_resets, false);
+    let session_line = render_usage_line(
+        "Session",
+        usage.session_util,
+        usage.session_resets.as_ref(),
+        true,
+    );
+    let week_line = render_usage_line(
+        "Week   ",
+        usage.week_util,
+        usage.week_resets.as_ref(),
+        false,
+    );
 
     let lines = vec![session_line, week_line];
     let paragraph = Paragraph::new(lines);
@@ -1591,7 +1600,7 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
 fn render_usage_line(
     label: &str,
     utilization: f64,
-    resets_at: &DateTime<Utc>,
+    resets_at: Option<&DateTime<Utc>>,
     is_session: bool,
 ) -> Line<'static> {
     let color = usage_color(utilization);
@@ -1606,8 +1615,13 @@ fn render_usage_line(
     let bar_filled: String = "█".repeat(filled);
     let bar_empty: String = "░".repeat(empty);
 
-    let estimate_text = estimate_time_to_full(utilization, resets_at, is_session);
-    let reset_text = format_reset_time(resets_at, is_session);
+    let (estimate_text, reset_text) = match resets_at {
+        Some(r) => (
+            estimate_time_to_full(utilization, r, is_session),
+            format_reset_time(r, is_session),
+        ),
+        None => ("—".to_string(), "—".to_string()),
+    };
 
     Line::from(vec![
         Span::styled(format!(" {label} "), Style::default().fg(Color::DarkGray)),
@@ -2790,7 +2804,7 @@ mod tests {
     #[test]
     fn test_render_usage_line_produces_spans() {
         let resets_at = Utc::now() + chrono::Duration::hours(3);
-        let line = render_usage_line("Session", 50.0, &resets_at, true);
+        let line = render_usage_line("Session", 50.0, Some(&resets_at), true);
         // Should have 6 spans: label, filled bar, empty bar, pct, estimate, reset
         assert_eq!(line.spans.len(), 6);
     }
@@ -2799,7 +2813,7 @@ mod tests {
     fn test_render_usage_line_bar_proportions() {
         let resets_at = Utc::now();
         // At 50%, should have 10 filled (out of 20) and 10 empty
-        let line = render_usage_line("Test   ", 50.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 50.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 10);
@@ -2809,7 +2823,7 @@ mod tests {
     #[test]
     fn test_render_usage_line_zero_percent() {
         let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 0.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 0.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 0);
@@ -2819,11 +2833,30 @@ mod tests {
     #[test]
     fn test_render_usage_line_full_percent() {
         let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 100.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 100.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 20);
         assert_eq!(empty_content.chars().count(), 0);
+    }
+
+    #[test]
+    fn test_render_usage_line_none_resets_at() {
+        let line = render_usage_line("Session", 0.0, None, true);
+        // Should still produce 6 spans with em-dash placeholders for estimate and reset
+        assert_eq!(line.spans.len(), 6);
+        let estimate = &line.spans[4].content;
+        let reset = &line.spans[5].content;
+        assert!(
+            estimate.contains('—'),
+            "Estimate should contain em-dash when resets_at is None: {:?}",
+            estimate
+        );
+        assert!(
+            reset.contains('—'),
+            "Reset should contain em-dash when resets_at is None: {:?}",
+            reset
+        );
     }
 
     #[test]
