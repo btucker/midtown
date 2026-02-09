@@ -2000,11 +2000,50 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         }
     }
 
-    // Shut down all coworker sessions to prevent orphaned processes
-    info!("Shutting down all coworker sessions...");
-    let shutdown_count = state.session_manager.shutdown_all().await;
-    if shutdown_count > 0 {
-        info!("Shut down {} coworker session(s)", shutdown_count);
+    // Shut down all coworker sessions with detach-on-drop for session survival
+    info!("Shutting down all coworker sessions (detach mode)...");
+
+    // Build metadata map: coworker name -> (task_id, pr_number, working_dir)
+    let mut coworker_metadata = std::collections::HashMap::new();
+    {
+        let coworker_records = state.coworker_records.read().await;
+        let ps = state.persistent_state.lock().await;
+
+        for cw in state.coworkers.list() {
+            let task_id = coworker_records.get(&cw.name).and_then(|r| r.task_id);
+            let pr_number = ps
+                .github
+                .pr_reviewers
+                .iter()
+                .find(|(_, assignment)| assignment.reviewer == cw.name)
+                .map(|(pr, _)| *pr);
+            let working_dir = Some(cw.working_dir.clone());
+
+            coworker_metadata.insert(cw.name, (task_id, pr_number, working_dir));
+        }
+    }
+
+    let session_infos = state.session_manager.shutdown_all(coworker_metadata).await;
+
+    if !session_infos.is_empty() {
+        info!(
+            "Detached {} coworker session(s) for later resume",
+            session_infos.len()
+        );
+
+        // Persist session info to daemon-state.json
+        let mut ps = state.persistent_state.lock().await;
+        for (name, info) in session_infos {
+            ps.headless_sessions.insert(name, info);
+        }
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!("Failed to save session info for resume: {}", e);
+        } else {
+            info!(
+                "Saved session info for {} coworker(s)",
+                ps.headless_sessions.len()
+            );
+        }
     }
 
     // Signal webhook forwarder watchdog to stop

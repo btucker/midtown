@@ -158,6 +158,8 @@ pub struct HeadlessSession {
     stderr_reader: BufReader<tokio::process::ChildStderr>,
     stdin: Option<tokio::process::ChildStdin>,
     session_id: Option<String>,
+    /// If true, the child process will NOT be killed on drop (for daemon restart survival).
+    detach_on_drop: bool,
 }
 
 impl HeadlessSession {
@@ -280,6 +282,7 @@ impl HeadlessSession {
             stderr_reader,
             stdin,
             session_id: None,
+            detach_on_drop: false,
         })
     }
 
@@ -435,14 +438,32 @@ impl HeadlessSession {
     pub fn pid(&self) -> Option<u32> {
         self.child.id()
     }
+
+    /// Enable detach-on-drop mode to allow the child process to survive when dropped.
+    ///
+    /// Used during daemon shutdown to keep Claude sessions alive across restart.
+    /// The session can later be resumed via `--resume <session_id>`.
+    pub fn detach_on_drop(&mut self) {
+        self.detach_on_drop = true;
+    }
 }
 
 impl Drop for HeadlessSession {
     fn drop(&mut self) {
-        // Ensure the child process is killed when the session is dropped.
-        // tokio::process::Child does NOT kill on drop (it detaches), so we
-        // must explicitly start_kill() to prevent orphaned claude processes.
-        let _ = self.child.start_kill();
+        if self.detach_on_drop {
+            // Detach mode: let the process survive for later resume.
+            // tokio::process::Child detaches by default, so we just skip start_kill().
+            debug!(
+                "HeadlessSession dropped in detach mode (pid={:?}, session_id={:?}) — process will survive",
+                self.child.id(),
+                self.session_id
+            );
+        } else {
+            // Normal mode: kill the child process when the session is dropped.
+            // tokio::process::Child does NOT kill on drop (it detaches), so we
+            // must explicitly start_kill() to prevent orphaned claude processes.
+            let _ = self.child.start_kill();
+        }
     }
 }
 

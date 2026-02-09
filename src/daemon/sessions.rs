@@ -17,6 +17,10 @@ use tracing::{debug, info, warn};
 
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
 
+/// Metadata for a coworker needed for session persistence on shutdown.
+/// Maps to (task_id, pr_number, working_dir).
+type CoworkerMetadata = (Option<u32>, Option<u64>, Option<String>);
+
 /// Status of a managed headless session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -227,25 +231,84 @@ impl SessionManager {
         Ok(session_id)
     }
 
-    /// Shut down all coworker sessions.
+    /// Shut down all coworker sessions with detach-on-drop to survive daemon restart.
     ///
-    /// Called during daemon shutdown to prevent orphaned processes.
-    /// Returns the number of sessions that were shut down.
-    pub async fn shutdown_all(&self) -> usize {
+    /// Returns session info for each coworker so the daemon can persist it and
+    /// resume sessions after restart. Each `HeadlessSessionInfo` contains the
+    /// session_id, PID, task/PR associations, and working directory.
+    ///
+    /// `coworker_metadata` maps coworker names to `(task_id, pr_number, working_dir)`.
+    /// Pass this from the daemon's `coworker_records` and `persistent_state.github`.
+    pub async fn shutdown_all(
+        &self,
+        coworker_metadata: HashMap<String, CoworkerMetadata>,
+    ) -> Vec<(String, crate::daemon::state::HeadlessSessionInfo)> {
         let mut sessions = self.sessions.write().await;
-        let count = sessions.len();
+        let mut session_infos = Vec::new();
         let names: Vec<String> = sessions.keys().cloned().collect();
+
         for name in &names {
-            if let Some(cs) = sessions.remove(name) {
+            if let Some(mut cs) = sessions.remove(name) {
                 let session_id = cs.session_id.clone();
-                drop(cs); // Drop triggers process kill
-                info!(
-                    "Shut down headless session '{}' during daemon shutdown (session_id={:?})",
-                    name, session_id
-                );
+                let pid = cs.session.as_ref().and_then(|s| s.pid());
+
+                // Enable detach mode to let the process survive
+                if let Some(session) = cs.session.as_mut() {
+                    session.detach_on_drop();
+                }
+
+                // Extract metadata for this coworker
+                let (task_id, pr_number, working_dir) =
+                    coworker_metadata.get(name).cloned().unwrap_or_default();
+
+                // Determine coworker type based on task vs PR
+                let coworker_type = if pr_number.is_some() {
+                    Some("reviewer".to_string())
+                } else if task_id.is_some() {
+                    Some("dev".to_string())
+                } else {
+                    None
+                };
+
+                // Build purpose string
+                let purpose = if let Some(pr) = pr_number {
+                    format!("reviewer for PR #{}", pr)
+                } else if let Some(task) = task_id {
+                    format!("task !{}", task)
+                } else {
+                    format!("coworker {}", name)
+                };
+
+                // Only persist sessions that have a session_id (successfully initialized)
+                if let Some(sid) = session_id {
+                    let info = crate::daemon::state::HeadlessSessionInfo {
+                        session_id: sid.clone(),
+                        last_active: cs.last_event_at.unwrap_or_else(chrono::Utc::now),
+                        purpose: purpose.clone(),
+                        pid,
+                        coworker_type,
+                        task_id: task_id.map(|t| t as u64),
+                        pr_number,
+                        working_dir,
+                    };
+                    session_infos.push((name.clone(), info));
+                    info!(
+                        "Detached headless session '{}' (session_id={}, pid={:?}) for later resume",
+                        name, sid, pid
+                    );
+                } else {
+                    info!(
+                        "Dropping headless session '{}' (no session_id, cannot resume)",
+                        name
+                    );
+                }
+
+                // Drop will now skip kill thanks to detach_on_drop()
+                drop(cs);
             }
         }
-        count
+
+        session_infos
     }
 
     /// Check if a coworker has a running session.
