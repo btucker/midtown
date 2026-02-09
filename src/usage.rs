@@ -43,15 +43,15 @@ pub struct OAuthCredentials {
     pub email: Option<String>,
 }
 
-/// Fetch OAuth credentials from macOS Keychain for the current midtown auth profile.
+/// Fetch OAuth credentials from macOS Keychain for a specific auth profile.
 ///
 /// The keychain entry name is `Claude Code-credentials-{hash}` where `{hash}` is the
 /// first 8 hex characters of SHA256(CLAUDE_CONFIG_DIR path).
 #[cfg(target_os = "macos")]
-pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
+pub fn get_oauth_credentials_for_profile(profile: &str) -> Option<OAuthCredentials> {
     use sha2::{Digest, Sha256};
 
-    let config_dir = crate::auth::current_profile_dir();
+    let config_dir = crate::auth::profile_dir(profile);
     let config_dir_str = config_dir.to_string_lossy();
 
     // Derive the keychain service name hash
@@ -91,6 +91,21 @@ pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
         .map(|s| s.to_string());
 
     Some(OAuthCredentials { token, email })
+}
+
+/// Fetch OAuth credentials from macOS Keychain for the current midtown auth profile.
+///
+/// The keychain entry name is `Claude Code-credentials-{hash}` where `{hash}` is the
+/// first 8 hex characters of SHA256(CLAUDE_CONFIG_DIR path).
+#[cfg(target_os = "macos")]
+pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
+    let current_profile = crate::auth::current_profile();
+    get_oauth_credentials_for_profile(&current_profile)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn get_oauth_credentials_for_profile(_profile: &str) -> Option<OAuthCredentials> {
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -135,6 +150,15 @@ pub fn fetch_usage(token: &str, account_email: Option<String>) -> Option<UsageDa
         week_resets,
         account_email,
     })
+}
+
+/// Fetch usage data for a specific profile using credentials from the macOS Keychain.
+///
+/// Combines credential retrieval and API fetch into a single call.
+/// Returns `None` if credentials are unavailable or the API call fails.
+pub fn fetch_usage_for_profile(profile: &str) -> Option<UsageData> {
+    let creds = get_oauth_credentials_for_profile(profile)?;
+    fetch_usage(&creds.token, creds.email)
 }
 
 /// Fetch usage data using credentials from the macOS Keychain.

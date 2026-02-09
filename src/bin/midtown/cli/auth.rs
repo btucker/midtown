@@ -85,7 +85,13 @@ fn handle_login(profile: &str) -> Result<Response, String> {
     })
 }
 
+/// Profile info with usage data for display.
+type ProfileInfo = (String, bool, bool, Option<midtown::usage::UsageData>);
+
 fn handle_list() -> Result<Response, String> {
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
     let profiles =
         midtown::auth::list_profiles().map_err(|e| format!("Failed to list profiles: {}", e))?;
 
@@ -96,22 +102,89 @@ fn handle_list() -> Result<Response, String> {
     }
 
     let current = midtown::auth::current_profile();
-    let mut lines = Vec::new();
-    lines.push("Profiles:".to_string());
 
-    for name in &profiles {
-        let marker = if *name == current { " (active)" } else { "" };
-        let status = midtown::auth::profile_status(name);
-        let cred_status = status
-            .map(|s| {
-                if s.has_credentials {
-                    "authenticated"
-                } else {
-                    "not authenticated"
-                }
-            })
-            .unwrap_or("unknown");
-        lines.push(format!("  {}{} - {}", name, marker, cred_status));
+    // Fetch usage data for all authenticated profiles in parallel
+    let results: Arc<Mutex<Vec<ProfileInfo>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let mut handles = vec![];
+
+    for name in profiles {
+        let results = Arc::clone(&results);
+        let name = name.clone();
+        let is_current = name == current;
+
+        let handle = thread::spawn(move || {
+            let status = midtown::auth::profile_status(&name);
+            let has_credentials = status.as_ref().is_some_and(|s| s.has_credentials);
+
+            let usage = if has_credentials {
+                midtown::usage::fetch_usage_for_profile(&name)
+            } else {
+                None
+            };
+
+            results
+                .lock()
+                .unwrap()
+                .push((name, is_current, has_credentials, usage));
+        });
+
+        handles.push(handle);
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let mut results = results.lock().unwrap().clone();
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Format as a table
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "{:<20} {:<18} {:<25} {}",
+        "Profile", "Status", "Usage", "Resets"
+    ));
+    lines.push("-".repeat(90));
+
+    for (name, is_current, has_credentials, usage) in results {
+        let marker = if is_current { " (active)" } else { "" };
+        let profile_name = format!("{}{}", name, marker);
+
+        let status = if has_credentials {
+            "authenticated"
+        } else {
+            "not authenticated"
+        };
+
+        let (usage_str, resets_str) = if let Some(usage_data) = usage {
+            // Use session (5-hour) utilization as the primary metric
+            let pct = usage_data.session_util;
+            let usage_display = format!("{:.0}%", pct);
+
+            // Calculate time until reset
+            let now = chrono::Utc::now();
+            let duration = usage_data.session_resets.signed_duration_since(now);
+            let hours = duration.num_hours();
+            let minutes = duration.num_minutes() % 60;
+            let resets_display = if hours > 0 {
+                format!("{}h {}m", hours, minutes)
+            } else {
+                format!("{}m", minutes)
+            };
+
+            (usage_display, resets_display)
+        } else if has_credentials {
+            ("unavailable".to_string(), "-".to_string())
+        } else {
+            ("-".to_string(), "-".to_string())
+        };
+
+        lines.push(format!(
+            "{:<20} {:<18} {:<25} {}",
+            profile_name, status, usage_str, resets_str
+        ));
     }
 
     Ok(Response::Message {
