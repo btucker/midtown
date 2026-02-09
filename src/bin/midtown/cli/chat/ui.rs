@@ -840,21 +840,10 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Draw the chat messages area (top of chat panel)
 fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
-    // Show selection mode indicator in title
-    let title = if app.selection_mode {
-        " #midtown [SELECT: press 's' to exit] "
-    } else {
-        " #midtown "
-    };
-    let border_color = if app.selection_mode {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
     let block = Block::default()
-        .title(title)
+        .title(" #midtown ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+        .border_style(Style::default().fg(Color::DarkGray));
 
     let inner = block.inner(area);
 
