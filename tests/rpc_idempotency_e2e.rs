@@ -220,12 +220,13 @@ impl RpcFixture {
         let mut tasks = vec![];
         for entry in fs::read_dir(&tasks_dir).expect("Failed to read tasks dir") {
             let entry = entry.expect("Failed to read entry");
-            if let Some(name) = entry.file_name().to_str() {
-                if name.ends_with(".md") && !name.starts_with('.') {
-                    let content = fs::read_to_string(entry.path()).expect("Failed to read task");
-                    if let Some(task_info) = parse_task(&content) {
-                        tasks.push(task_info);
-                    }
+            if let Some(name) = entry.file_name().to_str()
+                && name.ends_with(".md")
+                && !name.starts_with('.')
+            {
+                let content = fs::read_to_string(entry.path()).expect("Failed to read task");
+                if let Some(task_info) = parse_task(&content) {
+                    tasks.push(task_info);
                 }
             }
         }
