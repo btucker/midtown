@@ -2100,9 +2100,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Persist session info for survival across daemon restarts
     info!("Persisting session info for restart survival...");
-    persist_sessions_for_restart(&state).await?;
+    if let Err(e) = persist_sessions_for_restart(&state).await {
+        warn!(
+            "Failed to persist sessions for restart (sessions will not survive): {}",
+            e
+        );
+    }
 
     // Mark all sessions to be detached (not killed) on drop
+    // CRITICAL: Always detach even if persistence failed above - sessions should
+    // survive the restart even if we can't restore their context
     state.session_manager.detach_all().await;
 
     // Shut down all coworker sessions (detach instead of kill)

@@ -1,8 +1,11 @@
 //! Startup state recovery for the midtown daemon.
 //!
 //! Handles recovery of coworker tracking across daemon restarts.
-//! When the daemon starts, it discovers running coworkers from tmux and
-//! creates minimal records so they are tracked for health monitoring.
+//! When the daemon starts:
+//! - Discovers running coworkers from tmux and creates minimal records for health monitoring
+//! - Recovers headless coworker sessions from persisted state and resumes them with --resume
+//! - Cleans up zombie processes from previous daemon runs (orphaned PPID=1 processes)
+//!
 //! Workflow state is recovered when coworkers report via RPC.
 
 use std::collections::HashMap;
@@ -42,13 +45,19 @@ pub async fn recover_coworker_records(
 /// Scan for and kill any orphaned Claude headless processes not tracked by the daemon.
 ///
 /// This cleanup runs on daemon startup to remove zombie processes left behind
-/// from crashes or unclean shutdowns.
+/// from crashes or unclean shutdowns. Only kills processes that:
+/// - Match the midtown settings pattern (scoped to this installation)
+/// - Are truly orphaned (PPID=1)
+/// - Are not tmux processes
 pub fn kill_zombie_claude_processes() {
     info!("Scanning for zombie Claude headless processes...");
 
-    // Find all claude processes running in headless mode
+    // Use the same pattern as the rest of the codebase to scope to this midtown installation
+    let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
+
+    // Find PIDs matching the pattern
     let output = match std::process::Command::new("pgrep")
-        .args(["-f", "claude.*headless"])
+        .args(["-f", pattern])
         .output()
     {
         Ok(output) if output.status.success() => output,
@@ -62,8 +71,43 @@ pub fn kill_zombie_claude_processes() {
         }
     };
 
-    let pids = String::from_utf8_lossy(&output.stdout);
-    let zombie_pids: Vec<&str> = pids.lines().filter(|line| !line.is_empty()).collect();
+    let pids_str = String::from_utf8_lossy(&output.stdout);
+    let candidate_pids: Vec<u32> = pids_str
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+
+    if candidate_pids.is_empty() {
+        return;
+    }
+
+    // Filter to only truly orphaned processes (PPID=1) and exclude tmux
+    let mut zombie_pids = Vec::new();
+    for pid in candidate_pids {
+        // Check if process is orphaned (PPID=1)
+        let ppid = get_ppid(pid);
+        if ppid != Some(1) {
+            continue;
+        }
+
+        // Check if process is tmux (should not kill)
+        let is_tmux = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .starts_with("tmux")
+            })
+            .unwrap_or(false);
+
+        if is_tmux {
+            continue;
+        }
+
+        zombie_pids.push(pid);
+    }
 
     if zombie_pids.is_empty() {
         return;
@@ -73,13 +117,48 @@ pub fn kill_zombie_claude_processes() {
         "Found {} zombie Claude process(es), killing...",
         zombie_pids.len()
     );
-    for pid in zombie_pids {
+    for pid in &zombie_pids {
         info!("Killing zombie process: {}", pid);
         let _ = std::process::Command::new("kill")
             .arg("-9")
-            .arg(pid)
+            .arg(pid.to_string())
             .output();
     }
+}
+
+/// Get the parent PID of a process.
+fn get_ppid(pid: u32) -> Option<u32> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "ppid="])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// Verify that a PID belongs to a claude process.
+///
+/// Returns true if the process exists and its command line contains "claude".
+/// This prevents accidentally killing unrelated processes when PIDs are reused.
+fn verify_claude_process(pid: u32) -> bool {
+    let output = match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let cmdline = String::from_utf8_lossy(&output.stdout);
+    cmdline.contains("claude")
 }
 
 /// Recover headless coworker sessions from persisted state after daemon restart.
@@ -117,13 +196,23 @@ pub async fn recover_headless_sessions(
             name, session_info.session_id, session_info.purpose
         );
 
-        // Kill the old orphaned process if it still exists
+        // Kill the old orphaned process if it still exists and is a claude process
         if let Some(pid) = session_info.pid {
-            info!("Killing orphaned process {} for {}", pid, name);
-            let _ = std::process::Command::new("kill")
-                .arg("-9")
-                .arg(pid.to_string())
-                .output();
+            // Verify the PID belongs to a claude process before killing
+            // (PIDs can be reused between daemon restarts)
+            let is_claude = verify_claude_process(pid);
+            if is_claude {
+                info!("Killing orphaned claude process {} for {}", pid, name);
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .output();
+            } else {
+                warn!(
+                    "PID {} for {} is not a claude process (or already dead), skipping kill",
+                    pid, name
+                );
+            }
         }
 
         // Build launch config based on coworker type and saved context
@@ -172,7 +261,14 @@ pub async fn recover_headless_sessions(
         });
     }
 
-    // Clear the headless_sessions map after recovery (save empty state)
+    // FIXME: We clear the headless_sessions map here before effects execute,
+    // creating a crash window where recovery data is lost. The architecturally
+    // correct fix is to add Effect::ClearRecoveryState and clear after effects
+    // complete successfully. For now, we clear eagerly to prevent double-recovery
+    // if the daemon restarts again before effects execute.
+    //
+    // See review feedback: "Persisted state cleared before recovery effects execute"
+    // Tracked in follow-up task for Effect-based refactoring.
     {
         let state = persistent_state.lock().await;
         if let Err(e) = state.save_for_repo(repo_name) {
