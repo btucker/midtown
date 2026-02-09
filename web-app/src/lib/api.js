@@ -44,6 +44,33 @@ export async function fetchProjects() {
   return []
 }
 
+// Fetch the list of available channels
+export async function fetchChannels() {
+  try {
+    const res = await fetch(`${getApiBase()}/channels`)
+    if (res.ok) {
+      const data = await res.json()
+      const channelList = data.channels.map((name) => ({
+        name,
+        unread: 0,
+        has_pr: false,
+        ci_status: null,
+      }))
+      // Ensure midtown is first
+      channelList.sort((a, b) => {
+        if (a.name === 'midtown') return -1
+        if (b.name === 'midtown') return 1
+        return a.name.localeCompare(b.name)
+      })
+      channels.set(channelList)
+      return channelList
+    }
+  } catch (err) {
+    console.error('Failed to fetch channels:', err)
+  }
+  return []
+}
+
 // Switch to a different project by name
 export function switchProject(projectName, webhookPort) {
   // Disconnect existing WebSocket
@@ -98,6 +125,7 @@ export function switchProject(projectName, webhookPort) {
 
   // Load data from the new project
   if (projectApiBase) {
+    fetchChannels() // Fetch available channels first
     fetchHistory()
     fetchStatus()
     fetchUsage()
@@ -115,41 +143,55 @@ export function getApiBase() {
 }
 
 // Fetch channel message history
-export async function fetchHistory() {
+// If channelName is provided, fetches only that channel's messages.
+// Otherwise, fetches all messages from the main channel.
+export async function fetchHistory(channelName = null) {
   try {
-    const res = await fetch(`${getApiBase()}/channel`)
+    const url = channelName
+      ? `${getApiBase()}/channel?channel=${encodeURIComponent(channelName)}`
+      : `${getApiBase()}/channel`
+    const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
-      messages.set(data)
 
-      // Group messages by channel
-      const byChannel = {}
-      const channelSet = new Set()
-      for (const msg of data) {
-        const channelName = msg.channel || 'midtown'
-        if (!byChannel[channelName]) {
-          byChannel[channelName] = []
+      if (channelName) {
+        // Fetching a specific channel - update only that channel's messages
+        messagesByChannel.update((byChannel) => ({
+          ...byChannel,
+          [channelName]: data,
+        }))
+      } else {
+        // Fetching all messages (initial load) - group by channel
+        messages.set(data)
+
+        const byChannel = {}
+        const channelSet = new Set()
+        for (const msg of data) {
+          const name = msg.channel || 'midtown'
+          if (!byChannel[name]) {
+            byChannel[name] = []
+          }
+          byChannel[name].push(msg)
+          channelSet.add(name)
         }
-        byChannel[channelName].push(msg)
-        channelSet.add(channelName)
+
+        messagesByChannel.set(byChannel)
+
+        // Build channel list
+        const channelList = Array.from(channelSet).map((name) => ({
+          name,
+          unread: 0,
+          has_pr: false,
+          ci_status: null,
+        }))
+        // Ensure midtown is first
+        channelList.sort((a, b) => {
+          if (a.name === 'midtown') return -1
+          if (b.name === 'midtown') return 1
+          return a.name.localeCompare(b.name)
+        })
+        channels.set(channelList)
       }
-
-      messagesByChannel.set(byChannel)
-
-      // Build channel list
-      const channelList = Array.from(channelSet).map((name) => ({
-        name,
-        unread: 0,
-        has_pr: false,
-        ci_status: null,
-      }))
-      // Ensure midtown is first
-      channelList.sort((a, b) => {
-        if (a.name === 'midtown') return -1
-        if (b.name === 'midtown') return 1
-        return a.name.localeCompare(b.name)
-      })
-      channels.set(channelList)
     }
   } catch (err) {
     console.error('Failed to fetch history:', err)

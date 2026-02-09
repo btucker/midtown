@@ -467,14 +467,36 @@ async fn api_channels_create(
     ))
 }
 
+/// Query parameters for channel history
+#[derive(Debug, Deserialize)]
+struct ChannelHistoryQuery {
+    /// Optional channel name to filter by. If not provided, returns all messages from the main channel.
+    channel: Option<String>,
+}
+
 /// Get channel message history
+///
+/// Accepts an optional `?channel=name` query parameter to load a specific channel.
+/// If not provided, returns messages from the main "midtown" channel.
 async fn api_channel_history(
     State(state): State<Arc<WebState>>,
+    Query(params): Query<ChannelHistoryQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let channel = Channel::for_repo(&state.config.repo).map_err(|e| {
-        error!("Failed to open channel: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
+
+    let channel = if let Some(channel_name) = params.channel {
+        // Load a specific channel by name
+        Channel::new(base_dir, &channel_name).map_err(|e| {
+            error!("Failed to open channel '{}': {}", channel_name, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    } else {
+        // Default: load the main channel
+        Channel::for_repo(&state.config.repo).map_err(|e| {
+            error!("Failed to open channel: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
 
     let messages = channel.read_all().map_err(|e| {
         error!("Failed to read channel: {}", e);

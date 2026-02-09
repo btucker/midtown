@@ -1,5 +1,6 @@
 <script>
-  import { channels, activeChannel, kanbanData, activeProject } from './store.js'
+  import { channels, activeChannel, kanbanData, activeProject, messagesByChannel } from './store.js'
+  import { fetchHistory, fetchChannels } from './api.js'
 
   let showCreateInput = false
   let newChannelName = ''
@@ -46,8 +47,14 @@
     }
   }
 
-  function selectChannel(channelName) {
+  async function selectChannel(channelName) {
     activeChannel.set(channelName)
+
+    // Load messages for this channel if we haven't fetched them yet
+    const currentMessages = $messagesByChannel[channelName]
+    if (!currentMessages || currentMessages.length === 0) {
+      await fetchHistory(channelName)
+    }
   }
 
   function formatChannelName(name) {
@@ -97,11 +104,7 @@
       }
 
       // Success - refresh channel list
-      const listResponse = await fetch(`/api/${project}/channels`)
-      if (listResponse.ok) {
-        const data = await listResponse.json()
-        channels.set(data.channels.map((name) => ({ name, unread: 0 })))
-      }
+      await fetchChannels()
 
       // Switch to the new channel and close the input
       activeChannel.set(name)
