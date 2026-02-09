@@ -137,6 +137,8 @@ gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<'EO
 
 ## Test plan
 - [x] Unit tests pass
+
+🌃 Co-built with [Midtown](https://github.com/btucker/midtown)
 EOF
 )"
 ```
