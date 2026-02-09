@@ -341,6 +341,43 @@ mod tests {
     }
 
     #[test]
+    fn test_coworker_view_output_format_does_not_match_response_enum() {
+        // The coworker.view RPC returns {"success": true, "output": "..."} which
+        // doesn't match any Response variant. This is why coworker_view() uses
+        // send_raw() instead of send().
+        let json = r#"{"success": true, "output": "some terminal output"}"#;
+        let result: Result<Response, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "coworker.view output format should NOT deserialize as Response"
+        );
+    }
+
+    #[test]
+    fn test_coworker_view_output_extraction() {
+        // Verify the extraction logic used in DaemonClient::coworker_view()
+        let raw: serde_json::Value =
+            serde_json::from_str(r#"{"success": true, "output": "terminal content here"}"#)
+                .unwrap();
+        let output = raw
+            .get("output")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "RPC response missing 'output' field".to_string());
+        assert_eq!(output.unwrap(), "terminal content here");
+    }
+
+    #[test]
+    fn test_coworker_view_missing_output_field_returns_error() {
+        // If the output field is missing, extraction should fail with a clear error
+        let raw: serde_json::Value = serde_json::from_str(r#"{"success": true}"#).unwrap();
+        let output = raw
+            .get("output")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "RPC response missing 'output' field".to_string());
+        assert_eq!(output.unwrap_err(), "RPC response missing 'output' field");
+    }
+
+    #[test]
     fn test_status_pretty_format() {
         let status = StatusResponse {
             daemon_running: true,
