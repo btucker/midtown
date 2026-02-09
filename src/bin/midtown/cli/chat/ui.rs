@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use midtown::{Message, MessageType};
@@ -311,7 +311,7 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         .title("Board")
         .style(Style::default().fg(Color::White));
 
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
 
     hyperlinks
