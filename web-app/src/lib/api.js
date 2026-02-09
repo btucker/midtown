@@ -194,7 +194,10 @@ export async function fetchHistory(channelName = null) {
       }
     }
   } catch (err) {
-    console.error('Failed to fetch history:', err)
+    // Retain last-known-good data on transient network errors so the
+    // channel view doesn't flash empty. Messages will refresh on the
+    // next successful WebSocket reconnect or manual channel switch.
+    console.warn('Failed to fetch history (retaining cached data):', err)
   }
 }
 
