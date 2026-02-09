@@ -1152,6 +1152,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         writeln!(file, "{}", serde_json::to_string(&new_msg).unwrap()).unwrap();
 
@@ -1164,6 +1165,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
 
@@ -1341,6 +1343,7 @@ mod tests {
                     message_type: MessageType::Text,
                     channel: None,
                     source_channel: None,
+                    session_id: None,
                 };
                 writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
             }
@@ -1355,6 +1358,7 @@ mod tests {
                     message_type: MessageType::Text,
                     channel: None,
                     source_channel: None,
+                    session_id: None,
                 };
                 writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
             }
@@ -1418,6 +1422,7 @@ mod tests {
                 message_type: MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             };
             writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
         }
@@ -1476,6 +1481,7 @@ mod tests {
                 message_type: MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             };
             writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
             file.write_all(existing.as_bytes()).unwrap();

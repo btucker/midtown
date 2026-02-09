@@ -1888,6 +1888,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
@@ -1897,6 +1898,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1940,6 +1942,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let msg2 = Message {
             id: "2".to_string(),
@@ -1949,6 +1952,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1989,6 +1993,7 @@ mod tests {
             message_type: MessageType::Action,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -2054,6 +2059,7 @@ mod tests {
             message_type: MessageType::System,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -2136,6 +2142,7 @@ mod tests {
                 message_type: MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -2238,6 +2245,7 @@ mod tests {
                 message_type: MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -2375,6 +2383,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let daemon_msg = Message {
             id: "2".to_string(),
@@ -2384,6 +2393,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let daemon_lines = render_message(&daemon_msg, 80, Some("madison"), &current_tasks, None);
@@ -2401,6 +2411,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2418,6 +2429,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2435,6 +2447,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2477,6 +2490,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2494,6 +2508,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let daemon_lines = render_message(&daemon_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2519,6 +2534,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2559,6 +2575,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         // Test with a current task
@@ -2616,6 +2633,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -2649,6 +2667,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         // Task stored with lowercase "park"
@@ -2961,6 +2980,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         }
     }
 
@@ -3342,6 +3362,7 @@ mod tests {
             message_type: MessageType::Action,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let segments = vec![ContentSegment::Mermaid(source.to_string())];
         let current_tasks = HashMap::new();

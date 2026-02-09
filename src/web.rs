@@ -319,6 +319,11 @@ pub struct CoworkerStatusData {
     pub status: String,
     pub current_task: Option<String>,
     pub model: String,
+    /// Claude session ID for this coworker session, if known.
+    /// Enables the web UI to distinguish between multiple sessions
+    /// that share the same coworker name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1647,6 +1652,7 @@ pub fn coworker_status_update(
         status: status.to_string(),
         current_task: current_task.map(|s| s.to_string()),
         model: model.to_string(),
+        session_id: None,
     })
 }
 
@@ -1750,6 +1756,7 @@ mod tests {
             status: "running".to_string(),
             current_task: Some("Fix auth bug".to_string()),
             model: "sonnet".to_string(),
+            session_id: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();
@@ -1960,6 +1967,7 @@ mod tests {
             status: "stopped".to_string(),
             current_task: None,
             model: "sonnet".to_string(),
+            session_id: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();

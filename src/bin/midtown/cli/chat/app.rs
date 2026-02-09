@@ -1629,6 +1629,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1756,6 +1757,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1831,6 +1833,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1885,6 +1888,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1944,6 +1948,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
