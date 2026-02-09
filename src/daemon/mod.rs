@@ -1428,12 +1428,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let (chat_monitor_shutdown_tx, chat_monitor_shutdown_rx) = watch::channel(false);
     if config.chat_monitor_enabled {
         let state = Arc::clone(&state);
-        let channel_path = state
-            .channel_router
-            .default_channel()
-            .unwrap()
-            .channel_file_path()
-            .to_path_buf();
+        let channel_path = match state.channel_router.default_channel() {
+            Ok(ch) => ch.channel_file_path().to_path_buf(),
+            Err(e) => {
+                error!("Failed to get default channel for chat monitor: {}", e);
+                return Err(e);
+            }
+        };
         tokio::spawn(async move {
             chat::chat_monitor_loop(state, channel_path, chat_monitor_shutdown_rx).await;
         });
@@ -1854,7 +1855,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodic channel log rotation (only rotates the default/main channel)
             _ = channel_rotation_interval.tick() => {
-                let default_channel = state.channel_router.default_channel().unwrap();
+                let default_channel = match state.channel_router.default_channel() {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        error!("Failed to get default channel for rotation: {}", e);
+                        continue;
+                    }
+                };
                 if default_channel.needs_rotation(CHANNEL_ROTATION_MAX_AGE_HOURS) {
                     info!("Channel rotation triggered (oldest message > {}h)", CHANNEL_ROTATION_MAX_AGE_HOURS);
                     match default_channel.rotate(CHANNEL_ROTATION_RETAIN_MINUTES) {

@@ -780,8 +780,8 @@ pub struct ChannelRouter {
     base_dir: PathBuf,
     /// Default channel name (repo name)
     default_channel_name: String,
-    /// Cache of opened channels
-    channels: std::sync::Mutex<std::collections::HashMap<String, Channel>>,
+    /// Cache of opened channels (Arc-wrapped for shared cache across clones)
+    channels: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Channel>>>,
 }
 
 impl ChannelRouter {
@@ -792,7 +792,7 @@ impl ChannelRouter {
         Self {
             base_dir: base_dir.into(),
             default_channel_name: default_channel_name.into(),
-            channels: std::sync::Mutex::new(std::collections::HashMap::new()),
+            channels: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -820,9 +820,12 @@ impl ChannelRouter {
 
         // Open new channel
         let channel = Channel::new(&self.base_dir, channel_name)?;
-        let result = channel.send(message);
-        channels.insert(channel_name.to_string(), channel);
-        result
+        // Cache the channel before attempting send - the Channel itself is valid
+        // even if the subsequent write fails (filesystem error, permissions, etc).
+        // The Channel holds no mutable state, so caching a channel that failed
+        // a write is safe - the next send() will retry the write.
+        channels.insert(channel_name.to_string(), channel.clone());
+        channel.send(message)
     }
 
     /// Get or create a channel by name.
@@ -874,7 +877,8 @@ impl Clone for ChannelRouter {
         Self {
             base_dir: self.base_dir.clone(),
             default_channel_name: self.default_channel_name.clone(),
-            channels: std::sync::Mutex::new(self.channels.lock().unwrap().clone()),
+            // Arc::clone shares the same cache across clones
+            channels: std::sync::Arc::clone(&self.channels),
         }
     }
 }

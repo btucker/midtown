@@ -463,7 +463,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             // Collect and return the full WorldSnapshot for debugging/testing.
             // Debug context (channel messages, daemon logs) is only populated here,
             // not during normal tick collection, to avoid I/O overhead on the hot path.
-            let default_channel = state.channel_router.default_channel().unwrap();
+            let default_channel = match state.channel_router.default_channel() {
+                Ok(ch) => ch,
+                Err(e) => {
+                    error!("Failed to get default channel for snapshot: {}", e);
+                    return Response::error(request.id, RpcError::new(-32603, e.to_string()));
+                }
+            };
             let snapshot = super::snapshot::collect_world_snapshot(state)
                 .await
                 .with_debug_context(&default_channel);
