@@ -9,6 +9,9 @@ pub enum ChannelCommand {
     Post {
         /// Message to post
         message: String,
+        /// Channel to post to (defaults to main channel if not specified)
+        #[arg(long)]
+        channel: Option<String>,
     },
     /// Read messages from the channel
     Read {
@@ -20,7 +23,9 @@ pub enum ChannelCommand {
 
 pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        ChannelCommand::Post { message } => client.channel_post(message),
+        ChannelCommand::Post { message, channel } => {
+            client.channel_post(message, channel.as_deref())
+        }
         ChannelCommand::Read { all } => client.channel_read(*all),
     }
 }

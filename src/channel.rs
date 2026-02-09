@@ -1703,16 +1703,19 @@ mod tests {
         let default = router.default_channel().unwrap();
         assert_eq!(default.channel_name(), "my-repo");
 
-        // Sending a message with None channel uses default
+        // Message::text() creates a message with channel: None
         let msg = Message::text("agent1", "Test");
-        assert_eq!(msg.channel_name(), "midtown"); // Message::text defaults to "midtown"
+        // channel_name() returns "midtown" as a fallback when channel field is None
+        assert_eq!(msg.channel_name(), "midtown");
+        // But the channel field itself is None
+        assert!(msg.channel.is_none());
 
-        // But router's default is "my-repo"
+        // Router uses its default "my-repo" when message.channel is None
         router.send(&msg).unwrap();
 
-        // Message should be in "midtown" channel (message's channel field wins)
-        let midtown_ch = router.get_channel("midtown").unwrap();
-        let messages = read_all_with_retry(&midtown_ch, 5).unwrap();
+        // Message should be in "my-repo" channel (router's default is used)
+        let my_repo_ch = router.get_channel("my-repo").unwrap();
+        let messages = read_all_with_retry(&my_repo_ch, 5).unwrap();
         assert_eq!(messages.len(), 1);
     }
 
@@ -1791,5 +1794,40 @@ mod tests {
         let channel = router.get_channel("test-channel").unwrap();
         let messages = read_all_with_retry(&channel, 5).unwrap();
         assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn test_channel_router_insight_message_routing() {
+        let temp_dir = TempDir::new().unwrap();
+        let router = ChannelRouter::new(temp_dir.path(), "midtown");
+
+        // Send an insight to a topic channel
+        let insight_msg = Message::for_channel(
+            "auth-refactor",
+            "park",
+            "💡 The tower::Layer stack composes auth providers independently",
+            MessageType::Text,
+        );
+        router.send(&insight_msg).unwrap();
+
+        // Send a non-insight message to the same topic channel
+        let regular_msg = Message::for_channel(
+            "auth-refactor",
+            "park",
+            "Working on the auth module",
+            MessageType::Text,
+        );
+        router.send(&regular_msg).unwrap();
+
+        // Verify the topic channel has both messages
+        let topic_channel = router.get_channel("auth-refactor").unwrap();
+        let topic_messages = read_all_with_retry(&topic_channel, 5).unwrap();
+        assert_eq!(topic_messages.len(), 2);
+        assert!(topic_messages[0].content.contains("💡"));
+        assert!(!topic_messages[1].content.contains("💡"));
+
+        // Note: This test only validates that the router correctly sends messages to topic channels.
+        // The cross-posting behavior (where insights are also sent to main channel) is handled
+        // by the daemon's send_and_broadcast_async() method, which is tested in daemon/mod.rs.
     }
 }
