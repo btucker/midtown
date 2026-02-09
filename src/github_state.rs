@@ -75,6 +75,8 @@ pub enum AssignmentSource {
     PollingFallback,
     /// Manually assigned (e.g., by the lead or via an RPC command).
     Manual,
+    /// Recovered from persistent state on daemon restart (session survival).
+    Recovery,
 }
 
 impl fmt::Display for AssignmentSource {
@@ -83,6 +85,7 @@ impl fmt::Display for AssignmentSource {
             AssignmentSource::Webhook => write!(f, "webhook"),
             AssignmentSource::PollingFallback => write!(f, "polling"),
             AssignmentSource::Manual => write!(f, "manual"),
+            AssignmentSource::Recovery => write!(f, "recovery"),
         }
     }
 }
