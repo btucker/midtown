@@ -1031,11 +1031,19 @@ async fn handle_coworker_report_state(
     if phase == crate::coworker_state::WorkflowPhase::Idle {
         // Check if coworker is tracked (should be, since they're reporting state)
         if state.coworkers.get(name).is_some() {
-            // Shut down the coworker's tmux window
+            // Shut down the coworker's tmux window (headed) and headless session (if any).
+            // Both paths are needed: coworkers.shutdown() kills tmux windows and removes
+            // from CoworkerManager; session_manager.shutdown() kills the headless process.
+            // Without the session_manager call, headless processes survive as zombies.
             let coworkers = state.coworkers.clone();
             let name_owned = name.to_string();
             let shutdown_result =
                 tokio::task::spawn_blocking(move || coworkers.shutdown(&name_owned)).await;
+
+            if let Err(e) = state.session_manager.shutdown(name).await {
+                // Not an error for tmux-only coworkers — they have no headless session
+                tracing::debug!("Headless session shutdown for {}: {}", name, e);
+            }
 
             match shutdown_result {
                 Ok(Ok(())) => {
