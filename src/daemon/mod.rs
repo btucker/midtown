@@ -46,7 +46,6 @@ use tokio::sync::{Mutex, broadcast, watch};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
-use crate::channel::Channel;
 use crate::config;
 use crate::coworker::CoworkerManager;
 use crate::message::Message;
@@ -315,7 +314,7 @@ struct PrCoworkerCache {
 /// Shared daemon state.
 pub(crate) struct DaemonState {
     coworkers: CoworkerManager,
-    channel: Channel,
+    channel_router: crate::ChannelRouter,
     socket_path: PathBuf,
     /// Unified per-coworker records: session health, workflow phase, last activity.
     /// Replaces the separate `coworker_lifecycles` and `coworker_state_reports`
@@ -561,7 +560,7 @@ impl DaemonState {
         coworkers: CoworkerManager,
         repo_name: String,
         all_repo_paths: Vec<PathBuf>,
-        channel: Channel,
+        channel_router: crate::ChannelRouter,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
         max_coworkers: usize,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
@@ -581,7 +580,7 @@ impl DaemonState {
 
         Ok(Self {
             coworkers,
-            channel,
+            channel_router,
             socket_path,
             coworker_records: tokio::sync::RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
@@ -851,23 +850,24 @@ impl DaemonState {
         }
     }
 
-    /// Send a message to the channel and broadcast it to WebSocket clients.
+    /// Send a message to the appropriate channel (based on Message.channel field)
+    /// and broadcast it to WebSocket clients.
     fn send_and_broadcast(&self, message: &Message) -> crate::Result<()> {
-        self.channel.send(message)?;
+        self.channel_router.send(message)?;
         self.broadcast_web_update(web::channel_message_update(message));
         Ok(())
     }
 
     /// Async version of send_and_broadcast that uses spawn_blocking for the channel write.
     ///
-    /// The channel.send() method acquires a file lock that can take up to 2 seconds under
+    /// The channel_router.send() method acquires a file lock that can take up to 2 seconds under
     /// contention. When called in an async context (like RPC handlers), this can block the
     /// Tokio runtime thread and prevent other tasks from making progress. This async version
     /// moves the blocking file write to a dedicated thread pool.
     async fn send_and_broadcast_async(&self, message: &Message) -> crate::Result<()> {
-        let channel = self.channel.clone();
+        let router = self.channel_router.clone();
         let msg = message.clone();
-        let write_result = tokio::task::spawn_blocking(move || channel.send(&msg)).await;
+        let write_result = tokio::task::spawn_blocking(move || router.send(&msg)).await;
 
         match write_result {
             Ok(Ok(())) => {}
@@ -1263,9 +1263,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         })
         .unwrap_or_else(|| repo_name.clone());
 
-    // Create channel for the repo
-    let channel = Channel::for_repo(&repo_name)?;
-    info!("Channel: {}", channel.base_dir().display());
+    // Create channel router for the repo
+    let channel_base_dir = crate::paths::projects_dir_for_repo(&repo_name);
+    let channel_router = crate::ChannelRouter::new(&channel_base_dir, "midtown");
+    info!("Channel base: {}", channel_base_dir.display());
 
     // Remove existing socket file if present
     if config.socket_path.exists() {
@@ -1379,7 +1380,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         coworker_manager,
         repo_name.clone(),
         all_repo_paths,
-        channel,
+        channel_router,
         web_updates_tx,
         config.max_coworkers,
         shared_push_manager,
@@ -1427,7 +1428,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     let (chat_monitor_shutdown_tx, chat_monitor_shutdown_rx) = watch::channel(false);
     if config.chat_monitor_enabled {
         let state = Arc::clone(&state);
-        let channel_path = state.channel.channel_file_path().to_path_buf();
+        let channel_path = match state.channel_router.default_channel() {
+            Ok(ch) => ch.channel_file_path().to_path_buf(),
+            Err(e) => {
+                error!("Failed to get default channel for chat monitor: {}", e);
+                return Err(e);
+            }
+        };
         tokio::spawn(async move {
             chat::chat_monitor_loop(state, channel_path, chat_monitor_shutdown_rx).await;
         });
@@ -1846,11 +1853,18 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 effects::execute_effects(review_effects, &state).await;
             }
 
-            // Periodic channel log rotation
+            // Periodic channel log rotation (only rotates the default/main channel)
             _ = channel_rotation_interval.tick() => {
-                if state.channel.needs_rotation(CHANNEL_ROTATION_MAX_AGE_HOURS) {
+                let default_channel = match state.channel_router.default_channel() {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        error!("Failed to get default channel for rotation: {}", e);
+                        continue;
+                    }
+                };
+                if default_channel.needs_rotation(CHANNEL_ROTATION_MAX_AGE_HOURS) {
                     info!("Channel rotation triggered (oldest message > {}h)", CHANNEL_ROTATION_MAX_AGE_HOURS);
-                    match state.channel.rotate(CHANNEL_ROTATION_RETAIN_MINUTES) {
+                    match default_channel.rotate(CHANNEL_ROTATION_RETAIN_MINUTES) {
                         Ok(archived) => {
                             info!("Channel rotated: {} messages archived", archived);
                             let msg = Message::system(

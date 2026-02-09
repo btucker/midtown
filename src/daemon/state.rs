@@ -62,6 +62,12 @@ pub struct DaemonPersistentState {
     /// Persisted so the daemon can resume sessions after restart.
     #[serde(default)]
     pub headless_sessions: HashMap<String, HeadlessSessionInfo>,
+
+    /// Task-to-channel mapping for routing messages to topic channels.
+    /// Maps task_id (e.g., "1007") to channel_name (e.g., "task-1007").
+    /// Tasks not in this map use the default (main) channel.
+    #[serde(default)]
+    pub task_channel: HashMap<String, String>,
 }
 
 impl DaemonPersistentState {
@@ -81,11 +87,12 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task→channel mappings",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
-                    state.worktree_registry.len()
+                    state.worktree_registry.len(),
+                    state.task_channel.len()
                 );
                 Ok(state)
             }
@@ -108,11 +115,12 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task→channel mappings",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
-            self.worktree_registry.len()
+            self.worktree_registry.len(),
+            self.task_channel.len()
         );
         Ok(())
     }
@@ -150,6 +158,7 @@ impl DaemonPersistentState {
             ci_stats: CiCheckStats::default(),
             worktree_registry: WorktreeRegistry::default(),
             headless_sessions: HashMap::new(),
+            task_channel: HashMap::new(),
         };
 
         // Save the unified file

@@ -752,6 +752,137 @@ impl Channel {
     }
 }
 
+/// Router for managing multiple channels with lazy initialization.
+///
+/// ChannelRouter maintains a cache of Channel instances, opening them on-demand
+/// when a message is routed to a specific channel. This enables multi-channel
+/// message routing without pre-opening all possible channels at startup.
+///
+/// # Examples
+///
+/// ```
+/// use midtown::{ChannelRouter, Message};
+/// use std::path::PathBuf;
+///
+/// let base_dir = PathBuf::from("/tmp/test");
+/// let router = ChannelRouter::new(base_dir, "midtown");
+///
+/// // Send to main channel (uses default repo name)
+/// let msg1 = Message::text("agent1", "Hello");
+/// router.send(&msg1).unwrap();
+///
+/// // Send to a topic channel (lazy-opens "pr-42" channel)
+/// let msg2 = Message::for_channel("pr-42", "agent1", "Review feedback", midtown::MessageType::Text);
+/// router.send(&msg2).unwrap();
+/// ```
+pub struct ChannelRouter {
+    /// Base directory for all channels
+    base_dir: PathBuf,
+    /// Default channel name (repo name)
+    default_channel_name: String,
+    /// Cache of opened channels (Arc-wrapped for shared cache across clones)
+    channels: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Channel>>>,
+}
+
+impl ChannelRouter {
+    /// Create a new ChannelRouter with the given base directory and default channel name.
+    ///
+    /// The default channel name is typically the repository name (e.g., "midtown").
+    pub fn new(base_dir: impl Into<PathBuf>, default_channel_name: impl Into<String>) -> Self {
+        Self {
+            base_dir: base_dir.into(),
+            default_channel_name: default_channel_name.into(),
+            channels: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Send a message to the appropriate channel based on Message.channel field.
+    ///
+    /// If the message's channel is None or empty, uses the default channel name.
+    /// Channels are opened lazily on first use and cached for subsequent sends.
+    pub fn send(&self, message: &Message) -> Result<()> {
+        let channel_name = message.channel_name();
+
+        // Fast path: check if channel is already open
+        {
+            let channels = self.channels.lock().unwrap();
+            if let Some(channel) = channels.get(channel_name) {
+                return channel.send(message);
+            }
+        }
+
+        // Slow path: open channel and cache it
+        let mut channels = self.channels.lock().unwrap();
+        // Double-check after acquiring exclusive lock (another thread may have opened it)
+        if let Some(channel) = channels.get(channel_name) {
+            return channel.send(message);
+        }
+
+        // Open new channel
+        let channel = Channel::new(&self.base_dir, channel_name)?;
+        // Cache the channel before attempting send - the Channel itself is valid
+        // even if the subsequent write fails (filesystem error, permissions, etc).
+        // The Channel holds no mutable state, so caching a channel that failed
+        // a write is safe - the next send() will retry the write.
+        channels.insert(channel_name.to_string(), channel.clone());
+        channel.send(message)
+    }
+
+    /// Get or create a channel by name.
+    ///
+    /// Returns a clone of the cached Channel. Channels are opened lazily on first access.
+    pub fn get_channel(&self, channel_name: &str) -> Result<Channel> {
+        // Fast path: check if channel is already open
+        {
+            let channels = self.channels.lock().unwrap();
+            if let Some(channel) = channels.get(channel_name) {
+                return Ok(channel.clone());
+            }
+        }
+
+        // Slow path: open channel and cache it
+        let mut channels = self.channels.lock().unwrap();
+        // Double-check after acquiring exclusive lock
+        if let Some(channel) = channels.get(channel_name) {
+            return Ok(channel.clone());
+        }
+
+        let channel = Channel::new(&self.base_dir, channel_name)?;
+        channels.insert(channel_name.to_string(), channel.clone());
+        Ok(channel)
+    }
+
+    /// Get the default channel name.
+    pub fn default_channel_name(&self) -> &str {
+        &self.default_channel_name
+    }
+
+    /// Get the default channel (uses default_channel_name).
+    pub fn default_channel(&self) -> Result<Channel> {
+        self.get_channel(&self.default_channel_name)
+    }
+
+    /// List all currently open (cached) channel names.
+    ///
+    /// Does not scan the filesystem - only returns channels that have been
+    /// opened during this router's lifetime.
+    pub fn open_channels(&self) -> Vec<String> {
+        let channels = self.channels.lock().unwrap();
+        channels.keys().cloned().collect()
+    }
+}
+
+impl Clone for ChannelRouter {
+    fn clone(&self) -> Self {
+        Self {
+            base_dir: self.base_dir.clone(),
+            default_channel_name: self.default_channel_name.clone(),
+            // Arc::clone shares the same cache across clones
+            channels: std::sync::Arc::clone(&self.channels),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1498,5 +1629,154 @@ mod tests {
             "Archived file should exist at {:?}",
             archived_path
         );
+    }
+
+    #[test]
+    fn test_channel_router_basic_routing() {
+        let temp_dir = TempDir::new().unwrap();
+        let router = ChannelRouter::new(temp_dir.path(), "midtown");
+
+        // Send to default channel (message with no channel field set)
+        let msg1 = Message::text("agent1", "Hello main channel");
+        router.send(&msg1).unwrap();
+
+        // Send to a topic channel
+        let msg2 = Message::for_channel("pr-42", "agent2", "Review feedback", MessageType::Text);
+        router.send(&msg2).unwrap();
+
+        // Verify messages went to the right channels
+        let main_channel = router.default_channel().unwrap();
+        let messages = read_all_with_retry(&main_channel, 5).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "Hello main channel");
+
+        let pr_channel = router.get_channel("pr-42").unwrap();
+        let pr_messages = read_all_with_retry(&pr_channel, 5).unwrap();
+        assert_eq!(pr_messages.len(), 1);
+        assert_eq!(pr_messages[0].content, "Review feedback");
+    }
+
+    #[test]
+    fn test_channel_router_lazy_opening() {
+        let temp_dir = TempDir::new().unwrap();
+        let router = ChannelRouter::new(temp_dir.path(), "midtown");
+
+        // Initially no channels open
+        assert_eq!(router.open_channels().len(), 0);
+
+        // Send to a channel - it gets opened
+        let msg1 = Message::for_channel("task-5", "agent1", "Working on it", MessageType::Status);
+        router.send(&msg1).unwrap();
+        assert_eq!(router.open_channels().len(), 1);
+        assert!(router.open_channels().contains(&"task-5".to_string()));
+
+        // Send to another channel
+        let msg2 = Message::for_channel("pr-10", "agent2", "Reviewing", MessageType::Status);
+        router.send(&msg2).unwrap();
+        assert_eq!(router.open_channels().len(), 2);
+
+        // Send to existing channel - doesn't increase count
+        let msg3 = Message::for_channel("task-5", "agent1", "Still working", MessageType::Status);
+        router.send(&msg3).unwrap();
+        assert_eq!(router.open_channels().len(), 2);
+    }
+
+    #[test]
+    fn test_channel_router_default_channel() {
+        let temp_dir = TempDir::new().unwrap();
+        let router = ChannelRouter::new(temp_dir.path(), "my-repo");
+
+        // Get default channel
+        let default = router.default_channel().unwrap();
+        assert_eq!(default.channel_name(), "my-repo");
+
+        // Sending a message with None channel uses default
+        let msg = Message::text("agent1", "Test");
+        assert_eq!(msg.channel_name(), "midtown"); // Message::text defaults to "midtown"
+
+        // But router's default is "my-repo"
+        router.send(&msg).unwrap();
+
+        // Message should be in "midtown" channel (message's channel field wins)
+        let midtown_ch = router.get_channel("midtown").unwrap();
+        let messages = read_all_with_retry(&midtown_ch, 5).unwrap();
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn test_channel_router_concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let temp_dir = TempDir::new().unwrap();
+        let router = Arc::new(ChannelRouter::new(temp_dir.path(), "midtown"));
+
+        // Spawn multiple threads sending to different channels
+        let mut handles = vec![];
+        for i in 0..10 {
+            let router_clone = Arc::clone(&router);
+            let handle = thread::spawn(move || {
+                let channel_name = format!("task-{}", i % 3); // 3 different channels
+                let msg = Message::for_channel(
+                    channel_name,
+                    format!("agent{}", i),
+                    format!("Message {}", i),
+                    MessageType::Text,
+                );
+                router_clone.send(&msg).unwrap();
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All threads should have succeeded
+        // We should have 3 channels open (task-0, task-1, task-2)
+        assert_eq!(router.open_channels().len(), 3);
+    }
+
+    #[test]
+    fn test_channel_router_clone() {
+        let temp_dir = TempDir::new().unwrap();
+        let router = ChannelRouter::new(temp_dir.path(), "midtown");
+
+        // Send a message to open a channel
+        let msg = Message::for_channel("test-channel", "agent1", "Test", MessageType::Text);
+        router.send(&msg).unwrap();
+
+        // Clone the router
+        let router2 = router.clone();
+
+        // Clone should have access to the same cached channel
+        assert_eq!(router2.open_channels().len(), 1);
+        assert!(
+            router2
+                .open_channels()
+                .contains(&"test-channel".to_string())
+        );
+
+        // Both routers can send to the channel
+        router
+            .send(&Message::for_channel(
+                "test-channel",
+                "agent2",
+                "Msg2",
+                MessageType::Text,
+            ))
+            .unwrap();
+        router2
+            .send(&Message::for_channel(
+                "test-channel",
+                "agent3",
+                "Msg3",
+                MessageType::Text,
+            ))
+            .unwrap();
+
+        let channel = router.get_channel("test-channel").unwrap();
+        let messages = read_all_with_retry(&channel, 5).unwrap();
+        assert_eq!(messages.len(), 3);
     }
 }
