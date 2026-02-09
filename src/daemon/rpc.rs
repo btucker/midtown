@@ -99,11 +99,17 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         request.method, request.id
     );
 
-    // Clone request ID for cache operations (it will be moved during dispatch)
+    // Clone request ID and method for cache operations (they will be moved during dispatch)
     let request_id_for_cache = request.id.clone();
+    let request_method = request.method.clone();
+
+    // Methods with their own domain-specific caching should skip the RPC idempotency cache.
+    // kanban.data has a dedicated 30s TTL cache in DaemonState; the RPC cache (60s, keyed by
+    // request ID) would shadow it because the web server always sends id=1 for kanban requests.
+    let skip_rpc_cache = request_method == "kanban.data";
 
     // Check cache for idempotent response (within 60 second TTL)
-    {
+    if !skip_rpc_cache {
         let now = std::time::Instant::now();
         let cache = state.rpc_response_cache.lock().await;
         if let Some((cached_response, timestamp)) = cache.get(&request_id_for_cache)
@@ -550,7 +556,8 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // Error responses are NOT cached so that clients can retry after transient
     // failures (e.g., invalid params due to race conditions) without getting
     // a stale cached error.
-    if !response.is_error() {
+    // Methods with domain-specific caching (e.g., kanban.data) are excluded.
+    if !skip_rpc_cache && !response.is_error() {
         let mut cache = state.rpc_response_cache.lock().await;
         cache.insert(
             request_id_for_cache,
@@ -2109,14 +2116,12 @@ fn get_all_tasks() -> Vec<serde_json::Value> {
 ///
 /// Returns open PRs with author, reviewer, CI status, and timestamps,
 /// plus recently merged PRs for the Done column.
-/// Handle kanban.data RPC method.
 ///
 /// Runs blocking GraphQL operations in spawn_blocking to avoid blocking
 /// the async runtime and causing RPC timeouts.
 ///
-/// Uses a 30s TTL cache to avoid expensive GraphQL queries on every call.
-/// The web UI polls /api/status every 10s, so this cache prevents redundant
-/// queries and dramatically reduces GitHub API usage.
+/// Uses a 30s TTL cache (via `DaemonState::kanban_cache`) to avoid expensive
+/// GraphQL queries on every call and reduce GitHub API usage.
 async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     // Clone data needed for cache key computation
     let all_repo_paths = state.all_repo_paths.clone();
@@ -2129,7 +2134,7 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
     let repo_hash = hasher.finish();
 
     // Check cache first
-    if let Some(cached) = KANBAN_CACHE.get(repo_hash) {
+    if let Some(cached) = state.kanban_cache.get(repo_hash) {
         debug!(
             "Returning cached kanban data (TTL: {}s)",
             KANBAN_CACHE_TTL.as_secs()
@@ -2205,7 +2210,7 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         "repos": repos,
     });
 
-    KANBAN_CACHE.set(response_data.clone(), repo_hash);
+    state.kanban_cache.set(response_data.clone(), repo_hash);
 
     Response::success(id, response_data)
 }
@@ -2222,12 +2227,15 @@ const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
 /// Stores the full kanban response (PRs, merged PRs, repos) keyed by a hash
 /// of the repo paths. The cache expires after KANBAN_CACHE_TTL and avoids
 /// expensive GraphQL queries on every RPC call.
-struct KanbanCache {
+///
+/// Lives in `DaemonState` so the daemon can inspect and clean it up alongside
+/// other caches (see `DaemonState::cleanup_rpc_response_cache`).
+pub(crate) struct KanbanCache {
     inner: std::sync::Mutex<Option<(Instant, serde_json::Value, u64)>>,
 }
 
 impl KanbanCache {
-    const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: std::sync::Mutex::new(None),
         }
@@ -2248,10 +2256,18 @@ impl KanbanCache {
             *guard = Some((Instant::now(), value, repo_hash));
         }
     }
-}
 
-/// Global kanban data cache.
-static KANBAN_CACHE: KanbanCache = KanbanCache::new();
+    /// Remove expired entries. Called by `DaemonState::cleanup_rpc_response_cache`.
+    pub(crate) fn cleanup(&self) {
+        if let Ok(mut guard) = self.inner.lock()
+            && guard
+                .as_ref()
+                .is_some_and(|(ts, _, _)| ts.elapsed() >= KANBAN_CACHE_TTL)
+        {
+            *guard = None;
+        }
+    }
+}
 
 /// GraphQL query that fetches both open and recently merged PRs in a single call.
 ///
