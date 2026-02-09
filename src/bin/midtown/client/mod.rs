@@ -223,7 +223,13 @@ impl DaemonClient {
     }
 
     pub fn coworker_view(&self, name: &str) -> Result<Response, String> {
-        self.send("coworker.view", Some(serde_json::json!({ "name": name })))
+        let result = self.send_raw("coworker.view", Some(serde_json::json!({ "name": name })))?;
+        let output = result
+            .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(Response::message(output))
     }
 
     pub fn coworker_nudge(&self, name: &str, message: Option<&str>) -> Result<Response, String> {
