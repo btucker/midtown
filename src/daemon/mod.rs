@@ -1722,6 +1722,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     RequestId::Null,
                     sender,
                     content,
+                    None, // No channel specified - use default
                     &state,
                 ).await;
             }

@@ -287,7 +287,7 @@
           <div class="sender-line" class:cross-post={isInsight(msg) && isCrossPost(msg)}>
             {#if isInsight(msg) && isCrossPost(msg)}
               <span class="insight-star">★</span>
-              <span class="cross-post-source">from #{msg.source_channel}</span>
+              <span class="cross-post-source">from <a class="channel-link" data-channel={msg.source_channel} href="#{msg.source_channel}">#{msg.source_channel}</a></span>
               <span class="sender-divider">|</span>
             {/if}
             <span class="sender-name" style="color: {getSenderColor(msg.from)}">{msg.from}</span>
@@ -490,6 +490,16 @@
     color: #5fafaf;
     font-size: 0.88rem;
     font-weight: 600;
+  }
+
+  .cross-post-source :global(a.channel-link) {
+    color: inherit;
+    text-decoration: none;
+    font-weight: inherit;
+  }
+
+  .cross-post-source :global(a.channel-link:hover) {
+    text-decoration: underline;
   }
 
   .sender-divider {
