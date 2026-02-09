@@ -333,10 +333,20 @@ impl DaemonClient {
     // Insight commands
 
     pub fn report_insight(&self, agent: &str, insight: &str) -> Result<Value, String> {
-        self.send_raw(
-            "insight.report",
-            Some(serde_json::json!({ "agent": agent, "insight": insight })),
-        )
+        self.report_insight_to_channel(agent, insight, None)
+    }
+
+    pub fn report_insight_to_channel(
+        &self,
+        agent: &str,
+        insight: &str,
+        channel: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut params = serde_json::json!({ "agent": agent, "insight": insight });
+        if let Some(ch) = channel {
+            params["channel"] = serde_json::Value::String(ch.to_string());
+        }
+        self.send_raw("insight.report", Some(params))
     }
 
     // Session commands (attach/detach headless coworkers)

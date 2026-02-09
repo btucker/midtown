@@ -404,10 +404,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let insight = params
                 .and_then(|p| p.get("insight"))
                 .and_then(|v| v.as_str());
+            let channel = params
+                .and_then(|p| p.get("channel"))
+                .and_then(|v| v.as_str());
 
             match (agent, insight) {
                 (Some(agent), Some(insight)) => {
-                    handle_insight_report(request.id, agent, insight, state).await
+                    handle_insight_report(request.id, agent, insight, channel, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -828,10 +831,14 @@ async fn handle_headless_execute(
 /// an insight block. Deduplicates via in-memory hash set, posts the insight
 /// to the channel, and spawns a headless architect session to optionally
 /// generate a Mermaid diagram.
+///
+/// If the insight is from a topic channel (non-main), it is also cross-posted
+/// to the main channel with source_channel attribution.
 async fn handle_insight_report(
     id: RequestId,
     agent: &str,
     insight: &str,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Deduplicate: normalize and hash the insight content
@@ -850,8 +857,23 @@ async fn handle_insight_report(
         }
     }
 
-    // Post insight to channel
-    let msg = Message::text(agent, format!("💡 {}", insight));
+    // Determine the channel name (defaults to main channel if not specified)
+    let channel_name = channel.unwrap_or(&state.repo_name);
+    let main_channel = &state.repo_name;
+    let is_topic_channel = channel_name != main_channel;
+
+    // Post insight to the specified channel (or main if not specified)
+    let msg = if is_topic_channel {
+        Message::for_channel(
+            channel_name,
+            agent,
+            format!("💡 {}", insight),
+            MessageType::Text,
+        )
+    } else {
+        Message::text(agent, format!("💡 {}", insight))
+    };
+
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("insight.report: failed to post to channel: {}", e);
         return Response::error(
@@ -860,7 +882,27 @@ async fn handle_insight_report(
         );
     }
 
-    info!("insight.report: posted insight from {}", agent);
+    // If this is a topic channel insight, cross-post to the main channel
+    if is_topic_channel {
+        let cross_post = msg.cross_post_to(main_channel);
+        if let Err(e) = state.send_and_broadcast_async(&cross_post).await {
+            warn!(
+                "insight.report: failed to cross-post from {} to {}: {}",
+                channel_name, main_channel, e
+            );
+            // Don't fail the RPC if cross-posting fails — the original post succeeded
+        } else {
+            info!(
+                "insight.report: cross-posted insight from {} to {}",
+                channel_name, main_channel
+            );
+        }
+    }
+
+    info!(
+        "insight.report: posted insight from {} to {}",
+        agent, channel_name
+    );
 
     // Determine working directory for the architect session.
     // For coworkers, use their worktree; for lead, use the main repo dir.

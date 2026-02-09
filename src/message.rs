@@ -243,6 +243,37 @@ impl Message {
     pub fn action(from: impl Into<String>, content: impl Into<String>) -> Self {
         Self::new(from, content, MessageType::Action)
     }
+
+    /// Create a cross-posted message from a topic channel to the main channel.
+    ///
+    /// This creates a new message with the same content and sender, but:
+    /// - The `channel` field is set to the target (main) channel
+    /// - The `source_channel` field is set to the original topic channel
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use midtown::{Message, MessageType};
+    ///
+    /// let original = Message::for_channel("auth-refactor", "park", "💡 Insight", MessageType::Text);
+    /// let cross_post = original.cross_post_to("midtown");
+    ///
+    /// assert_eq!(cross_post.channel_name(), "midtown");
+    /// assert_eq!(cross_post.source_channel, Some("auth-refactor".to_string()));
+    /// assert_eq!(cross_post.from, "park");
+    /// assert_eq!(cross_post.content, "💡 Insight");
+    /// ```
+    pub fn cross_post_to(&self, target_channel: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(), // New ID for the cross-posted message
+            timestamp: Utc::now(),          // Preserve original timestamp semantics
+            from: self.from.clone(),
+            content: self.content.clone(),
+            message_type: self.message_type.clone(),
+            channel: Some(target_channel.into()),
+            source_channel: Some(self.channel_name().to_string()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -336,5 +367,26 @@ mod tests {
         let parsed: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.channel_name(), "pr-discussion");
         assert_eq!(parsed.from, "agent1");
+    }
+
+    #[test]
+    fn test_cross_post_to() {
+        let original =
+            Message::for_channel("auth-refactor", "park", "💡 Insight", MessageType::Text);
+        let cross_post = original.cross_post_to("midtown");
+
+        // Target channel is set correctly
+        assert_eq!(cross_post.channel_name(), "midtown");
+
+        // Source channel is set to the original channel
+        assert_eq!(cross_post.source_channel, Some("auth-refactor".to_string()));
+
+        // Content and sender are preserved
+        assert_eq!(cross_post.from, "park");
+        assert_eq!(cross_post.content, "💡 Insight");
+        assert_eq!(cross_post.message_type, MessageType::Text);
+
+        // New message gets a new ID
+        assert_ne!(cross_post.id, original.id);
     }
 }
