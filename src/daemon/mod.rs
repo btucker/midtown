@@ -872,20 +872,21 @@ impl DaemonState {
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
     /// This prevents the next tick from generating duplicate spawns/nudges for the same task.
-    /// Covers both `AssignAndSpawn` (fresh spawns) and `NudgeCoworkerWithCallbacks`
-    /// that contain a `RecordTaskAssignment` in on_success (nudges to running coworkers).
-    fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
+    /// Covers `AssignAndSpawn` (fresh spawns), `NudgeCoworkerWithCallbacks`, and
+    /// `SpawnCoworkerWithCallbacks` that contain a `RecordTaskAssignment` in on_success.
+    pub(crate) fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
         for effect in effects {
             match effect {
                 effects::Effect::AssignAndSpawn { task_id, .. } => {
                     self.mark_task_spawn_in_flight(task_id);
                     debug!("Marked task !{} as in-flight spawn", task_id);
                 }
-                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. } => {
+                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. }
+                | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                     for sub_effect in on_success {
                         if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
                             self.mark_task_spawn_in_flight(task_id);
-                            debug!("Marked task !{} as in-flight nudge assignment", task_id);
+                            debug!("Marked task !{} as in-flight assignment", task_id);
                         }
                     }
                 }
@@ -3512,13 +3513,11 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
     }
 
     #[test]
-    fn test_mark_in_flight_spawns_covers_nudge_effects() {
-        // Bug: mark_in_flight_spawns_from_effects only tracked AssignAndSpawn effects,
-        // not NudgeCoworkerWithCallbacks. This allowed cross-tick duplicate nudges
-        // because the task wasn't marked as in-flight between ticks.
-        //
-        // After the fix, NudgeCoworkerWithCallbacks effects that contain a
-        // RecordTaskAssignment in on_success should also be tracked.
+    fn test_mark_in_flight_spawns_covers_all_effect_variants() {
+        // mark_in_flight_spawns_from_effects must track task IDs from:
+        // 1. AssignAndSpawn (Case 2 fresh spawns)
+        // 2. NudgeCoworkerWithCallbacks with RecordTaskAssignment (Case 2 nudges)
+        // 3. SpawnCoworkerWithCallbacks with RecordTaskAssignment (Case 1 owned spawns)
         let effects = vec![
             effects::Effect::NudgeCoworkerWithCallbacks {
                 name: "pleasant".to_string(),
@@ -3542,16 +3541,31 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
                 on_success: vec![],
                 on_failure: vec![],
             },
+            effects::Effect::SpawnCoworkerWithCallbacks {
+                config: crate::launch::LaunchConfig::coworker(
+                    "broadway".to_string(),
+                    "test-repo".to_string(),
+                    crate::launch::SessionMode::Resume,
+                    None,
+                ),
+                on_success: vec![effects::Effect::RecordTaskAssignment {
+                    coworker: "broadway".to_string(),
+                    task_id: "875".to_string(),
+                }],
+                on_failure: vec![],
+            },
         ];
 
-        // Extract task IDs that should be in-flight
+        // Extract task IDs that should be in-flight (mirror the logic in
+        // mark_in_flight_spawns_from_effects for test verification)
         let mut in_flight_tasks = HashSet::new();
         for effect in &effects {
             match effect {
                 effects::Effect::AssignAndSpawn { task_id, .. } => {
                     in_flight_tasks.insert(task_id.clone());
                 }
-                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. } => {
+                effects::Effect::NudgeCoworkerWithCallbacks { on_success, .. }
+                | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                     for sub_effect in on_success {
                         if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
                             in_flight_tasks.insert(task_id.clone());
@@ -3569,6 +3583,10 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
         assert!(
             in_flight_tasks.contains("874"),
             "AssignAndSpawn should be tracked"
+        );
+        assert!(
+            in_flight_tasks.contains("875"),
+            "SpawnCoworkerWithCallbacks with RecordTaskAssignment should be tracked"
         );
     }
 }
