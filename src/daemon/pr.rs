@@ -98,7 +98,7 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
         return cache.merged_pr_owners.clone();
     }
 
-    // Fetch from API
+    // Fetch from API (include title and mergedAt for RPC cache)
     let output = std::process::Command::new("gh")
         .args([
             "pr",
@@ -106,16 +106,17 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
             "--state",
             "merged",
             "--limit",
-            "20",
+            "10", // Limit merged PR fetches to last 10 PRs
             "--json",
-            "headRefName,number",
+            "headRefName,number,title,mergedAt",
         ])
         .output();
 
-    let (coworker_names, branch_names, pr_numbers): (
+    let (coworker_names, branch_names, pr_numbers, merged_prs_data): (
         HashSet<String>,
         HashSet<String>,
         HashSet<u64>,
+        Vec<serde_json::Value>,
     ) = match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -136,19 +137,20 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
                     .iter()
                     .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
                     .collect();
-                (coworkers, branches, numbers)
+                // Store full PR data for RPC cache (includes number, headRefName, title, mergedAt)
+                (coworkers, branches, numbers, prs)
             } else {
-                (HashSet::new(), HashSet::new(), HashSet::new())
+                (HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
             }
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
-            (HashSet::new(), HashSet::new(), HashSet::new())
+            (HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
         }
         Err(e) => {
             warn!("Failed to execute gh pr list (merged): {}", e);
-            (HashSet::new(), HashSet::new(), HashSet::new())
+            (HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
         }
     };
 
@@ -158,6 +160,7 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
         cache.merged_pr_owners = coworker_names.clone();
         cache.merged_pr_branches = branch_names;
         cache.merged_pr_numbers = pr_numbers;
+        cache.merged_prs_data = merged_prs_data;
     }
     {
         let mut cooldowns = state.cooldowns.lock().unwrap();
@@ -297,9 +300,9 @@ pub(super) async fn poll_prs_for_issues(
 
     // Run gh pr list command (include createdAt and isDraft for review filtering)
     // Include state field to filter out merged/closed PRs after restart
-    // NOTE: comments and author are fetched on-demand in collect_comment_notification_effects
+    // NOTE: comments are fetched on-demand in collect_comment_notification_effects
     // to reduce GraphQL cost (bulk poll runs every 30s for ALL PRs, but comment detection
-    // only needs to check PRs owned by coworkers/lead)
+    // only needs to check PRs owned by coworkers/lead). Author is included for RPC cache.
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
@@ -307,7 +310,7 @@ pub(super) async fn poll_prs_for_issues(
             "--state",
             "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,author",
         ])
         .output()
         .await?;
@@ -398,6 +401,40 @@ pub(super) async fn poll_prs_for_issues(
             .collect();
         let mut cache = state.pr_coworker_cache.write().unwrap();
         cache.open_pr_owners = owners;
+    }
+
+    // Cache full open PR data for RPC responses (avoids gh CLI calls in handle_status).
+    // Format the PR data similarly to get_open_prs() in rpc.rs, including task enrichment.
+    {
+        let tasks = &snap.all_tasks;
+        let task_map: std::collections::HashMap<u64, String> = tasks
+            .iter()
+            .filter_map(|t| {
+                let id = t.id.parse::<u64>().ok()?;
+                Some((id, t.subject.clone()))
+            })
+            .collect();
+
+        let formatted_prs: Vec<serde_json::Value> = prs
+            .iter()
+            .map(|pr| {
+                let status = format_pr_status_for_rpc(pr);
+                let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                let task_id = crate::tasks::extract_task_id_from_pr_title(title);
+                let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
+                serde_json::json!({
+                    "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
+                    "title": title,
+                    "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
+                    "status": status,
+                    "task_id": task_id,
+                    "task_name": task_name,
+                })
+            })
+            .collect();
+
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.open_prs_data = formatted_prs;
     }
 
     // Cache coworker names whose PRs have all CI checks passing (for PR break decisions)
@@ -2556,6 +2593,29 @@ async fn collect_stale_check_effects(
     };
 
     collect_stale_check_effects_with_time(&ci_stats, prs, Utc::now())
+}
+
+/// Format PR status for RPC responses.
+///
+/// Matches the format used by `format_pr_status` in rpc.rs so that cached
+/// PR data has the same shape as freshly-fetched data.
+fn format_pr_status_for_rpc(pr: &serde_json::Value) -> String {
+    let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+    if is_draft {
+        return "draft".to_string();
+    }
+
+    let review_decision = pr
+        .get("reviewDecision")
+        .and_then(|r| r.as_str())
+        .unwrap_or("");
+
+    match review_decision {
+        "APPROVED" => "approved".to_string(),
+        "CHANGES_REQUESTED" => "changes requested".to_string(),
+        "REVIEW_REQUIRED" => "awaiting review".to_string(),
+        _ => "open".to_string(),
+    }
 }
 
 /// Pure helper for `collect_stale_check_effects` that accepts a reference time.

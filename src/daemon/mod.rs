@@ -305,6 +305,14 @@ struct PrCoworkerCache {
     /// Count of open PRs that need review (not draft, no Claude review, no formal review).
     /// Updated every PR poll tick. Used to prioritize PR reviews over new task pickup.
     prs_needing_review: usize,
+    /// Full open PR data from the last poll, formatted for RPC responses.
+    /// Cached to avoid re-fetching via gh CLI on every `midtown status` call.
+    /// Updated every PR poll tick (~30s).
+    open_prs_data: Vec<serde_json::Value>,
+    /// Full merged PR data from the last poll, formatted for RPC responses.
+    /// Cached to avoid re-fetching via gh CLI on every `midtown status` call.
+    /// Updated every `MERGED_PRS_FETCH_INTERVAL_SECS` (5 minutes).
+    merged_prs_data: Vec<serde_json::Value>,
     /// Whether the first PR poll has completed. Used to delay orphan worktree
     /// flagging until we have PR data - otherwise we'd incorrectly flag worktrees
     /// with open PRs during startup when the cache is empty.

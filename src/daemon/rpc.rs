@@ -2031,24 +2031,39 @@ async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
         })
         .collect();
 
-    // Run blocking operations (gh CLI calls, file I/O) in spawn_blocking
-    // to avoid blocking the async runtime and causing RPC timeouts.
-    let (pull_requests, tasks, merged_prs, recent_activity) =
-        match tokio::task::spawn_blocking(move || {
-            let pull_requests = get_open_prs();
-            let tasks = get_all_tasks();
-            let merged_prs = get_merged_prs();
-            let recent_activity = get_recent_channel_activity();
-            (pull_requests, tasks, merged_prs, recent_activity)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                error!("spawn_blocking panic in status handler: {}", e);
-                return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
-            }
-        };
+    // Get cached PR data from the daemon's periodic polling (every 30s for open PRs,
+    // every 5 minutes for merged PRs). This avoids synchronous gh CLI calls that can
+    // timeout under GitHub API rate limiting.
+    //
+    // During daemon startup (before the first PR poll completes), return empty arrays
+    // rather than stale data. The first open PR poll completes within ~5 seconds, so
+    // this window is brief.
+    let (pull_requests, merged_prs) = {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        if cache.pr_poll_initialized {
+            (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
+        } else {
+            // PR poll hasn't completed yet - return empty arrays during startup
+            (Vec::new(), Vec::new())
+        }
+    };
+
+    // Run blocking file I/O operations in spawn_blocking.
+    // Note: get_all_tasks reads from Claude Code task storage (local filesystem),
+    // not GitHub API, so it's fast and doesn't cause rate limit timeouts.
+    let (tasks, recent_activity) = match tokio::task::spawn_blocking(move || {
+        let tasks = get_all_tasks();
+        let recent_activity = get_recent_channel_activity();
+        (tasks, recent_activity)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            error!("spawn_blocking panic in status handler: {}", e);
+            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
+        }
+    };
 
     let pending_count = tasks
         .iter()
@@ -2097,83 +2112,11 @@ async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     )
 }
 
-/// Get open PRs from GitHub using gh CLI.
-fn get_open_prs() -> Vec<serde_json::Value> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--json",
-            "number,title,author,state,isDraft,reviewDecision",
-        ])
-        .output();
-
-    // Build a map of task_id -> task_subject for PR enrichment
-    let tasks = crate::tasks::read_tasks();
-    let task_map: std::collections::HashMap<u64, String> = tasks
-        .iter()
-        .filter_map(|t| {
-            let id = t.id.parse::<u64>().ok()?;
-            Some((id, t.subject.clone()))
-        })
-        .collect();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                prs.into_iter()
-                    .map(|pr| {
-                        let status = format_pr_status(&pr);
-                        let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                        // Extract task ID from PR title and look up task name
-                        let task_id = crate::tasks::extract_task_id_from_pr_title(title);
-                        let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
-                        serde_json::json!({
-                            "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
-                            "title": title,
-                            "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
-                            "status": status,
-                            "task_id": task_id,
-                            "task_name": task_name,
-                        })
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Failed to get PRs from gh CLI: {}", stderr.trim());
-            Vec::new()
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr list: {}", e);
-            Vec::new()
-        }
-    }
-}
-
-/// Format PR status from gh CLI JSON.
-fn format_pr_status(pr: &serde_json::Value) -> String {
-    let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-    if is_draft {
-        return "draft".to_string();
-    }
-
-    let review_decision = pr
-        .get("reviewDecision")
-        .and_then(|r| r.as_str())
-        .unwrap_or("");
-
-    match review_decision {
-        "APPROVED" => "approved".to_string(),
-        "CHANGES_REQUESTED" => "changes requested".to_string(),
-        "REVIEW_REQUIRED" => "awaiting review".to_string(),
-        _ => "open".to_string(),
-    }
-}
+// REMOVED: get_open_prs() and format_pr_status()
+// These functions made synchronous gh CLI calls on every RPC, causing timeouts under
+// GitHub API rate limiting. Now handle_status uses cached PR data from the daemon's
+// periodic polling (see pr_coworker_cache in daemon/mod.rs and poll_prs_for_issues in
+// daemon/pr.rs). The formatting logic moved to format_pr_status_for_rpc() in pr.rs.
 
 /// Get all tasks from Claude Code task storage with their status.
 fn get_all_tasks() -> Vec<serde_json::Value> {
@@ -2694,37 +2637,11 @@ fn kanban_ci_status(checks: &[serde_json::Value]) -> &'static str {
     }
 }
 
-/// Get recently merged PRs from GitHub using gh CLI.
-fn get_merged_prs() -> Vec<serde_json::Value> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--limit",
-            "10",
-            "--json",
-            "number,title,mergedAt",
-        ])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
-            Vec::new()
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr list (merged): {}", e);
-            Vec::new()
-        }
-    }
-}
+// REMOVED: get_merged_prs()
+// This function made synchronous gh CLI calls on every RPC, causing timeouts under
+// GitHub API rate limiting. Now handle_status uses cached merged PR data from the
+// daemon's periodic polling (see pr_coworker_cache and get_coworkers_with_merged_prs
+// in daemon/pr.rs, which polls every 5 minutes).
 
 /// Get recent channel activity.
 fn get_recent_channel_activity() -> Vec<serde_json::Value> {
