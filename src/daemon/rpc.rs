@@ -812,13 +812,14 @@ async fn handle_auth_switch(
 
     // Switch the profile on disk
     if all {
-        // Global switch: update global current profile
+        // Global switch: update global current profile and clear per-project overrides
         if let Err(e) = crate::auth::set_current_profile(profile) {
             return Response::error(
                 id,
                 RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
             );
         }
+        crate::config::clear_all_project_auth_profiles();
     } else {
         // Per-project switch: update this project's config
         let path = crate::config::project_config_path(&state.repo_name);

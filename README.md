@@ -91,6 +91,18 @@ The lead is just a claude code session, but it's been booted with some a [specia
 | `midtown status` | Show system status |
 | `midtown chat` | Open the IRC-style chat TUI |
 | `midtown log [-f]` | View daemon logs |
+| `midtown channel post <msg>` | Post to the team channel |
+| `midtown channel read` | Read recent messages |
+| `midtown coworker call-in` | Spawn a new coworker |
+| `midtown coworker break <name>` | Send a coworker on break |
+| `midtown coworker list` | List active coworkers |
+| `midtown coworker view <name>` | View a coworker's output |
+| `midtown session attach name <n>` | Attach to a headless session |
+| `midtown session detach <name>` | Resume headless execution |
+| `midtown task create <subject>` | Create a task |
+| `midtown task list` | List tasks |
+| `midtown task view <id>` | View task details |
+| `midtown pr list` | List pull requests |
 | `midtown auth` | Manage [auth profiles](docs/authentication.md) (multiple accounts supported) |
 | `midtown headless "<prompt>"` | Run a headless Claude session |
 
