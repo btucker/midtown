@@ -1055,6 +1055,11 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
 /// Layout for regular messages when sender is same:
 /// - Line 1: " HH:MM message"
 /// - Line 2+: "       continuation" (7 spaces)
+///
+/// Layout for cross-posted insights (source_channel is Some):
+/// - Line 1 (if sender changed): Actor name (bold) + current task
+/// - Line 2: " HH:MM ★ from #channel | message"
+/// - Line 3+: "                               continuation" (aligned with content)
 fn render_message(
     msg: &Message,
     width: usize,
@@ -1135,9 +1140,9 @@ fn render_message(
     // For cross-posted insights, use special format with "★ from #channel | " prefix
     // Format: actor line (if sender changed) + " HH:MM ★ from #channel | message"
     if let Some(ref source_channel) = msg.source_channel {
-        // Calculate the prefix length: "★ from #channel | "
-        // "★ " = 2, "from #" = 6, channel name, " | " = 3
-        let prefix_len = 2 + 6 + source_channel.len() + 3;
+        // Calculate the prefix display width: "★ from #channel | "
+        // "★ " = 2, "from #" = 6, channel name (char count, not byte count), " | " = 3
+        let prefix_len = 2 + 6 + source_channel.chars().count() + 3;
         let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + prefix_len);
         if content_width == 0 {
             return vec![];
@@ -1272,7 +1277,7 @@ fn render_message_with_mermaid(
     let extra_indent = if is_action {
         2 // "* "
     } else if let Some(ref source_channel) = msg.source_channel {
-        2 + 6 + source_channel.len() + 3 // "★ " + "from #" + channel + " | "
+        2 + 6 + source_channel.chars().count() + 3 // "★ " + "from #" + channel + " | "
     } else {
         0
     };
@@ -3676,6 +3681,45 @@ mod tests {
         assert!(
             channel_span.is_some(),
             "Expected to find #auth-refactor channel attribution"
+        );
+    }
+
+    #[test]
+    fn test_render_crosspost_utf8_channel_name() {
+        // Verify that multi-byte UTF-8 channel names produce correct continuation alignment.
+        // "design-café" has a multi-byte char (é = 2 bytes). Using .len() would overcount,
+        // causing misaligned continuation lines.
+        let long_content = "First line of content that is long enough to wrap onto a second continuation line for testing alignment";
+        let mut msg = test_message(long_content);
+        msg.source_channel = Some("design-café".to_string());
+
+        let current_tasks = HashMap::new();
+        let width = 60; // Narrow enough to force wrapping
+
+        let lines = render_message(&msg, width, None, &current_tasks, None);
+
+        // Should have sender line + at least 2 content lines (first + continuation)
+        assert!(
+            lines.len() >= 3,
+            "Expected at least 3 lines (sender + 2 content), got {}",
+            lines.len()
+        );
+
+        // The continuation line (index 2) should start with whitespace indent.
+        // With correct .chars().count(), the indent is:
+        //   TIMESTAMP_GUTTER_WIDTH (7) + prefix_len (2+6+11+3 = 22) = 29 spaces
+        // With buggy .len(), it would be 7 + (2+6+12+3) = 30 spaces (é is 2 bytes)
+        let continuation_line = &lines[2];
+        let first_span_content = &continuation_line.spans[0].content;
+
+        // "design-café" has 11 chars, so prefix_len = 2+6+11+3 = 22
+        let expected_indent = 7 + 22; // TIMESTAMP_GUTTER_WIDTH + prefix_len
+        assert_eq!(
+            first_span_content.len(),
+            expected_indent,
+            "Continuation indent should be {} spaces, got {} (possible byte/char mismatch)",
+            expected_indent,
+            first_span_content.len()
         );
     }
 
