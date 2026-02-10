@@ -803,6 +803,39 @@ fn build_coworker_relaunch_config(
     config
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeadRelaunchStatus {
+    Relaunched,
+    Failed,
+    Unchanged,
+}
+
+impl LeadRelaunchStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Relaunched => "relaunched",
+            Self::Failed => "failed",
+            Self::Unchanged => "unchanged",
+        }
+    }
+
+    fn summary(self) -> &'static str {
+        match self {
+            Self::Relaunched => "re-launched lead",
+            Self::Failed => "lead re-launch failed",
+            Self::Unchanged => "lead unchanged",
+        }
+    }
+
+    fn relaunched(self) -> bool {
+        matches!(self, Self::Relaunched)
+    }
+
+    fn attempted(self) -> bool {
+        !matches!(self, Self::Unchanged)
+    }
+}
+
 /// Handle auth.switch RPC method.
 ///
 /// Switches the active auth profile.
@@ -951,10 +984,10 @@ async fn handle_auth_switch(
             .collect()
     };
 
-    // Re-launch lead only when switching Claude auth. The interactive lead is
-    // currently Claude-backed; provider-specific lead relaunch for other
-    // providers will be added with multi-provider lead support.
-    let lead_relaunched = if provider == crate::auth::AuthProvider::Claude {
+    // Re-launch lead only when switching the provider backing the interactive
+    // lead session. Today lead is Claude-backed; other providers leave lead
+    // untouched instead of reporting a relaunch failure.
+    let lead_relaunch_status = if provider == crate::auth::AuthProvider::Claude {
         let session = state.coworkers.session_name().to_string();
         let workdir = state
             .all_repo_paths
@@ -975,19 +1008,19 @@ async fn handle_auth_switch(
         match lead_result {
             Ok(Ok(())) => {
                 info!("Re-launched lead with auth profile '{}'", profile);
-                true
+                LeadRelaunchStatus::Relaunched
             }
             Ok(Err(e)) => {
                 warn!("Failed to re-launch lead: {}", e);
-                false
+                LeadRelaunchStatus::Failed
             }
             Err(e) => {
                 warn!("spawn_blocking panic while re-launching lead: {}", e);
-                false
+                LeadRelaunchStatus::Failed
             }
         }
     } else {
-        false
+        LeadRelaunchStatus::Unchanged
     };
 
     // Re-launch all sessions for this provider using the updated auth profile.
@@ -1022,11 +1055,7 @@ async fn handle_auth_switch(
         profile,
         relaunch_count,
         shutdown_count,
-        if lead_relaunched {
-            "re-launched lead"
-        } else {
-            "failed to re-launch lead"
-        }
+        lead_relaunch_status.summary()
     ));
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post auth switch message: {}", e);
@@ -1042,12 +1071,14 @@ async fn handle_auth_switch(
                 profile,
                 relaunch_count,
                 shutdown_count,
-                if lead_relaunched { "re-launched lead" } else { "lead re-launch failed" }
+                lead_relaunch_status.summary()
             ),
             "switched": true,
             "coworkers_shutdown": shutdown_count,
             "coworkers_relaunched": relaunch_count,
-            "lead_relaunched": lead_relaunched,
+            "lead_relaunched": lead_relaunch_status.relaunched(),
+            "lead_relaunch_attempted": lead_relaunch_status.attempted(),
+            "lead_relaunch_status": lead_relaunch_status.as_str(),
         }),
     )
 }
@@ -3658,6 +3689,16 @@ mod tests {
         assert_eq!(config.name, "madison");
         assert_eq!(config.model, "opus");
         assert_eq!(config.session_mode, crate::launch::SessionMode::Resume);
+    }
+
+    #[test]
+    fn test_lead_relaunch_status_strings() {
+        assert_eq!(LeadRelaunchStatus::Relaunched.as_str(), "relaunched");
+        assert_eq!(LeadRelaunchStatus::Failed.as_str(), "failed");
+        assert_eq!(LeadRelaunchStatus::Unchanged.as_str(), "unchanged");
+        assert_eq!(LeadRelaunchStatus::Unchanged.summary(), "lead unchanged");
+        assert!(!LeadRelaunchStatus::Unchanged.attempted());
+        assert!(LeadRelaunchStatus::Relaunched.relaunched());
     }
 
     #[test]
