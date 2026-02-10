@@ -966,16 +966,10 @@ impl DaemonState {
 
     /// Cross-post an insight message to the main channel.
     ///
-    /// Creates a new message with the same content but sent to the main channel,
-    /// with source_channel set to the original topic channel name.
+    /// Formats the content as `#channel-name | content` and sends it to the
+    /// main channel with `source_channel` set to the original topic channel name.
     async fn cross_post_insight_to_main(&self, original: &Message) -> crate::Result<()> {
-        // Format: #channel-name | author: insight content
-        let formatted_content = format!(
-            "#{} | {}: {}",
-            original.channel_name(),
-            original.from,
-            original.content
-        );
+        let formatted_content = helpers::format_cross_post_content(original);
 
         // Create cross-posted message with source_channel attribution
         let mut cross_post = Message::for_channel(

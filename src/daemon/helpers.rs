@@ -404,6 +404,15 @@ pub fn is_gh_auth_error(stderr: &str) -> bool {
 // Insight cross-posting helpers
 // ---------------------------------------------------------------------------
 
+/// Format the content of an insight message for cross-posting to the main channel.
+///
+/// Produces the format: `#channel-name | insight content`.
+/// The author is omitted because all display surfaces (CLI, TUI, web UI)
+/// already render the `from` field as a sender label.
+pub(super) fn format_cross_post_content(message: &crate::message::Message) -> String {
+    format!("#{} | {}", message.channel_name(), message.content)
+}
+
 /// Check if a message should be cross-posted to the main channel as an insight.
 ///
 /// Returns true if:
@@ -1102,6 +1111,43 @@ mod tests {
         );
         assert!(result.contains("pending task !7"));
         assert!(result.contains("midtown task view 7"));
+    }
+
+    // =========================================================================
+    // format_cross_post_content tests
+    // =========================================================================
+
+    #[test]
+    fn format_cross_post_content_includes_channel_prefix() {
+        let msg = crate::message::Message::for_channel(
+            "auth-refactor",
+            "park",
+            "💡 The tower::Layer stack composes auth providers independently",
+            crate::message::MessageType::Text,
+        );
+        let result = format_cross_post_content(&msg);
+        assert_eq!(
+            result,
+            "#auth-refactor | 💡 The tower::Layer stack composes auth providers independently"
+        );
+    }
+
+    #[test]
+    fn format_cross_post_content_omits_author_from_content() {
+        // Author is omitted because the `from` field already carries it
+        let msg = crate::message::Message::for_channel(
+            "perf-tuning",
+            "broadway",
+            "💡 Connection pooling reduces latency by 40%",
+            crate::message::MessageType::Text,
+        );
+        let result = format_cross_post_content(&msg);
+        assert_eq!(
+            result,
+            "#perf-tuning | 💡 Connection pooling reduces latency by 40%"
+        );
+        // Verify author is NOT in the formatted content
+        assert!(!result.contains("broadway:"));
     }
 
     // =========================================================================
