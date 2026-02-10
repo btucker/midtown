@@ -287,22 +287,24 @@ pub fn text_contains_review_signature(text: &str) -> bool {
 ///
 /// Matches patterns like:
 /// - "## Code Review by madison"  (with attribution)
-/// - "### code review"             (without attribution - from code-review skill)
+/// - "### code review"             (exact match, without attribution - from code-review skill)
 /// - "# CODE REVIEW BY york"       (any case)
 ///
 /// Rationale: The code-review skill template uses "### Code review" without
 /// the "by {name}" part. Coworkers are supposed to add <!-- midtown: name -->
 /// frontmatter, but if they forget, we should still detect it as a review.
+/// We require either an exact "code review" match OR "code review by" to avoid
+/// false positives from headings like "Code Review Checklist".
 fn text_has_code_review_header(text: &str) -> bool {
     let text_lower = text.to_lowercase();
-    // Look for markdown heading followed by "code review" (with or without "by")
-    // Matches: # code review, ## code review by, ### code review by, etc.
+    // Look for markdown heading followed by "code review" (exact) or "code review by"
     for line in text_lower.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
             // Strip heading markers and check content
             let content = trimmed.trim_start_matches('#').trim();
-            if content.starts_with("code review") {
+            // Exact match OR attributed form
+            if content == "code review" || content.starts_with("code review by") {
                 return true;
             }
         }
@@ -914,6 +916,32 @@ mod tests {
             "### CODE REVIEW BY amsterdam"
         ));
         assert!(text_contains_review_signature("# Code review by pleasant"));
+    }
+
+    #[test]
+    fn review_signature_rejects_checklist_heading() {
+        // Should NOT match headings like "Code Review Checklist" to avoid false positives
+        assert!(!text_contains_review_signature(
+            "### Code Review Checklist\n\n- [ ] Tests added\n- [ ] Docs updated"
+        ));
+        assert!(!text_contains_review_signature(
+            "## Code Review Process\n\nFollow these steps..."
+        ));
+        assert!(!text_contains_review_signature(
+            "### Code Review Notes\n\nSome observations here"
+        ));
+    }
+
+    #[test]
+    fn review_signature_detects_exact_code_review() {
+        // Should match exact "code review" (from code-review skill default output)
+        assert!(text_contains_review_signature(
+            "### Code review\n\nNo issues found."
+        ));
+        // But not with trailing text
+        assert!(!text_contains_review_signature(
+            "### Code review checklist\n\nItems..."
+        ));
     }
 
     // -------------------------------------------------------------------------
