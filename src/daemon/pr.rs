@@ -4177,7 +4177,8 @@ mod tests {
         use super::super::snapshot::WorldSnapshot;
 
         // Setup: Task 42 is in_progress and linked to PR #100, which is closed (not in open list)
-        let in_progress_tasks = vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
+        let in_progress_tasks =
+            vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
 
         let mut pr_task_associations = HashMap::new();
         pr_task_associations.insert(100u64, "42".to_string());
@@ -4259,7 +4260,8 @@ mod tests {
     fn test_detect_abandoned_pr_tasks_skips_open_prs() {
         use super::super::snapshot::WorldSnapshot;
 
-        let in_progress_tasks = vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
+        let in_progress_tasks =
+            vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
 
         let mut pr_task_associations = HashMap::new();
         pr_task_associations.insert(100u64, "42".to_string());
@@ -4327,7 +4329,8 @@ mod tests {
     fn test_detect_abandoned_pr_tasks_skips_merged_prs() {
         use super::super::snapshot::WorldSnapshot;
 
-        let in_progress_tasks = vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
+        let in_progress_tasks =
+            vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
 
         let mut pr_task_associations = HashMap::new();
         pr_task_associations.insert(100u64, "42".to_string());
