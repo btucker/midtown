@@ -31,6 +31,8 @@ use app::App;
 use ratatui::style::Color as RatatuiColor;
 use ui::Hyperlink;
 
+use crate::client::DaemonClient;
+
 /// Convert a character index to a byte index in a UTF-8 string.
 ///
 /// Returns the byte offset where the nth character starts.
@@ -415,7 +417,19 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     if app.focused_pane != FocusedPane::InputBar {
                         app.focused_pane = FocusedPane::InputBar;
                     } else if !app.input_text.is_empty() {
-                        // TODO: Post message to channel
+                        // Post message to the main midtown channel
+                        // TODO: Once PR #901 (channel selection) is merged, use app.selected_channel instead
+                        let message = app.input_text.clone();
+                        let channel = Some("midtown");
+
+                        // Post via daemon RPC as "user" so the daemon can nudge the lead
+                        if let Ok(client) = DaemonClient::connect() {
+                            // Ignore errors - message posting is best-effort in the TUI
+                            // (daemon might not be running, network issues, etc.)
+                            let _ = client.channel_post_as(&message, "user", channel);
+                        }
+
+                        // Clear input immediately for responsive UX (optimistic update)
                         app.input_text.clear();
                         app.input_cursor = 0;
                     }
