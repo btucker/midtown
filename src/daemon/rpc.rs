@@ -3169,19 +3169,82 @@ async fn invoke_clusterer_for_task(
     description: &str,
     state: &DaemonState,
 ) -> Result<String, String> {
-    use crate::daemon::clusterer::{ChannelInfo, ClustererRequest, assign_channel};
+    use crate::daemon::clusterer::{
+        ChannelInfo, ClustererRequest, CompletedTaskInfo, assign_channel,
+    };
+    use crate::tasks::TaskStatus;
 
-    // TODO: Collect actual channel stats and task history.
-    // For MVP, send minimal information - just the new task.
+    // Collect channel information: list all channels and their active task counts
+    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+    let channel_names = crate::channel::Channel::list(&base_dir).unwrap_or_else(|e| {
+        warn!("Failed to list channels for clusterer: {}", e);
+        vec!["midtown".to_string()]
+    });
+
+    // Read all tasks to compute per-channel stats and recent completions
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+
+    // Build map of task_id -> channel from persistent state
+    let task_channel_map = {
+        let ps = state.persistent_state.lock().await;
+        ps.task_channel.clone()
+    };
+
+    // Group tasks by channel and collect stats
+    let mut channel_info_map: std::collections::HashMap<String, ChannelInfo> = channel_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                ChannelInfo {
+                    name: name.clone(),
+                    active_task_count: 0,
+                    recent_tasks: vec![],
+                },
+            )
+        })
+        .collect();
+
+    // Track recently completed tasks (last 10)
+    let mut recent_completions = vec![];
+
+    for task in &all_tasks {
+        let task_channel = task
+            .channel
+            .as_ref()
+            .or_else(|| task_channel_map.get(&task.id))
+            .map(|s| s.as_str())
+            .unwrap_or("midtown");
+
+        match task.status {
+            TaskStatus::Completed => {
+                // Collect completed tasks for context
+                if recent_completions.len() < 10 {
+                    recent_completions.push(CompletedTaskInfo {
+                        subject: task.subject.clone(),
+                        channel: Some(task_channel.to_string()),
+                    });
+                }
+            }
+            TaskStatus::InProgress | TaskStatus::Pending => {
+                // Count active tasks per channel and track recent subjects
+                if let Some(info) = channel_info_map.get_mut(task_channel) {
+                    info.active_task_count += 1;
+                    if info.recent_tasks.len() < 3 {
+                        info.recent_tasks.push(task.subject.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let channels: Vec<ChannelInfo> = channel_info_map.into_values().collect();
+
     let request = ClustererRequest {
         task_subject: subject.to_string(),
         task_description: description.to_string(),
-        channels: vec![ChannelInfo {
-            name: "midtown".to_string(),
-            active_task_count: 0,
-            recent_tasks: vec![],
-        }],
-        recent_completions: vec![],
+        channels,
+        recent_completions,
     };
 
     // Get working directory (use primary repo path)
