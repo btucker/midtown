@@ -94,7 +94,7 @@ fn handle_attach(target: &Option<AttachTarget>, client: &DaemonClient) -> Result
 
     // Build the claude command for interactive use in tmux.
     // Uses --resume to pick up the exact session state.
-    let config_dir = midtown::auth::current_profile_dir();
+    let config_dir = midtown::auth::active_profile_dir_for_project(&repo_name);
     let cmd = format!(
         "export CLAUDE_CONFIG_DIR='{}' MIDTOWN_AGENT='{}' DISABLE_AUTOUPDATER=1; \
          exec claude --resume {} --dangerously-skip-permissions",

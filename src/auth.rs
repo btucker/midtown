@@ -7,10 +7,11 @@
 //! ## Storage Structure
 //!
 //! ```text
-//! ~/.midtown/auth/
-//! ├── current              # Text file with current profile name
-//! └── <profile>/           # Per-profile directories (Claude's CLAUDE_CONFIG_DIR)
-//!     └── .claude.json     # Claude config with auth tokens (managed by claude CLI)
+//! ~/.midtown/
+//! ├── config.toml          # [providers.claude].auth_profile = "user@example.com"
+//! └── auth/
+//!     └── <profile>/       # Per-profile directories (Claude's CLAUDE_CONFIG_DIR)
+//!         └── .claude.json # Claude config with auth tokens (managed by claude CLI)
 //! ```
 //!
 //! ## Environment Variable
@@ -104,14 +105,33 @@ fn current_profile_file() -> PathBuf {
 
 /// Get the currently active profile name.
 ///
-/// Returns the profile name from `~/.midtown/auth/current`, or "default" if
-/// the file doesn't exist or is empty.
+/// Resolution order:
+/// 1. `[providers.claude].auth_profile` in global config.toml
+/// 2. Legacy `~/.midtown/auth/current` file (migrated to config on first read)
+/// 3. `DEFAULT_PROFILE`
 pub fn current_profile() -> String {
-    std::fs::read_to_string(current_profile_file())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_PROFILE.to_string())
+    // Primary: read from global config
+    let config = crate::config::GlobalConfig::load();
+    if let Some(ref profile) = config.providers.claude.auth_profile
+        && !profile.is_empty()
+    {
+        return profile.clone();
+    }
+
+    // Migration: check legacy file, migrate if found
+    let legacy_file = current_profile_file();
+    if let Ok(contents) = std::fs::read_to_string(&legacy_file) {
+        let trimmed = contents.trim().to_string();
+        if !trimmed.is_empty() {
+            // Migrate to global config and clean up old file
+            if set_current_profile_in_config(&trimmed).is_ok() {
+                let _ = std::fs::remove_file(&legacy_file);
+            }
+            return trimmed;
+        }
+    }
+
+    DEFAULT_PROFILE.to_string()
 }
 
 /// Get the config directory path for the current profile.
@@ -125,7 +145,7 @@ pub fn current_profile_dir() -> PathBuf {
 ///
 /// Resolution order:
 /// 1. Project config's `auth_profile` field
-/// 2. Global `~/.midtown/auth/current` file
+/// 2. Global `[providers.claude].auth_profile` in config.toml
 /// 3. `DEFAULT_PROFILE`
 pub fn active_profile_for_project(project: &str) -> String {
     if let Some(config) = crate::config::FullProjectConfig::load(project)
@@ -146,7 +166,7 @@ pub fn active_profile_dir_for_project(project: &str) -> PathBuf {
 
 /// Set the active profile.
 ///
-/// Writes the profile name to `~/.midtown/auth/current`.
+/// Writes the profile name to `[providers.claude].auth_profile` in global config.toml.
 /// Returns an error if the profile name is invalid or doesn't exist.
 pub fn set_current_profile(name: &str) -> std::io::Result<()> {
     validate_profile_name(name)?;
@@ -162,9 +182,25 @@ pub fn set_current_profile(name: &str) -> std::io::Result<()> {
         ));
     }
 
-    let current_file = current_profile_file();
-    std::fs::create_dir_all(current_file.parent().unwrap())?;
-    std::fs::write(current_file, format!("{}\n", name))
+    set_current_profile_in_config(name)?;
+
+    // Clean up legacy file if it exists
+    let legacy_file = current_profile_file();
+    if legacy_file.exists() {
+        let _ = std::fs::remove_file(&legacy_file);
+    }
+
+    Ok(())
+}
+
+/// Write the auth profile to global config.toml without validation.
+///
+/// Used internally by both `set_current_profile()` and the migration path
+/// in `current_profile()`.
+fn set_current_profile_in_config(name: &str) -> std::io::Result<()> {
+    let mut config = crate::config::GlobalConfig::load();
+    config.providers.claude.auth_profile = Some(name.to_string());
+    config.save()
 }
 
 /// List all available profiles.
