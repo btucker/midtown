@@ -215,6 +215,19 @@ impl SessionManager {
             message: format!("Failed to spawn headless session for '{}': {}", name, e),
         })?;
 
+        // Start provider-specific handshake eagerly so sessions with no initial
+        // prompt still initialize and expose a session_id to the daemon.
+        if let Err(e) = session.ensure_ready().await {
+            let _ = session.kill().await;
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "Failed to initialize headless session for '{}': {} — killed session",
+                    name, e
+                ),
+            });
+        }
+
         // Send initial prompt if provided — this is "Here's your mission",
         // so failure means the coworker has no task and would be non-functional.
         if let Some(prompt) = initial_prompt
