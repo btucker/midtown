@@ -12,8 +12,8 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
-use crate::headless::{HeadlessConfig, execute};
 use crate::message::Message;
+use crate::specialized::{SpecializedCoworker, SpecializedRole};
 
 /// Maximum number of concurrent architect sessions.
 const MAX_CONCURRENT_SESSIONS: usize = 2;
@@ -31,7 +31,30 @@ const _: () = assert!(MAX_CONCURRENT_SESSIONS <= 4);
 const _: () = assert!(SESSION_TIMEOUT.as_secs() >= 60);
 const _: () = assert!(SESSION_TIMEOUT.as_secs() <= 300);
 
-const ARCHITECT_SYSTEM_PROMPT: &str = r#"You are an architectural diagram illustrator for a software project. You receive an insight about the codebase and have full tool access to explore the code.
+/// Request for the architect to generate a diagram.
+pub struct InsightRequest {
+    pub insight: String,
+}
+
+/// Response from the architect (either a diagram or NO_DIAGRAM).
+pub enum DiagramResponse {
+    Diagram(String),
+    NoDiagram,
+}
+
+/// Architect role implementation.
+struct ArchitectRole;
+
+impl SpecializedRole for ArchitectRole {
+    type Request = InsightRequest;
+    type Response = DiagramResponse;
+
+    fn role_name(&self) -> &'static str {
+        "architect"
+    }
+
+    fn system_prompt(&self) -> String {
+        r#"You are an architectural diagram illustrator for a software project. You receive an insight about the codebase and have full tool access to explore the code.
 
 Your job:
 1. Evaluate whether a diagram would genuinely help illustrate this insight
@@ -53,7 +76,42 @@ Rules:
 - Use the actual code to ensure accuracy — read files, don't guess
 - Prefer flowcharts for data/control flow, sequence diagrams for interactions, class diagrams for structure
 - Label nodes with real function/struct/module names from the code
-- No decorative elements — every node should convey information"#;
+- No decorative elements — every node should convey information"#
+            .to_string()
+    }
+
+    fn model(&self) -> &str {
+        "sonnet"
+    }
+
+    fn persist_session(&self) -> bool {
+        false // One-shot, no resume
+    }
+
+    fn format_request(&self, request: &Self::Request) -> String {
+        request.insight.clone()
+    }
+
+    fn parse_response(&self, raw: &str) -> Result<Self::Response, String> {
+        // Check for NO_DIAGRAM
+        if raw.trim() == "NO_DIAGRAM" {
+            return Ok(DiagramResponse::NoDiagram);
+        }
+
+        // Extract mermaid fence block
+        match extract_mermaid_block(raw) {
+            Some(diagram) => {
+                // Safety net: verify the diagram renders with selkie. The architect should
+                // have already validated via CLI, but LLMs don't always follow instructions.
+                if let Err(e) = selkie::render::render_text(&diagram) {
+                    return Err(format!("Diagram failed selkie validation: {}", e));
+                }
+                Ok(DiagramResponse::Diagram(diagram))
+            }
+            None => Err("No mermaid block found in response".to_string()),
+        }
+    }
+}
 
 /// Spawn a headless architect session to generate a diagram for an insight.
 ///
@@ -83,103 +141,70 @@ pub async fn generate_insight_diagram(
         }
     };
 
-    let cwd_str = cwd.to_string_lossy().to_string();
-
-    let config = HeadlessConfig {
-        model: "sonnet".to_string(),
-        system_prompt: ARCHITECT_SYSTEM_PROMPT.to_string(),
-        json_schema: None,
-        cwd: Some(cwd_str.clone()),
-        max_budget_usd: Some(0.50),
-        allow_tools: true,
-        persist_session: false,
-        resume_session_id: None,
-        inactivity_timeout: None,
-        team_name: None,
-        agent_id: None,
-        agent_name: None,
-        settings_path: None,
-        env: std::collections::HashMap::new(),
-    };
-
     info!(
         "Architect: generating diagram for insight (cwd={})",
-        cwd_str
+        cwd.display()
     );
 
-    let result = match execute(&config, &insight, SESSION_TIMEOUT).await {
+    let role = ArchitectRole;
+    let request = InsightRequest { insight };
+
+    let result = match SpecializedCoworker::execute(
+        &role,
+        request,
+        None, // No session resume for one-shot architect
+        Some(cwd),
+        Some(SESSION_TIMEOUT),
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
-            warn!("Architect: headless execution failed: {}", e);
+            warn!("Architect: execution failed: {}", e);
             return;
         }
-    };
-
-    if result.is_error {
-        warn!("Architect: session returned error");
-        return;
-    }
-
-    let Some(output) = result.result else {
-        warn!("Architect: no result text returned");
-        return;
     };
 
     info!(
         "Architect: session complete (cost=${:.4}, duration={}ms)",
-        result.cost_usd.unwrap_or(0.0),
-        result.duration_ms.unwrap_or(0),
+        result.cost_usd, result.duration_ms
     );
 
-    // Check for NO_DIAGRAM response
-    if output.trim() == "NO_DIAGRAM" {
-        info!("Architect: no diagram needed for this insight");
-        return;
-    }
-
-    // Extract mermaid fence block from the output
-    let Some(diagram) = extract_mermaid_block(&output) else {
-        info!("Architect: no mermaid block found in output, skipping");
-        return;
-    };
-
-    // Safety net: verify the diagram renders with selkie. The architect should
-    // have already validated via CLI, but LLMs don't always follow instructions.
-    if let Err(e) = selkie::render::render_text(&diagram) {
-        warn!(
-            "Architect: diagram failed selkie validation (architect may have skipped CLI check): {}",
-            e
-        );
-        return;
-    }
-
-    // Post diagram to the same channel as the originating insight.
-    // Diagrams are NOT posted to main channel to avoid noise — if channel_name
-    // is None (insight from main), skip posting the diagram entirely.
-    let Some(ref ch_name) = channel_name else {
-        info!(
-            "Architect: skipping diagram post — insight was from main channel (no dedicated channel for diagrams)"
-        );
-        return;
-    };
-
-    let channel = match crate::Channel::for_repo(&repo_name) {
-        Ok(ch) => ch,
-        Err(e) => {
-            warn!("Architect: failed to open channel: {}", e);
-            return;
+    // Handle response
+    match result.response {
+        DiagramResponse::NoDiagram => {
+            info!("Architect: no diagram needed for this insight");
         }
-    };
-    let msg = Message::for_channel(
-        ch_name.clone(),
-        "architect",
-        format!("```mermaid\n{}\n```", diagram),
-        crate::message::MessageType::Text,
-    );
-    if let Err(e) = channel.send(&msg) {
-        warn!("Architect: failed to post diagram to channel: {}", e);
-    } else {
-        info!("Architect: posted diagram to topic channel '{}'", ch_name);
+        DiagramResponse::Diagram(diagram) => {
+            // Post diagram to the same channel as the originating insight.
+            // Diagrams are NOT posted to main channel to avoid noise — if channel_name
+            // is None (insight from main), skip posting the diagram entirely.
+            let Some(ref ch_name) = channel_name else {
+                info!(
+                    "Architect: skipping diagram post — insight was from main channel (no dedicated channel for diagrams)"
+                );
+                return;
+            };
+
+            let channel = match crate::Channel::for_repo(&repo_name) {
+                Ok(ch) => ch,
+                Err(e) => {
+                    warn!("Architect: failed to open channel: {}", e);
+                    return;
+                }
+            };
+            let msg = Message::for_channel(
+                ch_name.clone(),
+                "architect",
+                format!("```mermaid\n{}\n```", diagram),
+                crate::message::MessageType::Text,
+            );
+            if let Err(e) = channel.send(&msg) {
+                warn!("Architect: failed to post diagram to channel: {}", e);
+            } else {
+                info!("Architect: posted diagram to topic channel '{}'", ch_name);
+            }
+        }
     }
 }
 
@@ -281,12 +306,14 @@ Done."#;
 
     #[test]
     fn test_system_prompt_contains_validation_instructions() {
+        let role = ArchitectRole;
+        let prompt = role.system_prompt();
         assert!(
-            ARCHITECT_SYSTEM_PROMPT.contains("midtown diagram validate"),
+            prompt.contains("midtown diagram validate"),
             "system prompt should include midtown diagram validate command"
         );
         assert!(
-            ARCHITECT_SYSTEM_PROMPT.contains("2 fix attempts"),
+            prompt.contains("2 fix attempts"),
             "system prompt should cap retries at 2"
         );
     }
