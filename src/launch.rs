@@ -236,6 +236,11 @@ impl LaunchConfig {
             agent_id,
             agent_name,
             settings_path: None, // Set by caller
+            setting_sources: if self.restrict_setting_sources {
+                Some("project,local".to_string())
+            } else {
+                None
+            },
             env,
         }
     }
@@ -403,6 +408,30 @@ mod tests {
         let config = LaunchConfig::reviewer("york", 42);
         let headless = config.to_headless_config();
         assert!(headless.allow_tools);
+    }
+
+    #[test]
+    fn test_to_headless_config_includes_setting_sources() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let headless = config.to_headless_config();
+
+        assert_eq!(
+            headless.setting_sources,
+            Some("project,local".to_string()),
+            "Coworkers must restrict setting sources to avoid duplicate plugin loading"
+        );
+    }
+
+    #[test]
+    fn test_to_headless_config_reviewer_includes_setting_sources() {
+        let config = LaunchConfig::reviewer("york", 42);
+        let headless = config.to_headless_config();
+
+        assert_eq!(
+            headless.setting_sources,
+            Some("project,local".to_string()),
+            "Reviewers must restrict setting sources to avoid duplicate plugin loading"
+        );
     }
 
     #[test]

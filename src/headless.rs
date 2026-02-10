@@ -71,6 +71,10 @@ pub struct HeadlessConfig {
     /// Path to a Claude Code settings JSON file. When set, adds `--settings` flag.
     #[serde(default)]
     pub settings_path: Option<String>,
+    /// Setting sources to use. When set, adds `--setting-sources` CLI flag.
+    /// Common value: "project,local" to exclude user-level settings.
+    #[serde(default)]
+    pub setting_sources: Option<String>,
     /// Additional environment variables to set on the child process.
     ///
     /// Applied after the default env_remove call (MIDTOWN_AGENT), so values here
@@ -231,6 +235,11 @@ impl HeadlessSession {
         // Settings file
         if let Some(ref settings) = config.settings_path {
             cmd.arg("--settings").arg(settings);
+        }
+
+        // Setting sources
+        if let Some(ref sources) = config.setting_sources {
+            cmd.arg("--setting-sources").arg(sources);
         }
 
         if let Some(ref cwd) = config.cwd {
@@ -591,6 +600,7 @@ mod tests {
             agent_id: None,
             agent_name: None,
             settings_path: None,
+            setting_sources: None,
             env: std::collections::HashMap::new(),
         }
     }
@@ -686,6 +696,17 @@ mod tests {
     }
 
     #[test]
+    fn test_headless_config_setting_sources_roundtrip() {
+        let config = HeadlessConfig {
+            setting_sources: Some("project,local".to_string()),
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.setting_sources, Some("project,local".to_string()));
+    }
+
+    #[test]
     fn test_headless_config_backward_compat_missing_new_fields() {
         // Existing configs without new fields should deserialize with defaults
         let json = r#"{
@@ -704,6 +725,7 @@ mod tests {
         assert!(config.agent_id.is_none());
         assert!(config.agent_name.is_none());
         assert!(config.settings_path.is_none());
+        assert!(config.setting_sources.is_none());
     }
 
     #[test]
