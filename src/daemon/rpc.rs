@@ -447,10 +447,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let insight = params
                 .and_then(|p| p.get("insight"))
                 .and_then(|v| v.as_str());
+            let channel = params
+                .and_then(|p| p.get("channel"))
+                .and_then(|v| v.as_str());
 
             match (agent, insight) {
                 (Some(agent), Some(insight)) => {
-                    handle_insight_report(request.id, agent, insight, state).await
+                    handle_insight_report(request.id, agent, insight, channel, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -944,10 +947,15 @@ async fn handle_headless_execute(
 /// an insight block. Deduplicates via in-memory hash set, posts the insight
 /// to the channel, and spawns a headless architect session to optionally
 /// generate a Mermaid diagram.
+///
+/// The optional `channel` parameter specifies which channel to post to. If None,
+/// defaults to the main channel. Architect diagrams are posted to the same channel
+/// as the insight to prevent diagram noise in the main channel.
 async fn handle_insight_report(
     id: RequestId,
     agent: &str,
     insight: &str,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Deduplicate: normalize and hash the insight content
@@ -966,8 +974,14 @@ async fn handle_insight_report(
         }
     }
 
-    // Post insight to channel
-    let msg = Message::text(agent, format!("💡 {}", insight));
+    // Post insight to specified channel (or main if None)
+    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+    let msg = Message::for_channel(
+        channel_name,
+        agent,
+        format!("💡 {}", insight),
+        crate::message::MessageType::Text,
+    );
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("insight.report: failed to post to channel: {}", e);
         return Response::error(
@@ -976,7 +990,10 @@ async fn handle_insight_report(
         );
     }
 
-    info!("insight.report: posted insight from {}", agent);
+    info!(
+        "insight.report: posted insight from {} to channel '{}'",
+        agent, channel_name
+    );
 
     // Determine working directory for the architect session.
     // For coworkers, use their worktree; for lead, use the main repo dir.
@@ -992,11 +1009,13 @@ async fn handle_insight_report(
         state.all_repo_paths.first().cloned().unwrap_or_default()
     };
 
-    // Spawn the architect task asynchronously
+    // Spawn the architect task asynchronously - pass channel so diagram routes to same channel as insight
     let repo_name = state.repo_name.clone();
     let insight_owned = insight.to_string();
+    let channel_owned = channel.map(|s| s.to_string());
     tokio::spawn(async move {
-        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name).await;
+        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name, channel_owned)
+            .await;
     });
 
     Response::success(
