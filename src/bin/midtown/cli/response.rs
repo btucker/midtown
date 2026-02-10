@@ -378,6 +378,23 @@ mod tests {
     }
 
     #[test]
+    fn test_task_update_response_with_type_field() {
+        // The task.update RPC returns {"type": "message", "message": "..."} but the
+        // Response::Message variant expects just {"message": "..."}. The "type" field
+        // should be ignored during deserialization.
+        let json = r#"{"type": "message", "message": "Task !1116 updated"}"#;
+        let response: Response =
+            serde_json::from_str(json).expect("Should parse task.update response with type field");
+
+        match response {
+            Response::Message { message } => {
+                assert_eq!(message, "Task !1116 updated");
+            }
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_status_pretty_format() {
         let status = StatusResponse {
             daemon_running: true,

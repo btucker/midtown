@@ -1687,13 +1687,15 @@ fn handle_task_update(
     }
 
     info!("Updated task !{}", task_id);
-    Response::success(
+    let response = Response::success(
         id,
         serde_json::json!({
             "type": "message",
             "message": format!("Task !{} updated", task_id),
         }),
-    )
+    );
+    info!("Returning response: {:?}", response);
+    response
 }
 
 /// Handle task.done RPC — mark a task as completed directly.
