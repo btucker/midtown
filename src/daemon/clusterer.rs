@@ -71,6 +71,7 @@ pub struct ClustererResponse {
     pub rationale: String,
     /// Optional suggestions for channel maintenance.
     #[allow(dead_code)] // Logged but not currently acted upon
+    #[serde(default)]
     pub suggestions: Vec<ChannelSuggestion>,
 }
 
