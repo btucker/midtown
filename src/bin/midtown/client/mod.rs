@@ -424,10 +424,19 @@ impl DaemonClient {
 
     // Auth commands
 
-    pub fn auth_switch(&self, profile: &str, all: bool) -> Result<Response, String> {
+    pub fn auth_switch(
+        &self,
+        profile: &str,
+        all: bool,
+        provider: midtown::auth::AuthProvider,
+    ) -> Result<Response, String> {
         self.send(
             "auth.switch",
-            Some(serde_json::json!({ "profile": profile, "all": all })),
+            Some(serde_json::json!({
+                "profile": profile,
+                "all": all,
+                "provider": provider.as_str()
+            })),
         )
     }
 

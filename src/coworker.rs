@@ -11,6 +11,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::AuthProvider;
 use crate::session_key::SessionKey;
 use crate::tmux;
 use crate::worktree::{WorktreeError, WorktreeManager};
@@ -98,6 +99,9 @@ pub struct Coworker {
     /// The Claude model this coworker is using (e.g., "sonnet", "opus", "haiku")
     #[serde(default = "default_model")]
     pub model: String,
+    /// Auth provider backing this coworker session.
+    #[serde(default = "default_provider")]
+    pub provider: AuthProvider,
 }
 
 fn default_slot_id() -> String {
@@ -106,6 +110,10 @@ fn default_slot_id() -> String {
 
 fn default_model() -> String {
     "sonnet".to_string()
+}
+
+fn default_provider() -> AuthProvider {
+    AuthProvider::Claude
 }
 
 impl Coworker {
@@ -134,6 +142,7 @@ impl Coworker {
             current_task: None,             // Will be discovered via task tracking
             session_id: None,               // Will be set when coworker registers
             model: default_model(),         // Default to sonnet for recovered sessions
+            provider: default_provider(),
         }
     }
 }
@@ -1183,6 +1192,7 @@ impl CoworkerManager {
         working_dir: String,
         session_id: Option<String>,
         model: String,
+        provider: AuthProvider,
     ) -> crate::Result<()> {
         let mut coworkers = self.coworkers.write().unwrap();
 
@@ -1219,6 +1229,7 @@ impl CoworkerManager {
             current_task: None,
             session_id,
             model,
+            provider,
         };
         coworkers.insert(slot_id.to_string(), coworker);
 
@@ -1253,6 +1264,7 @@ impl CoworkerManager {
             working_dir,
             Some(session_id),
             config.model.clone(),
+            AuthProvider::Claude,
         ) {
             // Race condition: another spawn beat us to it. Clean up the tmux
             // window we just created and return an error.
@@ -1400,6 +1412,7 @@ impl CoworkerManager {
                 current_task: None,             // Will be discovered via task tracking
                 session_id: None,               // PROVISIONAL - signals register() can update
                 model: default_model(),         // PROVISIONAL - unknown for recovered sessions
+                provider: default_provider(),
             };
             coworkers.insert(slot_id, coworker);
             tracing::info!(
@@ -1575,6 +1588,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
         }
@@ -1608,6 +1622,7 @@ mod tests {
                         current_task: None,
                         session_id: None,
                         model: "sonnet".to_string(),
+                        provider: default_provider(),
                     },
                 );
             }
@@ -1639,6 +1654,7 @@ mod tests {
                         current_task: None,
                         session_id: None,
                         model: "sonnet".to_string(),
+                        provider: default_provider(),
                     },
                 );
             }
@@ -1688,6 +1704,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
         }
@@ -1964,6 +1981,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
             let slot_id = uuid::Uuid::new_v4().to_string();
@@ -1978,6 +1996,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
             let slot_id = uuid::Uuid::new_v4().to_string();
@@ -1992,6 +2011,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
         }
@@ -2027,6 +2047,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
         }
@@ -2078,6 +2099,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
         }
@@ -2191,6 +2213,7 @@ mod tests {
                     current_task: None,
                     session_id: None,
                     model: "sonnet".to_string(),
+                    provider: default_provider(),
                 },
             );
         }
@@ -2254,6 +2277,7 @@ mod tests {
             "/tmp/worktree".to_string(),
             Some("session-id-123".to_string()),
             "sonnet".to_string(),
+            default_provider(),
         );
 
         assert!(

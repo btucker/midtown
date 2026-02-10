@@ -979,6 +979,7 @@ mod tests {
                     current_task: None,
                     session_id: Some("session-aaa".to_string()),
                     model: "sonnet".to_string(),
+                    provider: crate::auth::AuthProvider::Claude,
                 },
                 Coworker {
                     slot_id: uuid::Uuid::new_v4().to_string(),
@@ -989,6 +990,7 @@ mod tests {
                     current_task: None,
                     session_id: Some("session-bbb".to_string()),
                     model: "sonnet".to_string(),
+                    provider: crate::auth::AuthProvider::Claude,
                 },
                 Coworker {
                     slot_id: uuid::Uuid::new_v4().to_string(),
@@ -999,6 +1001,7 @@ mod tests {
                     current_task: None,
                     session_id: Some("session-ccc".to_string()),
                     model: "sonnet".to_string(),
+                    provider: crate::auth::AuthProvider::Claude,
                 },
             ],
             running_coworkers: vec![],

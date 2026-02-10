@@ -746,10 +746,14 @@ impl DaemonState {
 
         // Register in the CoworkerManager tracking map (keyed by slot_id)
         // session_id is None initially — it arrives later via the init StreamEvent
-        if let Err(e) =
-            self.coworkers
-                .register(&slot_id, &name, working_dir, None, config.model.clone())
-        {
+        if let Err(e) = self.coworkers.register(
+            &slot_id,
+            &name,
+            working_dir,
+            None,
+            config.model.clone(),
+            crate::auth::AuthProvider::Claude,
+        ) {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
             tracing::warn!(

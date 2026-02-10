@@ -1195,20 +1195,35 @@ async fn api_push_unsubscribe(
 /// List all auth profiles with their status.
 ///
 /// Returns a JSON array of `{name, is_current, has_credentials}`.
-async fn api_auth_profiles() -> Result<impl IntoResponse, StatusCode> {
-    let profiles = tokio::task::spawn_blocking(|| {
+#[derive(Debug, Deserialize, Default)]
+struct AuthProfilesQuery {
+    provider: Option<String>,
+}
+
+async fn api_auth_profiles(
+    Query(query): Query<AuthProfilesQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let provider = query
+        .provider
+        .as_deref()
+        .map(str::parse::<crate::auth::AuthProvider>)
+        .transpose()
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .unwrap_or_default();
+
+    let profiles = tokio::task::spawn_blocking(move || {
         // Use project-aware profile resolution so "active" reflects the current project
         let project = crate::paths::detect_repo_name().unwrap_or_default();
         let current = if project.is_empty() {
-            crate::auth::current_profile()
+            crate::auth::current_profile_for(provider)
         } else {
-            crate::auth::active_profile_for_project(&project)
+            crate::auth::active_profile_for_project_with_provider(&project, provider)
         };
-        let names = crate::auth::list_profiles().unwrap_or_default();
+        let names = crate::auth::list_profiles_for(provider).unwrap_or_default();
         names
             .into_iter()
             .map(|name| {
-                let status = crate::auth::profile_status(&name);
+                let status = crate::auth::profile_status_for(provider, &name);
                 let has_credentials = status.as_ref().map(|s| s.has_credentials).unwrap_or(false);
                 serde_json::json!({
                     "name": name,
@@ -1234,12 +1249,14 @@ struct AuthSwitchRequest {
     /// When true, switch globally for all projects. Default: current project only.
     #[serde(default)]
     all: bool,
+    /// Provider to switch for ("claude" or "codex"). Defaults to "claude".
+    provider: Option<String>,
 }
 
 /// Switch the active auth profile via the daemon's RPC.
 ///
 /// Proxies to the daemon's `auth.switch` RPC, which shuts down all coworkers,
-/// switches the profile on disk, and re-launches the lead.
+/// switches the profile on disk, and (for Claude) re-launches the lead.
 async fn api_auth_switch(
     State(state): State<Arc<WebState>>,
     Json(body): Json<AuthSwitchRequest>,
@@ -1251,6 +1268,18 @@ async fn api_auth_switch(
             axum::Json(serde_json::json!({ "error": e.to_string() })),
         ));
     }
+    let provider = body
+        .provider
+        .as_deref()
+        .map(str::parse::<crate::auth::AuthProvider>)
+        .transpose()
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": e })),
+            )
+        })?
+        .unwrap_or_default();
 
     let repo = state.config.repo.clone();
     let profile = body.profile;
@@ -1269,7 +1298,7 @@ async fn api_auth_switch(
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "auth.switch",
-            "params": { "profile": profile, "all": all },
+            "params": { "profile": profile, "all": all, "provider": provider.as_str() },
             "id": 1
         });
         writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {}", e))?;

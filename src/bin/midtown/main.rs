@@ -36,6 +36,21 @@ enum OutputFormat {
     Pretty,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum AuthProviderArg {
+    Claude,
+    Codex,
+}
+
+impl From<AuthProviderArg> for midtown::auth::AuthProvider {
+    fn from(value: AuthProviderArg) -> Self {
+        match value {
+            AuthProviderArg::Claude => midtown::auth::AuthProvider::Claude,
+            AuthProviderArg::Codex => midtown::auth::AuthProvider::Codex,
+        }
+    }
+}
+
 #[derive(Subcommand, Clone)]
 enum Commands {
     /// Run the daemon server (internal - use 'start' instead)
@@ -138,6 +153,10 @@ enum Commands {
     },
     /// Manage authentication profiles for multi-account support
     Auth {
+        /// Auth provider to manage
+        #[arg(long, value_enum, default_value = "claude")]
+        provider: AuthProviderArg,
+
         #[command(subcommand)]
         command: Option<AuthCommand>,
     },
@@ -495,9 +514,9 @@ fn main() {
 
     // Auth command (no daemon required - profile management)
     // Bare `midtown auth` defaults to `midtown auth list`
-    if let Commands::Auth { command } = &command {
+    if let Commands::Auth { provider, command } = &command {
         let cmd = command.clone().unwrap_or(AuthCommand::List);
-        let result = cli::handle_auth(&cmd);
+        let result = cli::handle_auth(&cmd, (*provider).into());
         handle_result(format, result);
         return;
     }

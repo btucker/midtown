@@ -466,10 +466,19 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|p| p.get("all"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let provider = params
+                .and_then(|p| p.get("provider"))
+                .and_then(|v| v.as_str())
+                .map(str::parse::<crate::auth::AuthProvider>)
+                .transpose();
 
-            match profile {
-                Some(name) => handle_auth_switch(request.id, name, all, state).await,
-                None => Response::error(request.id, RpcError::invalid_params()),
+            match (profile, provider) {
+                (Some(name), Ok(provider)) => {
+                    let provider = provider.unwrap_or_default();
+                    handle_auth_switch(request.id, name, all, provider, state).await
+                }
+                (_, Err(e)) => Response::error(request.id, RpcError::new(-32602, e)),
+                (None, Ok(_)) => Response::error(request.id, RpcError::invalid_params()),
             }
         }
 
@@ -745,9 +754,36 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
     )
 }
 
+fn filter_coworkers_by_provider(
+    coworkers: &[crate::coworker::Coworker],
+    provider: crate::auth::AuthProvider,
+) -> Vec<crate::coworker::Coworker> {
+    coworkers
+        .iter()
+        .filter(|cw| cw.provider == provider)
+        .cloned()
+        .collect()
+}
+
+fn build_coworker_relaunch_config(
+    coworker: &crate::coworker::Coworker,
+    repo_name: &str,
+) -> crate::launch::LaunchConfig {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        coworker.name.clone(),
+        repo_name.to_string(),
+        crate::launch::SessionMode::Resume,
+        None,
+    );
+    config.model = coworker.model.clone();
+    config
+}
+
 /// Handle auth.switch RPC method.
 ///
-/// Switches the active auth profile and re-launches all Claude instances:
+/// Switches the active auth profile.
+///
+/// For Claude, also re-launches active sessions:
 /// 1. Validates and switches the profile on disk (project or global)
 /// 2. Shuts down all running coworkers (daemon will re-spawn for pending tasks)
 /// 3. Re-launches the lead window with the new credentials
@@ -755,6 +791,7 @@ async fn handle_auth_switch(
     id: RequestId,
     profile: &str,
     all: bool,
+    provider: crate::auth::AuthProvider,
     state: &DaemonState,
 ) -> Response {
     // Validate the profile name format (defense-in-depth — CLI also validates)
@@ -766,14 +803,14 @@ async fn handle_auth_switch(
     }
 
     // Validate the profile exists
-    if !crate::auth::profile_exists(profile) {
+    if !crate::auth::profile_exists_for(provider, profile) {
         return Response::error(
             id,
             RpcError::new(
                 -32602,
                 format!(
-                    "Profile '{}' does not exist. Create it with: midtown auth login {}",
-                    profile, profile
+                    "Profile '{}' does not exist for {}. Create it with: midtown auth --provider {} login {}",
+                    profile, provider, provider, profile
                 ),
             ),
         );
@@ -782,13 +819,13 @@ async fn handle_auth_switch(
     // Check if already on this profile
     if all {
         // For global switch, check the global current profile
-        let current = crate::auth::current_profile();
+        let current = crate::auth::current_profile_for(provider);
         if current == profile {
             return Response::success(
                 id,
                 serde_json::json!({
                     "success": true,
-                    "message": format!("Already on profile '{}'", profile),
+                    "message": format!("Already on {} profile '{}'", provider, profile),
                     "switched": false,
                 }),
             );
@@ -797,13 +834,13 @@ async fn handle_auth_switch(
         // For per-project switch, check the project config's auth_profile (not the effective profile)
         let path = crate::config::project_config_path(&state.repo_name);
         if let Some(config) = crate::config::FullProjectConfig::load_from(&path)
-            && config.project.auth_profile.as_deref() == Some(profile)
+            && crate::auth::project_profile_override(&config.project, provider) == Some(profile)
         {
             return Response::success(
                 id,
                 serde_json::json!({
                     "success": true,
-                    "message": format!("Already on profile '{}'", profile),
+                    "message": format!("Already on {} profile '{}'", provider, profile),
                     "switched": false,
                 }),
             );
@@ -813,7 +850,7 @@ async fn handle_auth_switch(
     // Switch the profile on disk
     if all {
         // Global switch: update global current profile and clear per-project overrides
-        if let Err(e) = crate::auth::set_current_profile(profile) {
+        if let Err(e) = crate::auth::set_current_profile_for(provider, profile) {
             return Response::error(
                 id,
                 RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
@@ -824,7 +861,11 @@ async fn handle_auth_switch(
         // Per-project switch: update this project's config
         let path = crate::config::project_config_path(&state.repo_name);
         let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
-        config.project.auth_profile = Some(profile.to_string());
+        crate::auth::set_project_profile_override(
+            &mut config.project,
+            provider,
+            profile.to_string(),
+        );
         if let Err(e) = config.save_to(&path) {
             return Response::error(
                 id,
@@ -834,21 +875,19 @@ async fn handle_auth_switch(
     }
 
     info!(
-        "Auth profile switched to '{}' ({})",
+        "Auth profile switched to '{}' for {} ({})",
         profile,
+        provider,
         if all { "global" } else { "project" }
     );
 
-    // Shut down all running coworkers
-    let running_coworkers: Vec<String> = state
-        .coworkers
-        .list()
-        .iter()
-        .map(|cw| cw.name.clone())
-        .collect();
+    // Shut down all running coworkers for this provider
+    let running_coworkers: Vec<crate::coworker::Coworker> =
+        filter_coworkers_by_provider(&state.coworkers.list(), provider);
 
     let shutdown_count = running_coworkers.len();
-    for name in &running_coworkers {
+    for coworker in &running_coworkers {
+        let name = &coworker.name;
         let coworkers = state.coworkers.clone();
         let name_owned = name.clone();
         let shutdown_result =
@@ -873,43 +912,91 @@ async fn handle_auth_switch(
         }
     }
 
-    // Re-launch the lead window with new auth credentials
-    let session = state.coworkers.session_name().to_string();
-    let workdir = state
-        .all_repo_paths
-        .first()
-        .cloned()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let project_name = state.repo_name.clone();
-    let additional_dirs: Vec<std::path::PathBuf> =
-        state.all_repo_paths.iter().skip(1).cloned().collect();
-
-    let lead_result = tokio::task::spawn_blocking(move || {
-        crate::tmux::spawn_lead(&session, &workdir, &project_name, &additional_dirs)
-    })
-    .await;
-
-    let lead_relaunched = match lead_result {
-        Ok(Ok(())) => {
-            info!("Re-launched lead with auth profile '{}'", profile);
-            true
-        }
-        Ok(Err(e)) => {
-            warn!("Failed to re-launch lead: {}", e);
-            false
-        }
-        Err(e) => {
-            warn!("spawn_blocking panic while re-launching lead: {}", e);
-            false
-        }
+    // Capture reviewer assignments before relaunch so reviewer coworkers can
+    // be re-spawned with the reviewer role/prompt.
+    let reviewer_pr_by_name: HashMap<String, u64> = {
+        let persistent = state.persistent_state.lock().await;
+        running_coworkers
+            .iter()
+            .filter_map(|cw| {
+                persistent
+                    .github
+                    .pr_for_reviewer(&cw.name)
+                    .map(|pr| (cw.name.clone(), pr))
+            })
+            .collect()
     };
+
+    // Re-launch lead only when switching Claude auth. The interactive lead is
+    // currently Claude-backed; provider-specific lead relaunch for other
+    // providers will be added with multi-provider lead support.
+    let lead_relaunched = if provider == crate::auth::AuthProvider::Claude {
+        let session = state.coworkers.session_name().to_string();
+        let workdir = state
+            .all_repo_paths
+            .first()
+            .cloned()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let project_name = state.repo_name.clone();
+        let additional_dirs: Vec<std::path::PathBuf> =
+            state.all_repo_paths.iter().skip(1).cloned().collect();
+
+        let lead_result = tokio::task::spawn_blocking(move || {
+            crate::tmux::spawn_lead(&session, &workdir, &project_name, &additional_dirs)
+        })
+        .await;
+
+        match lead_result {
+            Ok(Ok(())) => {
+                info!("Re-launched lead with auth profile '{}'", profile);
+                true
+            }
+            Ok(Err(e)) => {
+                warn!("Failed to re-launch lead: {}", e);
+                false
+            }
+            Err(e) => {
+                warn!("spawn_blocking panic while re-launching lead: {}", e);
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    // Re-launch all sessions for this provider using the updated auth profile.
+    let provider_auth_dir =
+        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, provider);
+    let mut relaunch_count = 0usize;
+    for coworker in &running_coworkers {
+        let mut config = if let Some(pr_number) = reviewer_pr_by_name.get(&coworker.name).copied() {
+            let mut reviewer =
+                crate::launch::LaunchConfig::reviewer(coworker.name.clone(), pr_number);
+            reviewer.session_mode = crate::launch::SessionMode::Resume;
+            reviewer.model = coworker.model.clone();
+            reviewer
+        } else {
+            build_coworker_relaunch_config(coworker, &state.repo_name)
+        };
+        config.auth_profile_dir = Some(provider_auth_dir.clone());
+
+        match state.spawn_coworker(&config).await {
+            Ok(()) => relaunch_count += 1,
+            Err(e) => warn!(
+                "Failed to relaunch coworker '{}' after {} auth switch: {}",
+                coworker.name, provider, e
+            ),
+        }
+    }
 
     // Post to channel
     let msg = Message::system(format!(
-        "Switched to auth profile '{}' — shut down {} coworker(s), {}",
+        "Switched to {} auth profile '{}' - restarted {}/{} coworker(s), {}",
+        provider,
         profile,
+        relaunch_count,
         shutdown_count,
         if lead_relaunched {
             "re-launched lead"
@@ -926,13 +1013,16 @@ async fn handle_auth_switch(
         serde_json::json!({
             "success": true,
             "message": format!(
-                "Switched to profile '{}'. Shut down {} coworker(s), {}.",
+                "Switched to {} profile '{}'. Restarted {}/{} coworker(s), {}.",
+                provider,
                 profile,
+                relaunch_count,
                 shutdown_count,
                 if lead_relaunched { "re-launched lead" } else { "lead re-launch failed" }
             ),
             "switched": true,
             "coworkers_shutdown": shutdown_count,
+            "coworkers_relaunched": relaunch_count,
             "lead_relaunched": lead_relaunched,
         }),
     )
@@ -3468,6 +3558,62 @@ mod tests {
         let hash1 = hash_insight("Insight one");
         let hash2 = hash_insight("Insight two");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_filter_coworkers_by_provider() {
+        let coworkers = vec![
+            crate::coworker::Coworker {
+                slot_id: "1".to_string(),
+                name: "lexington".to_string(),
+                status: crate::coworker::CoworkerStatus::Running,
+                working_dir: "/tmp/lexington".to_string(),
+                started_at: chrono::Utc::now(),
+                current_task: Some("Build auth".to_string()),
+                session_id: None,
+                model: "sonnet".to_string(),
+                provider: crate::auth::AuthProvider::Claude,
+            },
+            crate::coworker::Coworker {
+                slot_id: "2".to_string(),
+                name: "park".to_string(),
+                status: crate::coworker::CoworkerStatus::Running,
+                working_dir: "/tmp/park".to_string(),
+                started_at: chrono::Utc::now(),
+                current_task: Some("Review PR".to_string()),
+                session_id: None,
+                model: "gpt-5-codex".to_string(),
+                provider: crate::auth::AuthProvider::Codex,
+            },
+        ];
+
+        let claude = filter_coworkers_by_provider(&coworkers, crate::auth::AuthProvider::Claude);
+        let codex = filter_coworkers_by_provider(&coworkers, crate::auth::AuthProvider::Codex);
+
+        assert_eq!(claude.len(), 1);
+        assert_eq!(claude[0].name, "lexington");
+        assert_eq!(codex.len(), 1);
+        assert_eq!(codex[0].name, "park");
+    }
+
+    #[test]
+    fn test_build_coworker_relaunch_config_preserves_name_and_model() {
+        let coworker = crate::coworker::Coworker {
+            slot_id: "1".to_string(),
+            name: "madison".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp/madison".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: Some("Fix tests".to_string()),
+            session_id: None,
+            model: "opus".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+        };
+
+        let config = build_coworker_relaunch_config(&coworker, "midtown");
+        assert_eq!(config.name, "madison");
+        assert_eq!(config.model, "opus");
+        assert_eq!(config.session_mode, crate::launch::SessionMode::Resume);
     }
 
     #[test]

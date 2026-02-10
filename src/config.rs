@@ -101,6 +101,11 @@ pub struct ProjectMetadata {
     /// When set, overrides the global `[providers.claude].auth_profile` setting.
     #[serde(default)]
     pub auth_profile: Option<String>,
+
+    /// Provider-specific auth profile overrides.
+    /// Keys are provider names (e.g., "claude", "codex"), values are profile names.
+    #[serde(default)]
+    pub auth_profiles: Option<std::collections::HashMap<String, String>>,
 }
 
 impl ProjectMetadata {
@@ -211,6 +216,7 @@ impl FullProjectConfig {
                 repos: vec![repo_path.to_string()],
                 primary_repo: Some(repo_path.to_string()),
                 auth_profile: None,
+                auth_profiles: None,
             },
             default: ProjectConfig {
                 max_coworkers: Some(8),
@@ -669,6 +675,11 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
             || full.default.personality.is_some()
             || full.project.name.is_some()
             || full.project.auth_profile.is_some()
+            || full
+                .project
+                .auth_profiles
+                .as_ref()
+                .is_some_and(|m| !m.is_empty())
             || full.daemon.github_user.is_some()
         {
             return Some(full.default);

@@ -138,8 +138,11 @@ pub fn handle_e2e(cmd: &E2eCommand) -> Result<(), String> {
 }
 
 /// Handle auth profile commands (login, list, switch, remove) - no daemon required
-pub fn handle_auth(cmd: &AuthCommand) -> Result<Response, String> {
-    auth::handle(cmd)
+pub fn handle_auth(
+    cmd: &AuthCommand,
+    provider: midtown::auth::AuthProvider,
+) -> Result<Response, String> {
+    auth::handle(cmd, provider)
 }
 
 /// Handle `midtown lead remind` subcommands

@@ -1123,6 +1123,7 @@ mod tests {
             current_task: None,
             session_id: None,
             model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
         };
         let stopping = Coworker {
             slot_id: uuid::Uuid::new_v4().to_string(),
@@ -1133,6 +1134,7 @@ mod tests {
             current_task: None,
             session_id: None,
             model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
         };
 
         // Build a snapshot where the nudge should fire
