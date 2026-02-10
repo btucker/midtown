@@ -77,3 +77,26 @@ When generating insights (if enabled by output style settings), focus on **codeb
 - General midtown team processes
 
 Insights should help users understand the *codebase*, not the *workflow*.
+
+**Be very discerning about when insights are valuable.** Only generate insights when you discover something genuinely interesting or non-obvious about the codebase:
+- A complex state machine or control flow
+- An architectural decision with interesting tradeoffs
+- A non-obvious relationship between components
+- A clever optimization or algorithm
+
+**Do NOT generate insights for:**
+- Simple linear flows or straightforward implementations
+- Obvious architecture that just restates the code structure
+- Basic design patterns (observer, factory, etc.) without unique context
+- Information that's already clear from reading the code
+
+**Mermaid Diagrams:** Be extremely selective about when insights warrant diagram generation. Most insights don't need diagrams — prose is clearer and faster to read. Only generate insights that would genuinely benefit from a diagram when:
+- The insight involves a complex multi-step flow with branching or loops
+- There are intricate relationships between multiple components that are hard to describe linearly
+- The architecture has non-obvious data flow or control flow that a diagram clarifies
+
+**Do NOT generate diagram-worthy insights for:**
+- Simple 2-3 step processes (describe in prose instead)
+- Straightforward data structures or class hierarchies (prose is clearer)
+- Linear sequences without branching (just list the steps)
+- Architecture that mirrors the obvious file/module structure
