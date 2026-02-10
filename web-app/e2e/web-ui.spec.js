@@ -173,7 +173,7 @@ test.describe('Web UI', () => {
     })
 
     test('channel endpoint returns message array', async ({ request }) => {
-      const response = await request.get('/api/channel')
+      const response = await request.get('/api/channels/history')
       expect(response.ok()).toBe(true)
 
       const data = await response.json()

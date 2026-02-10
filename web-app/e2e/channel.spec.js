@@ -96,7 +96,7 @@ test.describe('Channel messaging', () => {
 
   test('shows empty state when no messages', async ({ page }) => {
     // Re-navigate with empty messages
-    await page.route('**/api/channel', (route) =>
+    await page.route('**/api/channels/history', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     )
     await page.goto('/')

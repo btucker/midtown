@@ -1,6 +1,6 @@
 <script>
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel } from './store.js'
-  import { fetchHistory, fetchChannels } from './api.js'
+  import { fetchHistory, fetchChannels, getApiBase } from './api.js'
   import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
 
   let showCreateInput = false
@@ -56,8 +56,7 @@
 
     isCreating = true
     try {
-      const project = $activeProject || 'default'
-      const response = await fetch(`/api/${project}/channels/create`, {
+      const response = await fetch(`${getApiBase()}/channels/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),

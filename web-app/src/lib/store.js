@@ -4,9 +4,45 @@ import { writable } from 'svelte/store'
 // Format: { 'midtown': [...messages], 'auth-refactor': [...messages], ... }
 export const messagesByChannel = writable({ midtown: [] })
 
+// Load unread counts from localStorage if available
+function loadUnreadCounts() {
+  if (typeof localStorage !== 'undefined') {
+    const stored = localStorage.getItem('midtown_unread_counts')
+    if (stored) {
+      try {
+        return JSON.parse(stored)
+      } catch (e) {
+        console.warn('Failed to parse stored unread counts:', e)
+      }
+    }
+  }
+  return {}
+}
+
+// Save unread counts to localStorage
+function saveUnreadCounts(channelList) {
+  if (typeof localStorage !== 'undefined') {
+    const counts = {}
+    channelList.forEach((ch) => {
+      if (ch.unread > 0) {
+        counts[ch.name] = ch.unread
+      }
+    })
+    localStorage.setItem('midtown_unread_counts', JSON.stringify(counts))
+  }
+}
+
 // List of available channels with metadata
 // Format: [{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }, ...]
-export const channels = writable([{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }])
+const storedUnread = loadUnreadCounts()
+export const channels = writable([
+  { name: 'midtown', unread: storedUnread['midtown'] || 0, has_pr: false, ci_status: null },
+])
+
+// Subscribe to channels to persist unread counts
+channels.subscribe((channelList) => {
+  saveUnreadCounts(channelList)
+})
 
 // Currently active/selected channel name
 export const activeChannel = writable('midtown')
