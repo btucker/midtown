@@ -283,6 +283,27 @@ pub enum Effect {
     /// consumption. Used by adaptive throttling to reduce PR polling frequency
     /// when quotas run low.
     UpdateRateLimit(crate::github_rate_limit::GitHubRateLimit),
+    /// Create a new topic channel and assign initial tasks to it.
+    ///
+    /// Creates the channel JSONL file and posts a creation message to main channel.
+    CreateChannel {
+        name: String,
+        initial_tasks: Vec<String>,
+    },
+    /// Archive a topic channel by marking it as archived.
+    ///
+    /// Archived channels stop receiving new messages but keep history readable.
+    /// Cannot archive the main "midtown" channel.
+    ArchiveChannel { name: String },
+    /// Merge one channel into another.
+    ///
+    /// Moves all messages from `from` channel into `into` channel, updates
+    /// task-to-channel mappings, posts a merge notice, and archives the source channel.
+    MergeChannels { from: String, into: String },
+    /// Assign a task to a specific channel.
+    ///
+    /// Updates the task_channel mapping in daemon persistent state.
+    AssignTaskChannel { task_id: String, channel: String },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -1040,6 +1061,136 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Failed to save daemon state after updating rate limit: {}",
                         e
                     );
+                }
+            }
+            Effect::CreateChannel {
+                name,
+                initial_tasks,
+            } => {
+                // Create the channel JSONL file
+                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                if let Err(e) = crate::channel::Channel::create(&base_dir, &name) {
+                    warn!("Failed to create channel '{}': {}", name, e);
+                } else {
+                    info!("Created channel '{}'", name);
+
+                    // Post creation message to main channel
+                    let msg = Message::text(
+                        "midtown",
+                        format!(
+                            "📢 Created new topic channel '{}' with {} initial task(s)",
+                            name,
+                            initial_tasks.len()
+                        ),
+                    );
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                        warn!("Failed to post channel creation message: {}", e);
+                    }
+                }
+            }
+            Effect::ArchiveChannel { name } => {
+                // Archive the channel by renaming to .archived.jsonl
+                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let channel_path = base_dir.join(format!("{}.jsonl", name));
+                let archived_path = base_dir.join(format!("{}.archived.jsonl", name));
+
+                if let Err(e) = std::fs::rename(&channel_path, &archived_path) {
+                    warn!("Failed to archive channel '{}': {}", name, e);
+                } else {
+                    info!("Archived channel '{}'", name);
+
+                    // Post archive message to main channel
+                    let msg = Message::text(
+                        "midtown",
+                        format!("📦 Archived channel '{}' (work complete)", name),
+                    );
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                        warn!("Failed to post archive message: {}", e);
+                    }
+                }
+            }
+            Effect::MergeChannels { from, into } => {
+                // Read all messages from source channel
+                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let from_channel = match crate::channel::Channel::new(&base_dir, &from) {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        warn!("Failed to open source channel '{}' for merge: {}", from, e);
+                        continue;
+                    }
+                };
+
+                // Append all messages to target channel
+                let into_channel = match crate::channel::Channel::new(&base_dir, &into) {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        warn!("Failed to open target channel '{}' for merge: {}", into, e);
+                        continue;
+                    }
+                };
+
+                // Read messages from source
+                let messages = match from_channel.read_all() {
+                    Ok(msgs) => msgs,
+                    Err(e) => {
+                        warn!("Failed to read messages from channel '{}': {}", from, e);
+                        continue;
+                    }
+                };
+
+                // Write to target
+                for msg in messages {
+                    if let Err(e) = into_channel.send(&msg) {
+                        warn!("Failed to send message to channel '{}': {}", into, e);
+                    }
+                }
+
+                // Update task_channel mappings: any task assigned to `from` should now point to `into`
+                {
+                    let mut ps = state.persistent_state.lock().await;
+                    for (_task_id, channel) in ps.task_channel.iter_mut() {
+                        if channel == &from {
+                            *channel = into.clone();
+                        }
+                    }
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!("Failed to save task_channel after merge: {}", e);
+                    }
+                }
+
+                // Post merge notice to target channel
+                let msg = Message::for_channel(
+                    &into,
+                    "midtown",
+                    format!("🔗 Merged channel '{}' into this channel", from),
+                    crate::message::MessageType::Text,
+                );
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                    warn!("Failed to post merge notice: {}", e);
+                }
+
+                // Archive the source channel
+                let from_path = base_dir.join(format!("{}.jsonl", from));
+                let archived_path = base_dir.join(format!("{}.archived.jsonl", from));
+                if let Err(e) = std::fs::rename(&from_path, &archived_path) {
+                    warn!(
+                        "Failed to archive source channel '{}' after merge: {}",
+                        from, e
+                    );
+                } else {
+                    info!(
+                        "Merged channel '{}' into '{}' and archived source",
+                        from, into
+                    );
+                }
+            }
+            Effect::AssignTaskChannel { task_id, channel } => {
+                // Update task_channel mapping in persistent state
+                let mut ps = state.persistent_state.lock().await;
+                ps.task_channel.insert(task_id.clone(), channel.clone());
+                debug!("Assigned task !{} to channel '{}'", task_id, channel);
+                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    warn!("Failed to save task_channel after assignment: {}", e);
                 }
             }
         }
