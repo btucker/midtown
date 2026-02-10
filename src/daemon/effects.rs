@@ -782,24 +782,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if orphaned_coworkers.is_empty() {
                     continue;
                 }
-                let mut cleared_count = 0;
                 let mut ps = state.persistent_state.lock().await;
                 for name in &orphaned_coworkers {
-                    if let Some(assignment) = ps.github.remove_assignment_by_reviewer(name) {
-                        info!(
-                            "Cleared stale reviewer assignment: {} was reviewing PR #{}",
-                            name, assignment.pr_number
-                        );
-                        cleared_count += 1;
-                    }
-                }
-                if cleared_count > 0
-                    && let Err(e) = ps.save_for_repo(&state.repo_name)
-                {
-                    warn!(
-                        "Failed to save daemon-state.json after clearing orphan reviewer assignments: {}",
-                        e
-                    );
+                    ps.clear_reviewer_assignment(name, &state.repo_name);
                 }
             }
             Effect::RerunWorkflow {

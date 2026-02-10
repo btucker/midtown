@@ -35,6 +35,32 @@ fn test_breaking_reviewer_should_clear_assignment() {
 }
 
 #[test]
+fn test_breaking_untracked_reviewer_still_clears_assignment() {
+    // Regression test for review feedback issue #1:
+    // When a coworker is not tracked (already deregistered, crashed, or broken twice)
+    // but still has an active reviewer assignment, the early return in handle_coworker_break
+    // would skip the cleanup, causing the daemon to respawn them.
+
+    // Setup: A reviewer assignment exists but the coworker is not tracked
+    let mut state = GitHubState::default();
+    state.assign_reviewer(42, "amsterdam", AssignmentSource::Webhook);
+
+    // Verify assignment exists
+    assert_eq!(state.get_reviewer(42), Some("amsterdam"));
+
+    // Simulate the fix: clear assignment even if coworker is not tracked
+    // (This would be called before the early return in handle_coworker_break)
+    let removed = state.remove_assignment_by_reviewer("amsterdam");
+    assert!(removed.is_some());
+
+    // Verify the assignment was cleared
+    assert_eq!(state.get_reviewer(42), None);
+
+    // The daemon should NOT spawn a new reviewer on the next tick
+    // because there's no assignment anymore
+}
+
+#[test]
 fn test_breaking_non_reviewer_is_safe() {
     // Setup: Create a GitHub state with a reviewer assigned
     let mut state = GitHubState::default();

@@ -666,6 +666,16 @@ async fn handle_coworker_spawn(
 
 /// Handle coworker.break RPC method.
 async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -> Response {
+    // Clear reviewer assignment if this coworker is reviewing a PR.
+    // This must happen BEFORE the early return to handle the case where
+    // the coworker is not tracked (already deregistered, crashed, or broken twice)
+    // but still has an active reviewer assignment. Otherwise the daemon would
+    // respawn them on the next tick.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.clear_reviewer_assignment(name, &state.repo_name);
+    }
+
     // Check if the coworker is tracked - if not, they're already "on break"
     if state.coworkers.get(name).is_none() {
         info!("Coworker {} is already on break (not tracked)", name);
@@ -679,24 +689,6 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
     }
 
     state.broadcast_coworker_update(name, "stopped", None);
-
-    // Clear reviewer assignment if this coworker is reviewing a PR
-    // This prevents the daemon from immediately respawning them
-    {
-        let mut ps = state.persistent_state.lock().await;
-        if let Some(assignment) = ps.github.remove_assignment_by_reviewer(name) {
-            info!(
-                "Cleared reviewer assignment for {} (was reviewing PR #{})",
-                name, assignment.pr_number
-            );
-            if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                warn!(
-                    "Failed to save persistent state after clearing reviewer assignment: {}",
-                    e
-                );
-            }
-        }
-    }
 
     // Shut down the headless session, then deregister from tracking
     if let Err(e) = state.session_manager.shutdown(name).await {
