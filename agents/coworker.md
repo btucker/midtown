@@ -200,6 +200,15 @@ A code review is **not complete** until you have:
 ### Responding to PR Review Feedback
 When your PR receives review comments with suggested changes:
 
+**First, check if the PR is still open.** If the PR was already merged before you push fixes, your commits will sit on an orphaned branch with no PR — and no one will ever land them. Always verify:
+
+```bash
+gh pr view <number> --json state --jq '.state'
+```
+
+- If **OPEN**: push fixes to the branch as normal.
+- If **MERGED**: open a **new PR** from your branch targeting main. Include context like "Follow-up to PR #N — addresses review feedback."
+
 **IMMEDIATE ACKNOWLEDGMENT**: Post an initial reply to each review comment immediately, then edit it with the final resolution. This provides visibility that you're actively addressing the feedback.
 
 1. **Address in the PR** - If the change is small or directly related to the PR's scope:
