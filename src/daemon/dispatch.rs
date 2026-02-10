@@ -20,6 +20,39 @@ use super::{DaemonState, snapshot};
 // Orphan task recovery
 // ============================================================================
 
+/// Determine whether an orphaned task should be recovered.
+///
+/// Pure decision function: returns `true` if the task should be recovered,
+/// `false` if it should be skipped. A task should NOT be recovered if:
+/// - It is already completed (race condition: RPC marked it done after snapshot)
+/// - It references a PR that has already been merged
+fn should_recover_task(task: &crate::tasks::Task, merged_pr_numbers: &HashSet<u64>) -> bool {
+    // Check if task is already completed
+    // Race condition: coworker reports completion via RPC, task is marked completed,
+    // but snapshot was collected before in_progress_tasks refreshed.
+    if task.status == crate::tasks::TaskStatus::Completed {
+        debug!(
+            "Skipping orphan recovery for task !{}: already completed",
+            task.id
+        );
+        return false;
+    }
+
+    // Check if this task references a PR that's already merged
+    if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(task)
+        && let Ok(pr_num) = pr_num_str.parse::<u64>()
+        && merged_pr_numbers.contains(&pr_num)
+    {
+        // PR is merged — task will be auto-completed, don't recover
+        debug!(
+            "Skipping orphan recovery for task !{}: PR #{} already merged",
+            task.id, pr_num
+        );
+        return false;
+    }
+    true
+}
+
 /// Check for orphaned tasks and auto-recover coworkers.
 ///
 /// An orphaned task is one that is `in_progress` but the owning coworker
@@ -45,10 +78,11 @@ pub(super) fn check_and_recover_orphans(
         return vec![];
     }
 
-    // Filter out in_progress tasks whose PRs have already been merged.
-    // These tasks are stale and will be auto-completed by the PR merge cleanup path.
-    // Attempting orphan recovery on them creates a loop: spawn → coworker sees
-    // task done → goes idle → grace period expires → spawn again.
+    // Filter out in_progress tasks whose PRs have already been merged or that
+    // are already completed. These tasks are stale and will be auto-completed
+    // by the PR merge cleanup path. Attempting orphan recovery on them creates
+    // a loop: spawn → coworker sees task done → goes idle → grace period
+    // expires → spawn again.
     let in_progress_tasks_active: Vec<(String, String, String)> = snap
         .in_progress_tasks
         .iter()
@@ -59,30 +93,7 @@ pub(super) fn check_and_recover_orphans(
                 None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
             };
 
-            // Check if task is already completed
-            // Race condition: coworker reports completion via RPC, task is marked completed,
-            // but snapshot was collected before in_progress_tasks refreshed.
-            if task.status == crate::tasks::TaskStatus::Completed {
-                debug!(
-                    "Skipping orphan recovery for task !{}: already completed",
-                    task_id
-                );
-                return false;
-            }
-
-            // Check if this task references a PR that's already merged
-            if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(&task)
-                && let Ok(pr_num) = pr_num_str.parse::<u64>()
-                && snap.merged_pr_numbers.contains(&pr_num)
-            {
-                // PR is merged — task will be auto-completed, don't recover
-                debug!(
-                    "Skipping orphan recovery for task !{}: PR #{} already merged",
-                    task_id, pr_num
-                );
-                return false;
-            }
-            true
+            should_recover_task(&task, &snap.merged_pr_numbers)
         })
         .cloned()
         .collect();
@@ -3623,15 +3634,37 @@ mod tests {
         .expect("daemon state")
     }
 
-    #[test]
-    fn test_orphan_recovery_skips_tasks_with_merged_prs() {
-        // This test verifies the filtering logic conceptually. The actual implementation
-        // reads tasks from disk using read_task(), so a full integration test would require
-        // setting up a temp task directory. For now, we verify the key components work:
+    // ======================================================================
+    // should_recover_task (pure decision function) tests
+    // ======================================================================
 
-        // 1. Verify extract_pr_number_from_task checks both subject and description
+    #[test]
+    fn test_should_recover_task_skips_completed_tasks() {
         use crate::tasks::{Task, TaskStatus};
-        let task_with_pr_in_subject = Task {
+
+        let completed_task = Task {
+            id: "1120".to_string(),
+            subject: "Fix orphan recovery loop".to_string(),
+            description: None,
+            status: TaskStatus::Completed,
+            owner: Some("vernon".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs = HashSet::new();
+        assert!(
+            !should_recover_task(&completed_task, &merged_prs),
+            "Should NOT recover a completed task"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_skips_merged_pr_in_subject() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
             id: "1120".to_string(),
             subject: "Merge PR #923 [Midtown !1120]".to_string(),
             description: None,
@@ -3641,13 +3674,19 @@ mod tests {
             channel: None,
             created_at: None,
         };
-        assert_eq!(
-            crate::tasks::extract_pr_number_from_task(&task_with_pr_in_subject),
-            Some("923".to_string()),
-            "Should extract PR number from subject"
-        );
 
-        let task_with_pr_in_desc = Task {
+        let merged_prs: HashSet<u64> = [923].into_iter().collect();
+        assert!(
+            !should_recover_task(&task, &merged_prs),
+            "Should NOT recover a task whose PR is already merged (subject)"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_skips_merged_pr_in_description() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
             id: "1121".to_string(),
             subject: "Address review feedback".to_string(),
             description: Some("Fixes from PR #925 review".to_string()),
@@ -3657,19 +3696,56 @@ mod tests {
             channel: None,
             created_at: None,
         };
-        assert_eq!(
-            crate::tasks::extract_pr_number_from_task(&task_with_pr_in_desc),
-            Some("925".to_string()),
-            "Should extract PR number from description"
-        );
 
-        // 2. The check_and_recover_orphans filter logic:
-        //    - For each in_progress task, reads full task via read_task(task_id)
-        //    - Calls extract_pr_number_from_task() to check subject + description
-        //    - If PR number matches merged_pr_numbers set, filters it out
-        //    - Only tasks without merged PRs go to decide_orphan_recovery()
-        //
-        // Manual verification: When PR #923 merges but task !1120 is still in_progress,
-        // orphan recovery no longer spawns vernon, preventing the loop.
+        let merged_prs: HashSet<u64> = [925].into_iter().collect();
+        assert!(
+            !should_recover_task(&task, &merged_prs),
+            "Should NOT recover a task whose PR is already merged (description)"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_allows_active_in_progress_task() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "42".to_string(),
+            subject: "Add auth endpoint".to_string(),
+            description: None,
+            status: TaskStatus::InProgress,
+            owner: Some("lexington".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs = HashSet::new();
+        assert!(
+            should_recover_task(&task, &merged_prs),
+            "Should recover an active in-progress task with no merged PR"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_allows_task_with_unmerged_pr() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1120".to_string(),
+            subject: "Merge PR #923 [Midtown !1120]".to_string(),
+            description: None,
+            status: TaskStatus::InProgress,
+            owner: Some("vernon".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // PR #923 is NOT in the merged set
+        let merged_prs: HashSet<u64> = [900, 910].into_iter().collect();
+        assert!(
+            should_recover_task(&task, &merged_prs),
+            "Should recover a task whose PR is NOT yet merged"
+        );
     }
 }
