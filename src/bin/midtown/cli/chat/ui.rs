@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use midtown::{Message, MessageType};
@@ -910,12 +910,15 @@ fn wrap_kanban_text(text: &str, width: usize) -> Vec<String> {
 
 /// Draw the chat panel showing messages
 fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    // Calculate dynamic input bar height based on text wrapping
+    let input_bar_height = calculate_input_bar_height(&app.input_text, area.width);
+
     // Split chat panel vertically: messages (top) + input bar (bottom)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(5),    // Messages area
-            Constraint::Length(3), // Input bar (3 lines with border)
+            Constraint::Min(5),                   // Messages area
+            Constraint::Length(input_bar_height), // Input bar (dynamic height)
         ])
         .split(area);
 
@@ -1053,6 +1056,40 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(paragraph, inner);
 }
 
+/// Calculate the required height for the input bar based on wrapped text
+///
+/// Returns total height including borders (2) and content lines (1 minimum, 6 maximum).
+fn calculate_input_bar_height(input_text: &str, area_width: u16) -> u16 {
+    const PROMPT_WIDTH: usize = 3; // "› "
+    const CURSOR_WIDTH: usize = 1; // "█"
+    const MIN_CONTENT_LINES: u16 = 1;
+    const MAX_CONTENT_LINES: u16 = 6;
+    const BORDER_HEIGHT: u16 = 2; // Top and bottom borders
+
+    // Account for borders when calculating available width
+    let available_width = area_width.saturating_sub(2) as usize;
+    if available_width == 0 {
+        return BORDER_HEIGHT + MIN_CONTENT_LINES;
+    }
+
+    // Calculate text width after prompt and cursor
+    let content_width = available_width.saturating_sub(PROMPT_WIDTH + CURSOR_WIDTH);
+    if content_width == 0 {
+        return BORDER_HEIGHT + MIN_CONTENT_LINES;
+    }
+
+    // Count wrapped lines (wrap_content splits on '\n' then wraps each line)
+    let line_count = if input_text.is_empty() {
+        1
+    } else {
+        wrap_content(input_text, content_width).len()
+    };
+
+    // Clamp to min/max and add borders
+    let content_lines = (line_count as u16).clamp(MIN_CONTENT_LINES, MAX_CONTENT_LINES);
+    BORDER_HEIGHT + content_lines
+}
+
 /// Draw the input bar at the bottom of the chat panel
 fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
     use super::app::FocusedPane;
@@ -1089,7 +1126,7 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
         format!("{}{}", prompt, app.input_text)
     };
 
-    let paragraph = Paragraph::new(text_with_cursor);
+    let paragraph = Paragraph::new(text_with_cursor).wrap(Wrap { trim: false });
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
@@ -3825,5 +3862,65 @@ mod tests {
             has_star,
             "Expected to find ★ prefix in cross-posted mermaid message"
         );
+    }
+
+    // --- Tests for input box height calculation ---
+
+    #[test]
+    fn test_calculate_input_bar_height_empty_text() {
+        // Empty text should use minimum height: 1 content line + 2 borders = 3
+        let height = calculate_input_bar_height("", 80);
+        assert_eq!(height, 3);
+    }
+
+    #[test]
+    fn test_calculate_input_bar_height_short_text() {
+        // Short text that fits in one line: 1 content line + 2 borders = 3
+        let height = calculate_input_bar_height("Hello", 80);
+        assert_eq!(height, 3);
+    }
+
+    #[test]
+    fn test_calculate_input_bar_height_wraps_long_text() {
+        // Text longer than available width should wrap
+        // Available width = 80 - 2 (borders) - 3 (prompt "› ") - 1 (cursor "█") = 74
+        let long_text = "a".repeat(150); // 150/74 = 2.02, wraps to 3 lines
+        let height = calculate_input_bar_height(&long_text, 80);
+        assert_eq!(
+            height, 5,
+            "150 chars should wrap to 3 lines: 3 + 2 borders = 5"
+        );
+    }
+
+    #[test]
+    fn test_calculate_input_bar_height_max_lines() {
+        // Very long text should be clamped at max 6 content lines
+        let very_long_text = "a".repeat(1000);
+        let height = calculate_input_bar_height(&very_long_text, 80);
+        assert_eq!(height, 8, "Max 6 content lines + 2 borders = 8");
+    }
+
+    #[test]
+    fn test_calculate_input_bar_height_narrow_terminal() {
+        // Narrow terminal should still produce valid height
+        let height = calculate_input_bar_height("Hello world", 10);
+        assert!(height >= 3, "Minimum height should be 3");
+        assert!(height <= 8, "Maximum height should be 8");
+    }
+
+    #[test]
+    fn test_calculate_input_bar_height_zero_width() {
+        // Edge case: zero width should return minimum height
+        let height = calculate_input_bar_height("test", 0);
+        assert_eq!(height, 3, "Zero width should return minimum height");
+    }
+
+    #[test]
+    fn test_calculate_input_bar_height_with_newlines() {
+        // Text with explicit newlines
+        let text = "Line 1\nLine 2\nLine 3";
+        let height = calculate_input_bar_height(text, 80);
+        // wrap_content splits on '\n' first, giving 3 lines + 2 borders = 5
+        assert_eq!(height, 5, "3 content lines + 2 border lines = 5");
     }
 }
