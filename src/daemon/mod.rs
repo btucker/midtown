@@ -2026,7 +2026,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // stale entries in the CoworkerManager tracking map.
                 let headless_names: std::collections::HashSet<String> =
                     state.session_manager.list_alive_names().await.into_iter().collect();
-                if let Err(e) = state.coworkers.sync_with_tmux(&headless_names) {
+                let persistent_sessions = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.headless_sessions.clone()
+                };
+                if let Err(e) = state.coworkers.sync_with_tmux(&headless_names, &persistent_sessions) {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }
                 run_tick(&events::DaemonEvent::SessionMonitorTick, &state).await;

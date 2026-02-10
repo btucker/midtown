@@ -1274,13 +1274,21 @@ impl CoworkerManager {
     ///
     /// 1. Removes coworkers whose tmux windows no longer exist.
     /// 2. Adds coworkers whose tmux windows exist but aren't tracked.
+    /// 3. Restores session_id from persistent_sessions for recovered headless coworkers.
     ///
     /// The second case handles coworkers that were missed during startup discovery
     /// (e.g., due to timing issues or transient tmux failures). Without this,
     /// orphan cleanup would incorrectly delete worktrees for running coworkers.
+    ///
+    /// The third case fixes the bug where headless coworkers recovered after daemon
+    /// restart have session_id: None because they don't emit an init event again.
     pub fn sync_with_tmux(
         &self,
         headless_names: &std::collections::HashSet<String>,
+        persistent_sessions: &std::collections::HashMap<
+            String,
+            crate::daemon::state::HeadlessSessionInfo,
+        >,
     ) -> crate::Result<()> {
         let active_windows = tmux::list_windows(&self.session_name)?;
 
@@ -1389,6 +1397,23 @@ impl CoworkerManager {
                 "Recovered undiscovered headless coworker from SessionManager: {}",
                 headless_name
             );
+        }
+
+        // Restore session_id from persistent state for recovered headless coworkers.
+        // After a daemon restart, headless sessions are alive but don't emit init
+        // events again, so their session_id stays None. This breaks reviewer assignment
+        // cleanup and spawning logic which relies on session_id for tracking.
+        for (name, session_info) in persistent_sessions {
+            if let Some(coworker) = coworkers.values_mut().find(|cw| &cw.name == name)
+                && coworker.session_id.is_none()
+            {
+                coworker.session_id = Some(session_info.session_id.clone());
+                tracing::debug!(
+                    "Restored session_id {} for recovered coworker {}",
+                    session_info.session_id,
+                    name
+                );
+            }
         }
 
         Ok(())
@@ -2054,8 +2079,9 @@ mod tests {
         // even though it has no tmux window
         let headless_names: std::collections::HashSet<String> =
             ["madison".to_string()].into_iter().collect();
+        let persistent_sessions = HashMap::new();
         manager
-            .sync_with_tmux(&headless_names)
+            .sync_with_tmux(&headless_names, &persistent_sessions)
             .expect("sync_with_tmux should succeed");
 
         // madison should still be tracked
@@ -2092,8 +2118,9 @@ mod tests {
         // because it's in headless_names (alive in SessionManager)
         let headless_names: std::collections::HashSet<String> =
             ["madison".to_string()].into_iter().collect();
+        let persistent_sessions = HashMap::new();
         manager
-            .sync_with_tmux(&headless_names)
+            .sync_with_tmux(&headless_names, &persistent_sessions)
             .expect("sync_with_tmux should succeed");
 
         // madison should now be tracked (recovered from headless_names)
@@ -2123,8 +2150,9 @@ mod tests {
         // is missing/invalid — same validation the tmux path performs.
         let headless_names: std::collections::HashSet<String> =
             ["madison".to_string()].into_iter().collect();
+        let persistent_sessions = HashMap::new();
         manager
-            .sync_with_tmux(&headless_names)
+            .sync_with_tmux(&headless_names, &persistent_sessions)
             .expect("sync_with_tmux should succeed");
 
         // madison should NOT be tracked (invalid worktree)
@@ -2162,8 +2190,9 @@ mod tests {
 
         // sync_with_tmux with empty headless_names should remove park
         let headless_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let persistent_sessions = HashMap::new();
         manager
-            .sync_with_tmux(&headless_names)
+            .sync_with_tmux(&headless_names, &persistent_sessions)
             .expect("sync_with_tmux should succeed");
 
         // park should be removed (not in tmux windows, not in headless_names)
@@ -2197,7 +2226,8 @@ mod tests {
             ["lexington".to_string()].into_iter().collect();
 
         // sync_with_tmux recovers the headless session
-        let result = manager.sync_with_tmux(&headless_names);
+        let persistent_sessions = HashMap::new();
+        let result = manager.sync_with_tmux(&headless_names, &persistent_sessions);
         assert!(result.is_ok(), "sync_with_tmux should succeed");
 
         // Now the recovery loop has created a Coworker entry for lexington
@@ -2229,6 +2259,105 @@ mod tests {
             entry.session_id,
             Some("session-id-123".to_string()),
             "session_id should be set"
+        );
+    }
+
+    /// Test that sync_with_tmux restores session_id from persistent state
+    /// for recovered headless coworkers after daemon restart.
+    ///
+    /// Reproduces the bug from snapshot-reviewer-not-spawning-20260210-182655.json:
+    /// - Coworkers exist in SessionManager with session_id: null
+    /// - persistent_state.headless_sessions has the session IDs
+    /// - After sync_with_tmux, coworkers should have session_id populated
+    #[test]
+    fn test_sync_with_tmux_restores_session_ids_from_persistent_state() {
+        use crate::daemon::state::HeadlessSessionInfo;
+
+        // Setup: create a CoworkerManager with no coworkers
+        let (manager, temp_dir) = test_manager();
+
+        // Simulate persistent state with saved session IDs
+        let mut persistent_sessions = HashMap::new();
+        persistent_sessions.insert(
+            "lexington".to_string(),
+            HeadlessSessionInfo {
+                session_id: "session-abc-123".to_string(),
+                last_active: Utc::now(),
+                purpose: "task !42".to_string(),
+                pid: Some(12345),
+                coworker_type: Some("dev".to_string()),
+                task_id: Some(42),
+                pr_number: None,
+                working_dir: Some(
+                    manager
+                        .worktree_manager
+                        .worktree_path("lexington")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+            },
+        );
+        persistent_sessions.insert(
+            "pleasant".to_string(),
+            HeadlessSessionInfo {
+                session_id: "session-xyz-789".to_string(),
+                last_active: Utc::now(),
+                purpose: "reviewer for PR #906".to_string(),
+                pid: Some(67890),
+                coworker_type: Some("reviewer".to_string()),
+                task_id: None,
+                pr_number: Some(906),
+                working_dir: Some(
+                    manager
+                        .worktree_manager
+                        .worktree_path("pleasant")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+            },
+        );
+
+        // Simulate SessionManager having these coworkers alive (but without session_id yet)
+        let headless_names: std::collections::HashSet<String> =
+            vec!["lexington".to_string(), "pleasant".to_string()]
+                .into_iter()
+                .collect();
+
+        // Create worktrees so validation passes
+        for name in &headless_names {
+            let worktree_path = manager.worktree_manager.worktree_path(name);
+            Command::new("git")
+                .args([
+                    "worktree",
+                    "add",
+                    "--detach",
+                    &worktree_path.to_string_lossy(),
+                ])
+                .current_dir(temp_dir.path())
+                .output()
+                .unwrap_or_else(|_| panic!("Failed to create worktree for {}", name));
+        }
+
+        // Run sync_with_tmux with persistent session info
+        manager
+            .sync_with_tmux(&headless_names, &persistent_sessions)
+            .expect("sync_with_tmux should succeed");
+
+        // Verify that both coworkers now have their session_id populated
+        let lexington = manager
+            .get("lexington")
+            .expect("lexington should be tracked");
+        assert_eq!(
+            lexington.session_id,
+            Some("session-abc-123".to_string()),
+            "lexington's session_id should be restored from persistent state"
+        );
+
+        let pleasant = manager.get("pleasant").expect("pleasant should be tracked");
+        assert_eq!(
+            pleasant.session_id,
+            Some("session-xyz-789".to_string()),
+            "pleasant's session_id should be restored from persistent state"
         );
     }
 }
