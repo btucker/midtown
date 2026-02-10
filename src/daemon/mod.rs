@@ -2221,6 +2221,32 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 // Per-coworker decision helpers for unit tests. The batch `decide_*` functions
 // in `rules.rs` handle the full coworker set; these single-coworker variants
 // make individual test cases easier to write.
+
+/// Test helper: Creates a minimal DaemonState for unit tests that only need
+/// specific fields populated. Most fields are set to empty/default values.
+#[cfg(test)]
+pub(super) fn minimal_daemon_state_for_test() -> DaemonState {
+    use std::path::PathBuf;
+    let worktree_manager = crate::worktree::WorktreeManager::new(PathBuf::from("/tmp/test"))
+        .expect("Failed to create WorktreeManager for test");
+    let coworker_manager =
+        crate::coworker::CoworkerManager::new("test".to_string(), worktree_manager);
+    let channel_router = crate::ChannelRouter::new(PathBuf::from("/tmp/test"), "midtown");
+
+    DaemonState::new(
+        PathBuf::from("/tmp/test.sock"),
+        coworker_manager,
+        "test-repo".to_string(),
+        vec![PathBuf::from("/tmp/test")],
+        channel_router,
+        None, // web_updates_tx
+        10,   // max_coworkers
+        None, // push_manager
+        "main".to_string(),
+    )
+    .expect("Failed to create minimal DaemonState for test")
+}
+
 #[cfg(test)]
 mod tests {
     use super::helpers::*;
@@ -3647,29 +3673,4 @@ Found 1 issue:
             "SpawnCoworkerWithCallbacks with RecordTaskAssignment should be tracked"
         );
     }
-}
-
-/// Test helper: Creates a minimal DaemonState for unit tests that only need
-/// specific fields populated. Most fields are set to empty/default values.
-#[cfg(test)]
-pub(super) fn minimal_daemon_state_for_test() -> DaemonState {
-    use std::path::PathBuf;
-    let worktree_manager = crate::worktree::WorktreeManager::new(PathBuf::from("/tmp/test"))
-        .expect("Failed to create WorktreeManager for test");
-    let coworker_manager =
-        crate::coworker::CoworkerManager::new("test".to_string(), worktree_manager);
-    let channel_router = crate::ChannelRouter::new(PathBuf::from("/tmp/test"), "midtown");
-
-    DaemonState::new(
-        PathBuf::from("/tmp/test.sock"),
-        coworker_manager,
-        "test-repo".to_string(),
-        vec![PathBuf::from("/tmp/test")],
-        channel_router,
-        None, // web_updates_tx
-        10,   // max_coworkers
-        None, // push_manager
-        "main".to_string(),
-    )
-    .expect("Failed to create minimal DaemonState for test")
 }

@@ -602,6 +602,61 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     snapshot
 }
 
+/// Test helper: Creates a minimal WorldSnapshot for unit tests with all fields
+/// set to empty/default values. Tests can override specific fields as needed.
+#[cfg(test)]
+pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
+    WorldSnapshot {
+        active_coworkers: vec![],
+        running_coworkers: vec![],
+        coworker_snapshots: vec![],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashSet::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: Utc::now(),
+        repo_name: "test-repo".to_string(),
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,60 +1077,5 @@ mod tests {
 
         let json = serde_json::to_string(&snapshot).expect("should serialize");
         assert!(json.contains("active_session_ids"));
-    }
-}
-
-/// Test helper: Creates a minimal WorldSnapshot for unit tests with all fields
-/// set to empty/default values. Tests can override specific fields as needed.
-#[cfg(test)]
-pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
-    WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashSet::new(),
-        in_progress_tasks: vec![],
-        busy_coworkers: HashSet::new(),
-        all_tasks: vec![],
-        pending_tasks_with_owners: vec![],
-        pending_tasks_without_owners: vec![],
-        task_channel: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        channel_messages: vec![],
-        daemon_logs: vec![],
-        tasks_with_worktrees: HashSet::new(),
-        task_worktree_map: HashMap::new(),
-        worktree_branch_owners: HashMap::new(),
-        merged_pr_branches: HashMap::new(),
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
-        now_utc: Utc::now(),
-        repo_name: "test-repo".to_string(),
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
     }
 }
