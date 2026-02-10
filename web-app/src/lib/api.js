@@ -67,7 +67,9 @@ export async function fetchChannels() {
       return channelList
     }
   } catch (err) {
-    console.error('Failed to fetch channels:', err)
+    // Retain last-known-good channel list on transient network errors.
+    // The channel list will refresh on WebSocket reconnect or next poll.
+    console.warn('Failed to fetch channels (retaining cached data):', err)
   }
   return []
 }
@@ -149,8 +151,8 @@ export function getApiBase() {
 export async function fetchHistory(channelName = null) {
   try {
     const url = channelName
-      ? `${getApiBase()}/channel?channel=${encodeURIComponent(channelName)}`
-      : `${getApiBase()}/channel`
+      ? `${getApiBase()}/channels/history?channel=${encodeURIComponent(channelName)}`
+      : `${getApiBase()}/channels/history`
     const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()

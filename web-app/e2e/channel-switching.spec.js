@@ -114,20 +114,20 @@ test.describe('Channel switching', () => {
     )
 
     // Route per-channel API calls
-    await page.route('**/api/channel?channel=midtown', (route) =>
+    await page.route('**/api/channels/history?channel=midtown', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_MAIN_MESSAGES) })
     )
 
-    await page.route('**/api/channel?channel=auth-refactor', (route) =>
+    await page.route('**/api/channels/history?channel=auth-refactor', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_AUTH_MESSAGES) })
     )
 
-    await page.route('**/api/channel?channel=ui-improvements', (route) =>
+    await page.route('**/api/channels/history?channel=ui-improvements', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_UI_MESSAGES) })
     )
 
     // Default channel endpoint (initial load)
-    await page.route('**/api/channel', (route) =>
+    await page.route('**/api/channels/history', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_MAIN_MESSAGES) })
     )
 

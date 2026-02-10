@@ -471,7 +471,7 @@ fn test_web_api_health_endpoint() {
     assert_eq!(body, "ok", "Health endpoint should return 'ok'");
 }
 
-/// Test that /api/channel returns an array of messages.
+/// Test that /api/channels/history returns an array of messages.
 #[test]
 #[ignore] // Requires built binary
 fn test_web_api_channel_history() {
@@ -495,7 +495,7 @@ fn test_web_api_channel_history() {
     thread::sleep(Duration::from_millis(100));
 
     // Fetch channel history via HTTP
-    let response = reqwest::blocking::get(format!("{}/channel", fixture.api_base()));
+    let response = reqwest::blocking::get(format!("{}/channels/history", fixture.api_base()));
     assert!(response.is_ok(), "Channel endpoint should be accessible");
 
     let response = response.unwrap();
@@ -1172,7 +1172,7 @@ fn test_web_api_handles_channel_errors() {
     }
 
     // Channel should exist after daemon starts
-    let response = reqwest::blocking::get(format!("{}/channel", fixture.api_base()));
+    let response = reqwest::blocking::get(format!("{}/channels/history", fixture.api_base()));
     assert!(response.is_ok(), "Channel endpoint should be accessible");
     assert!(
         response.unwrap().status().is_success(),
@@ -1290,7 +1290,7 @@ async fn test_full_message_flow() {
 
     // Verify message in REST history using async reqwest
     let api_base = fixture.api_base();
-    let history_response = reqwest::get(format!("{}/channel", api_base))
+    let history_response = reqwest::get(format!("{}/channels/history", api_base))
         .await
         .expect("History endpoint should work");
     let messages: Vec<serde_json::Value> = history_response
@@ -1738,7 +1738,7 @@ async fn test_api_upload_no_file_error() {
 // Per-Channel API Tests
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Test that /api/channel accepts ?channel=name query parameter and returns
+/// Test that /api/channels/history accepts ?channel=name query parameter and returns
 /// messages from the specified channel.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Requires built binary
@@ -1798,7 +1798,7 @@ async fn test_api_channel_history_per_channel() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Fetch main channel history (no parameter)
-    let main_response = reqwest::get(format!("{}/channel", fixture.api_base()))
+    let main_response = reqwest::get(format!("{}/channels/history", fixture.api_base()))
         .await
         .expect("Main channel endpoint should work");
     assert!(
@@ -1821,9 +1821,12 @@ async fn test_api_channel_history_per_channel() {
     assert!(has_main, "Main channel should contain main channel message");
 
     // Fetch topic channel history with ?channel=pr-42
-    let topic_response = reqwest::get(format!("{}/channel?channel=pr-42", fixture.api_base()))
-        .await
-        .expect("Topic channel endpoint should work");
+    let topic_response = reqwest::get(format!(
+        "{}/channels/history?channel=pr-42",
+        fixture.api_base()
+    ))
+    .await
+    .expect("Topic channel endpoint should work");
     assert!(
         topic_response.status().is_success(),
         "Topic channel should return 200"
@@ -1866,7 +1869,7 @@ async fn test_api_channel_history_per_channel() {
     std::mem::forget(fixture);
 }
 
-/// Test that /api/channel validates channel names and rejects invalid ones.
+/// Test that /api/channels/history validates channel names and rejects invalid ones.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Requires built binary
 async fn test_api_channel_history_validates_channel_name() {
@@ -1894,7 +1897,7 @@ async fn test_api_channel_history_validates_channel_name() {
     ];
 
     for name in invalid_names {
-        let url = format!("{}/channel?channel={}", fixture.api_base(), name);
+        let url = format!("{}/channels/history?channel={}", fixture.api_base(), name);
         let response = reqwest::get(&url).await;
 
         if let Ok(resp) = response {
@@ -1911,7 +1914,7 @@ async fn test_api_channel_history_validates_channel_name() {
     let valid_names = vec!["pr-42", "task-5", "my-channel", "channel_123"];
 
     for name in valid_names {
-        let url = format!("{}/channel?channel={}", fixture.api_base(), name);
+        let url = format!("{}/channels/history?channel={}", fixture.api_base(), name);
         let response = reqwest::get(&url).await;
 
         if let Ok(resp) = response {
