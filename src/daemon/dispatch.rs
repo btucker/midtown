@@ -45,6 +45,35 @@ pub(super) fn check_and_recover_orphans(
         return vec![];
     }
 
+    // Filter out in_progress tasks whose PRs have already been merged.
+    // These tasks are stale and will be auto-completed by the PR merge cleanup path.
+    // Attempting orphan recovery on them creates a loop: spawn → coworker sees
+    // task done → goes idle → grace period expires → spawn again.
+    let in_progress_tasks_active: Vec<(String, String, String)> = snap
+        .in_progress_tasks
+        .iter()
+        .filter(|(task_id, task_subject, _owner)| {
+            // Check if this task references a PR that's already merged
+            if let Some(pr_num_str) = crate::tasks::extract_pr_number(task_subject)
+                && let Ok(pr_num) = pr_num_str.parse::<u64>()
+                && snap.merged_pr_numbers.contains(&pr_num)
+            {
+                // PR is merged — task will be auto-completed, don't recover
+                debug!(
+                    "Skipping orphan recovery for task !{}: PR #{} already merged",
+                    task_id, pr_num
+                );
+                return false;
+            }
+            true
+        })
+        .cloned()
+        .collect();
+
+    if in_progress_tasks_active.is_empty() {
+        return vec![];
+    }
+
     // Compute recently-stopped coworkers (within grace period).
     // When a coworker completes work and goes idle → shutdown, the task may
     // not yet be marked done. This grace period prevents false orphan recovery
@@ -59,7 +88,7 @@ pub(super) fn check_and_recover_orphans(
 
     // Decide which orphan (if any) to recover using pure decision function
     let recovery = crate::rules::decide_orphan_recovery(
-        &snap.in_progress_tasks,
+        &in_progress_tasks_active,
         &snap.active_names,
         snap.is_at_dev_limit,
         &snap.coworkers_with_open_prs,
@@ -3563,4 +3592,9 @@ mod tests {
         )
         .expect("daemon state")
     }
+
+    // TODO: Add integration test for orphan recovery skipping tasks with merged PRs.
+    // The fix is in check_and_recover_orphans() which filters in_progress_tasks
+    // before passing to decide_orphan_recovery(). Manual verification: when a PR
+    // merges but the task is still in_progress, orphan recovery no longer fires.
 }
