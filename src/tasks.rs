@@ -70,6 +70,32 @@ pub fn read_tasks_for_session(session_id: &str) -> Vec<Task> {
     read_tasks_from_dir(&tasks_dir)
 }
 
+/// Read a single task by ID for the current repository.
+///
+/// Returns None if the task doesn't exist or can't be parsed.
+pub fn read_task(task_id: &str) -> Option<Task> {
+    let repo = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    let task_list_id = crate::paths::task_list_id_for_repo(&repo);
+
+    let home = dirs::home_dir()?;
+
+    let task_path = home
+        .join(".claude")
+        .join("tasks")
+        .join(&task_list_id)
+        .join(format!("{}.json", task_id));
+
+    let content = std::fs::read_to_string(&task_path).ok()?;
+    let mut task = parse_task_json(&content).ok()?;
+
+    // Populate created_at from file metadata
+    if let Ok(metadata) = task_path.metadata() {
+        task.created_at = metadata.created().ok();
+    }
+
+    Some(task)
+}
+
 /// Read the `.highwatermark` file from a tasks directory, returning the stored value or 0.
 fn read_highwatermark(tasks_dir: &std::path::Path) -> u64 {
     let path = tasks_dir.join(".highwatermark");
