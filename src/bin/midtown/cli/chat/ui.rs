@@ -1132,6 +1132,57 @@ fn render_message(
         return result;
     }
 
+    // For cross-posted insights, use special format with "★ from #channel | " prefix
+    // Format: actor line (if sender changed) + " HH:MM ★ from #channel | message"
+    if let Some(ref source_channel) = msg.source_channel {
+        // Calculate the prefix length: "★ from #channel | "
+        // "★ " = 2, "from #" = 6, channel name, " | " = 3
+        let prefix_len = 2 + 6 + source_channel.len() + 3;
+        let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + prefix_len);
+        if content_width == 0 {
+            return vec![];
+        }
+
+        let content_lines = wrap_content(&msg.content, content_width);
+        let mut result = Vec::new();
+
+        // Add sender name line if sender changed (same as regular messages)
+        if show_sender {
+            if prev_sender.is_some_and(|prev| !is_system_like_sender(prev)) {
+                result.push(Line::from(""));
+            }
+            let current_task = current_tasks.get(&msg.from.to_lowercase());
+            result.push(build_sender_line(
+                &display_from,
+                &msg.message_type,
+                color,
+                current_task,
+                width,
+            ));
+        }
+
+        // Add content lines with timestamp and cross-post attribution
+        for (i, content) in content_lines.iter().enumerate() {
+            if i == 0 {
+                // First line: " HH:MM ★ from #channel | message"
+                result.push(build_crosspost_timestamp_line(
+                    &time,
+                    content,
+                    source_channel,
+                    content_style,
+                ));
+            } else {
+                // Continuation lines: indent to align with content after prefix
+                let indent = " ".repeat(TIMESTAMP_GUTTER_WIDTH + prefix_len);
+                let mut spans = vec![Span::raw(indent)];
+                spans.extend(parse_markdown(content, content_style));
+                result.push(Line::from(spans));
+            }
+        }
+
+        return result;
+    }
+
     // Calculate content width (after " HH:MM " gutter)
     let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH);
     if content_width == 0 {
@@ -1215,8 +1266,17 @@ fn render_message_with_mermaid(
     };
 
     let is_action = msg.message_type == MessageType::Action;
-    // Action messages have "* " prefix that reduces available content width
-    let extra_indent = if is_action { 2 } else { 0 };
+    let is_crosspost = msg.source_channel.is_some();
+
+    // Calculate extra indent for action messages ("* ") or cross-posts ("★ from #channel | ")
+    let extra_indent = if is_action {
+        2 // "* "
+    } else if let Some(ref source_channel) = msg.source_channel {
+        2 + 6 + source_channel.len() + 3 // "★ " + "from #" + channel + " | "
+    } else {
+        0
+    };
+
     let content_width = width.saturating_sub(TIMESTAMP_GUTTER_WIDTH + extra_indent);
     if content_width == 0 {
         return;
@@ -1258,6 +1318,13 @@ fn render_message_with_mermaid(
                                 &time,
                                 content,
                                 color,
+                                content_style,
+                            ));
+                        } else if is_crosspost {
+                            lines.push(build_crosspost_timestamp_line(
+                                &time,
+                                content,
+                                msg.source_channel.as_ref().unwrap(),
                                 content_style,
                             ));
                         } else {
@@ -1417,6 +1484,26 @@ fn build_action_timestamp_line(
     let mut spans = vec![
         Span::styled(format!(" {} ", time), Style::default().fg(Color::DarkGray)),
         Span::styled("* ", Style::default().fg(actor_color)),
+    ];
+    spans.extend(parse_markdown(content, content_style));
+    Line::from(spans)
+}
+
+/// Build a timestamp line for cross-posted insights: " HH:MM ★ from #channel | message"
+/// The "★" and channel attribution are styled distinctly to indicate cross-posting
+fn build_crosspost_timestamp_line(
+    time: &str,
+    content: &str,
+    source_channel: &str,
+    content_style: Style,
+) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(format!(" {} ", time), Style::default().fg(Color::DarkGray)),
+        Span::styled("★ ", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!("from #{} | ", source_channel),
+            Style::default().fg(Color::DarkGray),
+        ),
     ];
     spans.extend(parse_markdown(content, content_style));
     Line::from(spans)
@@ -3553,5 +3640,93 @@ mod tests {
             // Should not panic — just verify we got some output
             assert!(!lines.is_empty(), "Should produce lines at width {}", width);
         }
+    }
+
+    #[test]
+    fn test_render_crosspost_message() {
+        // Create a cross-posted message with source_channel set
+        let mut msg = test_message("The tower::Layer stack composes auth providers independently.");
+        msg.source_channel = Some("auth-refactor".to_string());
+
+        let current_tasks = HashMap::new();
+        let width = 80;
+
+        let lines = render_message(&msg, width, None, &current_tasks, None);
+
+        // Should have at least 2 lines: sender line + content line
+        assert!(
+            lines.len() >= 2,
+            "Expected at least 2 lines, got {}",
+            lines.len()
+        );
+
+        // Content line should contain the ★ prefix (first span after timestamp)
+        let content_line = &lines[1];
+        let spans = &content_line.spans;
+
+        // Find the ★ span (should be the second span after timestamp)
+        let star_span = spans.iter().find(|s| s.content.contains('★'));
+        assert!(
+            star_span.is_some(),
+            "Expected to find ★ prefix in content line"
+        );
+
+        // Find the channel attribution span
+        let channel_span = spans.iter().find(|s| s.content.contains("#auth-refactor"));
+        assert!(
+            channel_span.is_some(),
+            "Expected to find #auth-refactor channel attribution"
+        );
+    }
+
+    #[test]
+    fn test_render_crosspost_with_mermaid() {
+        // Create a cross-posted message with mermaid content
+        let source = "graph TD\n  A-->B";
+        let mut msg = test_message("ignored");
+        msg.source_channel = Some("design".to_string());
+
+        let segments = vec![
+            ContentSegment::Text("Architecture insight: ".to_string()),
+            ContentSegment::Mermaid(source.to_string()),
+        ];
+
+        let mut cache = MermaidCache::new();
+        cache.insert_cached(source, dummy_rendered_diagram());
+
+        let current_tasks = HashMap::new();
+        let width = 80;
+
+        let mut lines = Vec::new();
+        let mut diagram_sources = Vec::new();
+        let mut mermaid_to_render = Vec::new();
+
+        render_message_with_mermaid(
+            &msg,
+            &segments,
+            width,
+            None,
+            &current_tasks,
+            None,
+            &cache,
+            &mut lines,
+            &mut diagram_sources,
+            &mut mermaid_to_render,
+        );
+
+        // Should produce output
+        assert!(
+            !lines.is_empty(),
+            "Expected at least some lines for cross-posted mermaid"
+        );
+
+        // Content line should contain the ★ prefix
+        let has_star = lines
+            .iter()
+            .any(|line| line.spans.iter().any(|s| s.content.contains('★')));
+        assert!(
+            has_star,
+            "Expected to find ★ prefix in cross-posted mermaid message"
+        );
     }
 }
