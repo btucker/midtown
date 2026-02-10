@@ -175,10 +175,12 @@ pub async fn recover_headless_sessions(
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Take ownership of the headless_sessions map so we can drain it
+    // Clone the headless_sessions map for iteration.
+    // We preserve the original map so sync_with_tmux() can restore session_ids
+    // for recovered coworkers during normal operation.
     let sessions = {
-        let mut state = persistent_state.lock().await;
-        std::mem::take(&mut state.headless_sessions)
+        let state = persistent_state.lock().await;
+        state.headless_sessions.clone()
     };
 
     if sessions.is_empty() {
@@ -261,23 +263,16 @@ pub async fn recover_headless_sessions(
         });
     }
 
-    // FIXME: We clear the headless_sessions map here before effects execute,
-    // creating a crash window where recovery data is lost. The architecturally
-    // correct fix is to add Effect::ClearRecoveryState and clear after effects
-    // complete successfully. For now, we clear eagerly to prevent double-recovery
-    // if the daemon restarts again before effects execute.
+    // NOTE: We preserve headless_sessions in persistent state so sync_with_tmux()
+    // can restore session_ids for recovered coworkers. The map will be overwritten
+    // at the next shutdown with fresh data.
     //
-    // See review feedback: "Persisted state cleared before recovery effects execute"
-    // Tracked in follow-up task for Effect-based refactoring.
-    {
-        let state = persistent_state.lock().await;
-        if let Err(e) = state.save_for_repo(repo_name) {
-            warn!(
-                "Failed to save empty headless_sessions after recovery: {}",
-                e
-            );
-        }
-    }
+    // This approach trades a theoretical double-recovery risk (if daemon restarts
+    // rapidly before sessions init) for correct session_id restoration during normal
+    // operation. The trade-off is acceptable because:
+    // 1. Rapid daemon restarts are rare in practice
+    // 2. Double-recovery is detected by SessionManager (session_id already alive)
+    // 3. Correct session_id tracking is critical for reviewer spawning
 
     effects
 }
