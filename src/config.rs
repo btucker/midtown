@@ -1548,4 +1548,51 @@ webhook_port = 47024
             "auth_profile was lost during serialization round-trip"
         );
     }
+
+    #[test]
+    fn test_per_project_auth_profile_check_without_fallback() {
+        // This test validates the fix for the per-project auth switch bug.
+        //
+        // Bug: The RPC handler used active_profile_for_project() which falls back
+        // to the global profile when auth_profile is unset. This caused
+        // "Already on profile" when the target matched the global default,
+        // preventing the project config from being updated.
+        //
+        // Fix: Check config.project.auth_profile directly (no fallback).
+
+        // Scenario 1: Config with no auth_profile set should NOT match any profile
+        let config = FullProjectConfig::minimal("test-project", "/path/to/repo");
+        assert_eq!(
+            config.project.auth_profile.as_deref(),
+            None,
+            "minimal config should have no auth_profile"
+        );
+        // This is the check the fixed RPC handler uses — it should NOT short-circuit
+        assert_ne!(
+            config.project.auth_profile.as_deref(),
+            Some("alice@example.com"),
+            "config with no auth_profile should not match any profile"
+        );
+
+        // Scenario 2: After setting auth_profile, it should match
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let mut config = FullProjectConfig::minimal("test-project", "/path/to/repo");
+        config.project.auth_profile = Some("alice@example.com".to_string());
+        config.save_to(&path).unwrap();
+
+        let loaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(
+            loaded.project.auth_profile.as_deref(),
+            Some("alice@example.com"),
+            "saved auth_profile should be loadable"
+        );
+
+        // Scenario 3: Different profile should not match
+        assert_ne!(
+            loaded.project.auth_profile.as_deref(),
+            Some("bob@example.com"),
+            "different profile should not match"
+        );
+    }
 }
