@@ -139,6 +139,7 @@ pub struct WorldSnapshot {
     pub review_feedback_pr_coworkers: HashSet<String>,
     /// Open PR data (from last GitHub poll). Used by orphan PR reconciliation.
     /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
+    #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
     /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
