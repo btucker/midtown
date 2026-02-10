@@ -1412,6 +1412,56 @@ pub(super) fn build_task_completion_effects(
     ]
 }
 
+// ============================================================================
+// Task unassignment for PRs in review
+// ============================================================================
+
+/// Find tasks that should be unassigned because their PR is in review.
+///
+/// A task is "in review" when:
+/// 1. It's in_progress with an owner
+/// 2. Its task_id appears in `tasks_with_open_prs` (has a PrAuthorSession)
+/// 3. The owner is NOT active (not in active_names)
+///
+/// Returns `UnassignTask` effects for each such task. This is a pure decision
+/// function — reads snapshot data and returns effects without performing I/O.
+///
+/// Runs every tick to handle timing races between PR detection and idle shutdown:
+/// - PR detected before idle → unassigned on next tick after shutdown
+/// - PR detected after idle → unassigned when PrAuthorSession is stored
+pub(super) fn reconcile_tasks_in_review(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let mut effects = vec![];
+
+    for (task_id, _subject, owner) in &snap.in_progress_tasks {
+        let owner_clean = owner.trim().trim_matches('"').to_lowercase();
+        if owner_clean.is_empty() {
+            continue;
+        }
+
+        // Only consider tasks with an associated open PR
+        if !snap.tasks_with_open_prs.contains_key(task_id) {
+            continue;
+        }
+
+        // Only unassign if the owner is NOT active (already shut down / on break)
+        if snap.active_names.contains(&owner_clean) {
+            continue;
+        }
+
+        debug!(
+            "Task !{} has open PR and owner {} is inactive — unassigning",
+            task_id, owner_clean
+        );
+
+        effects.push(Effect::UnassignTask {
+            task_id: task_id.clone(),
+            repo_name: snap.repo_name.clone(),
+        });
+    }
+
+    effects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2078,6 +2128,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -2216,6 +2267,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
@@ -2325,6 +2377,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -2407,6 +2460,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -2493,6 +2547,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -2606,6 +2661,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -2697,6 +2753,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -2820,6 +2877,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -2966,6 +3024,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -3063,6 +3122,147 @@ mod tests {
                 "Should bind to the existing worktree, not a new one"
             );
         }
+    }
+
+    // ======================================================================
+    // reconcile_tasks_in_review tests
+    // ======================================================================
+
+    /// Helper to create a minimal WorldSnapshot for reconciliation tests.
+    fn make_reconcile_snapshot(
+        in_progress_tasks: Vec<(String, String, String)>,
+        tasks_with_open_prs: HashMap<String, u64>,
+        active_names: HashSet<String>,
+    ) -> snapshot::WorldSnapshot {
+        snapshot::WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names,
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks,
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs,
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        }
+    }
+
+    #[test]
+    fn test_reconcile_tasks_in_review_inactive_owner_emits_unassign() {
+        // Task !42 is in_progress, owned by york, has open PR, york is NOT active
+        let in_progress = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "york".to_string(),
+        )];
+        let mut tasks_with_open_prs = HashMap::new();
+        tasks_with_open_prs.insert("42".to_string(), 100u64);
+        let active_names = HashSet::new(); // york is NOT active
+
+        let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        let effects = reconcile_tasks_in_review(&snap);
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::UnassignTask { task_id, repo_name } => {
+                assert_eq!(task_id, "42");
+                assert_eq!(repo_name, "test-repo");
+            }
+            other => panic!("Expected UnassignTask, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_reconcile_tasks_in_review_active_owner_no_effect() {
+        // Task !42 is in_progress, owned by york, has open PR, york IS active
+        let in_progress = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "york".to_string(),
+        )];
+        let mut tasks_with_open_prs = HashMap::new();
+        tasks_with_open_prs.insert("42".to_string(), 100u64);
+        let mut active_names = HashSet::new();
+        active_names.insert("york".to_string());
+
+        let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        let effects = reconcile_tasks_in_review(&snap);
+
+        assert!(effects.is_empty(), "Should not unassign active coworker");
+    }
+
+    #[test]
+    fn test_reconcile_tasks_in_review_no_pr_no_effect() {
+        // Task !42 is in_progress, owned by york, NO open PR, york is NOT active
+        let in_progress = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "york".to_string(),
+        )];
+        let tasks_with_open_prs = HashMap::new(); // No PR
+        let active_names = HashSet::new();
+
+        let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        let effects = reconcile_tasks_in_review(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not unassign task without open PR"
+        );
+    }
+
+    #[test]
+    fn test_reconcile_tasks_in_review_empty_owner_skipped() {
+        // Task !42 is in_progress with empty owner (already unassigned)
+        let in_progress = vec![("42".to_string(), "Fix auth bug".to_string(), "".to_string())];
+        let mut tasks_with_open_prs = HashMap::new();
+        tasks_with_open_prs.insert("42".to_string(), 100u64);
+        let active_names = HashSet::new();
+
+        let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        let effects = reconcile_tasks_in_review(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not unassign already-unowned task"
+        );
     }
 
     /// Helper to create minimal DaemonState for testing

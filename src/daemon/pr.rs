@@ -482,13 +482,40 @@ pub(super) async fn poll_prs_for_issues(
         }
     }
 
-    // Clean up persistent reviewer assignments for PRs that are no longer open
+    // Clean up persistent reviewer assignments for PRs that are no longer open.
+    // Before cleanup, detect abandoned PRs (closed without merge) that have
+    // associated tasks, and reset those tasks to pending.
     {
         let open_pr_numbers: Vec<u64> = prs
             .iter()
             .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
             .collect();
+        let open_set: std::collections::HashSet<u64> = open_pr_numbers.iter().copied().collect();
         let mut ps = state.persistent_state.lock().await;
+
+        // Detect tasks linked to PRs that are no longer open (closed without merge).
+        // Merged PRs are handled separately by build_task_completion_effects.
+        // Only reset tasks that are still in_progress (not already completed by merge).
+        for (pr_number, session) in &ps.github.pr_author_sessions {
+            if !open_set.contains(pr_number)
+                && !snap.merged_pr_numbers.contains(pr_number)
+                && let Some(ref task_id) = session.task_id
+            {
+                // Check if the task is still in_progress (not already completed)
+                let is_in_progress = snap
+                    .in_progress_tasks
+                    .iter()
+                    .any(|(tid, _, _)| tid == task_id);
+                if is_in_progress {
+                    effects.push(Effect::ResetAbandonedTask {
+                        task_id: task_id.clone(),
+                        pr_number: *pr_number,
+                        repo_name: state.repo_name.clone(),
+                    });
+                }
+            }
+        }
+
         ps.github.cleanup_closed_prs(&open_pr_numbers);
         ps.github.cleanup_expired_preserving(
             &running_coworker_names,
@@ -3978,6 +4005,7 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
