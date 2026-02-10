@@ -898,7 +898,11 @@ pub(super) fn spawn_for_pending_tasks(
         // Prevents nudge loops where the same pending-with-owner task gets
         // re-nudged every time the 300s cooldown expires. Once a task is assigned,
         // it stays assigned until the coworker completes it or shuts down.
-        if state.is_coworker_assigned_to_task(owner, task_id) {
+        if snap
+            .coworker_task_assignments
+            .get(&owner.to_lowercase())
+            .is_some_and(|assigned_task_id| assigned_task_id == task_id)
+        {
             debug!(
                 "Task !{}: skipping {} (already assigned to this task)",
                 task_id, owner
@@ -3536,8 +3540,17 @@ mod tests {
         // Simulate the nudge executing and recording the assignment
         state.record_task_assignment("york", "1107");
 
-        // Tick 2: is_coworker_assigned_to_task guard blocks re-nudge
-        let effects_tick2 = spawn_for_pending_tasks(&snap, &state);
+        // Tick 2: Create a new snapshot that includes the assignment in coworker_task_assignments.
+        // The guard should use snap.coworker_task_assignments to prevent re-nudge (pure decision pattern).
+        let snap_tick2 = snapshot::WorldSnapshot {
+            coworker_task_assignments: {
+                let mut assignments = HashMap::new();
+                assignments.insert("york".to_string(), "1107".to_string());
+                assignments
+            },
+            ..snap
+        };
+        let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
         let nudge_count_tick2 = effects_tick2
             .iter()
             .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
