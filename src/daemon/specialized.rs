@@ -245,6 +245,7 @@ impl SpecializedCoworker {
             agent_id: None,
             agent_name: None,
             settings_path: None,
+            setting_sources: None,
             env: std::collections::HashMap::new(),
         };
 
