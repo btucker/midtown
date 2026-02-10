@@ -2802,6 +2802,87 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
+        // Test the pure decision pattern: verify that spawn_for_pending_tasks
+        // correctly skips a task when coworker_task_assignments (in WorldSnapshot)
+        // shows the owner is already assigned to that specific task.
+        // This test verifies the refactored code uses the snapshot data
+        // (pure decision) rather than calling state.is_coworker_assigned_to_task()
+        // (impure decision with .lock()).
+
+        let mut assignments = HashMap::new();
+        assignments.insert("broadway".to_string(), "42".to_string());
+
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_with_owners: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "broadway".to_string(),
+            )],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            // KEY: broadway is already assigned to task !42 in the snapshot
+            coworker_task_assignments: assignments,
+            in_progress_tasks: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            all_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            attached_coworkers: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        // Should generate NO effects because broadway is already assigned to task !42
+        assert_eq!(
+            effects.len(),
+            0,
+            "Should generate no effects when owner is already assigned to the task \
+             (verified via coworker_task_assignments in snapshot)"
+        );
+    }
+
     // ======================================================================
     // Worktree reuse on reassignment tests
     // ======================================================================
