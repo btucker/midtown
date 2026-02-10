@@ -226,13 +226,8 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
     let mut lines = Vec::new();
     let hyperlinks = Vec::new();
 
-    // Discover available channels
-    let channel_repo = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
-    let channels = midtown::Channel::list(&base_dir).unwrap_or_default();
-
-    // Group tasks by channel (use main channel name for tasks with no channel)
-    let main_channel = channels.first().map(|s| s.as_str()).unwrap_or("midtown");
+    // Default channel matches the daemon's ChannelRouter default ("midtown")
+    let main_channel = "midtown";
 
     let mut tasks_by_channel: BTreeMap<String, Vec<&super::app::KanbanTask>> = BTreeMap::new();
     let (pending, in_progress, _completed) = app.tasks_by_status();
@@ -275,22 +270,30 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         if let Some(channel_prs) = prs_by_channel.get(channel_name)
             && !channel_prs.is_empty()
         {
-            // Determine overall CI status: red if any failed, yellow if any running, green if all passed
+            // Determine overall CI status: red if any failed, yellow if any running,
+            // green only if all passed, no indicator if all unknown
             let has_failed = channel_prs
                 .iter()
                 .any(|pr| pr.ci_status == super::app::CiStatus::Failed);
             let has_running = channel_prs
                 .iter()
                 .any(|pr| pr.ci_status == super::app::CiStatus::Running);
+            let has_passed = channel_prs
+                .iter()
+                .any(|pr| pr.ci_status == super::app::CiStatus::Passed);
 
             let ci_indicator = if has_failed {
-                " 🔴"
+                Some(" 🔴")
             } else if has_running {
-                " 🟡"
+                Some(" 🟡")
+            } else if has_passed {
+                Some(" 🟢")
             } else {
-                " 🟢"
+                None // All Unknown — no indicator
             };
-            header_parts.push(ci_indicator.to_string());
+            if let Some(indicator) = ci_indicator {
+                header_parts.push(indicator.to_string());
+            }
         }
 
         let channel_header = header_parts.join("");
