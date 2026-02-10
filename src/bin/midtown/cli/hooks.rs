@@ -111,7 +111,8 @@ fn handle_insight_hook() -> Result<Response, String> {
     );
 
     // Try to report insights via daemon RPC (handles dedup + architect pipeline)
-    let client = crate::client::DaemonClient::connect().ok();
+    // Use hook timeout (5s) since this runs during Claude Code execution
+    let client = crate::client::DaemonClient::connect_for_hook().ok();
 
     let mut posted_count = 0;
     for insight in &insights {
@@ -593,9 +594,8 @@ fn handle_task_hook() -> Result<Response, String> {
         None
     };
 
-    // Notify daemon for follow-up actions. Uses a 5s timeout via DaemonClient,
-    // so it won't block indefinitely.
-    if let Ok(client) = crate::client::DaemonClient::connect() {
+    // Notify daemon for follow-up actions. Uses hook timeout (5s) to avoid blocking.
+    if let Ok(client) = crate::client::DaemonClient::connect_for_hook() {
         // Safety-net: report structured state for TaskUpdate operations via RPC.
         // The primary mechanism is `midtown state`, but this catches transitions
         // if the coworker forgets to call it explicitly.
@@ -839,8 +839,8 @@ fn handle_ask_hook() -> Result<Response, String> {
         hook_log(repo, &format!("ask: {} asking: {}", agent, question_text));
     }
 
-    // Try to notify daemon via RPC
-    match crate::client::DaemonClient::connect() {
+    // Try to notify daemon via RPC (use hook timeout)
+    match crate::client::DaemonClient::connect_for_hook() {
         Ok(client) => match client.coworker_asking(&agent, &question_text) {
             Ok(_) => Ok(Response::Message {
                 message: format!("Notified Lead: {} is asking: {}", agent, question_text),
