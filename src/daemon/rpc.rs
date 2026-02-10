@@ -21,6 +21,38 @@ use super::helpers::*;
 use super::{DaemonState, effects, snapshot};
 
 // ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Check if a task has an associated open PR.
+///
+/// Returns true if any open PR has this task_id stored in its PrAuthorSession.
+/// This mapping is established when a coworker opens a PR - the daemon extracts
+/// the task ID from the PR title's "[Midtown !XXX]" marker and stores it in
+/// persistent state.
+///
+/// Used to decide whether to auto-complete a task when a coworker reports
+/// WorkflowPhase::Completed. Tasks with open PRs should complete on merge,
+/// not on phase transition.
+async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
+    let ps = state.persistent_state.lock().await;
+
+    // Check all PR author sessions to see if any have this task_id
+    for (_pr_number, session) in ps.github.pr_author_sessions.iter() {
+        if let Some(ref stored_task_id) = session.task_id
+            && stored_task_id == task_id
+        {
+            // Found a PR associated with this task
+            // The PR is still in pr_author_sessions, which means it's open
+            // (closed PRs are cleaned up by cleanup_closed_pr_state)
+            return true;
+        }
+    }
+
+    false
+}
+
+// ============================================================================
 // Connection handling
 // ============================================================================
 
@@ -1232,6 +1264,11 @@ async fn handle_coworker_report_state(
     // not the shared list the daemon reads. This closes the loop by updating the
     // shared list when a coworker reports completion via RPC.
     //
+    // IMPORTANT: Tasks that produce PRs complete on MERGE, not on coworker phase
+    // transition. Only auto-complete tasks that DON'T have associated open PRs.
+    // This keeps coworkers alive through the review cycle so feedback can be
+    // delivered to the same session (tier 1 routing).
+    //
     // Uses the existing Effect::CompleteTask and Effect::ClearBlockedBy variants
     // to stay consistent with the effect-based architecture and avoid duplicating
     // cleanup logic (e.g., clear_task_assignment_by_task is handled by the effect
@@ -1247,17 +1284,29 @@ async fn handle_coworker_report_state(
         });
 
         if let Some(ref tid) = effective_task_id {
-            let completion_effects = vec![
-                effects::Effect::CompleteTask {
-                    task_id: tid.clone(),
-                    repo_name: state.repo_name.clone(),
-                },
-                effects::Effect::ClearBlockedBy {
-                    completed_task_id: tid.clone(),
-                    repo_name: state.repo_name.clone(),
-                },
-            ];
-            effects::execute_effects(completion_effects, state).await;
+            // Check if the task has an associated open PR. If it does, defer
+            // completion to the PR merge path (dispatch.rs).
+            let has_open_pr = task_has_open_pr(tid, state).await;
+
+            if has_open_pr {
+                debug!(
+                    "Task !{} has open PR, deferring completion to merge path",
+                    tid
+                );
+            } else {
+                // No open PR (review task, investigation, etc.) - complete immediately
+                let completion_effects = vec![
+                    effects::Effect::CompleteTask {
+                        task_id: tid.clone(),
+                        repo_name: state.repo_name.clone(),
+                    },
+                    effects::Effect::ClearBlockedBy {
+                        completed_task_id: tid.clone(),
+                        repo_name: state.repo_name.clone(),
+                    },
+                ];
+                effects::execute_effects(completion_effects, state).await;
+            }
         }
 
         // Always clear the coworker's assignment (they're done regardless)

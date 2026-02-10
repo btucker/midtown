@@ -130,10 +130,33 @@ pub struct PrAuthorSession {
     pub original_author: String,
     /// When this session was recorded.
     pub stored_at: DateTime<Utc>,
+    /// The task ID associated with this PR (extracted from [Midtown !XXX] in PR title).
+    /// Used to prevent auto-completion of tasks until the PR merges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 fn default_assignment_source() -> AssignmentSource {
     AssignmentSource::PollingFallback
+}
+
+/// Extract task ID from a PR title in the format "[Midtown !XXX]".
+///
+/// Returns the task ID as a string (e.g., "42") if found, otherwise None.
+fn extract_task_id_from_title(title: &str) -> Option<String> {
+    // Look for pattern "[Midtown !NNN]" - case insensitive
+    let lower = title.to_lowercase();
+    if let Some(start) = lower.find("[midtown !") {
+        let after_marker = &title[start + 10..]; // Skip "[midtown !"
+        if let Some(end) = after_marker.find(']') {
+            let num_str = after_marker[..end].trim();
+            // Validate it's all digits
+            if !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit()) {
+                return Some(num_str.to_string());
+            }
+        }
+    }
+    None
 }
 
 impl GitHubState {
@@ -549,17 +572,20 @@ impl GitHubState {
     /// Store the Claude session ID for a PR author.
     ///
     /// Called when a coworker opens a PR, so that any other coworker can later
-    /// resume work on that PR with the original session context.
+    /// resume work on that PR with the original session context. Also extracts
+    /// the task ID from the PR title if present (format: "[Midtown !XXX]").
     pub fn store_pr_author_session(
         &mut self,
         pr_number: u64,
         session_id: &str,
         branch: &str,
         author: &str,
+        title: &str,
     ) {
+        let task_id = extract_task_id_from_title(title);
         debug!(
-            "Storing author session for PR #{}: session={}, branch={}, author={}",
-            pr_number, session_id, branch, author
+            "Storing author session for PR #{}: session={}, branch={}, author={}, task_id={:?}",
+            pr_number, session_id, branch, author, task_id
         );
         self.pr_author_sessions.insert(
             pr_number,
@@ -568,6 +594,7 @@ impl GitHubState {
                 branch: branch.to_string(),
                 original_author: author.to_string(),
                 stored_at: Utc::now(),
+                task_id,
             },
         );
     }
@@ -1190,12 +1217,19 @@ mod tests {
     #[test]
     fn test_store_pr_author_session() {
         let mut state = GitHubState::default();
-        state.store_pr_author_session(42, "session-abc-123", "lexington/feature", "lexington");
+        state.store_pr_author_session(
+            42,
+            "session-abc-123",
+            "lexington/feature",
+            "lexington",
+            "feat: Add feature [Midtown !42]",
+        );
 
         let session = state.get_pr_author_session(42).unwrap();
         assert_eq!(session.session_id, "session-abc-123");
         assert_eq!(session.branch, "lexington/feature");
         assert_eq!(session.original_author, "lexington");
+        assert_eq!(session.task_id, Some("42".to_string()));
     }
 
     #[test]
@@ -1207,7 +1241,13 @@ mod tests {
     #[test]
     fn test_remove_pr_author_session() {
         let mut state = GitHubState::default();
-        state.store_pr_author_session(42, "session-abc-123", "lexington/feature", "lexington");
+        state.store_pr_author_session(
+            42,
+            "session-abc-123",
+            "lexington/feature",
+            "lexington",
+            "feat: Add feature",
+        );
 
         let removed = state.remove_pr_author_session(42);
         assert!(removed.is_some());
@@ -1218,9 +1258,15 @@ mod tests {
     #[test]
     fn test_cleanup_closed_prs_removes_author_sessions() {
         let mut state = GitHubState::default();
-        state.store_pr_author_session(42, "session-1", "lexington/feature", "lexington");
-        state.store_pr_author_session(43, "session-2", "park/feature", "park");
-        state.store_pr_author_session(44, "session-3", "york/feature", "york");
+        state.store_pr_author_session(
+            42,
+            "session-1",
+            "lexington/feature",
+            "lexington",
+            "feat: Feature 1",
+        );
+        state.store_pr_author_session(43, "session-2", "park/feature", "park", "feat: Feature 2");
+        state.store_pr_author_session(44, "session-3", "york/feature", "york", "feat: Feature 3");
 
         // Only PR 42 and 44 are still open
         state.cleanup_closed_prs(&[42, 44]);
@@ -1236,7 +1282,13 @@ mod tests {
         let path = dir.path().join("github-state.json");
 
         let mut state = GitHubState::default();
-        state.store_pr_author_session(42, "session-abc", "lexington/feature", "lexington");
+        state.store_pr_author_session(
+            42,
+            "session-abc",
+            "lexington/feature",
+            "lexington",
+            "feat: Add auth [Midtown !123]",
+        );
         state.save(&path).unwrap();
 
         let loaded = GitHubState::load(&path).unwrap();
@@ -1244,5 +1296,25 @@ mod tests {
         assert_eq!(session.session_id, "session-abc");
         assert_eq!(session.branch, "lexington/feature");
         assert_eq!(session.original_author, "lexington");
+        assert_eq!(session.task_id, Some("123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_task_id_from_title() {
+        assert_eq!(
+            extract_task_id_from_title("feat: Add auth [Midtown !42]"),
+            Some("42".to_string())
+        );
+        assert_eq!(
+            extract_task_id_from_title("fix: Bug [MIDTOWN !123]"),
+            Some("123".to_string())
+        );
+        assert_eq!(
+            extract_task_id_from_title("feat: Thing [midtown !7]"),
+            Some("7".to_string())
+        );
+        assert_eq!(extract_task_id_from_title("No task marker"), None);
+        assert_eq!(extract_task_id_from_title("[Midtown !]"), None);
+        assert_eq!(extract_task_id_from_title("[Midtown !abc]"), None);
     }
 }
