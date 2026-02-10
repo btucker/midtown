@@ -125,6 +125,9 @@ pub mod session_key;
 // API usage data (session + weekly utilization from Anthropic OAuth API)
 pub mod usage;
 
+// AI channel clustering for task organization
+pub mod clustering;
+
 pub use channel::{Channel, ChannelRouter};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
