@@ -108,20 +108,30 @@ impl ClusteringDiff {
     ///
     /// Returns an error string if validation fails, or Ok(()) if valid.
     pub fn validate(&self) -> Result<(), String> {
-        // 1. Check that all created channels have at least one task
-        for create in &self.create_channels {
-            if create.tasks.is_empty() {
-                return Err(format!("Channel '{}' created with no tasks", create.name));
-            }
-            if create.name.is_empty() {
-                return Err("Channel created with empty name".to_string());
-            }
-            // Check for invalid characters (spaces, etc.)
-            if create.name.contains(' ') {
-                return Err(format!(
-                    "Channel name '{}' contains spaces (use kebab-case)",
-                    create.name
-                ));
+        // 1. Check that all created channels have at least one task and valid names
+        {
+            let mut seen_names = std::collections::HashSet::new();
+            for create in &self.create_channels {
+                if create.tasks.is_empty() {
+                    return Err(format!("Channel '{}' created with no tasks", create.name));
+                }
+                if create.name.is_empty() {
+                    return Err("Channel created with empty name".to_string());
+                }
+                // Check for invalid characters (spaces, etc.)
+                if create.name.contains(' ') {
+                    return Err(format!(
+                        "Channel name '{}' contains spaces (use kebab-case)",
+                        create.name
+                    ));
+                }
+                // Check for duplicate channel names
+                if !seen_names.insert(&create.name) {
+                    return Err(format!(
+                        "Duplicate channel name '{}' in create_channels",
+                        create.name
+                    ));
+                }
             }
         }
 
@@ -143,12 +153,29 @@ impl ClusteringDiff {
         }
 
         // 4. All task assignments must have non-empty task and channel
-        for assign in &self.assign_tasks {
-            if assign.task.is_empty() {
-                return Err("Task assignment with empty task ID".to_string());
-            }
-            if assign.channel.is_empty() {
-                return Err(format!("Task '{}' assigned to empty channel", assign.task));
+        {
+            let mut seen_tasks = std::collections::HashSet::new();
+            for assign in &self.assign_tasks {
+                if assign.task.is_empty() {
+                    return Err("Task assignment with empty task ID".to_string());
+                }
+                if assign.channel.is_empty() {
+                    return Err(format!("Task '{}' assigned to empty channel", assign.task));
+                }
+                // Cannot assign tasks to the "midtown" channel
+                if assign.channel == "midtown" {
+                    return Err(
+                        "Cannot assign tasks to the 'midtown' channel (tasks go to topic channels)"
+                            .to_string(),
+                    );
+                }
+                // Check for duplicate task assignments
+                if !seen_tasks.insert(&assign.task) {
+                    return Err(format!(
+                        "Task '{}' assigned multiple times in assign_tasks",
+                        assign.task
+                    ));
+                }
             }
         }
 
@@ -490,6 +517,84 @@ mod tests {
         };
         assert!(diff.validate().is_err());
         assert!(diff.validate().unwrap_err().contains("empty task ID"));
+    }
+
+    #[test]
+    fn test_duplicate_task_assignment_different_channels_fails() {
+        let diff = ClusteringDiff {
+            create_channels: vec![],
+            archive_channels: vec![],
+            merge_channels: vec![],
+            assign_tasks: vec![
+                TaskAssignment {
+                    task: "1234".to_string(),
+                    channel: "channel-a".to_string(),
+                },
+                TaskAssignment {
+                    task: "1234".to_string(),
+                    channel: "channel-b".to_string(),
+                },
+            ],
+        };
+        assert!(diff.validate().is_err());
+        assert!(
+            diff.validate()
+                .unwrap_err()
+                .contains("assigned multiple times")
+        );
+    }
+
+    #[test]
+    fn test_duplicate_create_channel_names_fails() {
+        let diff = ClusteringDiff {
+            create_channels: vec![
+                CreateChannel {
+                    name: "webhook-security".to_string(),
+                    tasks: vec!["1234".to_string()],
+                },
+                CreateChannel {
+                    name: "webhook-security".to_string(),
+                    tasks: vec!["1235".to_string()],
+                },
+            ],
+            archive_channels: vec![],
+            merge_channels: vec![],
+            assign_tasks: vec![
+                TaskAssignment {
+                    task: "1234".to_string(),
+                    channel: "webhook-security".to_string(),
+                },
+                TaskAssignment {
+                    task: "1235".to_string(),
+                    channel: "webhook-security".to_string(),
+                },
+            ],
+        };
+        assert!(diff.validate().is_err());
+        assert!(
+            diff.validate()
+                .unwrap_err()
+                .contains("Duplicate channel name")
+        );
+    }
+
+    #[test]
+    fn test_assign_task_to_midtown_channel_fails() {
+        let diff = ClusteringDiff {
+            create_channels: vec![],
+            archive_channels: vec![],
+            merge_channels: vec![],
+            assign_tasks: vec![TaskAssignment {
+                task: "1234".to_string(),
+                channel: "midtown".to_string(),
+            }],
+        };
+        assert!(diff.validate().is_err());
+        assert!(
+            diff.validate()
+                .unwrap_err()
+                .contains("Cannot assign tasks to the 'midtown' channel")
+        );
     }
 
     #[test]
