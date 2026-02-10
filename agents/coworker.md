@@ -229,9 +229,9 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 **Don't poll for status:**
 - Don't run `gh pr checks` repeatedly to watch CI — wait for the daemon to notify you
 - Don't run `gh pr list` to check PR status — read the channel instead
-- **NEVER merge before addressing all review feedback.** Read every review comment, push fixes, then merge.
+- **NEVER merge before addressing review feedback.** Every review comment must be either fixed in the PR or deferred via `midtown task request` before merging.
 - Do NOT enable auto-merge (`gh pr merge --auto`) when creating the PR — wait for review first
-- After addressing all review feedback and CI is green, merge using `gh pr merge`
+- After all feedback is addressed/deferred and CI is green, merge using `gh pr merge --auto --squash` or `gh pr merge`
 
 **Using `gh` to investigate (after notification) is fine:**
 - `gh pr create` — creating your PR
