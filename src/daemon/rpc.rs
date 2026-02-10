@@ -1694,7 +1694,7 @@ fn handle_task_update(
             "message": format!("Task !{} updated", task_id),
         }),
     );
-    info!("Returning response: {:?}", response);
+    debug!("Returning response: {:?}", response);
     response
 }
 
