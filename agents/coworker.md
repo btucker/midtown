@@ -200,14 +200,36 @@ A code review is **not complete** until you have:
 ### Responding to PR Review Feedback
 When your PR receives review comments with suggested changes:
 
-1. **Address in the PR** - If the change is small or directly related to the PR's scope, update the PR:
+**IMMEDIATE ACKNOWLEDGMENT**: Post an initial reply to each review comment immediately, then edit it with the final resolution. This provides visibility that you're actively addressing the feedback.
+
+1. **Address in the PR** - If the change is small or directly related to the PR's scope:
+   - Reply to the comment immediately with an acknowledgment comment:
+     ```bash
+     COMMENT_URL=$(gh api -X POST "/repos/{owner}/{repo}/issues/comments/{review_comment_id}/replies" \
+       -f body="👍 Addressing this now...")
+     REPLY_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
+     ```
    - Make the fix
    - Push to the branch
-   - Reply to the comment confirming it's addressed
+   - Edit your reply to confirm it's addressed:
+     ```bash
+     gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
+       -f body="✅ Addressed in $(git rev-parse --short HEAD)"
+     ```
 
 2. **Request a follow-up task** - If the suggestion is out of scope or would significantly expand the PR:
+   - Reply to the comment immediately with an acknowledgment:
+     ```bash
+     COMMENT_URL=$(gh api -X POST "/repos/{owner}/{repo}/issues/comments/{review_comment_id}/replies" \
+       -f body="👍 Will create a follow-up task...")
+     REPLY_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
+     ```
    - Run `midtown task request "description"` to notify the lead
-   - Reply to the comment explaining it will be handled separately
+   - Edit your reply to confirm the follow-up task was created:
+     ```bash
+     gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
+       -f body="📋 Created follow-up task: [description]"
+     ```
 
 **Never ignore review feedback.** Every suggestion must be either:
 - Addressed in the current PR, OR
