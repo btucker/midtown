@@ -1729,8 +1729,27 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     debug!("Buffering CI success for batching: {} on {}", ci_check.check_name, ci_check.target);
                     let mut buffer = state.ci_notification_buffer.lock().await;
                     buffer.add(ci_check);
-                } else if let Err(e) = state.send_and_broadcast_async(&webhook_event.message).await {
-                    error!("Failed to forward webhook message to channel: {}", e);
+                } else {
+                    // Route webhook message to task's topic channel if PR context is available
+                    let mut message = webhook_event.message.clone();
+                    if let Some(pr_ctx) = webhook_event.pr_context {
+                        // Extract task ID from PR title [Midtown !XXX]
+                        if let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(&pr_ctx.pr_title) {
+                            // Look up task's channel from task_channel mapping
+                            let ps = state.persistent_state.lock().await;
+                            if let Some(task_channel) = ps.task_channel.get(&task_id.to_string()) {
+                                debug!(
+                                    "Routing PR #{} webhook message to topic channel '{}' (task !{})",
+                                    pr_ctx.pr_number, task_channel, task_id
+                                );
+                                message.channel = Some(task_channel.clone());
+                            }
+                        }
+                    }
+
+                    if let Err(e) = state.send_and_broadcast_async(&message).await {
+                        error!("Failed to forward webhook message to channel: {}", e);
+                    }
                 }
 
                 // Nudge PR owner when someone else comments on their PR

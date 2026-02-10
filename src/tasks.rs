@@ -623,8 +623,22 @@ pub fn reset_task_to_pending_for_repo(task_id: &str, repo_name: &str) -> Result<
     Ok(())
 }
 
-/// Extract task ID from PR title using the `[Midtown #XX]` format.
+/// Extract task ID from PR title using the `[Midtown !XX]` format.
+///
+/// Also supports the legacy `[Midtown #XX]` format for backwards compatibility.
 pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
+    // Try the current format with !
+    if let Some(start) = title.find("[Midtown !") {
+        let rest = &title[start + 10..]; // Skip "[Midtown !"
+        if let Some(end) = rest.find(']') {
+            let num_str = &rest[..end];
+            if let Ok(id) = num_str.parse::<u64>() {
+                return Some(id);
+            }
+        }
+    }
+
+    // Fall back to legacy format with #
     if let Some(start) = title.find("[Midtown #") {
         let rest = &title[start + 10..]; // Skip "[Midtown #"
         if let Some(end) = rest.find(']') {
@@ -632,6 +646,7 @@ pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
             return num_str.parse::<u64>().ok();
         }
     }
+
     None
 }
 
@@ -1687,6 +1702,21 @@ mod tests {
 
     #[test]
     fn test_extract_task_id_from_pr_title() {
+        // Current format with !
+        assert_eq!(
+            extract_task_id_from_pr_title("feat: Add auth endpoint [Midtown !42]"),
+            Some(42)
+        );
+        assert_eq!(
+            extract_task_id_from_pr_title("fix: Something [Midtown !7]"),
+            Some(7)
+        );
+        assert_eq!(
+            extract_task_id_from_pr_title("prefix [Midtown !123] suffix"),
+            Some(123)
+        );
+
+        // Legacy format with # (backwards compatibility)
         assert_eq!(
             extract_task_id_from_pr_title("feat: Add auth endpoint [Midtown #42]"),
             Some(42)
@@ -1695,13 +1725,16 @@ mod tests {
             extract_task_id_from_pr_title("fix: Something [Midtown #7]"),
             Some(7)
         );
-        assert_eq!(extract_task_id_from_pr_title("No task id here"), None);
-        assert_eq!(extract_task_id_from_pr_title(""), None);
-        assert_eq!(extract_task_id_from_pr_title("[Midtown #] empty id"), None);
         assert_eq!(
             extract_task_id_from_pr_title("prefix [Midtown #123] suffix"),
             Some(123)
         );
+
+        // Invalid/missing cases
+        assert_eq!(extract_task_id_from_pr_title("No task id here"), None);
+        assert_eq!(extract_task_id_from_pr_title(""), None);
+        assert_eq!(extract_task_id_from_pr_title("[Midtown #] empty id"), None);
+        assert_eq!(extract_task_id_from_pr_title("[Midtown !] empty id"), None);
     }
 
     #[test]

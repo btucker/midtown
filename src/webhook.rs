@@ -36,6 +36,19 @@ use crate::web::{self, MobileChannelPost, WebConfig, WebState, WebUpdate};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// PR context for message routing.
+///
+/// Contains PR number and title, allowing the daemon to extract the task ID
+/// from the title's `[Midtown !XXX]` suffix and route the message to the
+/// task's topic channel.
+#[derive(Debug, Clone)]
+pub struct PrContext {
+    /// PR number
+    pub pr_number: u64,
+    /// PR title (contains task ID in `[Midtown !XXX]` format)
+    pub pr_title: String,
+}
+
 /// A webhook event with an optional structured PR activity payload.
 ///
 /// This allows the daemon to act on PR activity (e.g., nudging PR owners)
@@ -70,6 +83,9 @@ pub struct WebhookEvent {
     pub ci_check_passed: Option<CiCheckPassed>,
     /// Info about a newly opened PR — used to store the author's session for handoff.
     pub pr_opened: Option<PrOpenedInfo>,
+    /// PR context for message routing (PR number + title for task ID extraction).
+    /// When set, the daemon routes the message to the task's topic channel.
+    pub pr_context: Option<PrContext>,
 }
 
 impl WebhookEvent {
@@ -96,6 +112,7 @@ impl WebhookEvent {
             check_duration: None,
             ci_check_passed: None,
             pr_opened: None,
+            pr_context: None,
         }
     }
 
@@ -495,6 +512,7 @@ struct Review {
 #[derive(Debug, Deserialize)]
 struct PullRequestRef {
     number: u64,
+    title: String,
     head: Option<PullRequestHead>,
     body: Option<String>,
 }
@@ -786,6 +804,10 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         merged_pr,
         pr_merged_info,
         pr_opened,
+        pr_context: Some(PrContext {
+            pr_number: event.number,
+            pr_title: event.pull_request.title.clone(),
+        }),
         ..WebhookEvent::github(content)
     }))
 }
@@ -851,6 +873,10 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
             repo_full_name: Some(event.repository.full_name),
         }),
         review_state_change,
+        pr_context: Some(PrContext {
+            pr_number: event.pull_request.number,
+            pr_title: event.pull_request.title.clone(),
+        }),
         ..WebhookEvent::github(content)
     }))
 }
