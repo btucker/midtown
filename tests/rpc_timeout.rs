@@ -4,9 +4,6 @@
 //! 5-second read timeouts when the daemon's `handle_status` makes synchronous
 //! gh CLI calls that are slowed by GitHub API rate limiting.
 
-use std::sync::Arc;
-use std::time::Duration;
-
 /// Test that handle_status uses cached PR data instead of calling gh CLI.
 ///
 /// When PR data is available in WorldSnapshot (from the daemon's 30-second
