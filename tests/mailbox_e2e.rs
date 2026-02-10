@@ -880,8 +880,14 @@ fn test_daemon_delivers_mailbox_message_on_task_assignment() {
         .expect("Response should contain coworker name");
     eprintln!("Spawned coworker: {}", coworker_name);
 
-    // Create a pending task with no owner — the daemon should assign it
-    fixture.create_task("99", "Test mailbox delivery", "pending", None);
+    // Create a pending task already owned by this idle coworker so dispatch
+    // takes the "pending-with-owner" path, which emits DeliverMailboxMessage.
+    fixture.create_task(
+        "99",
+        "Test mailbox delivery",
+        "pending",
+        Some(coworker_name),
+    );
 
     // Wait for the daemon's task dispatch tick to assign the task and deliver
     // the mailbox message (dispatch runs every ~5s).
