@@ -815,16 +815,16 @@ pub(super) fn spawn_for_pending_tasks(
 
     let mut effects = Vec::new();
 
+    // Track coworkers spawned/assigned across both Case 1 (owned tasks) and
+    // Case 2 (unowned tasks) to prevent the same coworker from being targeted
+    // by both cases in a single tick. Case 1 inserts on spawn, Case 2 checks
+    // this set in addition to its own names_assigned_this_tick.
+    let mut coworkers_dispatched_this_tick: HashSet<String> = HashSet::new();
+
     // Case 1: Pending tasks with owners assigned but coworker not running.
     // With the daemon-managed task.claim flow, this case is rare (claims set
     // both owner and in_progress directly). It mainly handles backward compatibility
     // with pre-existing tasks or tasks where the Lead manually set an owner.
-    //
-    // Track coworkers spawned in this tick to prevent duplicate spawns when
-    // multiple pending tasks have the same owner (e.g., task !1062 and !1063
-    // both owned by broadway but neither in_progress yet).
-    let mut spawned_this_tick: HashSet<String> = HashSet::new();
-
     let pending_with_owners = &snap.pending_tasks_with_owners;
     for (task_id, task_subject, owner) in pending_with_owners.iter() {
         // Skip tasks whose referenced PR is already merged. These are stale —
@@ -845,6 +845,17 @@ pub(super) fn spawn_for_pending_tasks(
                 completed_task_id: task_id.clone(),
                 repo_name: snap.repo_name.clone(),
             });
+            continue;
+        }
+
+        // Skip tasks that already have an in-flight spawn from a previous tick.
+        // This prevents cross-tick duplicate spawns when the spawn takes longer
+        // than one tick interval to complete (same mechanism as Case 2).
+        if state.is_task_spawn_in_flight(task_id) {
+            debug!(
+                "Task !{} already has in-flight spawn, skipping duplicate",
+                task_id
+            );
             continue;
         }
 
@@ -910,7 +921,7 @@ pub(super) fn spawn_for_pending_tasks(
             } => {
                 // Skip if we already spawned this coworker in this tick.
                 // Prevents duplicate spawns when multiple pending tasks have the same owner.
-                if spawned_this_tick.contains(&o.to_lowercase()) {
+                if coworkers_dispatched_this_tick.contains(&o.to_lowercase()) {
                     debug!(
                         "Already spawned {} this tick — skipping duplicate spawn for task !{}",
                         o, tid
@@ -970,7 +981,14 @@ pub(super) fn spawn_for_pending_tasks(
                 }
 
                 // Post-spawn success effects
+                // Include RecordTaskAssignment so mark_in_flight_spawns_from_effects()
+                // can track this spawn across ticks and prevent duplicate spawns if
+                // the spawn takes longer than one tick interval to complete.
                 let on_success = vec![
+                    Effect::RecordTaskAssignment {
+                        coworker: o.clone(),
+                        task_id: tid.clone(),
+                    },
                     Effect::BindCoworkerToWorktree {
                         worktree_id: worktree_id.clone(),
                         coworker: o.clone(),
@@ -998,7 +1016,7 @@ pub(super) fn spawn_for_pending_tasks(
                 });
 
                 // Mark this coworker as spawned to prevent duplicate spawns in this tick
-                spawned_this_tick.insert(o.to_lowercase());
+                coworkers_dispatched_this_tick.insert(o.to_lowercase());
             }
             crate::rules::PendingTaskAction::Skip { ref reason } => {
                 debug!("{}", reason);
@@ -1157,10 +1175,24 @@ pub(super) fn spawn_for_pending_tasks(
             .contains(&coworker_name.to_lowercase());
 
         // Check if this coworker is already busy with an assigned task.
-        // Split into two sources: persistent busyness (from snapshot) and
-        // same-tick assignments (from this loop iteration).
+        // Split into three sources: persistent busyness (from snapshot),
+        // same-tick assignments (from this Case 2 loop), and cross-case
+        // dispatches (from Case 1's pending-with-owners spawns).
         let is_busy_from_snapshot = snap.busy_coworkers.contains(&coworker_name.to_lowercase());
-        let assigned_this_tick = names_assigned_this_tick.contains(&coworker_name.to_lowercase());
+        let assigned_this_tick_case2 =
+            names_assigned_this_tick.contains(&coworker_name.to_lowercase());
+        let dispatched_by_case1 =
+            coworkers_dispatched_this_tick.contains(&coworker_name.to_lowercase());
+
+        // Always skip if Case 1 already dispatched this coworker — it will pick up
+        // grouped tasks after spawning. This check applies regardless of grouping.
+        if dispatched_by_case1 {
+            debug!(
+                "Task !{}: skipping {} (already dispatched by Case 1 pending-with-owners)",
+                task.id, coworker_name
+            );
+            continue;
+        }
 
         // Skip running coworkers that are busy or reviewing.
         // Grouped tasks (same PR, blockedBy) are allowed to go to coworkers
@@ -1169,7 +1201,7 @@ pub(super) fn spawn_for_pending_tasks(
         // per coworker per tick is sufficient, even for grouped tasks.
         if already_running
             && (is_coworker_reviewer
-                || assigned_this_tick
+                || assigned_this_tick_case2
                 || (is_busy_from_snapshot && !was_grouped))
         {
             debug!(
@@ -1177,7 +1209,7 @@ pub(super) fn spawn_for_pending_tasks(
                 task.id,
                 coworker_name,
                 is_busy_from_snapshot,
-                assigned_this_tick,
+                assigned_this_tick_case2,
                 is_coworker_reviewer,
                 was_grouped
             );
@@ -1186,7 +1218,7 @@ pub(super) fn spawn_for_pending_tasks(
 
         // For fresh-spawn names (not grouped), prevent assigning multiple tasks
         // to the same not-yet-spawned coworker within the same tick.
-        if !already_running && (assigned_this_tick || is_busy_from_snapshot) && !was_grouped {
+        if !already_running && (assigned_this_tick_case2 || is_busy_from_snapshot) && !was_grouped {
             debug!(
                 "Task !{}: skipping {} (already assigned this tick)",
                 task.id, coworker_name
@@ -1207,6 +1239,7 @@ pub(super) fn spawn_for_pending_tasks(
             pr_coworker_map.insert(pr_num, coworker_name.clone());
         }
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
+        coworkers_dispatched_this_tick.insert(coworker_name.to_lowercase());
 
         // Build the prompt message — already-running coworkers need explicit claim instruction
         let prompt = if already_running {
@@ -2328,14 +2361,293 @@ mod tests {
             })
             .count();
 
-        // BUG: The current code generates TWO spawns for broadway (one for each pending task)
-        // because it doesn't check if broadway is already being spawned in this tick.
-        // The fix should prevent this by tracking in-flight spawns or deduplicating.
+        // Without the fix, this would generate TWO spawns for broadway (one per pending task).
+        // The coworkers_dispatched_this_tick set prevents this by tracking spawned coworkers.
         assert!(
             spawn_count <= 1,
             "Should generate at most ONE spawn for broadway, got {}. Multiple pending tasks \
              with the same owner should not cause duplicate spawns in the same tick.",
             spawn_count
+        );
+    }
+
+    #[test]
+    fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
+        // Verify that SpawnCoworkerWithCallbacks from the SpawnOwner branch
+        // includes RecordTaskAssignment in on_success, enabling
+        // mark_in_flight_spawns_from_effects() to track it across ticks.
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_with_owners: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "broadway".to_string(),
+            )],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            all_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            attached_coworkers: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        // Find the SpawnCoworkerWithCallbacks effect
+        let spawn_effect = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                    Some(on_success)
+                } else {
+                    None
+                }
+            })
+            .expect("Should have SpawnCoworkerWithCallbacks for broadway");
+
+        // Verify RecordTaskAssignment is in on_success
+        let has_record = spawn_effect.iter().any(|e| {
+            matches!(
+                e,
+                Effect::RecordTaskAssignment { coworker, task_id }
+                    if coworker == "broadway" && task_id == "42"
+            )
+        });
+        assert!(
+            has_record,
+            "SpawnCoworkerWithCallbacks on_success must include RecordTaskAssignment \
+             for cross-tick spawn deduplication"
+        );
+    }
+
+    #[test]
+    fn test_cross_tick_dedup_skips_in_flight_owned_task() {
+        // Simulate two consecutive ticks: the first tick spawned broadway for
+        // task !42 (marking it in-flight), the second tick should skip it.
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_with_owners: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "broadway".to_string(),
+            )],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            all_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            attached_coworkers: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+
+        // Simulate tick 1: generates spawn effects
+        let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
+        let spawn_count_tick1 = effects_tick1
+            .iter()
+            .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(spawn_count_tick1, 1, "Tick 1 should spawn broadway");
+
+        // Mark in-flight (normally done by the daemon between ticks)
+        state.mark_in_flight_spawns_from_effects(&effects_tick1);
+
+        // Simulate tick 2: should skip because task !42 is already in-flight
+        let effects_tick2 = spawn_for_pending_tasks(&snap, &state);
+        let spawn_count_tick2 = effects_tick2
+            .iter()
+            .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            spawn_count_tick2, 0,
+            "Tick 2 should NOT re-spawn broadway — task !42 is already in-flight"
+        );
+    }
+
+    #[test]
+    fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
+        // Scenario: Task !42 is pending with owner=broadway (Case 1),
+        // and task !43 is pending WITHOUT owner but references PR #100
+        // which broadway is working on (Case 2 would group it to broadway).
+        // Case 2 should skip broadway because Case 1 already dispatched it.
+        use crate::tasks::Task;
+
+        let snap = snapshot::WorldSnapshot {
+            // Case 1: broadway has a pending owned task
+            pending_tasks_with_owners: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "broadway".to_string(),
+            )],
+            // Case 2: unowned task referencing PR #100
+            pending_tasks_without_owners: vec![Task {
+                id: "43".to_string(),
+                subject: "Review feedback on PR #100 [Midtown !43]".to_string(),
+                status: crate::tasks::TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                created_at: None,
+            }],
+            // broadway is NOT running (will be spawned by Case 1)
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            in_progress_tasks: vec![
+                // Existing in-progress task for broadway on PR #100 (so Case 2 groups to broadway)
+                (
+                    "40".to_string(),
+                    "Implement feature [Midtown !40] PR #100".to_string(),
+                    "broadway".to_string(),
+                ),
+            ],
+            all_tasks: vec![Task {
+                id: "40".to_string(),
+                subject: "Implement feature [Midtown !40] PR #100".to_string(),
+                status: crate::tasks::TaskStatus::InProgress,
+                owner: Some("broadway".to_string()),
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                created_at: None,
+            }],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            attached_coworkers: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        // Count total effects targeting broadway
+        let broadway_spawns = effects
+            .iter()
+            .filter(|e| match e {
+                Effect::SpawnCoworkerWithCallbacks { config, .. } => {
+                    config.name.to_lowercase() == "broadway"
+                }
+                Effect::AssignAndSpawn { owner, .. } => owner.to_lowercase() == "broadway",
+                Effect::NudgeCoworkerWithCallbacks { name, .. } => {
+                    name.to_lowercase() == "broadway"
+                }
+                _ => false,
+            })
+            .count();
+
+        assert!(
+            broadway_spawns <= 1,
+            "Should generate at most ONE spawn/nudge for broadway across both Case 1 and Case 2, \
+             got {}. Cross-case deduplication should prevent Case 2 from targeting a coworker \
+             already dispatched by Case 1.",
+            broadway_spawns
         );
     }
 
