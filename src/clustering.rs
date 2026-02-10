@@ -458,4 +458,56 @@ mod tests {
         };
         assert!(diff.validate().is_ok());
     }
+
+    #[test]
+    fn test_create_channel_with_empty_name_fails() {
+        let diff = ClusteringDiff {
+            create_channels: vec![CreateChannel {
+                name: "".to_string(),
+                tasks: vec!["1234".to_string()],
+            }],
+            archive_channels: vec![],
+            merge_channels: vec![],
+            assign_tasks: vec![TaskAssignment {
+                task: "1234".to_string(),
+                channel: "".to_string(),
+            }],
+        };
+        assert!(diff.validate().is_err());
+        assert!(diff.validate().unwrap_err().contains("empty name"));
+    }
+
+    #[test]
+    fn test_assign_task_with_empty_task_id_fails() {
+        let diff = ClusteringDiff {
+            create_channels: vec![],
+            archive_channels: vec![],
+            merge_channels: vec![],
+            assign_tasks: vec![TaskAssignment {
+                task: "".to_string(),
+                channel: "some-channel".to_string(),
+            }],
+        };
+        assert!(diff.validate().is_err());
+        assert!(diff.validate().unwrap_err().contains("empty task ID"));
+    }
+
+    #[test]
+    fn test_assign_task_to_empty_channel_fails() {
+        let diff = ClusteringDiff {
+            create_channels: vec![],
+            archive_channels: vec![],
+            merge_channels: vec![],
+            assign_tasks: vec![TaskAssignment {
+                task: "1234".to_string(),
+                channel: "".to_string(),
+            }],
+        };
+        assert!(diff.validate().is_err());
+        assert!(
+            diff.validate()
+                .unwrap_err()
+                .contains("assigned to empty channel")
+        );
+    }
 }
