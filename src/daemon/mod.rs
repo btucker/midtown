@@ -1701,25 +1701,41 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         });
     }
 
-    // Main accept loop
+    // Spawn dedicated RPC listener task so connection acceptance is never
+    // blocked by long-running tick handlers (PR polling, task dispatch, etc.).
+    // Previously, listener.accept() was inside the main tokio::select! loop,
+    // meaning a tick that takes >15s would cause RPC client timeouts.
+    {
+        let rpc_state = Arc::clone(&state);
+        let rpc_shutdown_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            let mut shutdown_rx = rpc_shutdown_tx.subscribe();
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, _addr)) => {
+                                debug!("New RPC connection");
+                                let conn_shutdown = rpc_shutdown_tx.subscribe();
+                                let conn_state = Arc::clone(&rpc_state);
+                                tokio::spawn(rpc::handle_connection(stream, conn_shutdown, conn_state));
+                            }
+                            Err(e) => {
+                                error!("RPC accept error: {}", e);
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.recv() => break,
+                }
+            }
+        });
+    }
+
+    // Main event loop
     loop {
-        let shutdown_rx = shutdown_tx.subscribe();
         let state = Arc::clone(&state);
 
         tokio::select! {
-            // Accept new connections
-            result = listener.accept() => {
-                match result {
-                    Ok((stream, _addr)) => {
-                        debug!("New connection");
-                        tokio::spawn(rpc::handle_connection(stream, shutdown_rx, state));
-                    }
-                    Err(e) => {
-                        error!("Accept error: {}", e);
-                    }
-                }
-            }
-
             // Forward webhook messages to channel and nudge PR owners on comments
             Some(webhook_event) = async {
                 match webhook_rx.as_mut() {
