@@ -3,7 +3,7 @@ Resume reviewing PR #{pr_number}. The daemon was restarted and discovered you st
 IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment, post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
 
 TASK DESCRIPTION VERIFICATION: Before continuing the code review, verify the PR fulfills its assigned task:
-1. Find the task ID from the PR title — it uses the format `[Midtown #XX]`
+1. Find the task ID from the PR title — it uses the format `[Midtown !XX]`
 2. Run `midtown task view <id>` to read the full, current task description
 3. Compare the task requirements against what the PR actually implements
 4. If any requirements from the task description are missing from the PR, flag them in your review comment as "Missing from task description" items — these are separate from code quality issues

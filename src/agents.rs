@@ -716,11 +716,10 @@ mod tests {
             system_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
             "Reviewer system prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
         );
+        // After substitution, {name} becomes "park", so verify the complete frontmatter string
         assert!(
-            system_prompt.contains("<!-- midtown: ")
-                && system_prompt.contains("name")
-                && system_prompt.contains("-->"),
-            "Reviewer system prompt should show the frontmatter format with name placeholder"
+            system_prompt.contains("<!-- midtown: park -->"),
+            "Reviewer system prompt should show the frontmatter format with substituted name"
         );
         assert!(
             system_prompt.contains("prepend the frontmatter"),
