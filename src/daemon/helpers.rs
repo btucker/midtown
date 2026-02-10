@@ -283,22 +283,26 @@ pub fn text_contains_review_signature(text: &str) -> bool {
         || text_has_code_review_header(text)
 }
 
-/// Check if text contains a "Code Review by" header at any markdown heading level.
+/// Check if text contains a "Code Review" header at any markdown heading level.
 ///
 /// Matches patterns like:
-/// - "## Code Review by madison"
-/// - "### Code review by pleasant"  (any case)
-/// - "# CODE REVIEW BY york"
+/// - "## Code Review by madison"  (with attribution)
+/// - "### code review"             (without attribution - from code-review skill)
+/// - "# CODE REVIEW BY york"       (any case)
+///
+/// Rationale: The code-review skill template uses "### Code review" without
+/// the "by {name}" part. Coworkers are supposed to add <!-- midtown: name -->
+/// frontmatter, but if they forget, we should still detect it as a review.
 fn text_has_code_review_header(text: &str) -> bool {
     let text_lower = text.to_lowercase();
-    // Look for markdown heading followed by "code review by"
-    // Matches: # code review by, ## code review by, ### code review by, etc.
+    // Look for markdown heading followed by "code review" (with or without "by")
+    // Matches: # code review, ## code review by, ### code review by, etc.
     for line in text_lower.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
             // Strip heading markers and check content
             let content = trimmed.trim_start_matches('#').trim();
-            if content.starts_with("code review by") {
+            if content.starts_with("code review") {
                 return true;
             }
         }

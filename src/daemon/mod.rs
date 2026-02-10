@@ -3169,6 +3169,42 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
     }
 
     #[test]
+    fn test_text_contains_review_signature_code_review_without_frontmatter() {
+        // Regression test for PR #869: code-review skill sometimes posts reviews
+        // without the <!-- midtown: --> frontmatter. The "### Code review" heading
+        // alone should still be detected as a review.
+        //
+        // Real comment from PR #869 that failed detection:
+        let review_without_frontmatter = r#"### Code review
+
+No issues found. Checked for bugs and CLAUDE.md compliance.
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+<sub>- If this code review was useful, please react with 👍. Otherwise, react with 👎.</sub>"#;
+
+        // This should be detected as a review, but currently fails:
+        assert!(
+            text_contains_review_signature(review_without_frontmatter),
+            "Code review heading without frontmatter should still be detected"
+        );
+
+        // Case insensitive variant:
+        let review_lowercase = r#"### code review
+
+Found 1 issue:
+
+1. Missing error handling
+
+🤖 Generated with [Claude Code](https://claude.ai/code)"#;
+
+        assert!(
+            text_contains_review_signature(review_lowercase),
+            "Lowercase 'code review' heading should be detected"
+        );
+    }
+
+    #[test]
     fn test_text_contains_review_signature_none() {
         // Text without any review signature should return false
         assert!(!text_contains_review_signature("Just a regular comment"));
