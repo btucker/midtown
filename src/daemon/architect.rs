@@ -61,8 +61,9 @@ Rules:
 /// and posts the result to the channel. Errors are logged and silently skipped;
 /// the insight itself has already been posted before this function runs.
 ///
-/// Diagrams are posted to the same channel as the originating insight to prevent
-/// noise in the main channel. If `channel_name` is None, defaults to main channel.
+/// Diagrams are posted to the same channel as the originating insight. If
+/// `channel_name` is None (insight from main channel), the diagram is skipped
+/// entirely to avoid noise in the main channel.
 pub async fn generate_insight_diagram(
     insight: String,
     cwd: PathBuf,

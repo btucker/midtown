@@ -2899,6 +2899,9 @@ mod tests {
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
         assert!(SKIP_SENDERS.contains(&"user"));
+        // "architect" is skipped to prevent diagram messages from triggering
+        // @mention routing in the chat monitor.
+        assert!(SKIP_SENDERS.contains(&"architect"));
     }
 
     #[test]

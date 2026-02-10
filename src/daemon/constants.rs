@@ -170,7 +170,7 @@ pub(super) const STUCK_ESCALATION_NUDGE_COUNT: u32 = 2;
 // ---------------------------------------------------------------------------
 
 /// Senders whose messages are skipped by the chat monitor (not routed for @mentions).
-/// Includes subagent senders like "architect" to prevent diagram noise in main channel.
+/// Includes "architect" to prevent diagram messages from triggering mention routing.
 pub(super) const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user", "architect"];
 
 /// Senders that are considered "system" (not coworkers) for channel post handling.

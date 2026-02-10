@@ -948,9 +948,10 @@ async fn handle_headless_execute(
 /// to the channel, and spawns a headless architect session to optionally
 /// generate a Mermaid diagram.
 ///
-/// The optional `channel` parameter specifies which channel to post to. If None,
-/// defaults to the main channel. Architect diagrams are posted to the same channel
-/// as the insight to prevent diagram noise in the main channel.
+/// The optional `channel` parameter specifies which channel to post the insight to.
+/// If None, defaults to the main channel. Architect diagrams are only posted when
+/// `channel` is Some (topic channel) — diagrams are skipped for the main channel
+/// to avoid noise.
 async fn handle_insight_report(
     id: RequestId,
     agent: &str,
