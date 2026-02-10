@@ -71,6 +71,10 @@ pub struct HeadlessConfig {
     /// Path to a Claude Code settings JSON file. When set, adds `--settings` flag.
     #[serde(default)]
     pub settings_path: Option<String>,
+    /// Setting sources to restrict plugin loading. When set, adds `--setting-sources` flag.
+    /// Typically "project,local" to exclude user-level settings and prevent duplicate plugins.
+    #[serde(default)]
+    pub setting_sources: Option<String>,
     /// Additional environment variables to set on the child process.
     ///
     /// Applied after the default env_remove call (MIDTOWN_AGENT), so values here
@@ -231,6 +235,11 @@ impl HeadlessSession {
         // Settings file
         if let Some(ref settings) = config.settings_path {
             cmd.arg("--settings").arg(settings);
+        }
+
+        // Setting sources restriction (prevents duplicate plugin loading)
+        if let Some(ref sources) = config.setting_sources {
+            cmd.arg("--setting-sources").arg(sources);
         }
 
         if let Some(ref cwd) = config.cwd {
@@ -591,6 +600,7 @@ mod tests {
             agent_id: None,
             agent_name: None,
             settings_path: None,
+            setting_sources: None,
             env: std::collections::HashMap::new(),
         }
     }

@@ -236,6 +236,11 @@ impl LaunchConfig {
             agent_id,
             agent_name,
             settings_path: None, // Set by caller
+            setting_sources: if self.restrict_setting_sources {
+                Some("project,local".to_string())
+            } else {
+                None
+            },
             env,
         }
     }
