@@ -1458,6 +1458,8 @@ async fn handle_task_request(
 ///
 /// Only performs I/O (write task, post to channel). Dispatch for the new task
 /// happens on the next `TaskDispatchTick` via the canonical event loop pipeline.
+///
+/// If no channel is provided, invokes the clusterer to assign one automatically.
 async fn handle_task_create(
     id: RequestId,
     subject: &str,
@@ -1471,6 +1473,19 @@ async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
+    // If no channel was provided, invoke clusterer to assign one
+    let assigned_channel = if channel.is_none() {
+        match invoke_clusterer_for_task(subject, description, state).await {
+            Ok(ch) => Some(ch),
+            Err(e) => {
+                warn!("Clusterer failed to assign channel: {} — using 'midtown' as fallback", e);
+                Some("midtown".to_string())
+            }
+        }
+    } else {
+        channel.map(String::from)
+    };
+
     match crate::tasks::create_task_for_repo(
         subject,
         description,
@@ -1478,7 +1493,7 @@ async fn handle_task_create(
         "",
         &repo_name,
         blocked_by,
-        channel,
+        assigned_channel.as_deref(),
     ) {
         Ok(task_id) => {
             // Update daemon-side task-to-channel mapping if channel was provided
@@ -3137,6 +3152,56 @@ async fn handle_session_list(id: RequestId, state: &DaemonState) -> Response {
             "sessions": sessions,
         }),
     )
+}
+
+/// Invoke the clusterer to assign a channel for a new task.
+///
+/// Builds a ClustererRequest with minimal information (for MVP) and invokes
+/// the clusterer headless session. The clusterer accumulates context across
+/// invocations via session resume.
+///
+/// Returns the assigned channel name or an error.
+async fn invoke_clusterer_for_task(
+    subject: &str,
+    description: &str,
+    state: &DaemonState,
+) -> Result<String, String> {
+    use crate::daemon::clusterer::{assign_channel, ChannelInfo, ClustererRequest};
+
+    // TODO: Collect actual channel stats and task history.
+    // For MVP, send minimal information - just the new task.
+    let request = ClustererRequest {
+        task_subject: subject.to_string(),
+        task_description: description.to_string(),
+        channels: vec![
+            ChannelInfo {
+                name: "midtown".to_string(),
+                active_task_count: 0,
+                recent_tasks: vec![],
+            },
+        ],
+        recent_completions: vec![],
+    };
+
+    // Get working directory (use primary repo path)
+    let cwd = state
+        .all_repo_paths
+        .first()
+        .ok_or("No repo paths configured")?
+        .clone();
+
+    // Lock persistent state to pass to clusterer
+    let mut ps = state.persistent_state.lock().await;
+
+    // Invoke clusterer
+    let response = assign_channel(request, cwd, &mut ps).await?;
+
+    // Save persistent state with updated session ID
+    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        warn!("Failed to save clusterer session ID: {}", e);
+    }
+
+    Ok(response.channel)
 }
 
 // ============================================================================

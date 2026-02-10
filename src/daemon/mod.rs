@@ -7,8 +7,10 @@
 
 mod architect;
 mod chat;
+mod clusterer;
 mod constants;
 mod dispatch;
+mod specialized;
 pub(crate) mod effects;
 pub(crate) mod events;
 mod health;

@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["channel", "rationale"],
+  "properties": {
+    "channel": {
+      "type": "string",
+      "description": "The channel name to assign the task to (kebab-case)",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Brief explanation of why this channel was chosen"
+    },
+    "suggestions": {
+      "type": "array",
+      "description": "Optional suggestions for channel maintenance",
+      "items": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["archive", "merge"]
+          },
+          "channel": {
+            "type": "string",
+            "description": "Channel to archive (for archive action)"
+          },
+          "from": {
+            "type": "string",
+            "description": "Source channel (for merge action)"
+          },
+          "into": {
+            "type": "string",
+            "description": "Destination channel (for merge action)"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Explanation for the suggestion"
+          }
+        }
+      }
+    }
+  }
+}
