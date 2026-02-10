@@ -1,3 +1,4 @@
+import { get } from 'svelte/store'
 import {
   messages,
   messagesByChannel,
@@ -375,15 +376,31 @@ function handleUpdate(update) {
         }
       })
 
-      // Update channel list if this is a new channel
+      // Update channel list - increment unread if not viewing this channel
+      const currentActiveChannel = get(activeChannel)
+
       channels.update((channelList) => {
-        if (!channelList.find((ch) => ch.name === channelName)) {
+        const existingChannel = channelList.find((ch) => ch.name === channelName)
+        if (existingChannel) {
+          // Channel exists - increment unread if it's not the active channel
+          if (channelName !== currentActiveChannel) {
+            return channelList.map((ch) =>
+              ch.name === channelName ? { ...ch, unread: ch.unread + 1 } : ch
+            )
+          }
+          return channelList
+        } else {
+          // New channel - add it with unread count if not active
           return [
             ...channelList,
-            { name: channelName, unread: 0, has_pr: false, ci_status: null },
+            {
+              name: channelName,
+              unread: channelName === currentActiveChannel ? 0 : 1,
+              has_pr: false,
+              ci_status: null,
+            },
           ]
         }
-        return channelList
       })
 
       // Dismiss typing indicator when lead posts a message
