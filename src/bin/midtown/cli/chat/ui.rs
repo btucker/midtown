@@ -300,6 +300,7 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )]));
+        lines.push(Line::from("")); // Blank line after header
 
         // Render tasks for this channel
         for task in tasks {
