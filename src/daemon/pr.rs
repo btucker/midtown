@@ -3955,6 +3955,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),

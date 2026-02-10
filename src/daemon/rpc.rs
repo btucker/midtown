@@ -1420,6 +1420,20 @@ async fn handle_task_create(
         channel,
     ) {
         Ok(task_id) => {
+            // Update daemon-side task-to-channel mapping if channel was provided
+            {
+                let mut ps = state.persistent_state.lock().await;
+                if apply_task_channel_mapping(
+                    &mut ps.task_channel,
+                    &task_id.to_string(),
+                    channel,
+                    false,
+                ) && let Err(e) = ps.save_for_repo(&repo_name)
+                {
+                    warn!("Failed to save task-channel mapping: {}", e);
+                }
+            }
+
             // Post to channel so team is aware
             let msg = Message::text("lead", format!("created task: {}", subject));
             if let Err(e) = state.send_and_broadcast_async(&msg).await {
@@ -1486,6 +1500,35 @@ fn generate_active_form(subject: &str) -> String {
     }
 }
 
+/// Apply a task-to-channel mapping update to persistent state.
+///
+/// On `task.create`: pass `channel` from the RPC params. Non-empty values are stored;
+/// `None` or empty strings are ignored.
+///
+/// On `task.update`: pass `channel` from the RPC params. Non-empty values set/overwrite
+/// the mapping; an empty string clears it; `None` means no change.
+///
+/// Returns `true` if the mapping was modified (caller should save persistent state).
+fn apply_task_channel_mapping(
+    task_channel: &mut HashMap<String, String>,
+    task_id: &str,
+    channel: Option<&str>,
+    allow_clear: bool,
+) -> bool {
+    match channel {
+        Some(ch) if ch.is_empty() && allow_clear => {
+            // Empty string means clear the mapping (only on update, not create)
+            // Returns true only if a mapping was actually removed
+            task_channel.remove(task_id).is_some()
+        }
+        Some(ch) if !ch.is_empty() => {
+            task_channel.insert(task_id.to_string(), ch.to_string());
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Handle task.update RPC — update specific fields on a task directly.
 #[allow(clippy::too_many_arguments)]
 fn handle_task_update(
@@ -1533,6 +1576,16 @@ fn handle_task_update(
     // Clear assignment when task is completed or reset to pending
     if matches!(status, Some("completed") | Some("pending")) {
         state.clear_task_assignment_by_task(task_id);
+    }
+
+    // Update daemon-side task-to-channel mapping
+    {
+        let mut ps = state.persistent_state.blocking_lock();
+        if apply_task_channel_mapping(&mut ps.task_channel, task_id, channel, true)
+            && let Err(e) = ps.save_for_repo(&repo_name)
+        {
+            warn!("Failed to save task-channel mapping: {}", e);
+        }
     }
 
     info!("Updated task !{}", task_id);
@@ -3417,5 +3470,68 @@ mod tests {
             cache_hit.is_none(),
             "PID-prefixed string IDs from different processes should NOT collide"
         );
+    }
+
+    #[test]
+    fn test_apply_task_channel_mapping_sets_channel() {
+        let mut map = HashMap::new();
+        let changed = apply_task_channel_mapping(&mut map, "42", Some("auth"), false);
+        assert!(changed);
+        assert_eq!(map.get("42"), Some(&"auth".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_channel_mapping_overwrites_existing() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "old-channel".to_string());
+        let changed = apply_task_channel_mapping(&mut map, "42", Some("new-channel"), false);
+        assert!(changed);
+        assert_eq!(map.get("42"), Some(&"new-channel".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_channel_mapping_ignores_none() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "auth".to_string());
+        let changed = apply_task_channel_mapping(&mut map, "42", None, false);
+        assert!(!changed);
+        assert_eq!(map.get("42"), Some(&"auth".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_channel_mapping_ignores_empty_without_clear() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "auth".to_string());
+        // On create (allow_clear=false), empty string is ignored
+        let changed = apply_task_channel_mapping(&mut map, "42", Some(""), false);
+        assert!(!changed);
+        assert_eq!(map.get("42"), Some(&"auth".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_channel_mapping_clears_with_empty_on_update() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "auth".to_string());
+        // On update (allow_clear=true), empty string clears the mapping
+        let changed = apply_task_channel_mapping(&mut map, "42", Some(""), true);
+        assert!(changed);
+        assert!(!map.contains_key("42"));
+    }
+
+    #[test]
+    fn test_apply_task_channel_mapping_clear_nonexistent_is_noop() {
+        let mut map = HashMap::new();
+        // Clearing a mapping that doesn't exist returns false (no state modification)
+        let changed = apply_task_channel_mapping(&mut map, "99", Some(""), true);
+        assert!(!changed);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_apply_task_channel_mapping_none_on_empty_map() {
+        let mut map: HashMap<String, String> = HashMap::new();
+        let changed = apply_task_channel_mapping(&mut map, "42", None, true);
+        assert!(!changed);
+        assert!(map.is_empty());
     }
 }
