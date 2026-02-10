@@ -1733,3 +1733,339 @@ async fn test_api_upload_no_file_error() {
     fixture.async_cleanup().await;
     std::mem::forget(fixture);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Per-Channel API Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test that /api/channel accepts ?channel=name query parameter and returns
+/// messages from the specified channel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_api_channel_history_per_channel() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    // Post messages to different channels via RPC
+    let socket_path = fixture.socket_path.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Ok(mut stream) = UnixStream::connect(&socket_path) {
+            // Post to main channel
+            let request1 = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "channel.post",
+                "params": {
+                    "message": "Main channel message",
+                    "from": "test-agent"
+                },
+                "id": 1
+            });
+            let _ = stream.write_all(format!("{}\n", request1).as_bytes());
+            let _ = stream.flush();
+
+            // Wait a bit for the first message to be processed
+            thread::sleep(Duration::from_millis(50));
+
+            // Post to topic channel
+            let request2 = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "channel.post",
+                "params": {
+                    "message": "Topic channel message",
+                    "from": "test-agent",
+                    "channel": "pr-42"
+                },
+                "id": 2
+            });
+            let _ = stream.write_all(format!("{}\n", request2).as_bytes());
+            let _ = stream.flush();
+        }
+    })
+    .await
+    .unwrap();
+
+    // Give the daemon time to process and write messages
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Fetch main channel history (no parameter)
+    let main_response = reqwest::get(format!("{}/channel", fixture.api_base()))
+        .await
+        .expect("Main channel endpoint should work");
+    assert!(
+        main_response.status().is_success(),
+        "Main channel should return 200"
+    );
+
+    let main_messages: Vec<serde_json::Value> = main_response
+        .json()
+        .await
+        .expect("Should parse main channel JSON");
+
+    // Main channel should have the main message
+    let has_main = main_messages.iter().any(|m| {
+        m.get("content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.contains("Main channel message"))
+            .unwrap_or(false)
+    });
+    assert!(has_main, "Main channel should contain main channel message");
+
+    // Fetch topic channel history with ?channel=pr-42
+    let topic_response = reqwest::get(format!("{}/channel?channel=pr-42", fixture.api_base()))
+        .await
+        .expect("Topic channel endpoint should work");
+    assert!(
+        topic_response.status().is_success(),
+        "Topic channel should return 200"
+    );
+
+    let topic_messages: Vec<serde_json::Value> = topic_response
+        .json()
+        .await
+        .expect("Should parse topic channel JSON");
+
+    // Topic channel should have the topic message
+    let has_topic = topic_messages.iter().any(|m| {
+        m.get("content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.contains("Topic channel message"))
+            .unwrap_or(false)
+            && m.get("channel")
+                .and_then(|c| c.as_str())
+                .map(|s| s == "pr-42")
+                .unwrap_or(false)
+    });
+    assert!(
+        has_topic,
+        "Topic channel should contain topic channel message with correct channel field"
+    );
+
+    // Topic channel should NOT have the main channel message
+    let has_main_in_topic = topic_messages.iter().any(|m| {
+        m.get("content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.contains("Main channel message"))
+            .unwrap_or(false)
+    });
+    assert!(
+        !has_main_in_topic,
+        "Topic channel should not contain main channel messages"
+    );
+
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
+
+/// Test that /api/channel validates channel names and rejects invalid ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_api_channel_history_validates_channel_name() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    // Test invalid channel names (directory traversal, special chars)
+    let invalid_names = vec![
+        "../etc/passwd",
+        "../../secret",
+        "foo/bar",
+        "foo:bar",
+        "foo;bar",
+        "", // empty name
+    ];
+
+    for name in invalid_names {
+        let url = format!("{}/channel?channel={}", fixture.api_base(), name);
+        let response = reqwest::get(&url).await;
+
+        if let Ok(resp) = response {
+            assert_eq!(
+                resp.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "Should reject invalid channel name '{}'",
+                name
+            );
+        }
+    }
+
+    // Valid channel names should not cause 400 errors (might return 404 or 200)
+    let valid_names = vec!["pr-42", "task-5", "my-channel", "channel_123"];
+
+    for name in valid_names {
+        let url = format!("{}/channel?channel={}", fixture.api_base(), name);
+        let response = reqwest::get(&url).await;
+
+        if let Ok(resp) = response {
+            assert_ne!(
+                resp.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "Should not reject valid channel name '{}', got status {}",
+                name,
+                resp.status()
+            );
+        }
+    }
+
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
+
+/// Test that WebSocket broadcasts include the channel field for filtering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // Requires built binary
+async fn test_websocket_channel_field_in_broadcasts() {
+    let mut fixture = match WebTestFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        fixture.async_cleanup().await;
+        std::mem::forget(fixture);
+        return;
+    }
+
+    let _cleanup_guard = AsyncCleanupGuard::new(&fixture);
+
+    // Connect WebSocket
+    let ws_url = fixture.ws_url();
+    let (mut ws_stream, _) = connect_async(&ws_url)
+        .await
+        .expect("WebSocket should connect");
+
+    // Post messages to different channels
+    let socket_path = fixture.socket_path.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Ok(mut stream) = UnixStream::connect(&socket_path) {
+            // Post to main channel
+            let request1 = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "channel.post",
+                "params": {
+                    "message": "WS main message",
+                    "from": "test-agent"
+                },
+                "id": 1
+            });
+            let _ = stream.write_all(format!("{}\n", request1).as_bytes());
+            let _ = stream.flush();
+
+            thread::sleep(Duration::from_millis(100));
+
+            // Post to topic channel
+            let request2 = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "channel.post",
+                "params": {
+                    "message": "WS topic message",
+                    "from": "test-agent",
+                    "channel": "test-channel"
+                },
+                "id": 2
+            });
+            let _ = stream.write_all(format!("{}\n", request2).as_bytes());
+            let _ = stream.flush();
+        }
+    })
+    .await
+    .unwrap();
+
+    // Collect WebSocket messages
+    let mut main_received = false;
+    let mut topic_received = false;
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(timeout);
+
+    loop {
+        tokio::select! {
+            msg = ws_stream.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(update) = serde_json::from_str::<serde_json::Value>(&text)
+                            && update.get("type").and_then(|t| t.as_str()) == Some("channel_message")
+                        {
+                            let data = &update["data"];
+
+                            // Check for main channel message
+                            if data.get("content").and_then(|c| c.as_str())
+                                .map(|s| s.contains("WS main message"))
+                                .unwrap_or(false)
+                            {
+                                // Should have channel field set to "midtown" (default)
+                                let channel = data.get("channel")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or("");
+                                assert_eq!(
+                                    channel, "midtown",
+                                    "Main channel message should have channel='midtown'"
+                                );
+                                main_received = true;
+                            }
+
+                            // Check for topic channel message
+                            if data.get("content").and_then(|c| c.as_str())
+                                .map(|s| s.contains("WS topic message"))
+                                .unwrap_or(false)
+                            {
+                                // Should have channel field set to "test-channel"
+                                let channel = data.get("channel")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or("");
+                                assert_eq!(
+                                    channel, "test-channel",
+                                    "Topic channel message should have channel='test-channel'"
+                                );
+                                topic_received = true;
+                            }
+
+                            if main_received && topic_received {
+                                break;
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        eprintln!("WebSocket error: {}", e);
+                        break;
+                    }
+                    None => break,
+                    _ => {}
+                }
+            }
+            _ = &mut timeout => {
+                break;
+            }
+        }
+    }
+
+    assert!(
+        main_received,
+        "Should receive main channel message with channel field"
+    );
+    assert!(
+        topic_received,
+        "Should receive topic channel message with channel field"
+    );
+
+    let _ = ws_stream.close(None).await;
+    fixture.async_cleanup().await;
+    std::mem::forget(fixture);
+}
