@@ -322,7 +322,6 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         }
 
         lines.push(Line::from(vec![Span::styled(channel_header, style)]));
-        lines.push(Line::from("")); // Blank line after header
 
         // Render tasks for this channel
         for task in tasks {
@@ -339,7 +338,7 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
             };
 
             let task_line = format!(
-                "    {} #{} {}{}",
+                "{} !{} {}{}",
                 status_marker, task.id, task.subject, owner_text
             );
 
@@ -356,7 +355,7 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                     wrapped.to_string()
                 } else {
                     // Continuation lines: indent to align with subject text
-                    format!("        {}", wrapped.trim_start())
+                    format!("    {}", wrapped.trim_start())
                 };
 
                 let color = if task.status == super::app::TaskStatus::InProgress {
