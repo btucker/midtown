@@ -205,8 +205,7 @@ pub enum Effect {
     },
     /// Mark a task as completed.
     ///
-    /// Called when a PR is merged with `[Midtown !XX]` in the title (dispatch.rs),
-    /// or for non-PR tasks when the coworker reports completion (rpc.rs).
+    /// Called when a PR is merged with `[Midtown !XX]` in the title (dispatch.rs).
     CompleteTask { task_id: String, repo_name: String },
     /// Clear a completed task ID from all dependent tasks' `blockedBy` arrays.
     ///
@@ -304,6 +303,20 @@ pub enum Effect {
     ///
     /// Updates the task_channel mapping in daemon persistent state.
     AssignTaskChannel { task_id: String, channel: String },
+    /// Clear a task's owner without changing its status.
+    ///
+    /// Used when a coworker opens a PR and goes idle — the task stays in_progress
+    /// (linked to the PR via PrAuthorSession) but the coworker name is freed.
+    UnassignTask { task_id: String, repo_name: String },
+    /// Reset an abandoned task back to pending.
+    ///
+    /// Used when a PR is closed without merge — the associated task is reset
+    /// so it can be picked up by another coworker.
+    ResetAbandonedTask {
+        task_id: String,
+        pr_number: u64,
+        repo_name: String,
+    },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -1191,6 +1204,43 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 debug!("Assigned task !{} to channel '{}'", task_id, channel);
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save task_channel after assignment: {}", e);
+                }
+            }
+            Effect::UnassignTask { task_id, repo_name } => {
+                if let Err(e) = crate::tasks::unassign_task_for_repo(&task_id, &repo_name) {
+                    warn!("Failed to unassign task !{}: {}", task_id, e);
+                } else {
+                    info!(
+                        "Unassigned task !{} (PR in review, freeing coworker name)",
+                        task_id
+                    );
+                    state.clear_task_assignment_by_task(&task_id);
+                }
+            }
+            Effect::ResetAbandonedTask {
+                task_id,
+                pr_number,
+                repo_name,
+            } => {
+                if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {
+                    warn!(
+                        "Failed to reset abandoned task !{} (PR #{} closed): {}",
+                        task_id, pr_number, e
+                    );
+                } else {
+                    info!(
+                        "Reset task !{} to pending (PR #{} closed without merge)",
+                        task_id, pr_number
+                    );
+                    state.clear_task_assignment_by_task(&task_id);
+                    // Post channel notification
+                    let msg = crate::message::Message::system(format!(
+                        "PR #{} closed without merge. Task !{} reset to pending.",
+                        pr_number, task_id
+                    ));
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                        warn!("Failed to post abandoned task message: {}", e);
+                    }
                 }
             }
         }

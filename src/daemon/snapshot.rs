@@ -142,6 +142,14 @@ pub struct WorldSnapshot {
     /// (in-memory assignment tracking). Both paths are checked to prevent the
     /// spawn→idle→break loop (see PR #650).
     pub pending_task_owners: HashSet<String>,
+    /// Task IDs that have associated open PRs (from PrAuthorSession).
+    /// Maps task_id → pr_number. Used by reconcile_tasks_in_review to detect
+    /// tasks whose PR is open but whose owner is no longer active.
+    pub tasks_with_open_prs: HashMap<String, u64>,
+    /// PR numbers with associated task IDs (from PrAuthorSession).
+    /// Maps pr_number → task_id. Used by abandoned PR detection to reset tasks
+    /// when PRs are closed without merging.
+    pub pr_task_associations: HashMap<u64, String>,
 
     // ── Reviewer state ──────────────────────────────────────────────────
     /// Currently active reviewers (from both in-memory tracker and persistent state).
@@ -384,6 +392,34 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|(_, _, owner)| owner.to_lowercase())
         .collect();
 
+    // ── PR author sessions (task → PR mapping) ────────────────────────
+    let (tasks_with_open_prs, pr_task_associations) = {
+        let ps = state.persistent_state.lock().await;
+        let tasks_to_prs: HashMap<String, u64> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_number, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|tid| (tid.clone(), *pr_number))
+            })
+            .collect();
+        let prs_to_tasks: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_number, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|tid| (*pr_number, tid.clone()))
+            })
+            .collect();
+        (tasks_to_prs, prs_to_tasks)
+    };
+
     // ── Reviewer state ──────────────────────────────────────────────────
     let (active_reviewers, reviewer_pr_assignments, reviewer_restart_counts) = {
         let ps = state.persistent_state.lock().await;
@@ -529,6 +565,8 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         ci_passed_pr_coworkers,
         review_feedback_pr_coworkers,
         pending_task_owners,
+        tasks_with_open_prs,
+        pr_task_associations,
         active_reviewers,
         reviewer_pr_assignments,
         reviewed_prs,
@@ -635,6 +673,8 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -722,6 +762,8 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -874,6 +916,8 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -945,6 +989,8 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),

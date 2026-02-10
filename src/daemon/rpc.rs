@@ -1295,18 +1295,37 @@ async fn handle_coworker_report_state(
                     tid
                 );
             } else {
-                // No open PR (review task, investigation, etc.) - complete immediately
-                let completion_effects = vec![
-                    effects::Effect::CompleteTask {
-                        task_id: tid.clone(),
-                        repo_name: state.repo_name.clone(),
+                // No open PR — the coworker reported Completed prematurely
+                // (before opening a PR). Don't complete the task; nudge the
+                // coworker to open a PR and go idle. The daemon will complete
+                // the task when the PR merges.
+                //
+                // Non-PR tasks (reviews, investigations) should use
+                // `midtown task done <id>` directly instead of reporting
+                // WorkflowPhase::Completed.
+                warn!(
+                    "Task !{} reported completed by {} but has no PR — nudging to open PR",
+                    tid, name
+                );
+                let nudge_effects = vec![
+                    effects::Effect::NudgeCoworker {
+                        name: name.to_string(),
+                        message: format!(
+                            "Task !{} has no PR yet. Please open a PR for your changes and then go idle with `midtown state idle`. The daemon will complete the task when the PR merges.",
+                            tid
+                        ),
+                        session_id: None,
                     },
-                    effects::Effect::ClearBlockedBy {
-                        completed_task_id: tid.clone(),
-                        repo_name: state.repo_name.clone(),
+                    effects::Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: format!(
+                            "⚠️ {} reported task !{} completed without a PR — nudged to open PR first",
+                            name, tid
+                        ),
+                        channel: None,
                     },
                 ];
-                effects::execute_effects(completion_effects, state).await;
+                effects::execute_effects(nudge_effects, state).await;
             }
         }
 

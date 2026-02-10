@@ -574,6 +574,50 @@ pub fn update_task_fields_for_repo(
     Ok(())
 }
 
+/// Clear a task's owner without changing its status.
+///
+/// Used when a coworker goes idle after opening a PR — the task stays in_progress
+/// (linked to the PR via PrAuthorSession) but the coworker name is freed for new work.
+pub fn unassign_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
+    use fs2::FileExt;
+
+    let Some(home) = dirs::home_dir() else {
+        return Err("Could not determine home directory".to_string());
+    };
+
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_file = home
+        .join(".claude")
+        .join("tasks")
+        .join(&task_list_id)
+        .join(format!("{}.json", task_id));
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&task_file)
+        .map_err(|e| format!("Failed to open task {}: {}", task_id, e))?;
+    file.lock_exclusive()
+        .map_err(|e| format!("Failed to lock task {}: {}", task_id, e))?;
+
+    let content = std::fs::read_to_string(&task_file)
+        .map_err(|e| format!("Failed to read task {}: {}", task_id, e))?;
+
+    let mut task: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse task {}: {}", task_id, e))?;
+
+    task["owner"] = serde_json::Value::Null;
+
+    let updated_content = serde_json::to_string_pretty(&task)
+        .map_err(|e| format!("Failed to serialize task: {}", e))?;
+
+    std::fs::write(&task_file, updated_content)
+        .map_err(|e| format!("Failed to write task: {}", e))?;
+
+    let _ = file.unlock();
+    Ok(())
+}
+
 /// Reset a task to pending status and clear its owner.
 ///
 /// Used when orphan recovery fails to respawn a coworker - the task is reset
@@ -661,8 +705,8 @@ fn complete_task_in_dir(task_id: &str, tasks_dir: &std::path::Path) -> Result<()
 
 /// Mark a task as completed for a specific repo.
 ///
-/// This is called when a PR is opened with `[Midtown #XX]` in the title.
-/// Opening a PR means the implementation work is done; the task is complete.
+/// Called when a PR with `[Midtown !XX]` merges (via webhook/polling),
+/// or when a coworker completes a non-PR task (reviews, investigations).
 pub fn complete_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
@@ -1249,6 +1293,65 @@ mod tests {
         // alice, dave should NOT be in list (pending, completed respectively)
         assert!(!busy_coworkers.contains(&"alice".to_string()));
         assert!(!busy_coworkers.contains(&"dave".to_string()));
+    }
+
+    #[test]
+    fn test_unassign_task_clears_owner_preserves_status() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Create an in_progress task owned by york
+        create_task_file(&tasks_dir, "42", "in_progress", Some("york"));
+
+        // Verify task is owned
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let task = tasks.iter().find(|t| t.id == "42").unwrap();
+        assert_eq!(task.owner.as_deref(), Some("york"));
+        assert_eq!(task.status, TaskStatus::InProgress);
+
+        // Unassign the task (simulating what unassign_task_for_repo does)
+        let task_file = tasks_dir.join("42.json");
+        let content = std::fs::read_to_string(&task_file).unwrap();
+        let mut task_json: serde_json::Value = serde_json::from_str(&content).unwrap();
+        task_json["owner"] = serde_json::Value::Null;
+        std::fs::write(
+            &task_file,
+            serde_json::to_string_pretty(&task_json).unwrap(),
+        )
+        .unwrap();
+
+        // Verify owner is cleared but status is preserved
+        let tasks = read_tasks_from_dir(&tasks_dir);
+        let task = tasks.iter().find(|t| t.id == "42").unwrap();
+        assert!(task.owner.is_none(), "Owner should be cleared");
+        assert_eq!(
+            task.status,
+            TaskStatus::InProgress,
+            "Status should remain in_progress"
+        );
+    }
+
+    #[test]
+    fn test_busy_coworkers_excludes_unowned_in_progress() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().to_path_buf();
+
+        // Task in_progress with owner → busy
+        create_task_file(&tasks_dir, "1", "in_progress", Some("york"));
+        // Task in_progress WITHOUT owner (unassigned for review) → NOT busy
+        create_task_file(&tasks_dir, "2", "in_progress", None);
+
+        let tasks = read_tasks_from_dir(&tasks_dir);
+
+        // Simulate get_busy_coworkers logic
+        let busy_coworkers: Vec<String> = tasks
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::InProgress)
+            .filter_map(|t| t.owner)
+            .collect();
+
+        assert_eq!(busy_coworkers.len(), 1);
+        assert!(busy_coworkers.contains(&"york".to_string()));
     }
 
     #[test]

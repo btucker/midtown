@@ -219,6 +219,47 @@ fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64)
     hasher.finish()
 }
 
+/// Detect tasks linked to abandoned PRs (closed without merge) and return reset effects.
+///
+/// Pure decision function that takes snapshot data and returns effects for tasks
+/// whose PRs were closed without merging. Merged PRs are handled separately by
+/// build_task_completion_effects. Only resets tasks that are still in_progress.
+///
+/// Called from `poll_prs_for_issues` after fetching open PR list from GitHub.
+pub(super) fn detect_abandoned_pr_tasks(
+    snap: &WorldSnapshot,
+    open_pr_numbers: &[u64],
+    repo_name: &str,
+) -> Vec<Effect> {
+    let open_set: HashSet<u64> = open_pr_numbers.iter().copied().collect();
+    let mut effects = Vec::new();
+
+    // Check each PR with an associated task ID
+    for (pr_number, task_id) in &snap.pr_task_associations {
+        // PR is closed if it's not in the open set and wasn't merged
+        let is_closed = !open_set.contains(pr_number);
+        let is_merged = snap.merged_pr_numbers.contains(pr_number);
+
+        if is_closed && !is_merged {
+            // Check if the task is still in_progress (not already completed)
+            let is_in_progress = snap
+                .in_progress_tasks
+                .iter()
+                .any(|(tid, _, _)| tid == task_id);
+
+            if is_in_progress {
+                effects.push(Effect::ResetAbandonedTask {
+                    task_id: task_id.clone(),
+                    pr_number: *pr_number,
+                    repo_name: repo_name.to_string(),
+                });
+            }
+        }
+    }
+
+    effects
+}
+
 // ============================================================================
 
 /// Poll all open PRs and return effects for actionable issues.
@@ -482,12 +523,17 @@ pub(super) async fn poll_prs_for_issues(
         }
     }
 
-    // Clean up persistent reviewer assignments for PRs that are no longer open
+    // Detect abandoned PRs (closed without merge) and reset associated tasks.
+    // This uses pure decision logic that takes only snapshot data and returns effects.
+    let open_pr_numbers: Vec<u64> = prs
+        .iter()
+        .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+        .collect();
+    let abandoned_pr_effects = detect_abandoned_pr_tasks(snap, &open_pr_numbers, &state.repo_name);
+    effects.extend(abandoned_pr_effects);
+
+    // Clean up persistent reviewer assignments for PRs that are no longer open.
     {
-        let open_pr_numbers: Vec<u64> = prs
-            .iter()
-            .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
-            .collect();
         let mut ps = state.persistent_state.lock().await;
         ps.github.cleanup_closed_prs(&open_pr_numbers);
         ps.github.cleanup_expired_preserving(
@@ -3978,6 +4024,8 @@ mod tests {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -4117,5 +4165,234 @@ mod tests {
             !tracker2.should_nudge(99, PrIssueType::GreenWithFeedback),
             "cooldown should NOT be cleared for active owners"
         );
+    }
+
+    /// Unit test for detect_abandoned_pr_tasks pure function.
+    ///
+    /// Verifies that tasks linked to closed-without-merge PRs are detected
+    /// and ResetAbandonedTask effects are emitted correctly.
+    #[test]
+    fn test_detect_abandoned_pr_tasks() {
+        use super::super::effects::Effect;
+        use super::super::snapshot::WorldSnapshot;
+
+        // Setup: Task 42 is in_progress and linked to PR #100, which is closed (not in open list)
+        let in_progress_tasks =
+            vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
+
+        let mut pr_task_associations = HashMap::new();
+        pr_task_associations.insert(100u64, "42".to_string());
+
+        let merged_pr_numbers = HashSet::new(); // PR 100 is NOT merged
+
+        let snap = WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks,
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers,
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations,
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        // Call the pure function with PR 100 NOT in the open list
+        let open_pr_numbers = vec![]; // PR 100 is closed
+        let effects = detect_abandoned_pr_tasks(&snap, &open_pr_numbers, "test-repo");
+
+        // Verify: Should emit ResetAbandonedTask for task 42
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::ResetAbandonedTask {
+                task_id,
+                pr_number,
+                repo_name,
+            } => {
+                assert_eq!(task_id, "42");
+                assert_eq!(*pr_number, 100);
+                assert_eq!(repo_name, "test-repo");
+            }
+            other => panic!("Expected ResetAbandonedTask, got {:?}", other),
+        }
+    }
+
+    /// Test that detect_abandoned_pr_tasks skips PRs that are still open.
+    #[test]
+    fn test_detect_abandoned_pr_tasks_skips_open_prs() {
+        use super::super::snapshot::WorldSnapshot;
+
+        let in_progress_tasks =
+            vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
+
+        let mut pr_task_associations = HashMap::new();
+        pr_task_associations.insert(100u64, "42".to_string());
+
+        let snap = WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks,
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations,
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        // PR 100 is in the open list
+        let open_pr_numbers = vec![100u64];
+        let effects = detect_abandoned_pr_tasks(&snap, &open_pr_numbers, "test-repo");
+
+        // Should emit no effects since PR is still open
+        assert!(effects.is_empty(), "Should not reset task for open PR");
+    }
+
+    /// Test that detect_abandoned_pr_tasks skips merged PRs.
+    #[test]
+    fn test_detect_abandoned_pr_tasks_skips_merged_prs() {
+        use super::super::snapshot::WorldSnapshot;
+
+        let in_progress_tasks =
+            vec![("42".to_string(), "Fix auth".to_string(), "york".to_string())];
+
+        let mut pr_task_associations = HashMap::new();
+        pr_task_associations.insert(100u64, "42".to_string());
+
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(100u64); // PR 100 was merged
+
+        let snap = WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks,
+            busy_coworkers: HashSet::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers,
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations,
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        // PR 100 is NOT in open list, but it IS in merged list
+        let open_pr_numbers = vec![];
+        let effects = detect_abandoned_pr_tasks(&snap, &open_pr_numbers, "test-repo");
+
+        // Should emit no effects since merged PRs are handled separately
+        assert!(effects.is_empty(), "Should not reset task for merged PR");
     }
 }

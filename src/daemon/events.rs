@@ -70,6 +70,7 @@ pub async fn evaluate_tick(
         }
         DaemonEvent::TaskDispatchTick => {
             let mut effects = Vec::new();
+            effects.extend(super::dispatch::reconcile_tasks_in_review(snap));
             effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
             effects.extend(super::dispatch::check_and_recover_orphans(snap, state));
             effects.extend(super::dispatch::spawn_for_pending_tasks(snap, state));

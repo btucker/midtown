@@ -39,7 +39,7 @@ midtown state <phase> [--task <id>]
 | **pull-request** | `midtown state pull-request --task 5` | Opening or updating a PR |
 | **reviewing** | `midtown state reviewing --task 5` | Reviewing someone else's PR |
 | **debugging** | `midtown state debugging --task 5` | Investigating a bug |
-| **completed** | `midtown state completed --task 5` | Task finished |
+| **completed** | `midtown state completed --task 5` | Non-PR task finished (use `midtown task done` instead for explicit completion) |
 | **idle** | `midtown state idle` | No active work |
 
 **Always run `midtown state` when your phase changes.** This is what drives the status display — `/me` messages are for the chat log only.
@@ -54,10 +54,9 @@ midtown channel post "/me claimed task 5"
 midtown state developing --task 5
 midtown channel post "/me working on task 5"
 
-midtown state completed --task 5
-midtown channel post "/me completed task 5"
-
-midtown state idle
+midtown state pull-request --task 5
+midtown channel post "/me opened PR for task 5"
+midtown state idle  # daemon completes the task when PR merges
 ```
 
 ### Other Updates
@@ -159,7 +158,14 @@ midtown channel post "/me opened PR for task 42"
 Only @lead when you genuinely need the lead's input — e.g., to answer a design question, resolve a blocker, or weigh in on a decision.
 
 ### After Opening a PR: Go Idle
-Once your PR is open and you've posted to the channel, **go idle or pick up another unblocked task**. Do NOT:
+Once your PR is open and you've posted to the channel, go idle:
+```bash
+midtown state idle
+```
+
+Do NOT report `midtown state completed` — the daemon completes the task automatically when the PR merges. This ensures `blocked_by` dependencies only resolve when your code is on main.
+
+Do NOT:
 - Watch or monitor the reviewer working on your PR
 - Poll GitHub for review status
 - Wait actively for feedback
