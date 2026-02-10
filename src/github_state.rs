@@ -308,6 +308,11 @@ impl GitHubState {
     /// of a reviewer just because the review is taking longer than the timeout.
     /// Running coworkers' assignments are preserved regardless of timeout.
     ///
+    /// **Optimistic assignment safety**: Assignments younger than `timeout` (600s)
+    /// are never pruned, even if the reviewer doesn't appear in `running_coworkers`.
+    /// This protects against the window between optimistic assignment (before spawn)
+    /// and worktree creation (after spawn completes).
+    ///
     /// When `running_session_ids` is provided, assignments with a known
     /// `reviewer_session_id` are matched by session ID instead of name. This
     /// enables correct behavior when multiple sessions share a coworker name.
@@ -352,6 +357,31 @@ impl GitHubState {
                 && is_reviewer_running(assignment)
             {
                 assignment.assigned_at = now;
+            }
+        }
+    }
+
+    /// Backfill `reviewer_session_id` for assignments that were created before
+    /// the session ID was known (optimistic assignment pattern).
+    ///
+    /// During reviewer spawn, the assignment is created BEFORE the spawn completes,
+    /// so `reviewer_session_id` is initially `None`. Once the session starts and
+    /// the `init` event provides the session ID, subsequent poll ticks can observe
+    /// it in the snapshot's `running_coworkers`. This method matches assignments
+    /// by reviewer name and fills in the missing session ID.
+    pub fn backfill_reviewer_session_ids(
+        &mut self,
+        coworker_session_ids: &std::collections::HashMap<String, String>,
+    ) {
+        for assignment in self.pr_reviewers.values_mut() {
+            if assignment.reviewer_session_id.is_none()
+                && let Some(sid) = coworker_session_ids.get(&assignment.reviewer)
+            {
+                assignment.reviewer_session_id = Some(sid.clone());
+                debug!(
+                    "Backfilled reviewer_session_id for PR #{} (reviewer={}, session={})",
+                    assignment.pr_number, assignment.reviewer, sid
+                );
             }
         }
     }
@@ -915,6 +945,61 @@ mod tests {
         assert_eq!(assignments.len(), 1);
         assert!(!assignments.contains_key(&42));
         assert!(assignments.contains_key(&43));
+    }
+
+    #[test]
+    fn test_backfill_reviewer_session_ids() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
+
+        // Initially, no session IDs
+        assert!(state.pr_reviewers[&42].reviewer_session_id.is_none());
+        assert!(state.pr_reviewers[&43].reviewer_session_id.is_none());
+
+        // Backfill with session IDs from running coworkers
+        let mut session_map = std::collections::HashMap::new();
+        session_map.insert("lexington".to_string(), "sess-abc".to_string());
+        // park is not in the map (session not yet initialized)
+
+        state.backfill_reviewer_session_ids(&session_map);
+
+        // lexington should have session_id backfilled
+        assert_eq!(
+            state.pr_reviewers[&42].reviewer_session_id,
+            Some("sess-abc".to_string())
+        );
+        // park should still be None
+        assert!(state.pr_reviewers[&43].reviewer_session_id.is_none());
+
+        // Second backfill with park's session
+        let mut session_map2 = std::collections::HashMap::new();
+        session_map2.insert("lexington".to_string(), "sess-abc".to_string());
+        session_map2.insert("park".to_string(), "sess-def".to_string());
+
+        state.backfill_reviewer_session_ids(&session_map2);
+
+        // Both should now have session IDs
+        assert_eq!(
+            state.pr_reviewers[&42].reviewer_session_id,
+            Some("sess-abc".to_string())
+        );
+        assert_eq!(
+            state.pr_reviewers[&43].reviewer_session_id,
+            Some("sess-def".to_string())
+        );
+
+        // Already-set session IDs should not be overwritten
+        let mut session_map3 = std::collections::HashMap::new();
+        session_map3.insert("lexington".to_string(), "sess-NEW".to_string());
+
+        state.backfill_reviewer_session_ids(&session_map3);
+
+        // lexington keeps original session_id (not overwritten)
+        assert_eq!(
+            state.pr_reviewers[&42].reviewer_session_id,
+            Some("sess-abc".to_string())
+        );
     }
 
     #[test]

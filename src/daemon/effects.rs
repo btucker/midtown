@@ -157,7 +157,8 @@ pub enum Effect {
         /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
         restart_count: u32,
         /// Claude session ID for the reviewer, if known.
-        #[allow(dead_code)]
+        /// Initially `None` for optimistic assignments (before spawn completes);
+        /// backfilled by `backfill_reviewer_session_ids()` during subsequent poll ticks.
         reviewer_session_id: Option<String>,
     },
     /// Remove a reviewer assignment for a specific PR.

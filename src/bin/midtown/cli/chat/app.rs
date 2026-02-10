@@ -757,8 +757,8 @@ impl App {
     /// Compute a cache key for message rendering.
     ///
     /// This captures all inputs that affect the rendered output of draw_chat_messages():
-    /// scroll position, message count, terminal width, selection mode, and the last
-    /// message ID as a proxy for content changes.
+    /// scroll position, message count, terminal width, selection mode, last message ID
+    /// as a proxy for content changes, task state, and mermaid render state.
     pub fn message_cache_key(&self, width: u16) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -774,6 +774,10 @@ impl App {
         }
         // Hash task cache state (current_tasks affects sender labels)
         self.tasks_cache_hash.hash(&mut hasher);
+        // Hash mermaid render state — when a diagram finishes background rendering,
+        // the completed count changes and we need to re-render to show the diagram
+        // instead of the "rendering..." placeholder.
+        self.mermaid_cache.completed_count().hash(&mut hasher);
         hasher.finish()
     }
 

@@ -226,7 +226,9 @@ impl SessionManager {
                 code: -32602,
                 message: format!("No headless session for '{}'", name),
             })?;
-        let cs = sessions.remove(&slot_id).unwrap();
+        let cs = sessions
+            .remove(&slot_id)
+            .expect("slot_id found by name must exist in sessions map");
 
         let session_id = cs.session_id.clone();
 

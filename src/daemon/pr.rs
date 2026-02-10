@@ -7,7 +7,7 @@
 //! - Process pending review spawns from webhook-triggered delays
 //! - Nudge PR owners when their PR receives comments
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -247,18 +247,21 @@ pub(super) async fn poll_prs_for_issues(
     // reused for dev work after restart, the stale assignment should expire naturally
     // rather than being preserved by the dev coworker's presence.
     // Also exclude usage-limited coworkers: they can't complete reviews.
+    // Normalize to lowercase for consistent matching — worktree_branch_owners
+    // comes from WorktreeAssignment.current_coworker (external input), while
+    // running_coworkers uses names from AVENUE_NAMES (always lowercase).
     let review_branch_owners: HashSet<String> = snap
         .worktree_branch_owners
         .iter()
         .filter(|(branch, _)| branch.starts_with("review-pr-"))
-        .map(|(_, owner)| owner.clone())
+        .map(|(_, owner)| owner.to_lowercase())
         .collect();
     let running_coworker_names: HashSet<String> = snap
         .running_coworkers
         .iter()
         .map(|c| c.name.clone())
         .filter(|name| {
-            review_branch_owners.contains(name)
+            review_branch_owners.contains(&name.to_lowercase())
                 && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
         })
         .collect();
@@ -268,7 +271,7 @@ pub(super) async fn poll_prs_for_issues(
         .running_coworkers
         .iter()
         .filter(|c| {
-            review_branch_owners.contains(&c.name)
+            review_branch_owners.contains(&c.name.to_lowercase())
                 && !snap
                     .usage_limited_coworkers
                     .contains(&c.name.to_lowercase())
@@ -349,6 +352,20 @@ pub(super) async fn poll_prs_for_issues(
             &running_coworker_names,
             Some(&running_reviewer_session_ids),
         );
+        // Backfill reviewer_session_id for assignments created before the session
+        // started (optimistic assignment pattern: assign before spawn completes).
+        let reviewer_session_map: HashMap<String, String> = snap
+            .running_coworkers
+            .iter()
+            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
+            .filter_map(|c| {
+                c.session_id
+                    .as_ref()
+                    .map(|sid| (c.name.clone(), sid.clone()))
+            })
+            .collect();
+        ps.github
+            .backfill_reviewer_session_ids(&reviewer_session_map);
         ps.github.cleanup_stale_webhook_events();
     }
     {
