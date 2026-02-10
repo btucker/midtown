@@ -733,6 +733,40 @@ impl App {
             .map(|c| c.channel_file_path().to_path_buf())
     }
 
+    /// Post a message to the channel with fallback.
+    ///
+    /// Tries daemon RPC first (preferred - allows daemon to nudge lead),
+    /// then falls back to direct channel write if daemon is unavailable.
+    ///
+    /// Returns `true` if the message was successfully posted via either path.
+    pub fn post_message(&self, message: &str, sender: &str, channel_name: Option<&str>) -> bool {
+        use crate::client::DaemonClient;
+        use midtown::{Message, MessageType};
+
+        // Try daemon RPC first (preferred path - allows daemon to nudge lead)
+        // Note: DaemonClient::connect() is synchronous with a 15s timeout.
+        // This can freeze the UI if the daemon is unresponsive, but the
+        // direct channel write fallback mitigates this by ensuring messages
+        // are delivered even when the daemon is down. Making this async would
+        // require restructuring the entire event loop.
+        let daemon_result = DaemonClient::connect()
+            .and_then(|client| client.channel_post_as(message, sender, channel_name));
+
+        // If daemon RPC succeeds, we're done
+        if daemon_result.is_ok() {
+            return true;
+        }
+
+        // Fall back to direct channel write
+        if let Some(ref channel) = self.channel {
+            let mut msg = Message::new(sender, message, MessageType::Text);
+            msg.channel = channel_name.map(|s| s.to_string());
+            channel.send(&msg).is_ok()
+        } else {
+            false
+        }
+    }
+
     /// Get messages visible in the current scroll position
     pub fn visible_messages(&mut self) -> &[Message] {
         let total = self.messages.len();
