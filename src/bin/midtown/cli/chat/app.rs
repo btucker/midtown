@@ -2589,12 +2589,23 @@ pub(super) mod tests {
             "All 3 messages should be unread initially"
         );
 
-        // Simulate reading 2 messages by updating the cursor
-        let _ = channel.read_since_cursor("chat-tui").unwrap();
+        // Simulate reading messages by updating the cursor
+        let messages_read = channel.read_since_cursor("chat-tui").unwrap();
+        assert_eq!(messages_read.len(), 3, "Should have read 3 messages");
 
-        // Now refresh should show 1 new message (the 3rd one added after cursor init)
-        // Actually, read_since_cursor will read all 3 messages since cursor was at position 0
-        // So after that read, cursor is at EOF, and unread count should be 0
+        // Verify cursor was saved - load it and check it points to the last message
+        let cursor = channel.get_cursor("chat-tui").unwrap();
+        assert!(
+            cursor.last_message_id.is_some(),
+            "Cursor should have last_message_id set after reading"
+        );
+        assert_eq!(
+            cursor.last_message_id.as_ref(),
+            Some(&messages_read[2].id),
+            "Cursor should point to the last message read"
+        );
+
+        // Now refresh should show 0 unread (cursor is at EOF)
         app.refresh_unread_counts();
         assert_eq!(
             app.channel_unread_counts.get("test-channel"),
@@ -2607,12 +2618,30 @@ pub(super) mod tests {
             .send(&Message::text("alice", "Fourth message"))
             .unwrap();
 
+        // Verify we now have 4 total messages
+        let all_messages = channel.read_all().unwrap();
+        assert_eq!(all_messages.len(), 4, "Should have 4 total messages");
+
+        // Verify cursor still points to message 3 (not auto-updated)
+        let cursor_before_refresh = channel.get_cursor("chat-tui").unwrap();
+        assert_eq!(
+            cursor_before_refresh.last_message_id.as_ref(),
+            Some(&messages_read[2].id),
+            "Cursor should still point to message 3 before refresh"
+        );
+
         // Refresh should show 1 unread
         app.refresh_unread_counts();
+
+        // Diagnostic: if test fails, show what we got
+        let actual_count = app.channel_unread_counts.get("test-channel").copied();
         assert_eq!(
-            app.channel_unread_counts.get("test-channel"),
-            Some(&1),
-            "After new message arrives, unread count should be 1"
+            actual_count,
+            Some(1),
+            "After new message arrives, unread count should be 1. \
+             Cursor last_message_id: {:?}, All message IDs: {:?}",
+            cursor_before_refresh.last_message_id,
+            all_messages.iter().map(|m| &m.id).collect::<Vec<_>>()
         );
     }
 
