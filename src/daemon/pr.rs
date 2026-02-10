@@ -4091,10 +4091,10 @@ mod tests {
         // Step 2: Amsterdam died — simulate the inactive-owner check from the function.
         // This mirrors the code block that runs BEFORE should_nudge in the fixed version.
         let owner = "amsterdam".to_string();
-        if !active_coworkers.contains(&owner) {
-            if tracker.has_nudge(42, PrIssueType::GreenWithFeedback) {
-                tracker.clear_nudge(42, PrIssueType::GreenWithFeedback);
-            }
+        if !active_coworkers.contains(&owner)
+            && tracker.has_nudge(42, PrIssueType::GreenWithFeedback)
+        {
+            tracker.clear_nudge(42, PrIssueType::GreenWithFeedback);
         }
 
         // Step 3: should_nudge check — must return true now (cooldown was cleared)
@@ -4107,10 +4107,10 @@ mod tests {
         let mut tracker2 = PrIssueTracker::new();
         tracker2.record_nudge(99, PrIssueType::GreenWithFeedback);
         let active_owner = "lexington".to_string();
-        if !active_coworkers.contains(&active_owner) {
-            if tracker2.has_nudge(99, PrIssueType::GreenWithFeedback) {
-                tracker2.clear_nudge(99, PrIssueType::GreenWithFeedback);
-            }
+        if !active_coworkers.contains(&active_owner)
+            && tracker2.has_nudge(99, PrIssueType::GreenWithFeedback)
+        {
+            tracker2.clear_nudge(99, PrIssueType::GreenWithFeedback);
         }
         assert!(
             !tracker2.should_nudge(99, PrIssueType::GreenWithFeedback),
