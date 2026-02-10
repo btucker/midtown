@@ -2904,16 +2904,11 @@ fn collect_stale_check_effects_with_time(
 ///
 /// This is the PR equivalent of orphan task recovery. Pure decision function that
 /// returns effects, following the same pattern as `reconcile_tasks_in_review()`.
-pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot, state: &DaemonState) -> Vec<Effect> {
+pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Get cached PR data from the last poll
-    let prs = {
-        let cache = state.pr_coworker_cache.read().unwrap();
-        cache.open_prs_data.clone()
-    };
-
-    for pr in prs {
+    // Iterate over open PRs from the snapshot (pre-collected during collect_world_snapshot)
+    for pr in &snap.open_prs_data {
         let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
             Some(n) => n,
             None => continue,
@@ -2945,7 +2940,7 @@ pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot, state: &DaemonState) 
         }
 
         // Check if all CI checks are passing
-        if !all_ci_checks_passed(&pr) {
+        if !all_ci_checks_passed(pr) {
             continue;
         }
 
@@ -4117,6 +4112,7 @@ mod tests {
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -4233,18 +4229,7 @@ mod tests {
             }),
         ];
 
-        // Setup: Mock DaemonState with cached PR data
-        // Only the pr_coworker_cache field is needed for this test.
-        let cache = super::super::PrCoworkerCache {
-            open_prs_data: pr_data,
-            ..Default::default()
-        };
-        let state = super::super::DaemonState {
-            pr_coworker_cache: std::sync::RwLock::new(cache),
-            ..super::super::minimal_daemon_state_for_test()
-        };
-
-        // Setup: Snapshot with reviewed PRs and task associations
+        // Setup: Snapshot with open PR data, reviewed PRs, and task associations
         let mut reviewed_prs = HashSet::new();
         reviewed_prs.insert(42); // PR #42 is reviewed (ORPHANED)
         reviewed_prs.insert(100); // PR #100 is reviewed (has task)
@@ -4254,6 +4239,7 @@ mod tests {
         pr_task_associations.insert(100, "1234".to_string()); // PR #100 has task
 
         let snap = crate::daemon::snapshot::WorldSnapshot {
+            open_prs_data: pr_data,
             reviewed_prs,
             pr_task_associations,
             repo_name: "test-repo".to_string(),
@@ -4262,7 +4248,7 @@ mod tests {
         };
 
         // Execute: Call the pure decision function
-        let effects = reconcile_orphaned_prs(&snap, &state);
+        let effects = reconcile_orphaned_prs(&snap);
 
         // Verify: Should generate exactly one CreateTask effect for PR #42
         assert_eq!(effects.len(), 1, "should generate 1 task for orphaned PR");
@@ -4428,6 +4414,7 @@ mod tests {
             merged_pr_numbers,
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations,
@@ -4509,6 +4496,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations,
@@ -4581,6 +4569,7 @@ mod tests {
             merged_pr_numbers,
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations,

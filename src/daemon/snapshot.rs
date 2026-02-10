@@ -137,6 +137,9 @@ pub struct WorldSnapshot {
     /// Coworkers whose open PR has CI passed AND has review feedback to address.
     /// These coworkers are protected from idle shutdown (prevents spawn→idle→break loop).
     pub review_feedback_pr_coworkers: HashSet<String>,
+    /// Open PR data (from last GitHub poll). Used by orphan PR reconciliation.
+    /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
+    pub open_prs_data: Vec<serde_json::Value>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
     /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
     /// (in-memory assignment tracking). Both paths are checked to prevent the
@@ -376,12 +379,13 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         super::pr::get_coworkers_with_merged_prs(state);
     // Merged PR numbers are populated as a side effect of the above call.
     let merged_pr_numbers = super::pr::get_merged_pr_numbers(state);
-    let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review) = {
+    let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review, open_prs_data) = {
         let cache = state.pr_coworker_cache.read().unwrap();
         (
             cache.ci_passed_pr_owners.clone(),
             cache.review_feedback_pr_owners.clone(),
             cache.prs_needing_review,
+            cache.open_prs_data.clone(),
         )
     };
 
@@ -450,16 +454,11 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         posted.clone()
     };
 
-    // Pre-check review status for all assigned PRs so decision logic doesn't need API calls
+    // Get all reviewed PRs from persistent state (not just assigned ones)
+    // This ensures orphaned PRs (those without active reviewers/tasks) are included
     let reviewed_prs = {
-        let pr_numbers: Vec<u64> = reviewer_pr_assignments.values().copied().collect();
-        let mut reviewed = HashSet::new();
-        for pr in pr_numbers {
-            if state.is_pr_reviewed(pr).await {
-                reviewed.insert(pr);
-            }
-        }
-        reviewed
+        let ps = state.persistent_state.lock().await;
+        ps.github.reviewed_prs.clone()
     };
 
     // ── GitHub rate limit ────────────────────────────────────────────────
@@ -564,6 +563,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         merged_pr_numbers,
         ci_passed_pr_coworkers,
         review_feedback_pr_coworkers,
+        open_prs_data,
         pending_task_owners,
         tasks_with_open_prs,
         pr_task_associations,
@@ -628,6 +628,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         merged_pr_numbers: HashSet::new(),
         ci_passed_pr_coworkers: HashSet::new(),
         review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
         pending_task_owners: HashSet::new(),
         tasks_with_open_prs: HashMap::new(),
         pr_task_associations: HashMap::new(),
@@ -727,6 +728,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -816,6 +818,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -970,6 +973,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -1043,6 +1047,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
