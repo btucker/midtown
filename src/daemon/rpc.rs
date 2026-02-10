@@ -1777,9 +1777,38 @@ pub(super) async fn handle_channel_post(
         tracker.insert(key, now);
     }
 
-    // Use provided channel or default to main channel
-    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
-    let msg = Message::for_channel(channel_name, from, content.clone(), msg_type.clone());
+    // Determine target channel:
+    // 1. If channel is explicitly provided, use it
+    // 2. For coworkers with an active task, route to the task's topic channel
+    // 3. Otherwise, use the main channel
+    let channel_name = if let Some(ch) = channel {
+        ch.to_string()
+    } else if is_coworker_sender(from) {
+        // Look up coworker's current task and route to its topic channel
+        let records = state.coworker_records.read().await;
+        if let Some(record) = records.get(from) {
+            if let Some(task_id) = record.task_id {
+                let ps = state.persistent_state.lock().await;
+                if let Some(task_channel) = ps.task_channel.get(&task_id.to_string()) {
+                    debug!(
+                        "Routing message from {} to topic channel '{}' (task !{})",
+                        from, task_channel, task_id
+                    );
+                    task_channel.clone()
+                } else {
+                    state.channel_router.default_channel_name().to_string()
+                }
+            } else {
+                state.channel_router.default_channel_name().to_string()
+            }
+        } else {
+            state.channel_router.default_channel_name().to_string()
+        }
+    } else {
+        state.channel_router.default_channel_name().to_string()
+    };
+
+    let msg = Message::for_channel(&channel_name, from, content.clone(), msg_type.clone());
 
     // Use async version to avoid blocking the runtime during file lock acquisition
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
