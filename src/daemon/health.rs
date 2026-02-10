@@ -1069,6 +1069,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],

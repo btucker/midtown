@@ -1216,7 +1216,11 @@ pub(super) fn spawn_for_pending_tasks(
         // Prevents nudge/spawn loops where grouped tasks get re-assigned every tick
         // because the busy check is bypassed for grouped tasks. The coworker may be
         // busy with this exact task from a previous tick's assignment.
-        if state.is_coworker_assigned_to_task(&coworker_name, &task.id) {
+        if snap
+            .coworker_task_assignments
+            .get(&coworker_name.to_lowercase())
+            .is_some_and(|assigned_task_id| assigned_task_id == &task.id)
+        {
             debug!(
                 "Task !{}: skipping {} (already assigned to this task)",
                 task.id, coworker_name
@@ -2149,6 +2153,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             task_channel: HashMap::new(),
@@ -2281,6 +2286,7 @@ mod tests {
             active_session_ids: HashSet::new(),
             active_reviewers: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             merged_pr_numbers: HashSet::new(),
             running_coworkers: vec![],
             active_coworkers: vec![],
@@ -2390,6 +2396,7 @@ mod tests {
             active_session_ids: HashSet::new(),
             // broadway has NO in_progress tasks (both are still pending)
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
@@ -2475,6 +2482,7 @@ mod tests {
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
@@ -2564,6 +2572,7 @@ mod tests {
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
@@ -2665,6 +2674,7 @@ mod tests {
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![
                 // Existing in-progress task for broadway on PR #100 (so Case 2 groups to broadway)
                 (
@@ -2788,6 +2798,7 @@ mod tests {
             coworker_start_times: HashMap::new(),
             headless_process_health: HashMap::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -2914,6 +2925,7 @@ mod tests {
             coworker_start_times: HashMap::new(),
             headless_process_health: HashMap::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -3061,6 +3073,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             task_channel: HashMap::new(),
@@ -3195,6 +3208,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks,
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -3355,8 +3369,17 @@ mod tests {
         // Simulate the nudge executing and recording the assignment
         state.record_task_assignment("york", "1107");
 
-        // Tick 2: Task !1107 is still pending, york is busy with !1107 now
-        let effects_tick2 = spawn_for_pending_tasks(&snap, &state);
+        // Tick 2: Task !1107 is still pending, york is busy with !1107 now.
+        // Create a new snapshot that includes the assignment.
+        let snap_tick2 = snapshot::WorldSnapshot {
+            coworker_task_assignments: {
+                let mut assignments = HashMap::new();
+                assignments.insert("york".to_string(), "1107".to_string());
+                assignments
+            },
+            ..snap
+        };
+        let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
         let nudge_count_tick2 = effects_tick2
             .iter()
             .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
