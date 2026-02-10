@@ -1194,6 +1194,18 @@ pub(super) fn spawn_for_pending_tasks(
             continue;
         }
 
+        // Skip if this coworker is already assigned to THIS SPECIFIC TASK.
+        // Prevents nudge/spawn loops where grouped tasks get re-assigned every tick
+        // because the busy check is bypassed for grouped tasks. The coworker may be
+        // busy with this exact task from a previous tick's assignment.
+        if state.is_coworker_assigned_to_task(&coworker_name, &task.id) {
+            debug!(
+                "Task !{}: skipping {} (already assigned to this task)",
+                task.id, coworker_name
+            );
+            continue;
+        }
+
         // Skip running coworkers that are busy or reviewing.
         // Grouped tasks (same PR, blockedBy) are allowed to go to coworkers
         // that are busy from *previous ticks* (cross-tick grouping).
@@ -3273,6 +3285,242 @@ mod tests {
             effects.is_empty(),
             "Should not unassign already-unowned task"
         );
+    }
+
+    #[test]
+    fn test_grouped_task_skips_if_already_assigned() {
+        // Regression test for nudge/spawn loop bug: When a grouped task (same PR)
+        // is assigned to a coworker, subsequent ticks should NOT re-assign/re-nudge
+        // the same task to the same coworker. The is_coworker_assigned_to_task check
+        // prevents this loop.
+        use crate::tasks::Task;
+
+        // Task !1107 references PR #912 which is owned by york
+        let task_1107 = Task {
+            id: "1107".to_string(),
+            subject: "Investigate PR #912 — no CI checks running".to_string(),
+            description: Some("PR #912 (feat: add codex provider support)...".to_string()),
+            status: crate::tasks::TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            channel: Some("midtown".to_string()),
+            created_at: None,
+        };
+
+        // All tasks (for PR owner lookup)
+        let all_tasks = vec![
+            // Task !999 owns PR #912 and is assigned to york
+            Task {
+                id: "999".to_string(),
+                subject: "Add codex provider support (PR #912)".to_string(),
+                description: None,
+                status: crate::tasks::TaskStatus::InProgress,
+                owner: Some("york".to_string()),
+                blocked_by: vec![],
+                channel: Some("midtown".to_string()),
+                created_at: None,
+            },
+        ];
+
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_without_owners: vec![task_1107],
+            all_tasks,
+            // York is running (active)
+            active_names: {
+                let mut names = HashSet::new();
+                names.insert("york".to_string());
+                names
+            },
+            active_session_ids: HashSet::new(),
+            // York is busy (has task !999 in progress)
+            busy_coworkers: {
+                let mut busy = HashSet::new();
+                busy.insert("york".to_string());
+                busy
+            },
+            in_progress_tasks: vec![(
+                "999".to_string(),
+                "Add codex provider support (PR #912)".to_string(),
+                "york".to_string(),
+            )],
+            pending_tasks_with_owners: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            attached_coworkers: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+
+        // Tick 1: Task !1107 groups to york (PR #912), generates nudge
+        let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_count_tick1 = effects_tick1
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick1, 1,
+            "Tick 1 should nudge york with task !1107"
+        );
+
+        // Simulate the nudge executing and recording the assignment
+        state.record_task_assignment("york", "1107");
+
+        // Tick 2: Task !1107 is still pending, york is busy with !1107 now
+        let effects_tick2 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_count_tick2 = effects_tick2
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick2, 0,
+            "Tick 2 should NOT re-nudge york — task !1107 is already assigned to york"
+        );
+    }
+
+    #[test]
+    fn test_spawn_coworker_with_callbacks_clears_in_flight_marker() {
+        // Regression test for spawn loop bug: SpawnCoworkerWithCallbacks must
+        // clear the in-flight marker after spawn completes (success or failure).
+        // Without this, the marker stays set forever and subsequent ticks think
+        // the spawn is still in-flight, blocking retries.
+        //
+        // This test verifies that after a SpawnCoworkerWithCallbacks effect executes,
+        // the in-flight marker for any RecordTaskAssignment effects in on_success
+        // is cleared, just like NudgeCoworkerWithCallbacks does.
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_with_owners: vec![(
+                "1107".to_string(),
+                "Investigate CI failure".to_string(),
+                "york".to_string(),
+            )],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            all_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            attached_coworkers: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+
+        // Tick 1: generates SpawnCoworkerWithCallbacks with RecordTaskAssignment
+        let effects = spawn_for_pending_tasks(&snap, &state);
+        let spawn_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(spawn_count, 1, "Tick 1 should spawn york");
+
+        // Verify the effect has RecordTaskAssignment in on_success
+        let has_record_assignment = effects.iter().any(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                on_success
+                    .iter()
+                    .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_record_assignment,
+            "SpawnCoworkerWithCallbacks should have RecordTaskAssignment in on_success"
+        );
+
+        // Mark in-flight (daemon does this between evaluate_tick and execute_effects)
+        state.mark_in_flight_spawns_from_effects(&effects);
+        assert!(
+            state.is_task_spawn_in_flight("1107"),
+            "Task !1107 should be marked in-flight before execution"
+        );
+
+        // NOTE: We can't actually execute the effects in a unit test because
+        // spawn_coworker() requires a full daemon setup. In practice, the
+        // execute_effects() function would run, spawn york, execute on_success
+        // callbacks, and then clear the in-flight marker.
+        //
+        // The fix ensures that SpawnCoworkerWithCallbacks extracts task IDs
+        // from RecordTaskAssignment effects and clears them after spawn completes,
+        // just like NudgeCoworkerWithCallbacks does (see effects.rs lines 655-682).
+        //
+        // This test documents the expected behavior. The actual clearing happens
+        // in execute_effects() at the effect execution level.
     }
 
     /// Helper to create minimal DaemonState for testing

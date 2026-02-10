@@ -846,6 +846,17 @@ impl DaemonState {
         busy.into_iter().collect()
     }
 
+    /// Check if a coworker is already assigned to a specific task.
+    ///
+    /// Used to prevent duplicate task assignment in Case 2 grouped task logic.
+    /// Returns true if the coworker's current assignment matches the given task_id.
+    pub(crate) fn is_coworker_assigned_to_task(&self, coworker: &str, task_id: &str) -> bool {
+        let assignments = self.coworker_task_assignments.lock().unwrap();
+        assignments
+            .get(&coworker.to_lowercase())
+            .is_some_and(|a| a.task_id == task_id)
+    }
+
     /// Record a pending nudge sent to a coworker.
     ///
     /// Called after successfully sending a nudge via `NudgeCoworker` or

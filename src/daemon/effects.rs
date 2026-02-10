@@ -632,6 +632,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 on_success,
                 on_failure,
             } => {
+                // Extract task IDs from on_success RecordTaskAssignment effects
+                // to clear their in-flight markers after the spawn completes.
+                let task_ids: Vec<String> = on_success
+                    .iter()
+                    .filter_map(|e| {
+                        if let Effect::RecordTaskAssignment { task_id, .. } = e {
+                            Some(task_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
@@ -644,6 +657,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // Recursively execute failure follow-ups
                         Box::pin(execute_effects(on_failure, state)).await;
                     }
+                }
+                // Clear in-flight markers regardless of success/failure,
+                // so these tasks can be retried on the next tick if needed.
+                for task_id in &task_ids {
+                    state.clear_task_spawn_in_flight(task_id);
                 }
             }
             Effect::NudgeCoworkerWithCallbacks {
