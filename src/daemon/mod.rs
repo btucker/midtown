@@ -898,14 +898,6 @@ impl DaemonState {
         }
     }
 
-    /// Send a message to the appropriate channel (based on Message.channel field)
-    /// and broadcast it to WebSocket clients.
-    fn send_and_broadcast(&self, message: &Message) -> crate::Result<()> {
-        self.channel_router.send(message)?;
-        self.broadcast_web_update(web::channel_message_update(message));
-        Ok(())
-    }
-
     /// Async version of send_and_broadcast that uses spawn_blocking for the channel write.
     ///
     /// The channel_router.send() method acquires a file lock that can take up to 2 seconds under
