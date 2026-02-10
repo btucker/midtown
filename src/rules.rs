@@ -21,6 +21,9 @@ pub(crate) struct CoworkerSnapshot {
     pub name: String,
     pub started_at: DateTime<Utc>,
     pub isolated_tasks: bool,
+    /// Claude Code session UUID, if known. Enables session-first lookups
+    /// alongside name-based lookups during the multi-session migration.
+    pub session_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +669,105 @@ pub(crate) fn decide_stuck_coworker_restarts(
     restarts
 }
 
+/// A reviewer detected as stuck (no events for the stuck duration).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StuckReviewerRestart {
+    pub name: String,
+    pub pr_number: u64,
+    pub restart_count: u32,
+}
+
+/// Detect reviewers whose headless process has not emitted events for
+/// `stuck_duration`, indicating a stuck/hung reviewer session.
+///
+/// Parallel to `decide_stuck_coworker_restarts()` but for reviewers tracked
+/// by PR number in `GitHubState`, not by task. Adds a `max_restarts` limit
+/// to prevent infinite restart loops for the same PR.
+///
+/// A reviewer is only considered stuck if:
+/// 1. Process is alive (`is_alive` = true)
+/// 2. No stream events received for `stuck_duration`
+/// 3. Has an active PR assignment (in `reviewer_pr_assignments`)
+/// 4. `restart_count < max_restarts` (backoff limit not reached)
+///
+/// Skips reviewers with usage limits, API errors, running subagents, or
+/// pending tools — they are paused/busy but not stuck.
+///
+/// Pure function: takes ProcessHealth data and returns restart decisions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide_stuck_reviewer_restarts(
+    process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
+    reviewer_pr_assignments: &HashMap<String, u64>,
+    reviewer_restart_counts: &HashMap<u64, u32>,
+    usage_limited_coworkers: &HashSet<String>,
+    api_error_coworkers: &HashSet<String>,
+    attached_coworkers: &HashSet<String>,
+    now_utc: DateTime<Utc>,
+    stuck_duration: Duration,
+    max_restarts: u32,
+) -> Vec<StuckReviewerRestart> {
+    let stuck_threshold = chrono::Duration::from_std(stuck_duration).unwrap_or_default();
+    let mut restarts = Vec::new();
+
+    for (name, health) in process_health {
+        // Only check alive processes
+        if !health.is_alive {
+            continue;
+        }
+        // Only check coworkers that have a reviewer assignment
+        let pr_number = match reviewer_pr_assignments.get(name) {
+            Some(pr) => *pr,
+            None => continue,
+        };
+        // Skip coworkers at usage limit
+        if usage_limited_coworkers.contains(&name.to_lowercase()) {
+            continue;
+        }
+        // Skip coworkers with API errors
+        if api_error_coworkers.contains(&name.to_lowercase()) {
+            continue;
+        }
+        // Skip attached coworkers
+        if attached_coworkers.contains(&name.to_lowercase()) {
+            continue;
+        }
+        // Skip coworkers with running subagents
+        if health.has_running_subagent {
+            continue;
+        }
+        // Skip coworkers with pending tool executions
+        if health.has_pending_tool {
+            continue;
+        }
+        // Check last_event_at — no events yet means just spawned, skip
+        let last_event = match health.last_event_at {
+            Some(t) => t,
+            None => continue,
+        };
+        let elapsed = now_utc.signed_duration_since(last_event);
+        if elapsed < stuck_threshold {
+            continue;
+        }
+
+        // Check restart count — stop if we've exceeded the limit
+        let current_count = reviewer_restart_counts
+            .get(&pr_number)
+            .copied()
+            .unwrap_or(0);
+        if current_count >= max_restarts {
+            continue;
+        }
+
+        restarts.push(StuckReviewerRestart {
+            name: name.clone(),
+            pr_number,
+            restart_count: current_count,
+        });
+    }
+
+    restarts
+}
+
 // ---------------------------------------------------------------------------
 /// Check if pane content indicates an active (not recovered) usage limit.
 ///
@@ -1075,42 +1177,6 @@ pub fn decide_review_complete_action(
 }
 
 // ---------------------------------------------------------------------------
-// Reviewer liveness decision
-// ---------------------------------------------------------------------------
-
-/// Decision about whether a reviewer assignment is still valid.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReviewerLivenessDecision {
-    /// Reviewer is still active and working — skip spawning a replacement.
-    Active,
-    /// Reviewer is dead (not in active_names) — spawn a replacement.
-    Dead,
-    /// Reviewer is running but usage-limited — can't complete review, spawn a replacement.
-    UsageLimited,
-}
-
-/// Pure decision function: should we spawn a replacement reviewer for a PR?
-///
-/// Checks whether the assigned reviewer is still alive and capable of completing
-/// the review. Uses snapshot data only (no I/O).
-///
-/// - `active_names`: coworkers currently running (from `WorldSnapshot::active_names`)
-/// - `usage_limited_coworkers`: coworkers at usage limit (from `WorldSnapshot::usage_limited_coworkers`)
-pub(crate) fn decide_reviewer_liveness(
-    reviewer_name: &str,
-    active_names: &std::collections::HashSet<String>,
-    usage_limited_coworkers: &std::collections::HashSet<String>,
-) -> ReviewerLivenessDecision {
-    if !active_names.contains(reviewer_name) {
-        ReviewerLivenessDecision::Dead
-    } else if usage_limited_coworkers.contains(reviewer_name) {
-        ReviewerLivenessDecision::UsageLimited
-    } else {
-        ReviewerLivenessDecision::Active
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Task assignment decision types and functions
 // ---------------------------------------------------------------------------
 
@@ -1502,6 +1568,7 @@ mod tests {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
             isolated_tasks: false,
+            session_id: None,
         }
     }
 
@@ -1510,6 +1577,7 @@ mod tests {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
             isolated_tasks: true,
+            session_id: None,
         }
     }
 
@@ -4386,96 +4454,214 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
         );
     }
 
-    // ── Reviewer liveness decision tests ──────────────────────────────
+    // -----------------------------------------------------------------------
+    // decide_stuck_reviewer_restarts tests
+    // -----------------------------------------------------------------------
 
     #[test]
-    fn reviewer_active_when_in_active_names_and_not_usage_limited() {
-        let active_names: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-        let usage_limited: HashSet<String> = HashSet::new();
+    fn stuck_reviewer_detected() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited),
-            ReviewerLivenessDecision::Active,
-            "reviewer in active_names and not usage-limited should be Active"
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "riverside".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                exit_code: None,
+            },
+        );
+
+        let mut reviewer_assignments = HashMap::new();
+        reviewer_assignments.insert("riverside".to_string(), 42u64);
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &health,
+            &reviewer_assignments,
+            &HashMap::new(), // no prior restarts
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(300),
+            2,
+        );
+
+        assert_eq!(restarts.len(), 1);
+        assert_eq!(restarts[0].name, "riverside");
+        assert_eq!(restarts[0].pr_number, 42);
+        assert_eq!(restarts[0].restart_count, 0);
+    }
+
+    #[test]
+    fn stuck_reviewer_skipped_usage_limited() {
+        use crate::daemon::snapshot::ProcessHealth;
+
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "york".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: true,
+                has_api_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                exit_code: None,
+            },
+        );
+
+        let mut reviewer_assignments = HashMap::new();
+        reviewer_assignments.insert("york".to_string(), 42u64);
+
+        let mut usage_limited = HashSet::new();
+        usage_limited.insert("york".to_string());
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &health,
+            &reviewer_assignments,
+            &HashMap::new(),
+            &usage_limited,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(300),
+            2,
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "usage-limited reviewer should be skipped"
         );
     }
 
     #[test]
-    fn reviewer_dead_when_not_in_active_names() {
-        let active_names: HashSet<String> =
-            ["park", "madison"].iter().map(|s| s.to_string()).collect();
-        let usage_limited: HashSet<String> = HashSet::new();
+    fn stuck_reviewer_skipped_subagent() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited),
-            ReviewerLivenessDecision::Dead,
-            "reviewer not in active_names should be Dead"
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "park".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: true,
+                has_pending_tool: false,
+                exit_code: None,
+            },
+        );
+
+        let mut reviewer_assignments = HashMap::new();
+        reviewer_assignments.insert("park".to_string(), 42u64);
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &health,
+            &reviewer_assignments,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(300),
+            2,
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "reviewer with running subagent should be skipped"
         );
     }
 
     #[test]
-    fn reviewer_dead_when_active_names_empty() {
-        let active_names: HashSet<String> = HashSet::new();
-        let usage_limited: HashSet<String> = HashSet::new();
+    fn stuck_reviewer_max_restarts_stops_loop() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited),
-            ReviewerLivenessDecision::Dead,
-            "reviewer should be Dead when no coworkers are active"
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "broadway".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                exit_code: None,
+            },
+        );
+
+        let mut reviewer_assignments = HashMap::new();
+        reviewer_assignments.insert("broadway".to_string(), 42u64);
+
+        // PR 42 already has 2 restarts (= MAX_REVIEWER_RESTARTS)
+        let mut restart_counts = HashMap::new();
+        restart_counts.insert(42u64, 2u32);
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &health,
+            &reviewer_assignments,
+            &restart_counts,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(300),
+            2,
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "reviewer at max restarts should not be flagged (loop broken)"
         );
     }
 
     #[test]
-    fn reviewer_usage_limited_when_active_but_at_limit() {
-        let active_names: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-        let usage_limited: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
+    fn stuck_reviewer_no_assignment_not_flagged() {
+        use crate::daemon::snapshot::ProcessHealth;
 
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited),
-            ReviewerLivenessDecision::UsageLimited,
-            "reviewer active but usage-limited should be UsageLimited (can't complete review)"
-        );
-    }
-
-    #[test]
-    fn reviewer_dead_takes_priority_over_usage_limited() {
-        // If a coworker is both not active and in usage_limited (stale data),
-        // Dead should take priority because the process isn't running.
-        let active_names: HashSet<String> = HashSet::new();
-        let usage_limited: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited),
-            ReviewerLivenessDecision::Dead,
-            "dead reviewer should return Dead even if usage_limited contains the name"
-        );
-    }
-
-    #[test]
-    fn reviewer_liveness_unaffected_by_other_coworkers() {
-        // Other coworkers being active/usage-limited shouldn't affect this reviewer's decision
-        let active_names: HashSet<String> = ["park", "madison", "amsterdam"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let usage_limited: HashSet<String> = ["park"].iter().map(|s| s.to_string()).collect();
-
-        // york is not in active_names
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited),
-            ReviewerLivenessDecision::Dead,
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
+            "madison".to_string(),
+            ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(now - chrono::Duration::minutes(10)),
+                has_usage_limit: false,
+                has_api_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                exit_code: None,
+            },
         );
 
-        // amsterdam is active and not usage-limited
-        assert_eq!(
-            decide_reviewer_liveness("amsterdam", &active_names, &usage_limited),
-            ReviewerLivenessDecision::Active,
+        // madison has NO reviewer assignment
+        let reviewer_assignments = HashMap::new();
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &health,
+            &reviewer_assignments,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            Duration::from_secs(300),
+            2,
         );
 
-        // park is active but usage-limited
-        assert_eq!(
-            decide_reviewer_liveness("park", &active_names, &usage_limited),
-            ReviewerLivenessDecision::UsageLimited,
+        assert!(
+            restarts.is_empty(),
+            "coworker without PR assignment should not be flagged"
         );
     }
 }

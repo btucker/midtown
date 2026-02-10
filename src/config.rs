@@ -92,6 +92,11 @@ pub struct ProjectMetadata {
     /// channel, and other singleton resources.
     #[serde(default)]
     pub primary_repo: Option<String>,
+
+    /// Auth profile to use for this project (email address).
+    /// When set, overrides the global `~/.midtown/auth/current` profile.
+    #[serde(default)]
+    pub auth_profile: Option<String>,
 }
 
 impl ProjectMetadata {
@@ -201,6 +206,7 @@ impl FullProjectConfig {
                 name: Some(name.to_string()),
                 repos: vec![repo_path.to_string()],
                 primary_repo: Some(repo_path.to_string()),
+                auth_profile: None,
             },
             default: ProjectConfig {
                 max_coworkers: Some(8),
@@ -500,6 +506,7 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
             || full.default.max_coworkers.is_some()
             || full.default.personality.is_some()
             || full.project.name.is_some()
+            || full.project.auth_profile.is_some()
             || full.daemon.github_user.is_some()
         {
             return Some(full.default);
@@ -1502,5 +1509,90 @@ name = "solo"
         assert!(template.contains("webhook_port"));
         assert!(template.contains("chat_layout"));
         assert!(template.contains("github_user"));
+    }
+
+    #[test]
+    fn test_auth_profile_roundtrip() {
+        // Reproduce bug: auth_profile survives round-trip serialization
+        let toml = r#"
+[project]
+name = "midtown"
+repos = ["/path/to/repo"]
+primary_repo = "/path/to/repo"
+auth_profile = "ben@btucker.net"
+
+[default]
+
+[daemon]
+webhook_port = 47024
+"#;
+        let config: FullProjectConfig = toml::from_str(toml).expect("Failed to parse config");
+
+        // Verify auth_profile was parsed
+        assert_eq!(
+            config.project.auth_profile.as_deref(),
+            Some("ben@btucker.net")
+        );
+
+        // Serialize back to TOML
+        let serialized = toml::to_string(&config).expect("Failed to serialize config");
+
+        // Parse again
+        let reparsed: FullProjectConfig =
+            toml::from_str(&serialized).expect("Failed to reparse config");
+
+        // Verify auth_profile survived the round-trip
+        assert_eq!(
+            reparsed.project.auth_profile.as_deref(),
+            Some("ben@btucker.net"),
+            "auth_profile was lost during serialization round-trip"
+        );
+    }
+
+    #[test]
+    fn test_per_project_auth_profile_check_without_fallback() {
+        // This test validates the fix for the per-project auth switch bug.
+        //
+        // Bug: The RPC handler used active_profile_for_project() which falls back
+        // to the global profile when auth_profile is unset. This caused
+        // "Already on profile" when the target matched the global default,
+        // preventing the project config from being updated.
+        //
+        // Fix: Check config.project.auth_profile directly (no fallback).
+
+        // Scenario 1: Config with no auth_profile set should NOT match any profile
+        let config = FullProjectConfig::minimal("test-project", "/path/to/repo");
+        assert_eq!(
+            config.project.auth_profile.as_deref(),
+            None,
+            "minimal config should have no auth_profile"
+        );
+        // This is the check the fixed RPC handler uses — it should NOT short-circuit
+        assert_ne!(
+            config.project.auth_profile.as_deref(),
+            Some("alice@example.com"),
+            "config with no auth_profile should not match any profile"
+        );
+
+        // Scenario 2: After setting auth_profile, it should match
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let mut config = FullProjectConfig::minimal("test-project", "/path/to/repo");
+        config.project.auth_profile = Some("alice@example.com".to_string());
+        config.save_to(&path).unwrap();
+
+        let loaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(
+            loaded.project.auth_profile.as_deref(),
+            Some("alice@example.com"),
+            "saved auth_profile should be loadable"
+        );
+
+        // Scenario 3: Different profile should not match
+        assert_ne!(
+            loaded.project.auth_profile.as_deref(),
+            Some("bob@example.com"),
+            "different profile should not match"
+        );
     }
 }

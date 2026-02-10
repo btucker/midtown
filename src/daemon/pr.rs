@@ -7,7 +7,7 @@
 //! - Process pending review spawns from webhook-triggered delays
 //! - Nudge PR owners when their PR receives comments
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -243,13 +243,40 @@ pub(super) async fn poll_prs_for_issues(
     // Get running coworkers for cleanup_expired_preserving, which removes timed-out
     // reviewer assignments but preserves those for still-running reviewers (i.e., reviews
     // that are taking longer than the timeout but the reviewer is still actively working).
-    // Exclude usage-limited coworkers: they're running but can't complete reviews,
-    // so their expired assignments should be cleaned up to allow reassignment.
+    // Only include coworkers that own a review worktree branch — if a reviewer name was
+    // reused for dev work after restart, the stale assignment should expire naturally
+    // rather than being preserved by the dev coworker's presence.
+    // Also exclude usage-limited coworkers: they can't complete reviews.
+    // Normalize to lowercase for consistent matching — worktree_branch_owners
+    // comes from WorktreeAssignment.current_coworker (external input), while
+    // running_coworkers uses names from AVENUE_NAMES (always lowercase).
+    let review_branch_owners: HashSet<String> = snap
+        .worktree_branch_owners
+        .iter()
+        .filter(|(branch, _)| branch.starts_with("review-pr-"))
+        .map(|(_, owner)| owner.to_lowercase())
+        .collect();
     let running_coworker_names: HashSet<String> = snap
         .running_coworkers
         .iter()
         .map(|c| c.name.clone())
-        .filter(|name| !snap.usage_limited_coworkers.contains(&name.to_lowercase()))
+        .filter(|name| {
+            review_branch_owners.contains(&name.to_lowercase())
+                && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
+        })
+        .collect();
+    // Build session ID set for same reviewer-subset — enables session-based matching
+    // in cleanup_expired_preserving when assignments carry a reviewer_session_id.
+    let running_reviewer_session_ids: HashSet<String> = snap
+        .running_coworkers
+        .iter()
+        .filter(|c| {
+            review_branch_owners.contains(&c.name.to_lowercase())
+                && !snap
+                    .usage_limited_coworkers
+                    .contains(&c.name.to_lowercase())
+        })
+        .filter_map(|c| c.session_id.clone())
         .collect();
 
     // Get list of idle coworkers for handoff decisions
@@ -270,7 +297,9 @@ pub(super) async fn poll_prs_for_issues(
 
     // Run gh pr list command (include createdAt and isDraft for review filtering)
     // Include state field to filter out merged/closed PRs after restart
-    // Include comments and author for polling-based review comment detection
+    // NOTE: comments and author are fetched on-demand in collect_comment_notification_effects
+    // to reduce GraphQL cost (bulk poll runs every 30s for ALL PRs, but comment detection
+    // only needs to check PRs owned by coworkers/lead)
     let output = tokio::process::Command::new("gh")
         .args([
             "pr",
@@ -278,7 +307,7 @@ pub(super) async fn poll_prs_for_issues(
             "--state",
             "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,comments,author",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
         ])
         .output()
         .await?;
@@ -319,8 +348,24 @@ pub(super) async fn poll_prs_for_issues(
     }
     {
         let mut ps = state.persistent_state.lock().await;
+        ps.github.cleanup_expired_preserving(
+            &running_coworker_names,
+            Some(&running_reviewer_session_ids),
+        );
+        // Backfill reviewer_session_id for assignments created before the session
+        // started (optimistic assignment pattern: assign before spawn completes).
+        let reviewer_session_map: HashMap<String, String> = snap
+            .running_coworkers
+            .iter()
+            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
+            .filter_map(|c| {
+                c.session_id
+                    .as_ref()
+                    .map(|sid| (c.name.clone(), sid.clone()))
+            })
+            .collect();
         ps.github
-            .cleanup_expired_preserving(&running_coworker_names);
+            .backfill_reviewer_session_ids(&reviewer_session_map);
         ps.github.cleanup_stale_webhook_events();
     }
     {
@@ -408,8 +453,10 @@ pub(super) async fn poll_prs_for_issues(
             .collect();
         let mut ps = state.persistent_state.lock().await;
         ps.github.cleanup_closed_prs(&open_pr_numbers);
-        ps.github
-            .cleanup_expired_preserving(&running_coworker_names);
+        ps.github.cleanup_expired_preserving(
+            &running_coworker_names,
+            Some(&running_reviewer_session_ids),
+        );
         if let Err(e) = ps.save_for_repo(&state.repo_name) {
             warn!("Failed to save daemon-state.json after cleanup: {}", e);
         }
@@ -568,9 +615,7 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
-    effects.extend(
-        collect_stuck_condition_effects(state, &prs, &reviewed_prs, prs_needing_review).await,
-    );
+    effects.extend(collect_stuck_condition_effects(state, &prs, &reviewed_prs).await);
 
     // Detect stale CI checks and trigger re-runs
     effects.extend(collect_stale_check_effects(state, &prs).await);
@@ -690,6 +735,7 @@ fn pr_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -727,6 +773,7 @@ fn pr_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -750,6 +797,7 @@ fn pr_action_to_effects(
                         issue_type,
                         get_issue_action(issue_type)
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -787,6 +835,7 @@ fn pr_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -819,14 +868,10 @@ fn pr_action_to_effects(
 /// (comment-based or formal), pre-collected before this function to keep
 /// decision logic free of async API calls.
 ///
-/// The `prs_needing_review` parameter is the pre-computed count of PRs that
-/// need review, calculated by the caller to maintain pure function behavior
-/// (no cache writes inside effect collection).
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
-    prs_needing_review: usize,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -1028,6 +1073,7 @@ async fn collect_stuck_condition_effects(
                         effects.push(Effect::NudgeCoworker {
                             name: name.clone(),
                             message: nudge_msg,
+                            session_id: None,
                         });
                         // Post to channel so it's visible
                         effects.push(Effect::PostSystemMessage {
@@ -1056,34 +1102,6 @@ async fn collect_stuck_condition_effects(
             } else {
                 tracker.clear(name, StuckConditionType::SilentCoworker);
             }
-        }
-    }
-
-    // --- Scenario 5: Review backlog ---
-    // prs_needing_review is passed in from the caller (computed and cached before
-    // calling this function to maintain pure function behavior).
-    {
-        let current_review_count = {
-            let ps = state.persistent_state.lock().await;
-            ps.github.active_count()
-        };
-
-        // Backlog exists when more PRs need review than we can handle
-        if prs_needing_review > MAX_CONCURRENT_REVIEWS
-            && current_review_count >= MAX_CONCURRENT_REVIEWS
-        {
-            tracker.track("backlog", StuckConditionType::ReviewBacklog);
-            if tracker.should_nudge("backlog", StuckConditionType::ReviewBacklog) {
-                let nudge = format!(
-                    "@lead {} PRs need review but I'm at the max concurrent review limit ({}/{}) — some PRs may wait longer than usual",
-                    prs_needing_review, current_review_count, MAX_CONCURRENT_REVIEWS,
-                );
-                effects.extend(stuck_nudge_effects(&nudge));
-                tracker.record_nudge("backlog", StuckConditionType::ReviewBacklog);
-                nudge_count += 1;
-            }
-        } else {
-            tracker.clear("backlog", StuckConditionType::ReviewBacklog);
         }
     }
 
@@ -1122,6 +1140,35 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
     }]
 }
 
+/// Fetch PR details with comments and author for a specific PR.
+///
+/// This is used by `collect_comment_notification_effects` to fetch comment data
+/// on-demand, avoiding the GraphQL cost of fetching comments for ALL open PRs
+/// in the bulk poll.
+async fn fetch_pr_comments(
+    pr_number: u64,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "comments,author",
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr view failed for PR #{}: {}", pr_number, stderr).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pr_data: serde_json::Value = serde_json::from_str(&stdout)?;
+    Ok(pr_data)
+}
+
 /// Polling fallback for review comment notifications.
 ///
 /// When webhooks are degraded, this detects new review comments by comparing
@@ -1129,8 +1176,9 @@ fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
 /// (`PrIssueType::ReviewComment`) to avoid duplicate notifications.
 ///
 /// For each coworker-owned PR:
-/// 1. Count non-owner comments (excludes PR author and coworker's own comments)
-/// 2. If count increased since last poll, nudge/spawn the owner AND create a review
+/// 1. Fetch comments on-demand (not included in bulk poll to reduce GraphQL cost)
+/// 2. Count non-owner comments (excludes PR author and coworker's own comments)
+/// 3. If count increased since last poll, nudge/spawn the owner AND create a review
 ///    feedback task for consistent "task !X" formatting
 ///
 /// This enables the polling path to fill the gap identified in graceful degradation:
@@ -1169,8 +1217,17 @@ async fn collect_comment_notification_effects(
 
         // Check for lead/* branches first, before filtering by coworker ownership
         if is_lead_branch(head_ref) {
+            // Fetch PR details with comments on-demand
+            let pr_with_comments = match fetch_pr_comments(pr_number).await {
+                Ok(data) => data,
+                Err(e) => {
+                    debug!("Failed to fetch comments for PR #{}: {}", pr_number, e);
+                    continue;
+                }
+            };
+
             // Count all comments for lead PRs
-            let non_owner_count = count_non_owner_comments(pr, None);
+            let non_owner_count = count_non_owner_comments(&pr_with_comments, None);
 
             // Check if there are new comments since last poll
             let has_new = {
@@ -1221,8 +1278,17 @@ async fn collect_comment_notification_effects(
                 None => continue, // Not a coworker PR
             };
 
+        // Fetch PR details with comments on-demand
+        let pr_with_comments = match fetch_pr_comments(pr_number).await {
+            Ok(data) => data,
+            Err(e) => {
+                debug!("Failed to fetch comments for PR #{}: {}", pr_number, e);
+                continue;
+            }
+        };
+
         // Count non-owner comments
-        let non_owner_count = count_non_owner_comments(pr, Some(&owner));
+        let non_owner_count = count_non_owner_comments(&pr_with_comments, Some(&owner));
 
         // Check if there are new comments since last poll
         let has_new = {
@@ -1319,6 +1385,7 @@ fn comment_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1356,6 +1423,7 @@ fn comment_action_to_effects(
                         pr_number,
                         crate::config::get_personality(),
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1378,6 +1446,7 @@ fn comment_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComment)
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1415,6 +1484,7 @@ fn comment_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1470,6 +1540,7 @@ fn handoff_to_coworker_effects(
                 "{} is taking over PR #{} from {} ({})",
                 assignee, pr_number, original_author, context_suffix
             ),
+            channel: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -1487,6 +1558,7 @@ fn handoff_to_coworker_effects(
                 assignee,
                 message
             ),
+            channel: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -1529,28 +1601,7 @@ async fn collect_reviewer_effects_with_source(
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
-    // Check rate limit
-    let current_review_count = {
-        let ps = state.persistent_state.lock().await;
-        ps.github.active_count()
-    };
-
-    if current_review_count >= MAX_CONCURRENT_REVIEWS {
-        debug!(
-            "At max concurrent reviews ({}/{}), skipping auto-review spawn",
-            current_review_count, MAX_CONCURRENT_REVIEWS
-        );
-        return effects;
-    }
-
-    let reviews_available = MAX_CONCURRENT_REVIEWS - current_review_count;
-    let mut reviews_planned = 0;
-
     for pr in prs {
-        if reviews_planned >= reviews_available {
-            break;
-        }
-
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         if pr_number == 0 {
             continue;
@@ -1661,74 +1712,21 @@ async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if already assigned for review AND the reviewer is still active.
-        // If a reviewer was assigned but has since died/shut down, we should spawn
-        // a replacement rather than waiting for the assignment to expire.
+        // Check if already assigned for review.
+        // Stale assignments are cleaned up by cleanup_expired_preserving() during
+        // the PR poll cycle, so any remaining assignment here is still valid.
         {
             let ps = state.persistent_state.lock().await;
             if ps.github.is_assigned(pr_number) {
-                // Check if the assigned reviewer is still alive using pure decision logic
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    // Get active coworker names for liveness check
-                    let active_names: HashSet<String> = state
-                        .coworkers
-                        .list()
-                        .into_iter()
-                        .map(|cw| cw.name.to_lowercase())
-                        .collect();
-                    // Get usage limited coworkers from headless_health
-                    let usage_limited_coworkers: HashSet<String> = {
-                        let health = state.headless_health.read().unwrap();
-                        health
-                            .iter()
-                            .filter_map(|(name, h)| {
-                                if h.has_usage_limit {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect()
-                    };
-
-                    let liveness = crate::rules::decide_reviewer_liveness(
-                        reviewer_name,
-                        &active_names,
-                        &usage_limited_coworkers,
+                    debug!(
+                        "PR #{} already assigned to active reviewer {}",
+                        pr_number, reviewer_name
                     );
-
-                    match liveness {
-                        crate::rules::ReviewerLivenessDecision::Active => {
-                            debug!(
-                                "PR #{} already assigned to active reviewer {}",
-                                pr_number, reviewer_name
-                            );
-                            continue;
-                        }
-                        crate::rules::ReviewerLivenessDecision::Dead => {
-                            debug!(
-                                "PR #{} assigned to {} but reviewer is dead, will spawn replacement",
-                                pr_number, reviewer_name
-                            );
-                            // Don't clear assignment here - just proceed to spawn.
-                            // The spawn callback will replace the stale assignment when
-                            // the new reviewer is successfully spawned.
-                        }
-                        crate::rules::ReviewerLivenessDecision::UsageLimited => {
-                            debug!(
-                                "PR #{} assigned to {} but reviewer is usage-limited, will spawn replacement",
-                                pr_number, reviewer_name
-                            );
-                            // Don't clear assignment here - just proceed to spawn.
-                            // The spawn callback will replace the stale assignment when
-                            // the new reviewer is successfully spawned.
-                        }
-                    }
                 } else {
-                    // Assignment exists but no reviewer name - shouldn't happen, but skip anyway
                     debug!("PR #{} has assignment but no reviewer name", pr_number);
-                    continue;
                 }
+                continue;
             }
         }
 
@@ -1771,6 +1769,18 @@ async fn collect_reviewer_effects_with_source(
             path: wt_path.clone(),
         });
 
+        // Reserve the reviewer assignment BEFORE spawning to prevent race conditions.
+        // If multiple events (webhooks, polling) trigger spawns for the same PR
+        // before any spawn completes, they would all pass the is_assigned() check.
+        // By assigning immediately, subsequent calls see the reservation and skip spawning.
+        effects.push(Effect::AssignReviewer {
+            pr_number,
+            reviewer_name: reviewer_name.clone(),
+            source,
+            restart_count: 0,
+            reviewer_session_id: None,
+        });
+
         let on_success = vec![
             // Register the review worktree assignment
             Effect::RegisterWorktreeAssignment {
@@ -1793,11 +1803,6 @@ async fn collect_reviewer_effects_with_source(
                 status: "running".to_string(),
                 current_task: Some(format!("reviewing PR #{}", pr_number)),
             },
-            Effect::AssignReviewer {
-                pr_number,
-                reviewer_name: reviewer_name.clone(),
-                source,
-            },
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: daemon_messages::called_in_reviewer(
@@ -1805,25 +1810,29 @@ async fn collect_reviewer_effects_with_source(
                     pr_number,
                     config::get_personality(),
                 ),
+                channel: None,
             },
         ];
 
-        let on_failure = vec![Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "⚠️ Failed to spawn reviewer for PR #{} ({})",
-                pr_number,
-                truncate_str(title, 40),
-            ),
-        }];
+        let on_failure = vec![
+            // Clean up the optimistic assignment we made before spawning
+            Effect::RemoveReviewerAssignment { pr_number },
+            Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "⚠️ Failed to spawn reviewer for PR #{} ({})",
+                    pr_number,
+                    truncate_str(title, 40),
+                ),
+                channel: None,
+            },
+        ];
 
         effects.push(Effect::SpawnCoworkerWithCallbacks {
             config,
             on_success,
             on_failure,
         });
-
-        reviews_planned += 1;
     }
 
     effects
@@ -1847,6 +1856,7 @@ fn review_complete_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1884,6 +1894,7 @@ fn review_complete_action_to_effects(
                         pr_number,
                         config::get_personality(),
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1906,6 +1917,7 @@ fn review_complete_action_to_effects(
                         owner,
                         get_issue_action(PrIssueType::ReviewComplete)
                     ),
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1943,6 +1955,7 @@ fn review_complete_action_to_effects(
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message,
+                    channel: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3870,6 +3883,7 @@ mod tests {
             running_coworkers: vec![],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "test".to_string(),
             repo_name: "test-repo".to_string(),
             coworker_start_times: HashMap::new(),
@@ -3890,6 +3904,8 @@ mod tests {
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: false,
             usage_limit_nudge_at: None,

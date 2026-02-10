@@ -34,9 +34,6 @@ pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
 /// Hash bucket deduplication prevents duplicate reviewer assignments.
 pub const PR_REVIEW_DELAY_SECS: u64 = 45;
 
-/// Maximum number of concurrent PR reviews the daemon will run.
-pub const MAX_CONCURRENT_REVIEWS: usize = 4;
-
 /// How long a review assignment is valid before it can be reassigned (10 minutes).
 /// Re-exported from github_state for use by the in-memory tracker.
 pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
@@ -113,6 +110,21 @@ pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
 /// and running subagent detection (has_running_subagent) provide precise stuck detection,
 /// allowing a shorter timeout without false positives.
 pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(180);
+
+/// How long a reviewer's process can go without events before considering it stuck (5 minutes).
+/// Reviewers take longer than task coworkers (reading diffs, writing comments), so this
+/// threshold is longer than COWORKER_STUCK_DURATION.
+pub(super) const REVIEWER_STUCK_DURATION: Duration = Duration::from_secs(300);
+
+/// Maximum number of times a stuck reviewer can be restarted for the same PR.
+/// After this many restarts (meaning max_restarts + 1 total attempts), the daemon
+/// stops retrying and posts an escalation warning for the lead to handle.
+pub(super) const MAX_REVIEWER_RESTARTS: u32 = 2;
+
+/// Maximum number of times a stuck task coworker can be restarted.
+/// After this many restarts, the daemon stops retrying and posts an escalation warning.
+#[allow(dead_code)] // Will be used when task-based stuck restart backoff is implemented
+pub(super) const MAX_TASK_RESTARTS: u32 = 3;
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.

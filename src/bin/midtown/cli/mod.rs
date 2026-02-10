@@ -137,7 +137,7 @@ pub fn handle_e2e(cmd: &E2eCommand) -> Result<(), String> {
     e2e::handle(cmd)
 }
 
-/// Handle auth profile commands (login, list, switch, status, remove) - no daemon required
+/// Handle auth profile commands (login, list, switch, remove) - no daemon required
 pub fn handle_auth(cmd: &AuthCommand) -> Result<Response, String> {
     auth::handle(cmd)
 }

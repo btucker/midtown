@@ -25,7 +25,7 @@ mod webhook_fwd;
 use constants::*;
 pub use constants::{
     DEFAULT_MAX_COWORKERS, DEFAULT_PR_POLL_INTERVAL_SECS, DEFAULT_WEBHOOK_PORT,
-    DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, MAX_CONCURRENT_REVIEWS, PR_NUDGE_COOLDOWN_SECS,
+    DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, PR_NUDGE_COOLDOWN_SECS,
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
 pub use trackers::{
@@ -420,6 +420,13 @@ pub(crate) struct DaemonState {
     /// from being posted to the channel multiple times. Resets on daemon restart,
     /// which is acceptable because transcript cursors prevent re-extraction.
     insight_hashes: std::sync::Mutex<HashSet<u64>>,
+    /// PR numbers for which a reviewer escalation warning has been posted.
+    ///
+    /// Prevents the escalation warning (stuck reviewer after max restarts) from
+    /// firing every tick. Once posted, the PR number is added here and the warning
+    /// is not repeated. Resets on daemon restart, which is acceptable because
+    /// reviewer assignments also reset.
+    reviewer_escalations_posted: std::sync::Mutex<HashSet<u64>>,
     /// In-memory deduplication for reviewer `[Review Note]` channel messages.
     ///
     /// Tracks (reviewer, PR number) → timestamp of first note. When a reviewer
@@ -456,6 +463,12 @@ pub(crate) struct DaemonState {
     /// to "exactly-once" semantics.
     rpc_response_cache:
         Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
+    /// Kanban data cache with 30s TTL.
+    ///
+    /// Stores the full kanban GraphQL response (PRs, merged PRs, repos) keyed by
+    /// a hash of the repo paths. Integrated into DaemonState (rather than a global
+    /// static) so the daemon can inspect and clean it up alongside other caches.
+    kanban_cache: rpc::KanbanCache,
 }
 
 impl DaemonState {
@@ -516,6 +529,8 @@ impl DaemonState {
         let now = std::time::Instant::now();
         let mut cache = self.rpc_response_cache.lock().await;
         cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+        // Also clean up expired kanban cache entries
+        self.kanban_cache.cleanup();
     }
 
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
@@ -628,11 +643,13 @@ impl DaemonState {
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
+            reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
+            kanban_cache: rpc::KanbanCache::new(),
         })
     }
 
@@ -643,6 +660,7 @@ impl DaemonState {
     /// `CoworkerManager::register` to add the coworker to the tracking map.
     async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<()> {
         let name = config.name.clone();
+        let slot_id = uuid::Uuid::new_v4().to_string();
 
         // Idempotent: if this coworker is already running, skip silently.
         // Multiple code paths (orphan recovery, task dispatch, PR call-in) can
@@ -655,11 +673,20 @@ impl DaemonState {
             return Ok(());
         }
 
+        // Inject project-resolved auth profile if not already set
+        let config = if config.auth_profile_dir.is_none() {
+            let mut c = config.clone();
+            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(&self.repo_name));
+            c
+        } else {
+            config.clone()
+        };
+
         // Prepare worktree and augment config with additional dirs
         // Note: Worktree creation now happens via Effect::EnsureWorktree in the
         // decision layer (rules.rs), not inline here. This follows the effect-based
         // architecture: I/O goes through the Effect pipeline.
-        let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
+        let (working_dir, launch_config) = self.coworkers.prepare_spawn(&config)?;
 
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config();
@@ -684,16 +711,17 @@ impl DaemonState {
             }
         }
 
-        // Spawn the headless session
+        // Spawn the headless session (keyed by slot_id)
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
-            .spawn(&name, &headless_config, initial_prompt)
+            .spawn(&name, &slot_id, &headless_config, initial_prompt)
             .await?;
 
-        // Register in the CoworkerManager tracking map
+        // Register in the CoworkerManager tracking map (keyed by slot_id)
         // session_id is None initially — it arrives later via the init StreamEvent
         let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
         if let Err(e) = self.coworkers.register(
+            &slot_id,
             &name,
             working_dir,
             None,
@@ -1189,6 +1217,68 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
     }
 }
 
+/// Persist session info for all running coworkers before daemon shutdown.
+///
+/// Collects session data from SessionManager and enriches it with task/PR/purpose
+/// info from CoworkerManager and persistent state, then saves to daemon-state.json.
+async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> {
+    // Collect base session info (session_id, pid, last_active) from SessionManager
+    let mut session_info = state.session_manager.collect_session_info().await;
+
+    // Enrich with task/PR assignments and working directories from CoworkerManager
+    let coworkers = state.coworkers.list();
+    for coworker in coworkers {
+        if let Some(info) = session_info.get_mut(&coworker.name) {
+            info.working_dir = Some(coworker.working_dir.clone());
+
+            // Determine coworker type and assignment based on current_task and isolated_tasks
+            if coworker.isolated_tasks {
+                // Isolated coworker - likely a reviewer
+                info.coworker_type = Some("reviewer".to_string());
+
+                // Look up PR assignment from persistent state
+                let persistent = state.persistent_state.lock().await;
+                if let Some(assignment) = persistent
+                    .github
+                    .pr_reviewers
+                    .values()
+                    .find(|assignment| assignment.reviewer == coworker.name)
+                {
+                    let pr_num = assignment.pr_number;
+                    info.pr_number = Some(pr_num);
+                    info.purpose = format!("reviewer for PR #{}", pr_num);
+                } else {
+                    info.purpose = "reviewer (unassigned)".to_string();
+                }
+            } else {
+                // Regular dev coworker
+                info.coworker_type = Some("dev".to_string());
+                if let Some(task_str) = &coworker.current_task {
+                    // Parse task ID from string like "!42" or "42"
+                    let task_id: Option<u64> = task_str.trim_start_matches('!').parse().ok();
+                    info.task_id = task_id;
+                    info.purpose = format!("task {}", task_str);
+                } else {
+                    info.purpose = "dev (no task)".to_string();
+                }
+            }
+        }
+    }
+
+    // Save enriched session info to persistent state
+    {
+        let mut persistent = state.persistent_state.lock().await;
+        persistent.headless_sessions = session_info;
+        persistent.save_for_repo(&state.repo_name)?;
+        info!(
+            "Persisted {} session(s) for restart survival",
+            persistent.headless_sessions.len()
+        );
+    }
+
+    Ok(())
+}
+
 /// Run the full snapshot→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
     let mut snap = snapshot::collect_world_snapshot(state).await;
@@ -1473,6 +1563,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
     // Recover coworker workflow state from their state files across daemon restarts.
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
+
+    // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
+    // This must run BEFORE session recovery to clean up processes before spawning new ones.
+    startup::kill_zombie_claude_processes();
+
+    // Recover headless coworker sessions from persisted state (session survival).
+    // This kills orphaned processes and spawns with --resume to continue previous work.
+    let recovery_effects =
+        startup::recover_headless_sessions(&state.persistent_state, &repo_name).await;
+    if !recovery_effects.is_empty() {
+        info!(
+            "Executing {} session recovery effect(s)",
+            recovery_effects.len()
+        );
+        effects::execute_effects(recovery_effects, &state).await;
+    }
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -2023,11 +2129,28 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         }
     }
 
-    // Shut down all coworker sessions to prevent orphaned processes
-    info!("Shutting down all coworker sessions...");
+    // Persist session info for survival across daemon restarts
+    info!("Persisting session info for restart survival...");
+    if let Err(e) = persist_sessions_for_restart(&state).await {
+        warn!(
+            "Failed to persist sessions for restart (sessions will not survive): {}",
+            e
+        );
+    }
+
+    // Mark all sessions to be detached (not killed) on drop
+    // CRITICAL: Always detach even if persistence failed above - sessions should
+    // survive the restart even if we can't restore their context
+    state.session_manager.detach_all().await;
+
+    // Shut down all coworker sessions (detach instead of kill)
+    info!("Shutting down all coworker sessions (detach mode)...");
     let shutdown_count = state.session_manager.shutdown_all().await;
     if shutdown_count > 0 {
-        info!("Shut down {} coworker session(s)", shutdown_count);
+        info!(
+            "Detached {} coworker session(s) for restart survival",
+            shutdown_count
+        );
     }
 
     // Signal webhook forwarder watchdog to stop
@@ -3385,6 +3508,7 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
             effects::Effect::NudgeCoworkerWithCallbacks {
                 name: "pleasant".to_string(),
                 message: "task prompt".to_string(),
+                session_id: None,
                 on_success: vec![effects::Effect::RecordTaskAssignment {
                     coworker: "pleasant".to_string(),
                     task_id: "873".to_string(),

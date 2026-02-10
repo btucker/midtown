@@ -1046,11 +1046,9 @@ fn unserved_prs_needing_review(snap: &DispatchSnapshot) -> usize {
 
 /// Should task dispatch be deferred to prioritize reviewer spawning?
 /// This mirrors the deferral condition in dispatch.rs spawn_for_pending_tasks().
-const MAX_CONCURRENT_REVIEWS: usize = 4;
+/// Task dispatch is deferred when the dev coworker limit is reached (preserving review headroom).
 fn should_defer_task_dispatch(snap: &DispatchSnapshot) -> bool {
-    let active_review_count = snap.active_reviewers.len();
-    let unserved = unserved_prs_needing_review(snap);
-    unserved > 0 && active_review_count < MAX_CONCURRENT_REVIEWS && !snap.is_at_coworker_limit
+    snap.is_at_dev_limit
 }
 
 /// Regression test: dispatch deferral should NOT block when all PRs needing review

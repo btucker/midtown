@@ -62,6 +62,7 @@ pub async fn evaluate_tick(
             // Health checks: idle shutdown, stuck detection, usage limits.
             effects.extend(super::health::check_and_shutdown_idle_coworkers(snap, state).await);
             effects.extend(super::health::check_and_restart_stuck_coworkers(snap, state).await);
+            effects.extend(super::health::check_and_restart_stuck_reviewers(snap));
             effects.extend(super::health::check_for_usage_limits(snap));
             effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
             effects.extend(super::health::check_and_nudge_api_errors(snap, state));
@@ -308,6 +309,8 @@ mod tests {
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
         })
     }
 
@@ -381,6 +384,8 @@ mod tests {
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
         };
         Effect::SpawnCoworkerWithCallbacks {
             config,
@@ -402,6 +407,8 @@ mod tests {
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
         };
         Effect::AssignAndSpawn {
             task_id: "1".to_string(),
@@ -463,6 +470,8 @@ mod tests {
             team_name: None,
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
         };
 
         let config2 = config1.clone();

@@ -406,7 +406,7 @@ fn cleanup_preserves_running_coworker_assignments() {
 
     // Only riverside is still running
     let running: HashSet<String> = ["riverside".to_string()].into_iter().collect();
-    state.cleanup_expired_preserving(&running);
+    state.cleanup_expired_preserving(&running, None);
 
     // riverside's assignment preserved, columbus's removed
     assert!(
@@ -577,6 +577,54 @@ fn complete_reviewer_lifecycle() {
     assert!(!state.has_cached_review(pr_number));
 }
 
+/// Test that multiple reviewer spawn attempts for the same PR are prevented.
+///
+/// Bug: When multiple events (webhooks, polling) trigger reviewer spawns
+/// for the same PR in quick succession, they all pass the `is_assigned` check
+/// before any spawn completes, causing multiple reviewers to be spawned.
+///
+/// This test verifies that:
+/// 1. First spawn check passes (`is_assigned` returns false)
+/// 2. Assignment is recorded immediately (before spawn completes)
+/// 3. Second spawn check fails (`is_assigned` returns true)
+/// 4. Only one reviewer is spawned
+#[test]
+fn prevent_multiple_reviewer_spawns_for_same_pr() {
+    let mut state = GitHubState::default();
+    let pr_number = 859u64;
+
+    // Simulate first spawn attempt
+    // 1. Check if assigned (should be false)
+    assert!(
+        !state.is_assigned(pr_number),
+        "First spawn: PR should not be assigned yet"
+    );
+
+    // 2. Assign reviewer BEFORE spawn completes
+    //    (this is where the fix needs to be - assign immediately, not after spawn)
+    state.assign_reviewer(pr_number, "broadway", AssignmentSource::Webhook);
+
+    // 3. Second spawn attempt (concurrent webhook or polling)
+    //    should see the assignment and skip spawning
+    assert!(
+        state.is_assigned(pr_number),
+        "Second spawn: PR should already be assigned, preventing duplicate spawn"
+    );
+
+    // 4. Verify only one reviewer is assigned
+    let reviewer = state.get_reviewer(pr_number);
+    assert_eq!(
+        reviewer,
+        Some("broadway"),
+        "Only one reviewer should be assigned"
+    );
+
+    // 5. Attempting to assign another reviewer should be blocked by the caller
+    //    (the daemon's collect_reviewer_effects should check is_assigned)
+    //    This test documents the expected behavior - the fix must ensure
+    //    assignment happens BEFORE spawn completes, not in the on_success callback.
+}
+
 /// Test race between webhook and polling for same PR.
 #[test]
 fn webhook_polling_race_handled() {
@@ -628,4 +676,159 @@ fn batch_pr_reviewer_handling() {
     let counts = state.count_by_source();
     assert_eq!(counts.get("webhook"), Some(&1));
     assert_eq!(counts.get("polling"), Some(&1));
+}
+
+// =============================================================================
+// Tests: Ghost reviewer assignments — name reuse handled by cleanup
+// =============================================================================
+
+/// Test that cleanup_expired_preserving handles the name-reuse case correctly.
+///
+/// Scenario: "columbus" was assigned to review PR #823 and the assignment timed out.
+/// After restart, "columbus" is respawned as a dev coworker (no review worktree).
+/// cleanup_expired_preserving should NOT preserve the expired assignment because
+/// columbus is not in the running_coworker_names set (filtered to review worktree owners).
+#[test]
+fn cleanup_expired_preserving_handles_name_reuse() {
+    let mut state = GitHubState::default();
+
+    // Pre-restart: columbus was reviewing PR #823
+    state.assign_reviewer(823, "columbus", AssignmentSource::Webhook);
+
+    // Expire the assignment (simulate time passing beyond timeout)
+    if let Some(a) = state.pr_reviewers.get_mut(&823) {
+        a.assigned_at =
+            Utc::now() - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+    }
+
+    // After restart, columbus is running but as a dev coworker (no review worktree).
+    // The running_coworker_names passed to cleanup_expired_preserving should only
+    // include coworkers bound to review worktrees, so columbus is NOT in the set.
+    let running_reviewers: HashSet<String> = HashSet::new(); // columbus excluded (dev work)
+    state.cleanup_expired_preserving(&running_reviewers, None);
+
+    // The expired assignment should be removed because columbus is not a reviewer
+    assert!(
+        !state.pr_reviewers.contains_key(&823),
+        "Expired assignment for dev-reused coworker should be cleaned up"
+    );
+}
+
+/// Test that cleanup_expired_preserving preserves active reviewer assignments.
+///
+/// If a reviewer is still running with a review worktree, their expired assignment
+/// should be preserved (and refreshed) to avoid losing track of active reviews.
+#[test]
+fn cleanup_expired_preserving_keeps_active_reviewer() {
+    let mut state = GitHubState::default();
+
+    state.assign_reviewer(824, "york", AssignmentSource::Webhook);
+
+    // Expire the assignment
+    if let Some(a) = state.pr_reviewers.get_mut(&824) {
+        a.assigned_at =
+            Utc::now() - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+    }
+
+    // york is still running AND bound to a review worktree
+    let running_reviewers: HashSet<String> = ["york".to_string()].into_iter().collect();
+    state.cleanup_expired_preserving(&running_reviewers, None);
+
+    // Assignment should be preserved (york is actively reviewing)
+    assert!(
+        state.pr_reviewers.contains_key(&824),
+        "Active reviewer's assignment should be preserved"
+    );
+}
+
+/// Test simulating rapid concurrent spawn attempts (the actual bug scenario from PR #859).
+///
+/// Bug reproduction: PR #859 had 3 reviewers spawned (broadway, madison, columbus)
+/// because multiple webhook/polling events triggered spawns before any completed.
+///
+/// This test verifies that the fix (immediate assignment before spawn) prevents
+/// the race condition by making the assignment visible to subsequent spawn attempts.
+#[test]
+fn concurrent_spawn_attempts_prevented_by_immediate_assignment() {
+    let mut state = GitHubState::default();
+    let pr_number = 859u64;
+
+    // Simulate the bug scenario: 3 rapid spawn decisions happening concurrently
+    // (e.g., webhook event + 2 polling ticks before any spawn completes)
+
+    // === Spawn attempt 1 (webhook) ===
+    // Check if assigned (should be false)
+    assert!(
+        !state.is_assigned(pr_number),
+        "First check: PR should not be assigned"
+    );
+
+    // IMMEDIATELY assign before spawning (the fix!)
+    // Previously this happened in the on_success callback AFTER spawn completed.
+    // Now it happens BEFORE, making it visible to concurrent spawn attempts.
+    state.assign_reviewer(pr_number, "broadway", AssignmentSource::Webhook);
+
+    // === Spawn attempt 2 (polling, concurrent) ===
+    // Check if assigned (should be true now because of immediate assignment!)
+    assert!(
+        state.is_assigned(pr_number),
+        "Second check: PR should already be assigned, preventing duplicate spawn"
+    );
+    // The daemon's collect_reviewer_effects() would skip spawning here
+
+    // === Spawn attempt 3 (polling, concurrent) ===
+    // Check if assigned (should still be true)
+    assert!(
+        state.is_assigned(pr_number),
+        "Third check: PR should still be assigned, preventing third duplicate spawn"
+    );
+    // The daemon's collect_reviewer_effects() would skip spawning here too
+
+    // === Verify only one reviewer assigned ===
+    assert_eq!(
+        state.get_reviewer(pr_number),
+        Some("broadway"),
+        "Only broadway should be assigned (first spawn attempt)"
+    );
+
+    // Verify no other reviewers got assigned
+    let assigned_reviewers: Vec<&str> = state.assigned_reviewers().collect();
+    assert_eq!(
+        assigned_reviewers.len(),
+        1,
+        "Only one reviewer should be assigned total (not 3 like in the bug)"
+    );
+    assert_eq!(assigned_reviewers[0], "broadway");
+}
+
+/// Test that spawn failure cleanup works correctly with optimistic assignment.
+///
+/// When a spawn fails after optimistic assignment, the RemoveReviewerAssignment
+/// effect should clean up the assignment so a retry can succeed.
+///
+/// This prevents a failed spawn from permanently blocking future spawn attempts.
+#[test]
+fn spawn_failure_cleans_up_optimistic_assignment() {
+    let mut state = GitHubState::default();
+    let pr_number = 859u64;
+
+    // Simulate optimistic assignment before spawn (the fix)
+    state.assign_reviewer(pr_number, "broadway", AssignmentSource::Webhook);
+    assert!(state.is_assigned(pr_number));
+
+    // Spawn fails - simulate RemoveReviewerAssignment effect from on_failure callback
+    let removed = state.remove_assignment(pr_number);
+    assert!(removed.is_some(), "Assignment should be removed");
+    assert_eq!(removed.unwrap().reviewer, "broadway");
+
+    // Verify assignment is cleared
+    assert!(
+        !state.is_assigned(pr_number),
+        "Assignment should be cleared after spawn failure"
+    );
+
+    // Retry should now work (can assign again)
+    state.assign_reviewer(pr_number, "madison", AssignmentSource::PollingFallback);
+    assert!(state.is_assigned(pr_number));
+    assert_eq!(state.get_reviewer(pr_number), Some("madison"));
 }

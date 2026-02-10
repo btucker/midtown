@@ -79,6 +79,13 @@ pub struct LaunchConfig {
     /// Defaults to "sonnet" for standard coworkers, "opus" for reviewers, PR handoff
     /// coworkers, and review feedback responders.
     pub model: String,
+    /// Optional channel for routing coworker messages. When set, coworkers will
+    /// post to this channel by default instead of the main channel.
+    pub channel: Option<String>,
+    /// Auth profile directory to use as `CLAUDE_CONFIG_DIR`.
+    /// When set, overrides the default `current_profile_dir()` resolution.
+    /// Callers should resolve this from project config before constructing.
+    pub auth_profile_dir: Option<PathBuf>,
 }
 
 /// The shell command string and generated session ID (if fresh).
@@ -114,6 +121,8 @@ impl LaunchConfig {
             team_name: Some(team),
             working_dir: None,
             model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
         }
     }
 
@@ -135,6 +144,8 @@ impl LaunchConfig {
             team_name: None, // Reviewers don't need mailbox (short-lived)
             working_dir: None,
             model: "opus".to_string(),
+            channel: None,
+            auth_profile_dir: None,
         }
     }
 
@@ -179,6 +190,8 @@ impl LaunchConfig {
             team_name: Some(team),
             working_dir: None,
             model: "opus".to_string(),
+            channel: None,
+            auth_profile_dir: None,
         }
     }
 
@@ -215,12 +228,19 @@ impl LaunchConfig {
             let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
             env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), task_list_id);
         }
-        // Set Claude config directory from the active auth profile
-        let config_dir = crate::auth::current_profile_dir();
+        // Set Claude config directory from the resolved auth profile
+        let config_dir = self
+            .auth_profile_dir
+            .clone()
+            .unwrap_or_else(crate::auth::current_profile_dir);
         env.insert(
             "CLAUDE_CONFIG_DIR".to_string(),
             config_dir.to_string_lossy().to_string(),
         );
+        // Set default channel for routing coworker messages
+        if let Some(ref ch) = self.channel {
+            env.insert("MIDTOWN_CHANNEL".to_string(), ch.clone());
+        }
 
         HeadlessConfig {
             model: self.model.clone(),
@@ -263,12 +283,19 @@ impl LaunchConfig {
             let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
             env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
         }
-        // Set Claude config directory from the active auth profile
-        let config_dir = crate::auth::current_profile_dir();
+        // Set Claude config directory from the resolved auth profile
+        let config_dir = self
+            .auth_profile_dir
+            .clone()
+            .unwrap_or_else(crate::auth::current_profile_dir);
         env_parts.push(format!("CLAUDE_CONFIG_DIR='{}'", config_dir.display()));
         // Must be a real shell env var — Claude Code blocklists this from settings.json
         if self.team_name.is_some() {
             env_parts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1".to_string());
+        }
+        // Set default channel for routing coworker messages
+        if let Some(ref ch) = self.channel {
+            env_parts.push(format!("MIDTOWN_CHANNEL='{}'", ch));
         }
         let env_export = format!("export {}", env_parts.join(" "));
 
@@ -536,5 +563,27 @@ mod tests {
                 .shell_command
                 .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
         );
+    }
+
+    #[test]
+    fn test_channel_routing_env_var() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        config.channel = Some("task-42".to_string());
+        let headless = config.to_headless_config();
+
+        // Verify MIDTOWN_CHANNEL env var is set
+        assert_eq!(
+            headless.env.get("MIDTOWN_CHANNEL"),
+            Some(&"task-42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_no_channel_routing_when_none() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let headless = config.to_headless_config();
+
+        // Verify MIDTOWN_CHANNEL env var is not set when channel is None
+        assert!(!headless.env.contains_key("MIDTOWN_CHANNEL"));
     }
 }

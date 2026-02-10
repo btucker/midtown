@@ -319,6 +319,11 @@ pub struct CoworkerStatusData {
     pub status: String,
     pub current_task: Option<String>,
     pub model: String,
+    /// Claude session ID for this coworker session, if known.
+    /// Enables the web UI to distinguish between multiple sessions
+    /// that share the same coworker name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1134,7 +1139,13 @@ async fn api_push_unsubscribe(
 /// Returns a JSON array of `{name, is_current, has_credentials}`.
 async fn api_auth_profiles() -> Result<impl IntoResponse, StatusCode> {
     let profiles = tokio::task::spawn_blocking(|| {
-        let current = crate::auth::current_profile();
+        // Use project-aware profile resolution so "active" reflects the current project
+        let project = crate::paths::detect_repo_name().unwrap_or_default();
+        let current = if project.is_empty() {
+            crate::auth::current_profile()
+        } else {
+            crate::auth::active_profile_for_project(&project)
+        };
         let names = crate::auth::list_profiles().unwrap_or_default();
         names
             .into_iter()
@@ -1162,6 +1173,9 @@ async fn api_auth_profiles() -> Result<impl IntoResponse, StatusCode> {
 #[derive(Debug, Deserialize)]
 struct AuthSwitchRequest {
     profile: String,
+    /// When true, switch globally for all projects. Default: current project only.
+    #[serde(default)]
+    all: bool,
 }
 
 /// Switch the active auth profile via the daemon's RPC.
@@ -1182,6 +1196,7 @@ async fn api_auth_switch(
 
     let repo = state.config.repo.clone();
     let profile = body.profile;
+    let all = body.all;
 
     let result = tokio::task::spawn_blocking(move || {
         use std::io::{BufRead, BufReader, Write};
@@ -1196,7 +1211,7 @@ async fn api_auth_switch(
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "auth.switch",
-            "params": { "profile": profile },
+            "params": { "profile": profile, "all": all },
             "id": 1
         });
         writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {}", e))?;
@@ -1268,9 +1283,9 @@ async fn api_usage() -> Result<impl IntoResponse, StatusCode> {
     match data {
         Some(usage) => Ok(axum::Json(serde_json::json!({
             "session_util": usage.session_util,
-            "session_resets": usage.session_resets.to_rfc3339(),
+            "session_resets": usage.session_resets.map(|d| d.to_rfc3339()),
             "week_util": usage.week_util,
-            "week_resets": usage.week_resets.to_rfc3339(),
+            "week_resets": usage.week_resets.map(|d| d.to_rfc3339()),
             "account_email": usage.account_email,
         }))),
         None => Err(StatusCode::NO_CONTENT),
@@ -1637,6 +1652,7 @@ pub fn coworker_status_update(
         status: status.to_string(),
         current_task: current_task.map(|s| s.to_string()),
         model: model.to_string(),
+        session_id: None,
     })
 }
 
@@ -1740,6 +1756,7 @@ mod tests {
             status: "running".to_string(),
             current_task: Some("Fix auth bug".to_string()),
             model: "sonnet".to_string(),
+            session_id: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();
@@ -1950,6 +1967,7 @@ mod tests {
             status: "stopped".to_string(),
             current_task: None,
             model: "sonnet".to_string(),
+            session_id: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();

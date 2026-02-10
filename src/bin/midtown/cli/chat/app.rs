@@ -10,8 +10,34 @@ use chrono::{DateTime, Utc};
 use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
+use ratatui::text::Line;
+
 use super::mermaid::MermaidCache;
 use midtown::usage::{self, UsageData};
+
+/// Cached output from draw_chat_messages() to avoid recomputation on input-only redraws.
+///
+/// The chat message area is the most expensive part of the render pipeline due to
+/// mermaid parsing, markdown rendering, and text wrapping. This cache stores the
+/// fully-rendered lines so they can be reused when only the input bar changes.
+pub struct MessageRenderCache {
+    /// Pre-rendered lines for the chat messages area
+    pub lines: Vec<Line<'static>>,
+    /// Diagram sources from this render pass
+    pub diagram_sources: Vec<String>,
+    /// Cache key: hash of inputs that affect message rendering
+    pub cache_key: u64,
+}
+
+impl MessageRenderCache {
+    pub fn new(lines: Vec<Line<'static>>, diagram_sources: Vec<String>, cache_key: u64) -> Self {
+        Self {
+            lines,
+            diagram_sources,
+            cache_key,
+        }
+    }
+}
 
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
@@ -165,8 +191,6 @@ pub struct App {
     repo_status_last_refresh: Instant,
     /// Receiver for async repo status from background thread
     repo_status_receiver: Option<Receiver<Vec<(RepoInfo, RepoStatus)>>>,
-    /// Selection mode - when true, mouse capture is disabled for text selection
-    pub selection_mode: bool,
     /// User display name from config (None = "user")
     pub user_display_name: Option<String>,
     /// Cached mapping of coworker name -> current task subject.
@@ -180,6 +204,10 @@ pub struct App {
     /// When true AND at max_scroll, line truncation shows oldest content.
     /// When false, always use normal truncation (LAST N lines) for smooth scrolling.
     intentionally_at_top: bool,
+    /// Accumulator for mouse wheel scroll events (0-7).
+    /// Mouse wheels send multiple events per physical scroll, so we accumulate
+    /// fractional scrolls: 8 events = 1 line of movement for smoother scrolling.
+    mouse_scroll_accumulator: u8,
     /// Cache for rendered mermaid diagrams (content hash -> PNG image)
     pub mermaid_cache: MermaidCache,
     /// Mermaid diagram sources visible in the current render pass (indexed from 1 in the UI).
@@ -200,6 +228,10 @@ pub struct App {
     pub input_text: String,
     /// Cursor position in the input text
     pub input_cursor: usize,
+    /// Whether selection mode is active (mouse capture disabled for text selection)
+    pub selection_mode: bool,
+    /// Cached rendered message lines and hyperlinks to skip recomputation on input-only redraws
+    pub message_render_cache: Option<MessageRenderCache>,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -213,6 +245,9 @@ const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Shorter retry interval when usage fetch fails (15 seconds)
 const USAGE_RETRY_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Number of lines to scroll per mouse wheel event
+const SCROLL_STEP: usize = 3;
 
 impl App {
     pub fn new() -> Self {
@@ -244,11 +279,11 @@ impl App {
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now() - REPO_STATUS_REFRESH_INTERVAL, // Force initial refresh
             repo_status_receiver: None,
-            selection_mode: false,
             user_display_name: midtown::config::get_user_display_name(),
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: None,
@@ -258,6 +293,8 @@ impl App {
             selected_channel_index: 0,
             input_text: String::new(),
             input_cursor: 0,
+            selection_mode: false,
+            message_render_cache: None,
         };
 
         // Initial load
@@ -514,11 +551,11 @@ impl App {
         (pending, in_progress, completed)
     }
 
-    /// Scroll up one line
+    /// Scroll up by SCROLL_STEP lines
     pub fn scroll_up(&mut self) {
         let max_scroll = self.max_scroll();
         if self.scroll_offset < max_scroll {
-            self.scroll_offset += 1;
+            self.scroll_offset = (self.scroll_offset + SCROLL_STEP).min(max_scroll);
         }
         // Mark as intentionally at top if we've scrolled to max
         if self.scroll_offset >= max_scroll {
@@ -527,12 +564,30 @@ impl App {
         self.maybe_load_more_history();
     }
 
-    /// Scroll down one line
+    /// Scroll down by SCROLL_STEP lines
     pub fn scroll_down(&mut self) {
         if self.scroll_offset > 0 {
-            self.scroll_offset -= 1;
+            self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_STEP);
             // No longer at top when scrolling down
             self.intentionally_at_top = false;
+        }
+    }
+
+    /// Mouse wheel scroll up (slower than keyboard - 8 events = 1 line)
+    pub fn mouse_scroll_up(&mut self) {
+        self.mouse_scroll_accumulator += 1;
+        if self.mouse_scroll_accumulator >= 8 {
+            self.mouse_scroll_accumulator = 0;
+            self.scroll_up();
+        }
+    }
+
+    /// Mouse wheel scroll down (slower than keyboard - 8 events = 1 line)
+    pub fn mouse_scroll_down(&mut self) {
+        self.mouse_scroll_accumulator += 1;
+        if self.mouse_scroll_accumulator >= 8 {
+            self.mouse_scroll_accumulator = 0;
+            self.scroll_down();
         }
     }
 
@@ -567,11 +622,6 @@ impl App {
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
         self.intentionally_at_top = false;
-    }
-
-    /// Toggle selection mode (disables mouse capture for text selection)
-    pub fn toggle_selection_mode(&mut self) {
-        self.selection_mode = !self.selection_mode;
     }
 
     /// Cycle focus between panes: Board → Chat → InputBar → Board
@@ -702,6 +752,33 @@ impl App {
             self.tasks_cache_hash = new_hash;
         }
         &self.current_tasks_cache
+    }
+
+    /// Compute a cache key for message rendering.
+    ///
+    /// This captures all inputs that affect the rendered output of draw_chat_messages():
+    /// scroll position, message count, terminal width, selection mode, last message ID
+    /// as a proxy for content changes, task state, and mermaid render state.
+    pub fn message_cache_key(&self, width: u16) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.scroll_offset.hash(&mut hasher);
+        self.messages.len().hash(&mut hasher);
+        width.hash(&mut hasher);
+        self.selection_mode.hash(&mut hasher);
+        // Hash last message ID as proxy for content changes
+        if let Some(last) = self.messages.back() {
+            last.id.hash(&mut hasher);
+        }
+        // Hash task cache state (current_tasks affects sender labels)
+        self.tasks_cache_hash.hash(&mut hasher);
+        // Hash mermaid render state — when a diagram finishes background rendering,
+        // the completed count changes and we need to re-render to show the diagram
+        // instead of the "rendering..." placeholder.
+        self.mermaid_cache.completed_count().hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Compute a hash of the relevant task state for cache invalidation
@@ -1431,11 +1508,11 @@ pub(super) mod tests {
             repo_statuses: Vec::new(),
             repo_status_last_refresh: Instant::now(),
             repo_status_receiver: None,
-            selection_mode: false,
             user_display_name: None,
             current_tasks_cache: HashMap::new(),
             tasks_cache_hash: 0,
             intentionally_at_top: false,
+            mouse_scroll_accumulator: 0,
             mermaid_cache: MermaidCache::new(),
             diagram_sources: Vec::new(),
             usage_data: None,
@@ -1445,7 +1522,75 @@ pub(super) mod tests {
             selected_channel_index: 0,
             input_text: String::new(),
             input_cursor: 0,
+            selection_mode: false,
+            message_render_cache: None,
         }
+    }
+
+    #[test]
+    fn test_mouse_scroll_accumulator() {
+        // Test that mouse wheel scrolling requires multiple events per line
+        // for smooth scrolling (reduces scroll speed compared to keyboard).
+        // Each 8 mouse events triggers one scroll_up/down which moves by SCROLL_STEP.
+        let mut app = test_app();
+
+        // Add enough messages to make scrolling possible
+        // visible_height = 20, so we need > 20 messages
+        for i in 0..30 {
+            app.messages
+                .push_back(Message::text("test", format!("Test message {}", i)));
+        }
+
+        // Start at the bottom (scroll_offset = 0)
+        app.scroll_offset = 0;
+
+        // Test scroll up: should require 8 events to scroll SCROLL_STEP lines
+        let initial_offset = app.scroll_offset;
+
+        // First 7 events should not scroll
+        for _ in 0..7 {
+            app.mouse_scroll_up();
+        }
+        assert_eq!(
+            app.scroll_offset, initial_offset,
+            "Should not scroll with <8 events"
+        );
+
+        // 8th event should trigger scroll by SCROLL_STEP
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset,
+            initial_offset + SCROLL_STEP,
+            "Should scroll after 8 events"
+        );
+
+        // Accumulator should reset, so another 8 events needed
+        for _ in 0..7 {
+            app.mouse_scroll_up();
+        }
+        assert_eq!(
+            app.scroll_offset,
+            initial_offset + SCROLL_STEP,
+            "Should not scroll with <8 events after reset"
+        );
+
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset,
+            initial_offset + SCROLL_STEP * 2,
+            "Should scroll after another 8 events"
+        );
+
+        // Test scroll down
+        let current_offset = app.scroll_offset;
+        for _ in 0..8 {
+            app.mouse_scroll_down();
+        }
+        assert_eq!(
+            app.scroll_offset,
+            current_offset - SCROLL_STEP,
+            "Scroll down should work after 8 events"
+        );
     }
 
     #[test]
@@ -1543,6 +1688,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1670,6 +1816,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1745,6 +1892,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1799,6 +1947,7 @@ pub(super) mod tests {
                 message_type: midtown::MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -1840,6 +1989,83 @@ pub(super) mod tests {
         assert!(
             app.is_at_max_scroll(),
             "page_up to max should set intentionally_at_top"
+        );
+    }
+
+    #[test]
+    fn test_mouse_wheel_scroll_is_slower_than_keyboard() {
+        // Mouse wheel scrolling should be slower than keyboard scrolling for smoother UX.
+        // Mouse wheels send multiple events per physical scroll, so we use fractional
+        // scrolling: 8 wheel events = SCROLL_STEP lines of movement.
+        // Keyboard scrolls SCROLL_STEP per call; mouse needs 8 events per SCROLL_STEP.
+        let messages: VecDeque<Message> = (0..30)
+            .map(|i| Message {
+                id: i.to_string(),
+                from: "user".to_string(),
+                content: format!("message {}", i),
+                timestamp: Utc::now(),
+                message_type: midtown::MessageType::Text,
+                channel: None,
+                source_channel: None,
+                session_id: None,
+            })
+            .collect();
+
+        let mut app = App {
+            messages,
+            visible_height: 10,
+            ..test_app()
+        };
+
+        // Start at bottom
+        assert_eq!(app.scroll_offset, 0);
+
+        // Keyboard scroll up: should move SCROLL_STEP lines per call
+        app.scroll_up();
+        assert_eq!(
+            app.scroll_offset, SCROLL_STEP,
+            "Keyboard scroll should move SCROLL_STEP lines"
+        );
+
+        // Reset
+        app.scroll_offset = 0;
+
+        // Mouse wheel scroll up: should take 8 events to move SCROLL_STEP lines
+        for i in 1..=7 {
+            app.mouse_scroll_up();
+            assert_eq!(app.scroll_offset, 0, "Event {} shouldn't scroll yet", i);
+        }
+
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset, SCROLL_STEP,
+            "Eighth wheel event should complete SCROLL_STEP lines of scroll"
+        );
+
+        // Ninth event starts accumulating for next batch
+        app.mouse_scroll_up();
+        assert_eq!(
+            app.scroll_offset, SCROLL_STEP,
+            "Ninth wheel event accumulates"
+        );
+
+        // Test mouse wheel scroll down
+        // Accumulator is at 1 from the ninth up event
+        for i in 1..=6 {
+            app.mouse_scroll_down();
+            assert_eq!(
+                app.scroll_offset,
+                SCROLL_STEP,
+                "Down event {} accumulates (acc={})",
+                i,
+                i + 1
+            );
+        }
+
+        app.mouse_scroll_down();
+        assert_eq!(
+            app.scroll_offset, 0,
+            "Seventh down event triggers scroll (acc=8)"
         );
     }
 }

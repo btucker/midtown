@@ -423,40 +423,6 @@ fn update_project_config(
         .map_err(|e| format!("Failed to save project config: {}", e))
 }
 
-/// Build the claude command for the Lead session.
-///
-/// Returns either:
-/// - The value of `MIDTOWN_LEAD_COMMAND` env var if set (for tests/CI stubs)
-/// - Otherwise, the full Claude Code command with system prompt, settings, and
-///   CLAUDE_CODE_TASK_LIST_ID for task sharing with coworkers
-fn build_lead_claude_command(
-    task_list_id: &str,
-    additional_repos: &[PathBuf],
-) -> Result<String, String> {
-    // Allow tests/CI to override the lead command (claude isn't available in CI)
-    if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
-        return Ok(test_cmd);
-    }
-
-    let prompt_file = midtown::tmux::write_lead_prompt_file().map_err(|e| format!("{}", e))?;
-    let settings_file = midtown::tmux::write_lead_settings_file().map_err(|e| format!("{}", e))?;
-
-    // Build --add-dir flags for additional repos
-    let add_dir_flags: String = additional_repos
-        .iter()
-        .map(|r| format!(" --add-dir {}", r.display()))
-        .collect();
-
-    // Always start a fresh session. Users can /resume interactively if desired.
-    Ok(format!(
-        "export CLAUDE_CODE_TASK_LIST_ID='{}'; exec claude --dangerously-skip-permissions --settings {} --append-system-prompt \"$(cat {})\"{}",
-        task_list_id,
-        settings_file.display(),
-        prompt_file.display(),
-        add_dir_flags
-    ))
-}
-
 /// Handle `midtown start` command.
 ///
 /// 1. Starts the daemon (if not running)
@@ -547,30 +513,18 @@ pub fn handle_start(
     } else if session_exists(&session) {
         messages.push(format!("Session '{}' already exists", session));
     } else {
-        // Get the shared task list ID for this project
-        let task_list_id = midtown::paths::task_list_id_for_repo(&project_name);
-
-        // Build the claude command (always starts fresh; users can /resume interactively)
-        let claude_cmd = build_lead_claude_command(&task_list_id, &additional_repos)?;
-
         // Get project name for status bar (uppercase)
         let display_name = project_name.to_uppercase();
 
-        // Create tmux session with claude command directly
-        // -n sets the window name to "lead"
+        // Create empty tmux session (no command — spawn_lead creates the window)
         let status = Command::new("tmux")
             .args([
                 "new-session",
                 "-d",
                 "-s",
                 &session,
-                "-n",
-                "lead",
                 "-c",
                 &primary_repo.to_string_lossy(),
-                "sh",
-                "-c",
-                &claude_cmd,
             ])
             .status()
             .map_err(|e| format!("Failed to create session: {}", e))?;
@@ -579,21 +533,27 @@ pub fn handle_start(
             return Err(format!("Failed to create session '{}'", session));
         }
 
-        // Verify the lead window survives for a few seconds (guards against
-        // immediate Claude failure due to missing auth, misconfiguration, etc.)
-        if !midtown::tmux::wait_for_window_stable(&session, "lead") {
-            return Err(format!(
-                "Lead window {}:lead was created but immediately closed (command likely failed)",
-                session
-            ));
-        }
+        // Use spawn_lead() to create the Lead window with proper config,
+        // auth profile, settings, and system prompt.
+        midtown::tmux::spawn_lead(
+            &session,
+            &primary_repo.to_string_lossy(),
+            &project_name,
+            &additional_repos,
+        )
+        .map_err(|e| format!("Failed to spawn lead: {}", e))?;
 
-        // Enable Kitty graphics protocol passthrough for terminals that support it (e.g., Ghostty)
+        // Kill the default empty window created by new-session (window 0)
+        // spawn_lead creates its own "lead" window, so the default is redundant.
+        let _ = Command::new("tmux")
+            .args(["kill-window", "-t", &format!("{}:0", session)])
+            .status();
+
+        // Configure tmux session-level options (status bar, titles, passthrough)
         let _ = Command::new("tmux")
             .args(["set-option", "-t", &session, "allow-passthrough", "on"])
             .status();
 
-        // Configure status bar with dark gray background and yellow foreground (Lead's color)
         let _ = Command::new("tmux")
             .args([
                 "set-option",
@@ -604,7 +564,6 @@ pub fn handle_start(
             ])
             .status();
 
-        // Set status-left with project name
         let _ = Command::new("tmux")
             .args([
                 "set-option",
@@ -615,7 +574,6 @@ pub fn handle_start(
             ])
             .status();
 
-        // Set terminal title to "Midtown: <project>" instead of showing the command
         let _ = Command::new("tmux")
             .args(["set-option", "-t", &session, "set-titles", "on"])
             .status();
@@ -629,28 +587,6 @@ pub fn handle_start(
             ])
             .status();
 
-        // Set Lead window tab color (yellow to match chat TUI team panel)
-        let lead_window = format!("{}:lead", session);
-        let _ = Command::new("tmux")
-            .args([
-                "set-window-option",
-                "-t",
-                &lead_window,
-                "window-status-style",
-                "fg=yellow",
-            ])
-            .status();
-        let _ = Command::new("tmux")
-            .args([
-                "set-window-option",
-                "-t",
-                &lead_window,
-                "window-status-current-style",
-                "fg=yellow,bold",
-            ])
-            .status();
-
-        // Set up hook to update status bar color based on active window
         let _ = midtown::tmux::setup_status_bar_hook(&session);
 
         // Set up chat TUI (split pane or separate window based on config)
@@ -1182,7 +1118,7 @@ fn is_daemon_running(pid_file: &Path) -> bool {
 }
 
 /// Ensure the Lead pane has proper midtown settings.
-/// Checks for a marker file; if missing, restarts Claude with settings.
+/// Checks for a marker file; if missing, uses spawn_lead() to restart with settings.
 fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
     let marker_path = lead_initialized_marker(repo);
 
@@ -1198,43 +1134,14 @@ fn ensure_lead_has_settings(session: &str, repo: &Path) -> Result<(), String> {
     // Need to reinitialize Lead with proper settings
     eprintln!("Reinitializing Lead with midtown settings...");
 
-    // Get the shared task list ID for this repo
     let repo_name = repo
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "default".to_string());
-    let task_list_id = midtown::paths::task_list_id_for_repo(&repo_name);
 
-    // Build the claude command with settings (fresh session)
-    let claude_cmd = build_lead_claude_command(&task_list_id, &[])?;
-
-    // Kill the current Lead pane content and restart with proper settings
-    let lead_pane = format!("{}:lead.0", session);
-
-    // Send Ctrl-C to interrupt any running process, then exit
-    let _ = Command::new("tmux")
-        .args(["send-keys", "-t", &lead_pane, "C-c"])
-        .status();
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Send exit command to close any shell
-    let _ = Command::new("tmux")
-        .args(["send-keys", "-t", &lead_pane, "exit", "Enter"])
-        .status();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    // Respawn the pane with the proper claude command
-    let _ = Command::new("tmux")
-        .args([
-            "respawn-pane",
-            "-k",
-            "-t",
-            &lead_pane,
-            "sh",
-            "-c",
-            &claude_cmd,
-        ])
-        .status();
+    // spawn_lead kills existing lead windows and creates a fresh one
+    midtown::tmux::spawn_lead(session, &repo.to_string_lossy(), &repo_name, &[])
+        .map_err(|e| format!("Failed to re-launch lead: {}", e))?;
 
     // Set up chat pane (split or separate window based on config)
     midtown::tmux::setup_chat_pane(session);
@@ -1333,9 +1240,6 @@ mod tests {
 
     // Mutex to serialize tests that change CWD
     static CWD_MUTEX: Mutex<()> = Mutex::new(());
-
-    // Mutex to serialize tests that change env vars (MIDTOWN_LEAD_COMMAND)
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     /// Helper to create a fake git repo in a temp directory
     fn create_git_repo(dir: &std::path::Path) {
@@ -1477,51 +1381,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_lead_claude_command_includes_system_prompt() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Ensure env var override is not set
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
-        }
-
-        let task_list_id = "midtown-test";
-
-        let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
-
-        assert!(
-            cmd.contains("--append-system-prompt"),
-            "Command must include --append-system-prompt, got: {}",
-            cmd
-        );
-    }
-
-    #[test]
-    fn test_build_lead_claude_command_no_resume_flag() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Ensure env var override is not set
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
-        }
-
-        let task_list_id = "midtown-test";
-
-        let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
-
-        assert!(
-            !cmd.contains("--resume"),
-            "Command should not include --resume (always fresh session), got: {}",
-            cmd
-        );
-        assert!(
-            !cmd.contains("--session-id"),
-            "Command should not include --session-id (let claude manage it), got: {}",
-            cmd
-        );
-    }
-
-    #[test]
     fn test_handle_start_clears_stale_session_id() {
         let temp = TempDir::new().unwrap();
         let unique_name = format!("test-project-{}", uuid::Uuid::new_v4());
@@ -1548,26 +1407,6 @@ mod tests {
         if let Some(parent) = session_file.parent() {
             let _ = std::fs::remove_dir(parent);
         }
-    }
-
-    #[test]
-    fn test_build_lead_claude_command_includes_task_list_id() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Ensure env var override is not set
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
-        }
-
-        let task_list_id = "midtown-myrepo";
-
-        let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
-
-        assert!(
-            cmd.contains("CLAUDE_CODE_TASK_LIST_ID='midtown-myrepo'"),
-            "Command must set CLAUDE_CODE_TASK_LIST_ID, got: {}",
-            cmd
-        );
     }
 
     #[test]
@@ -1603,55 +1442,6 @@ mod tests {
             let result = session_name_for(&None);
             assert!(result.is_err());
         });
-    }
-
-    #[test]
-    fn test_build_lead_claude_command_with_additional_repos() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Ensure env var override is not set
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
-        }
-
-        let task_list_id = "midtown-multi";
-        let additional_repos = vec![
-            PathBuf::from("/path/to/repo-a"),
-            PathBuf::from("/path/to/repo-b"),
-        ];
-
-        let cmd = build_lead_claude_command(task_list_id, &additional_repos).unwrap();
-
-        assert!(
-            cmd.contains("--add-dir /path/to/repo-a"),
-            "Command must include --add-dir for repo-a, got: {}",
-            cmd
-        );
-        assert!(
-            cmd.contains("--add-dir /path/to/repo-b"),
-            "Command must include --add-dir for repo-b, got: {}",
-            cmd
-        );
-    }
-
-    #[test]
-    fn test_build_lead_claude_command_no_additional_repos() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Ensure env var override is not set
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
-        }
-
-        let task_list_id = "midtown-single";
-
-        let cmd = build_lead_claude_command(task_list_id, &[]).unwrap();
-
-        assert!(
-            !cmd.contains("--add-dir"),
-            "Command should not contain --add-dir with no additional repos, got: {}",
-            cmd
-        );
     }
 
     #[test]
@@ -1712,51 +1502,6 @@ mod tests {
         assert!(validate_project_name("my/project").is_err());
         assert!(validate_project_name("my;project").is_err());
         assert!(validate_project_name("$(whoami)").is_err());
-    }
-
-    #[test]
-    fn test_build_lead_claude_command_respects_env_override() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Set the override env var
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::set_var("MIDTOWN_LEAD_COMMAND", "sleep 300");
-        }
-
-        let result = build_lead_claude_command("test-task-list", &[]);
-
-        // Should return the env var value directly
-        assert_eq!(result.unwrap(), "sleep 300");
-
-        // Clean up
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
-        }
-    }
-
-    #[test]
-    fn test_build_lead_claude_command_builds_real_command_without_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Ensure env var is not set
-        // SAFETY: Protected by mutex
-        unsafe {
-            std::env::remove_var("MIDTOWN_LEAD_COMMAND");
-        }
-
-        let result = build_lead_claude_command("test-task-list", &[]);
-
-        // Should return a command containing claude and the task list ID
-        let cmd = result.unwrap();
-        assert!(cmd.contains("claude"), "Command should contain 'claude'");
-        assert!(
-            cmd.contains("test-task-list"),
-            "Command should contain task list ID"
-        );
-        assert!(
-            cmd.contains("CLAUDE_CODE_TASK_LIST_ID"),
-            "Command should set task list env var"
-        );
     }
 
     #[test]

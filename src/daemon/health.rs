@@ -333,6 +333,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
                         "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
                         name, pr
                     ),
+                    channel: None,
                 });
                 (false, String::new())
             }
@@ -361,6 +362,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         effects.push(Effect::PostToChannel {
             sender: "system".to_string(),
             message: shutdown_msg,
+            channel: None,
         });
         effects.push(Effect::BroadcastCoworkerUpdate {
             name: name.clone(),
@@ -370,6 +372,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
+            session_id: None,
         });
     }
 
@@ -417,18 +420,27 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             ),
         );
 
+        // Look up the task's channel from the snapshot
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == restart.task_id)
+            .and_then(|t| t.channel.clone());
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            restart.name.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::Fresh,
+            Some(prompt),
+        );
+        config.channel = channel.clone();
+
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
+            session_id: None,
         });
-        effects.push(Effect::SpawnCoworker(
-            crate::launch::LaunchConfig::coworker(
-                restart.name.clone(),
-                state.repo_name.clone(),
-                crate::launch::SessionMode::Fresh,
-                Some(prompt),
-            ),
-        ));
+        effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: format!(
@@ -437,7 +449,185 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                 COWORKER_STUCK_DURATION.as_secs(),
                 restart.task_id
             ),
+            channel,
         });
+    }
+
+    effects
+}
+
+/// Detect reviewers whose headless process has been stuck (no events for
+/// `REVIEWER_STUCK_DURATION`), kill them, and respawn with the same PR assignment.
+///
+/// Uses the same exclusion logic as task stuck detection but checks reviewer
+/// PR assignments instead of in-progress tasks. Implements backoff via
+/// `restart_count` — after `MAX_REVIEWER_RESTARTS`, posts an escalation
+/// warning and stops retrying.
+pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    if snap.active_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let restarts = crate::rules::decide_stuck_reviewer_restarts(
+        &snap.headless_process_health,
+        &snap.reviewer_pr_assignments,
+        &snap.reviewer_restart_counts,
+        &snap.usage_limited_coworkers,
+        &snap.api_error_coworkers,
+        &snap.attached_coworkers,
+        snap.now_utc,
+        REVIEWER_STUCK_DURATION,
+        MAX_REVIEWER_RESTARTS,
+    );
+
+    let mut effects = Vec::new();
+    for restart in restarts {
+        let new_restart_count = restart.restart_count + 1;
+
+        info!(
+            "Reviewer {} stuck reviewing PR #{} (no events for {}s, restart {}/{})",
+            restart.name,
+            restart.pr_number,
+            REVIEWER_STUCK_DURATION.as_secs(),
+            new_restart_count,
+            MAX_REVIEWER_RESTARTS,
+        );
+
+        // Shut down the stuck reviewer
+        effects.push(Effect::ShutdownCoworker {
+            name: restart.name.clone(),
+            message: String::new(),
+            session_id: None,
+        });
+
+        // Respawn with incremented restart count
+        let worktree_id = crate::worktree_registry::review_slug_for_pr(restart.pr_number);
+        let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
+
+        let mut config =
+            crate::launch::LaunchConfig::reviewer(restart.name.clone(), restart.pr_number);
+        config.working_dir = Some(wt_path.clone());
+
+        effects.push(Effect::EnsureWorktree {
+            worktree_id: worktree_id.clone(),
+            path: wt_path,
+        });
+
+        let on_success = vec![
+            Effect::BindCoworkerToWorktree {
+                worktree_id,
+                coworker: restart.name.clone(),
+            },
+            Effect::BroadcastCoworkerUpdate {
+                name: restart.name.clone(),
+                status: "running".to_string(),
+                current_task: Some(format!("reviewing PR #{}", restart.pr_number)),
+            },
+            Effect::AssignReviewer {
+                pr_number: restart.pr_number,
+                reviewer_name: restart.name.clone(),
+                source: crate::github_state::AssignmentSource::Manual,
+                restart_count: new_restart_count,
+                reviewer_session_id: None,
+            },
+        ];
+
+        let on_failure = vec![Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
+                restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
+            ),
+            channel: None,
+        }];
+
+        effects.push(Effect::SpawnCoworkerWithCallbacks {
+            config,
+            on_success,
+            on_failure,
+        });
+
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🔄 Restarted stuck reviewer {} for PR #{} (no events for {}s, attempt {}/{})",
+                restart.name,
+                restart.pr_number,
+                REVIEWER_STUCK_DURATION.as_secs(),
+                new_restart_count,
+                MAX_REVIEWER_RESTARTS,
+            ),
+            channel: None,
+        });
+    }
+
+    // Check for reviewers that have hit the restart limit and emit escalation warnings.
+    // These are reviewers whose restart_count >= MAX_REVIEWER_RESTARTS that were
+    // filtered out by decide_stuck_reviewer_restarts(). We detect them by checking
+    // for alive, stuck reviewers with maxed-out restart counts.
+    //
+    // The escalation is only posted once per PR (tracked via reviewer_escalations_posted
+    // in WorldSnapshot) to prevent spamming the channel/lead on every tick.
+    let stuck_threshold = chrono::Duration::from_std(REVIEWER_STUCK_DURATION).unwrap_or_default();
+    for (name, health) in &snap.headless_process_health {
+        if !health.is_alive {
+            continue;
+        }
+        let pr_number = match snap.reviewer_pr_assignments.get(name) {
+            Some(pr) => *pr,
+            None => continue,
+        };
+        // Skip if we've already posted an escalation for this PR
+        if snap.reviewer_escalations_posted.contains(&pr_number) {
+            continue;
+        }
+        let restart_count = snap
+            .reviewer_restart_counts
+            .get(&pr_number)
+            .copied()
+            .unwrap_or(0);
+        if restart_count < MAX_REVIEWER_RESTARTS {
+            continue;
+        }
+        // Check if actually stuck (same criteria as the pure function)
+        let last_event = match health.last_event_at {
+            Some(t) => t,
+            None => continue,
+        };
+        if snap.now_utc.signed_duration_since(last_event) < stuck_threshold {
+            continue;
+        }
+        // Skip if already excluded
+        if snap.usage_limited_coworkers.contains(&name.to_lowercase())
+            || snap.api_error_coworkers.contains(&name.to_lowercase())
+            || snap.attached_coworkers.contains(&name.to_lowercase())
+            || health.has_running_subagent
+            || health.has_pending_tool
+        {
+            continue;
+        }
+
+        warn!(
+            "Reviewer {} stuck on PR #{} after {} restarts — escalating to lead",
+            name, pr_number, restart_count
+        );
+
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🚨 Reviewer {} is stuck on PR #{} after {} restart attempts. \
+                 Manual intervention needed — the reviewer keeps getting stuck on this PR.",
+                name, pr_number, restart_count
+            ),
+            channel: None,
+        });
+        effects.push(Effect::NudgeLead {
+            message: format!(
+                "Reviewer {} is stuck on PR #{} after {} restarts. Please investigate.",
+                name, pr_number, restart_count
+            ),
+        });
+        effects.push(Effect::RecordReviewerEscalation { pr_number });
     }
 
     effects
@@ -488,6 +678,7 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
                 "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~15m when it resets.",
                 detected_coworker
             ),
+            channel: None,
         },
     ]
 }
@@ -521,6 +712,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
                 "🔔 Usage limit expired — nudging {} coworkers to resume work",
                 snap.running_coworkers.len()
             ),
+            channel: None,
         },
     ];
 
@@ -529,6 +721,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
             message: "continue".to_string(),
+            session_id: None,
         });
     }
 
@@ -591,6 +784,7 @@ pub(super) fn check_and_nudge_api_errors(
         effects.push(Effect::NudgeCoworker {
             name: name.clone(),
             message: "The API error may have cleared. Try continuing your work.".to_string(),
+            session_id: None,
         });
         effects.push(Effect::RecordCooldown {
             category: "api_error_nudge".to_string(),
@@ -616,6 +810,7 @@ pub(super) fn check_and_nudge_api_errors(
                     affected_count,
                     names.join(", ")
                 ),
+                channel: None,
             },
         );
     }
@@ -674,18 +869,27 @@ pub(super) async fn check_and_respawn_dead_processes(
             ),
         );
 
+        // Look up the task's channel from the snapshot
+        let channel = snap
+            .all_tasks
+            .iter()
+            .find(|t| t.id == *task_id)
+            .and_then(|t| t.channel.clone());
+
+        let mut config = crate::launch::LaunchConfig::coworker(
+            name.clone(),
+            state.repo_name.clone(),
+            crate::launch::SessionMode::Fresh,
+            Some(prompt),
+        );
+        config.channel = channel.clone();
+
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
+            session_id: None,
         });
-        effects.push(Effect::SpawnCoworker(
-            crate::launch::LaunchConfig::coworker(
-                name.clone(),
-                state.repo_name.clone(),
-                crate::launch::SessionMode::Fresh,
-                Some(prompt),
-            ),
-        ));
+        effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {
             category: "process_respawn".to_string(),
             key: name.clone(),
@@ -696,6 +900,7 @@ pub(super) async fn check_and_respawn_dead_processes(
                 "💀 Coworker {} process died (exit {}) — restarting for task !{}",
                 name, exit_code, task_id
             ),
+            channel,
         });
     }
 
@@ -744,6 +949,7 @@ fn effects_for_fired_reminders(
         effects.push(Effect::PostToChannel {
             sender: "system".to_string(),
             message: message.clone(),
+            channel: None,
         });
         effects.push(Effect::NudgeLead { message });
         fired_ids.push(reminder.id.clone());
@@ -829,6 +1035,7 @@ mod tests {
         use std::collections::{HashMap, HashSet};
 
         let running = Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "lexington".to_string(),
             status: CoworkerStatus::Running,
             working_dir: "/tmp/test".to_string(),
@@ -839,6 +1046,7 @@ mod tests {
             model: "sonnet".to_string(),
         };
         let stopping = Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "park".to_string(),
             status: CoworkerStatus::Stopping,
             working_dir: "/tmp/test".to_string(),
@@ -855,6 +1063,7 @@ mod tests {
             running_coworkers: vec![running.clone()],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),
@@ -875,6 +1084,8 @@ mod tests {
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
             prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
             coworkers_with_unblocked_deps: HashSet::new(),
             usage_limit_nudge_scheduled: true,
             // Set nudge time in the past so it fires
