@@ -24,6 +24,8 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 const CLUSTERER_SYSTEM_PROMPT: &str = include_str!("../../agents/clusterer.md");
 
 /// JSON schema for clusterer response.
+/// NOTE: Not currently used (JSON schema validation via claude --json-schema is TODO).
+#[allow(dead_code)]
 const CLUSTERER_SCHEMA: &str = include_str!("../clusterer_schema.json");
 
 /// Input data sent to the clusterer for each task.
@@ -65,9 +67,10 @@ pub struct ClustererResponse {
     /// Channel to assign the task to.
     pub channel: String,
     /// Rationale for the assignment.
+    #[allow(dead_code)] // Logged but not currently used in logic
     pub rationale: String,
     /// Optional suggestions for channel maintenance.
-    #[serde(default)]
+    #[allow(dead_code)] // Logged but not currently acted upon
     pub suggestions: Vec<ChannelSuggestion>,
 }
 
@@ -75,7 +78,10 @@ pub struct ClustererResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "action", rename_all = "lowercase")]
 pub enum ChannelSuggestion {
-    Archive { channel: String, reason: String },
+    Archive {
+        channel: String,
+        reason: String,
+    },
     Merge {
         from: String,
         into: String,

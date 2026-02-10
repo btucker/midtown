@@ -1478,7 +1478,10 @@ async fn handle_task_create(
         match invoke_clusterer_for_task(subject, description, state).await {
             Ok(ch) => Some(ch),
             Err(e) => {
-                warn!("Clusterer failed to assign channel: {} — using 'midtown' as fallback", e);
+                warn!(
+                    "Clusterer failed to assign channel: {} — using 'midtown' as fallback",
+                    e
+                );
                 Some("midtown".to_string())
             }
         }
@@ -3166,20 +3169,18 @@ async fn invoke_clusterer_for_task(
     description: &str,
     state: &DaemonState,
 ) -> Result<String, String> {
-    use crate::daemon::clusterer::{assign_channel, ChannelInfo, ClustererRequest};
+    use crate::daemon::clusterer::{ChannelInfo, ClustererRequest, assign_channel};
 
     // TODO: Collect actual channel stats and task history.
     // For MVP, send minimal information - just the new task.
     let request = ClustererRequest {
         task_subject: subject.to_string(),
         task_description: description.to_string(),
-        channels: vec![
-            ChannelInfo {
-                name: "midtown".to_string(),
-                active_task_count: 0,
-                recent_tasks: vec![],
-            },
-        ],
+        channels: vec![ChannelInfo {
+            name: "midtown".to_string(),
+            active_task_count: 0,
+            recent_tasks: vec![],
+        }],
         recent_completions: vec![],
     };
 
