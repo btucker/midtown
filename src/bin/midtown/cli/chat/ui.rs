@@ -1025,11 +1025,11 @@ fn calculate_input_bar_height(input_text: &str, area_width: u16) -> u16 {
         return BORDER_HEIGHT + MIN_CONTENT_LINES;
     }
 
-    // Count wrapped lines
+    // Count wrapped lines (wrap_content splits on '\n' then wraps each line)
     let line_count = if input_text.is_empty() {
         1
     } else {
-        wrap_line(input_text, content_width).len()
+        wrap_content(input_text, content_width).len()
     };
 
     // Clamp to min/max and add borders
@@ -1073,7 +1073,18 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
         format!("{}{}", prompt, app.input_text)
     };
 
-    let paragraph = Paragraph::new(text_with_cursor).wrap(ratatui::widgets::Wrap { trim: false });
+    // Pre-wrap text to avoid per-frame recomputation from Paragraph::wrap()
+    let content_width = inner.width as usize;
+    let wrapped_lines: Vec<Line<'_>> = if content_width == 0 {
+        vec![Line::from(text_with_cursor)]
+    } else {
+        wrap_content(&text_with_cursor, content_width)
+            .into_iter()
+            .map(Line::from)
+            .collect()
+    };
+
+    let paragraph = Paragraph::new(wrapped_lines);
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
@@ -3648,9 +3659,7 @@ mod tests {
         // Text with explicit newlines
         let text = "Line 1\nLine 2\nLine 3";
         let height = calculate_input_bar_height(text, 80);
-        // wrap_line handles newlines via wrap_content, which splits on '\n'
-        // This text has 3 lines, so 3 content lines + 2 borders = 5
-        assert!(height >= 3, "Should have at least minimum height");
-        assert!(height <= 8, "Should not exceed maximum height");
+        // wrap_content splits on '\n' first, giving 3 lines + 2 borders = 5
+        assert_eq!(height, 5, "3 content lines + 2 border lines = 5");
     }
 }
