@@ -1024,13 +1024,21 @@ impl App {
             None => return, // No channel, can't calculate unread counts
         };
 
-        // List all available channels
-        let channels = match Channel::list(&base_dir) {
-            Ok(list) => list,
-            Err(_) => return, // Can't read channel list, skip
-        };
+        // Build list of channels to check
+        // Always include the current channel if we have one, plus any others discovered by list()
+        let mut channels_to_check = std::collections::HashSet::new();
 
-        for channel_name in channels {
+        // Add the current channel first (if we have one)
+        if let Some(ref ch) = self.channel {
+            channels_to_check.insert(ch.channel_name().to_string());
+        }
+
+        // Also add any channels discovered by scanning the directory
+        if let Ok(discovered) = Channel::list(&base_dir) {
+            channels_to_check.extend(discovered);
+        }
+
+        for channel_name in channels_to_check {
             // Open the channel
             let channel = match Channel::new(&base_dir, &channel_name) {
                 Ok(ch) => ch,
