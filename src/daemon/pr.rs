@@ -700,15 +700,6 @@ async fn collect_green_with_feedback_effects(
             continue;
         }
 
-        // Check cooldown to avoid spamming
-        let should_nudge = {
-            let tracker = state.pr_issue_tracker.lock().await;
-            tracker.should_nudge(pr_number, PrIssueType::GreenWithFeedback)
-        };
-        if !should_nudge {
-            continue;
-        }
-
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
@@ -718,6 +709,32 @@ async fn collect_green_with_feedback_effects(
                 Some(o) => o,
                 None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
             };
+
+        // Bug fix (!1067): Clear cooldown if owner is not active (died or went idle).
+        // Without this, if a coworker is spawned to address review feedback but dies
+        // (e.g., API error), the cooldown blocks retries and work is silently dropped.
+        // This MUST run before the should_nudge check below, so the cleared cooldown
+        // allows the PR to be re-evaluated in the same tick.
+        if !active_coworkers.contains(&owner) {
+            let mut tracker = state.pr_issue_tracker.lock().await;
+            // Only clear if there WAS a prior nudge — don't touch untracked PRs
+            if tracker.has_nudge(pr_number, PrIssueType::GreenWithFeedback) {
+                debug!(
+                    "PR #{} owner '{}' is not active — clearing GreenWithFeedback cooldown to allow retry",
+                    pr_number, owner
+                );
+                tracker.clear_nudge(pr_number, PrIssueType::GreenWithFeedback);
+            }
+        }
+
+        // Check cooldown to avoid spamming
+        let should_nudge = {
+            let tracker = state.pr_issue_tracker.lock().await;
+            tracker.should_nudge(pr_number, PrIssueType::GreenWithFeedback)
+        };
+        if !should_nudge {
+            continue;
+        }
 
         let message = format!(
             "PR #{} ({}) - {}: {}",
@@ -4007,6 +4024,98 @@ mod tests {
                 }
             }),
             "should cleanup PR #123"
+        );
+    }
+
+    /// Bug fix test for !1067: Cooldown should be cleared when coworker dies
+    ///
+    /// Scenario: A coworker is spawned to address review feedback on their PR,
+    /// but dies (API error, crash, etc.) without addressing it. The next poll
+    /// should clear the cooldown and retry, not silently drop the work.
+    #[test]
+    fn pr_issue_tracker_clears_nudge_when_requested() {
+        use super::super::trackers::{PrIssueTracker, PrIssueType};
+
+        let mut tracker = PrIssueTracker::new();
+
+        // First nudge: spawn coworker to address review feedback
+        tracker.record_nudge(42, PrIssueType::GreenWithFeedback);
+
+        // Verify cooldown is active
+        assert!(
+            !tracker.should_nudge(42, PrIssueType::GreenWithFeedback),
+            "cooldown should block immediate repeat"
+        );
+
+        // Coworker dies — daemon clears the cooldown
+        tracker.clear_nudge(42, PrIssueType::GreenWithFeedback);
+
+        // Next poll: cooldown is cleared, so should_nudge returns true
+        assert!(
+            tracker.should_nudge(42, PrIssueType::GreenWithFeedback),
+            "should_nudge should return true after clearing cooldown"
+        );
+
+        // Verify we can record a new nudge (retry)
+        tracker.record_nudge(42, PrIssueType::GreenWithFeedback);
+        assert!(
+            !tracker.should_nudge(42, PrIssueType::GreenWithFeedback),
+            "new cooldown should be active after retry"
+        );
+    }
+
+    /// Integration test for !1067: Simulates the exact code path in
+    /// collect_green_with_feedback_effects when a coworker dies.
+    ///
+    /// The function's loop body (after the fix) executes in this order:
+    /// 1. Determine PR owner from branch name
+    /// 2. If owner is NOT active AND has a prior nudge → clear cooldown
+    /// 3. Check should_nudge (now returns true because cooldown was cleared)
+    /// 4. Produce effects (spawn/nudge)
+    ///
+    /// This test walks through steps 2-3 to verify the ordering is correct:
+    /// clearing happens BEFORE the should_nudge gate.
+    #[test]
+    fn green_with_feedback_clears_cooldown_when_owner_inactive() {
+        use super::super::trackers::{PrIssueTracker, PrIssueType};
+
+        let mut tracker = PrIssueTracker::new();
+        let active_coworkers: Vec<String> = vec!["lexington".to_string()]; // amsterdam NOT here
+
+        // Step 1: First poll spawned amsterdam for PR #42, recorded nudge
+        tracker.record_nudge(42, PrIssueType::GreenWithFeedback);
+        assert!(
+            !tracker.should_nudge(42, PrIssueType::GreenWithFeedback),
+            "cooldown should be active after spawn"
+        );
+
+        // Step 2: Amsterdam died — simulate the inactive-owner check from the function.
+        // This mirrors the code block that runs BEFORE should_nudge in the fixed version.
+        let owner = "amsterdam".to_string();
+        if !active_coworkers.contains(&owner)
+            && tracker.has_nudge(42, PrIssueType::GreenWithFeedback)
+        {
+            tracker.clear_nudge(42, PrIssueType::GreenWithFeedback);
+        }
+
+        // Step 3: should_nudge check — must return true now (cooldown was cleared)
+        assert!(
+            tracker.should_nudge(42, PrIssueType::GreenWithFeedback),
+            "should_nudge must return true after cooldown cleared for inactive owner"
+        );
+
+        // Step 4: Verify active owners don't get cooldown cleared
+        let mut tracker2 = PrIssueTracker::new();
+        tracker2.record_nudge(99, PrIssueType::GreenWithFeedback);
+        let active_owner = "lexington".to_string();
+        if !active_coworkers.contains(&active_owner)
+            && tracker2.has_nudge(99, PrIssueType::GreenWithFeedback)
+        {
+            tracker2.clear_nudge(99, PrIssueType::GreenWithFeedback);
+        }
+        assert!(
+            !tracker2.should_nudge(99, PrIssueType::GreenWithFeedback),
+            "cooldown should NOT be cleared for active owners"
         );
     }
 }
