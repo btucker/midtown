@@ -267,9 +267,19 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         }
         first_channel = false;
 
-        // Channel header with task count and CI status
+        // Channel header with task count, unread count, and CI status
         let task_count = tasks.len();
-        let mut header_parts = vec![format!("  #{} ({})", channel_name, task_count)];
+        let mut header_parts =
+            if let Some(&unread_count) = app.channel_unread_counts.get(channel_name.as_str()) {
+                // Show unread count if there are unread messages
+                vec![format!(
+                    "  #{} ({}) — {} tasks",
+                    channel_name, unread_count, task_count
+                )]
+            } else {
+                // No unread messages, just show task count
+                vec![format!("  #{} — {} tasks", channel_name, task_count)]
+            };
 
         // Add CI status indicator if there are active PRs for this channel
         if let Some(channel_prs) = prs_by_channel.get(channel_name)

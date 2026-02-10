@@ -234,6 +234,8 @@ pub struct App {
     pub selection_mode: bool,
     /// Cached rendered message lines and hyperlinks to skip recomputation on input-only redraws
     pub message_render_cache: Option<MessageRenderCache>,
+    /// Unread message counts per channel (channel_name -> unread_count)
+    pub channel_unread_counts: HashMap<String, usize>,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -297,6 +299,7 @@ impl App {
             input_cursor: 0,
             selection_mode: false,
             message_render_cache: None,
+            channel_unread_counts: HashMap::new(),
         };
 
         // Initial load
@@ -470,6 +473,9 @@ impl App {
 
         // Poll for completed mermaid renders
         self.mermaid_cache.poll_completed();
+
+        // Refresh unread counts for channels
+        self.refresh_unread_counts();
     }
 
     /// Refresh kanban board data (tasks and PRs)
@@ -808,6 +814,79 @@ impl App {
             {
                 self.current_tasks_cache
                     .insert(owner.to_lowercase(), task.subject.clone());
+            }
+        }
+    }
+
+    /// Calculate unread message counts for all channels
+    ///
+    /// For each channel, compares the total message count with the cursor position
+    /// for the "chat-tui" agent to determine how many messages are unread.
+    pub fn refresh_unread_counts(&mut self) {
+        self.channel_unread_counts.clear();
+
+        // Get the base directory from the current channel if available
+        let base_dir = match &self.channel {
+            Some(ch) => ch.base_dir().to_path_buf(),
+            None => return, // No channel, can't calculate unread counts
+        };
+
+        // List all available channels
+        let channels = match Channel::list(&base_dir) {
+            Ok(list) => list,
+            Err(_) => return, // Can't read channel list, skip
+        };
+
+        for channel_name in channels {
+            // Open the channel
+            let channel = match Channel::new(&base_dir, &channel_name) {
+                Ok(ch) => ch,
+                Err(_) => continue, // Skip channels we can't open
+            };
+
+            // Get total message count
+            let total_count = match channel.message_count() {
+                Ok(count) => count,
+                Err(_) => continue, // Skip channels we can't read
+            };
+
+            // Calculate unread count:
+            // Load the cursor without updating it, then count messages from that position
+            let cursor = match midtown::Cursor::load_or_create(&base_dir, &channel_name, "chat-tui")
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    // If we can't load cursor, assume all messages are unread
+                    if total_count > 0 {
+                        self.channel_unread_counts
+                            .insert(channel_name.clone(), total_count);
+                    }
+                    continue;
+                }
+            };
+
+            // Read all messages and count how many come after the cursor position
+            let all_messages = match channel.read_all() {
+                Ok(msgs) => msgs,
+                Err(_) => continue,
+            };
+
+            // Count messages that come after the cursor's last_message_id
+            let unread_count = if let Some(ref last_id) = cursor.last_message_id {
+                // Find the position of the last read message
+                let last_read_idx = all_messages.iter().position(|m| &m.id == last_id);
+                match last_read_idx {
+                    Some(idx) => all_messages.len().saturating_sub(idx + 1),
+                    None => all_messages.len(), // Cursor points to non-existent message, all are unread
+                }
+            } else {
+                // Cursor has never been updated, all messages are unread
+                all_messages.len()
+            };
+
+            if unread_count > 0 {
+                self.channel_unread_counts
+                    .insert(channel_name, unread_count);
             }
         }
     }
@@ -1533,6 +1612,7 @@ pub(super) mod tests {
             input_cursor: 0,
             selection_mode: false,
             message_render_cache: None,
+            channel_unread_counts: HashMap::new(),
         }
     }
 
@@ -2079,6 +2159,66 @@ pub(super) mod tests {
         assert_eq!(
             app.scroll_offset, 0,
             "Seventh down event triggers scroll (acc=8)"
+        );
+    }
+
+    #[test]
+    fn test_unread_count_calculation() {
+        use tempfile::TempDir;
+
+        // Create a temporary channel with messages
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "test-channel").unwrap();
+
+        // Add some messages
+        channel
+            .send(&Message::text("alice", "First message"))
+            .unwrap();
+        channel
+            .send(&Message::text("bob", "Second message"))
+            .unwrap();
+        channel
+            .send(&Message::text("alice", "Third message"))
+            .unwrap();
+
+        // Create an app with this channel
+        let mut app = App {
+            channel: Some(channel.clone()),
+            ..test_app()
+        };
+
+        // Before any reading, all messages should be unread
+        app.refresh_unread_counts();
+        assert_eq!(
+            app.channel_unread_counts.get("test-channel"),
+            Some(&3),
+            "All 3 messages should be unread initially"
+        );
+
+        // Simulate reading 2 messages by updating the cursor
+        let _ = channel.read_since_cursor("chat-tui").unwrap();
+
+        // Now refresh should show 1 new message (the 3rd one added after cursor init)
+        // Actually, read_since_cursor will read all 3 messages since cursor was at position 0
+        // So after that read, cursor is at EOF, and unread count should be 0
+        app.refresh_unread_counts();
+        assert_eq!(
+            app.channel_unread_counts.get("test-channel"),
+            None, // No entry means 0 unread (we filter out 0s)
+            "After reading all messages, unread count should be 0"
+        );
+
+        // Add one more message
+        channel
+            .send(&Message::text("alice", "Fourth message"))
+            .unwrap();
+
+        // Refresh should show 1 unread
+        app.refresh_unread_counts();
+        assert_eq!(
+            app.channel_unread_counts.get("test-channel"),
+            Some(&1),
+            "After new message arrives, unread count should be 1"
         );
     }
 }
