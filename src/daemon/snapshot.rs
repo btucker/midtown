@@ -146,6 +146,10 @@ pub struct WorldSnapshot {
     /// Maps task_id → pr_number. Used by reconcile_tasks_in_review to detect
     /// tasks whose PR is open but whose owner is no longer active.
     pub tasks_with_open_prs: HashMap<String, u64>,
+    /// PR numbers with associated task IDs (from PrAuthorSession).
+    /// Maps pr_number → task_id. Used by abandoned PR detection to reset tasks
+    /// when PRs are closed without merging.
+    pub pr_task_associations: HashMap<u64, String>,
 
     // ── Reviewer state ──────────────────────────────────────────────────
     /// Currently active reviewers (from both in-memory tracker and persistent state).
@@ -389,9 +393,10 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .collect();
 
     // ── PR author sessions (task → PR mapping) ────────────────────────
-    let tasks_with_open_prs: HashMap<String, u64> = {
+    let (tasks_with_open_prs, pr_task_associations) = {
         let ps = state.persistent_state.lock().await;
-        ps.github
+        let tasks_to_prs: HashMap<String, u64> = ps
+            .github
             .pr_author_sessions
             .iter()
             .filter_map(|(pr_number, session)| {
@@ -400,7 +405,19 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
                     .as_ref()
                     .map(|tid| (tid.clone(), *pr_number))
             })
-            .collect()
+            .collect();
+        let prs_to_tasks: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .filter_map(|(pr_number, session)| {
+                session
+                    .task_id
+                    .as_ref()
+                    .map(|tid| (*pr_number, tid.clone()))
+            })
+            .collect();
+        (tasks_to_prs, prs_to_tasks)
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
@@ -549,6 +566,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         review_feedback_pr_coworkers,
         pending_task_owners,
         tasks_with_open_prs,
+        pr_task_associations,
         active_reviewers,
         reviewer_pr_assignments,
         reviewed_prs,
@@ -656,6 +674,7 @@ mod tests {
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -744,6 +763,7 @@ mod tests {
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -897,6 +917,7 @@ mod tests {
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -969,6 +990,7 @@ mod tests {
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),

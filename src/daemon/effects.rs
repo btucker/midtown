@@ -205,8 +205,7 @@ pub enum Effect {
     },
     /// Mark a task as completed.
     ///
-    /// Called when a PR is merged with `[Midtown !XX]` in the title (dispatch.rs),
-    /// or for non-PR tasks when the coworker reports completion (rpc.rs).
+    /// Called when a PR is merged with `[Midtown !XX]` in the title (dispatch.rs).
     CompleteTask { task_id: String, repo_name: String },
     /// Clear a completed task ID from all dependent tasks' `blockedBy` arrays.
     ///

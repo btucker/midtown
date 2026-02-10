@@ -1080,6 +1080,7 @@ mod tests {
             review_feedback_pr_coworkers: HashSet::new(),
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
             active_reviewers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewed_prs: HashSet::new(),
