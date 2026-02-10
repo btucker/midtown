@@ -678,7 +678,8 @@ async fn handle_coworker_spawn(
         working_dir: None,
         model: "sonnet".to_string(),
         channel: None,
-        auth_profile_dir: None, // Resolved by spawn_coworker()
+        auth_profile_dir: None,
+        auth_provider: crate::auth::AuthProvider::Claude, // Resolved by spawn_coworker()
     };
 
     // Spawn via the headless path (creates worktree + headless session)
@@ -776,6 +777,7 @@ fn build_coworker_relaunch_config(
         None,
     );
     config.model = coworker.model.clone();
+    config.auth_provider = coworker.provider;
     config
 }
 

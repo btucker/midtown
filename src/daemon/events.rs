@@ -321,6 +321,7 @@ mod tests {
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         })
     }
 
@@ -395,6 +396,7 @@ mod tests {
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         Effect::SpawnCoworkerWithCallbacks {
             config,
@@ -417,6 +419,7 @@ mod tests {
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         Effect::AssignAndSpawn {
             task_id: "1".to_string(),
@@ -479,6 +482,7 @@ mod tests {
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
 
         let config2 = config1.clone();

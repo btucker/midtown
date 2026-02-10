@@ -75,6 +75,8 @@ pub struct LaunchConfig {
     /// When set, overrides the default `current_profile_dir()` resolution.
     /// Callers should resolve this from project config before constructing.
     pub auth_profile_dir: Option<PathBuf>,
+    /// Auth provider for this session. Determines which auth env var is set.
+    pub auth_provider: crate::auth::AuthProvider,
 }
 
 /// The shell command string and generated session ID (if fresh).
@@ -109,6 +111,7 @@ impl LaunchConfig {
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         }
     }
 
@@ -131,6 +134,7 @@ impl LaunchConfig {
             model: "opus".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         }
     }
 
@@ -176,6 +180,7 @@ impl LaunchConfig {
             model: "opus".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         }
     }
 
@@ -212,9 +217,9 @@ impl LaunchConfig {
         let config_dir = self
             .auth_profile_dir
             .clone()
-            .unwrap_or_else(crate::auth::current_profile_dir);
+            .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
         env.insert(
-            "CLAUDE_CONFIG_DIR".to_string(),
+            self.auth_provider.env_var().to_string(),
             config_dir.to_string_lossy().to_string(),
         );
         // Set default channel for routing coworker messages
@@ -268,8 +273,12 @@ impl LaunchConfig {
         let config_dir = self
             .auth_profile_dir
             .clone()
-            .unwrap_or_else(crate::auth::current_profile_dir);
-        env_parts.push(format!("CLAUDE_CONFIG_DIR='{}'", config_dir.display()));
+            .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
+        env_parts.push(format!(
+            "{}='{}'",
+            self.auth_provider.env_var(),
+            config_dir.display()
+        ));
         // Must be a real shell env var — Claude Code blocklists this from settings.json
         if self.team_name.is_some() {
             env_parts.push("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1".to_string());
@@ -589,5 +598,23 @@ mod tests {
 
         // Verify MIDTOWN_CHANNEL env var is not set when channel is None
         assert!(!headless.env.contains_key("MIDTOWN_CHANNEL"));
+    }
+
+    #[test]
+    fn test_to_headless_config_uses_codex_home_for_codex_provider() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        config.auth_provider = crate::auth::AuthProvider::Codex;
+        config.auth_profile_dir = Some(std::path::PathBuf::from("/tmp/midtown-codex-profile"));
+
+        let headless = config.to_headless_config();
+
+        assert_eq!(
+            headless.env.get("CODEX_HOME"),
+            Some(&"/tmp/midtown-codex-profile".to_string())
+        );
+        assert!(
+            !headless.env.contains_key("CLAUDE_CONFIG_DIR"),
+            "Codex provider should not inject CLAUDE_CONFIG_DIR"
+        );
     }
 }

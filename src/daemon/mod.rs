@@ -691,7 +691,10 @@ impl DaemonState {
         // Inject project-resolved auth profile if not already set
         let config = if config.auth_profile_dir.is_none() {
             let mut c = config.clone();
-            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(&self.repo_name));
+            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
+                &self.repo_name,
+                c.auth_provider,
+            ));
             c
         } else {
             config.clone()
@@ -752,7 +755,7 @@ impl DaemonState {
             working_dir,
             None,
             config.model.clone(),
-            crate::auth::AuthProvider::Claude,
+            config.auth_provider,
         ) {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
