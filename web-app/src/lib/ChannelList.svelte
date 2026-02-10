@@ -50,6 +50,11 @@
   async function selectChannel(channelName) {
     activeChannel.set(channelName)
 
+    // Clear unread count for this channel
+    channels.update((channelList) =>
+      channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch))
+    )
+
     // Load messages for this channel if we haven't fetched them yet
     const currentMessages = $messagesByChannel[channelName]
     if (!currentMessages || currentMessages.length === 0) {
@@ -180,6 +185,9 @@
         {formatChannelName(channel.name)}
       </div>
       <div class="channel-badges">
+        {#if channel.unread > 0}
+          <span class="unread-count" title="{channel.unread} unread messages">{channel.unread}</span>
+        {/if}
         {#if totalTasks > 0}
           <span class="task-count">{totalTasks}</span>
         {/if}
@@ -365,6 +373,17 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  .unread-count {
+    font-size: 0.75rem;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #ff6b6b;
+    color: #ffffff;
+    min-width: 1.5em;
+    text-align: center;
+    font-weight: 600;
   }
 
   .task-count {
