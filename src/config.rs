@@ -1689,11 +1689,11 @@ webhook_port = 47024
         // (can't use the real function since it uses the hardcoded base dir)
         for entry in std::fs::read_dir(&projects_dir).unwrap().flatten() {
             let config_path = entry.path().join("config.toml");
-            if let Some(mut config) = FullProjectConfig::load_from(&config_path) {
-                if config.project.auth_profile.is_some() {
-                    config.project.auth_profile = None;
-                    config.save_to(&config_path).unwrap();
-                }
+            if let Some(mut config) = FullProjectConfig::load_from(&config_path)
+                && config.project.auth_profile.is_some()
+            {
+                config.project.auth_profile = None;
+                config.save_to(&config_path).unwrap();
             }
         }
 
