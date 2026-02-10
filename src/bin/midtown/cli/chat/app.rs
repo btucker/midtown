@@ -1638,6 +1638,7 @@ pub(super) mod tests {
             owner: Some("park".to_string()),
             status: TaskStatus::InProgress,
             modified_at: None,
+            channel: None,
         };
         let cloned = task.clone();
         assert_eq!(cloned.id, "1");
@@ -1656,6 +1657,7 @@ pub(super) mod tests {
                     owner: None,
                     status: TaskStatus::Pending,
                     modified_at: None,
+                    channel: None,
                 },
                 KanbanTask {
                     id: "2".to_string(),
@@ -1663,6 +1665,7 @@ pub(super) mod tests {
                     owner: Some("park".to_string()),
                     status: TaskStatus::InProgress,
                     modified_at: None,
+                    channel: None,
                 },
                 KanbanTask {
                     id: "3".to_string(),
@@ -1670,6 +1673,7 @@ pub(super) mod tests {
                     owner: Some("lexington".to_string()),
                     status: TaskStatus::Completed,
                     modified_at: None,
+                    channel: None,
                 },
             ],
             ..test_app()
