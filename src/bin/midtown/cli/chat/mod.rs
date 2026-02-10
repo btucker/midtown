@@ -370,30 +370,26 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     }
                 }
                 // Arrow keys for scrolling - don't auto-focus input
-                KeyCode::Up => {
-                    match app.focused_pane {
-                        FocusedPane::Board => {
-                            // Navigate channel/task list (future implementation)
-                            EventResult::Continue
-                        }
-                        FocusedPane::Chat | FocusedPane::InputBar => {
-                            app.scroll_up();
-                            EventResult::Continue
-                        }
+                KeyCode::Up => match app.focused_pane {
+                    FocusedPane::Board => {
+                        app.board_selection_up();
+                        EventResult::Continue
                     }
-                }
-                KeyCode::Down => {
-                    match app.focused_pane {
-                        FocusedPane::Board => {
-                            // Navigate channel/task list (future implementation)
-                            EventResult::Continue
-                        }
-                        FocusedPane::Chat | FocusedPane::InputBar => {
-                            app.scroll_down();
-                            EventResult::Continue
-                        }
+                    FocusedPane::Chat | FocusedPane::InputBar => {
+                        app.scroll_up();
+                        EventResult::Continue
                     }
-                }
+                },
+                KeyCode::Down => match app.focused_pane {
+                    FocusedPane::Board => {
+                        app.board_selection_down();
+                        EventResult::Continue
+                    }
+                    FocusedPane::Chat | FocusedPane::InputBar => {
+                        app.scroll_down();
+                        EventResult::Continue
+                    }
+                },
                 KeyCode::PageUp => {
                     app.page_up();
                     EventResult::Continue

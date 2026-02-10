@@ -156,6 +156,15 @@ pub enum FocusedPane {
     InputBar,
 }
 
+/// Identifies a selectable item in the board panel
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardSelection {
+    /// A channel header (channel name)
+    Channel(String),
+    /// A task within a channel (channel name, task ID)
+    Task(String, String),
+}
+
 /// Application state
 pub struct App {
     /// All messages from the channel (VecDeque for O(1) front insertion)
@@ -223,9 +232,10 @@ pub struct App {
     usage_last_refresh: Instant,
     /// Which pane currently has focus
     pub focused_pane: FocusedPane,
-    /// Currently selected channel index in the board
-    #[allow(dead_code)] // Will be used for multi-channel navigation
-    pub selected_channel_index: usize,
+    /// Currently selected item in the board panel (channel or task)
+    pub board_selection: Option<BoardSelection>,
+    /// Currently selected channel for viewing messages
+    pub selected_channel: String,
     /// Text input buffer for the input bar
     pub input_text: String,
     /// Cursor position in the input text
@@ -294,7 +304,8 @@ impl App {
             usage_receiver: None,
             usage_last_refresh: Instant::now() - USAGE_REFRESH_INTERVAL, // Force initial refresh
             focused_pane: FocusedPane::Board,
-            selected_channel_index: 0,
+            board_selection: None,
+            selected_channel: "midtown".to_string(),
             input_text: String::new(),
             input_cursor: 0,
             selection_mode: false,
@@ -639,6 +650,125 @@ impl App {
             FocusedPane::Chat => FocusedPane::InputBar,
             FocusedPane::InputBar => FocusedPane::Board,
         };
+    }
+
+    /// Build the ordered list of selectable items in the board
+    pub fn build_board_selections(&self) -> Vec<BoardSelection> {
+        use std::collections::BTreeMap;
+
+        let mut selections = Vec::new();
+
+        // Discover available channels
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+        let channels = midtown::Channel::list(&base_dir).unwrap_or_default();
+        let main_channel = channels.first().map(|s| s.as_str()).unwrap_or("midtown");
+
+        // Group tasks by channel
+        let mut tasks_by_channel: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
+        let (pending, in_progress, _completed) = self.tasks_by_status();
+
+        for task in in_progress.iter().chain(pending.iter()) {
+            let channel_key = task.channel.as_deref().unwrap_or(main_channel).to_string();
+            tasks_by_channel.entry(channel_key).or_default().push(task);
+        }
+
+        // Build selection list: channel headers followed by their tasks
+        for (channel_name, tasks) in &tasks_by_channel {
+            selections.push(BoardSelection::Channel(channel_name.clone()));
+            for task in tasks {
+                selections.push(BoardSelection::Task(channel_name.clone(), task.id.clone()));
+            }
+        }
+
+        selections
+    }
+
+    /// Navigate board selection up
+    pub fn board_selection_up(&mut self) {
+        let selections = self.build_board_selections();
+        if selections.is_empty() {
+            return;
+        }
+
+        if let Some(ref current) = self.board_selection {
+            // Find current position and move up
+            if let Some(pos) = selections.iter().position(|s| s == current)
+                && pos > 0
+            {
+                self.board_selection = Some(selections[pos - 1].clone());
+                self.update_selected_channel();
+            }
+        } else {
+            // No selection - select the last item
+            self.board_selection = selections.last().cloned();
+            self.update_selected_channel();
+        }
+    }
+
+    /// Navigate board selection down
+    pub fn board_selection_down(&mut self) {
+        let selections = self.build_board_selections();
+        if selections.is_empty() {
+            return;
+        }
+
+        if let Some(ref current) = self.board_selection {
+            // Find current position and move down
+            if let Some(pos) = selections.iter().position(|s| s == current)
+                && pos < selections.len() - 1
+            {
+                self.board_selection = Some(selections[pos + 1].clone());
+                self.update_selected_channel();
+            }
+        } else {
+            // No selection - select the first item
+            self.board_selection = selections.first().cloned();
+            self.update_selected_channel();
+        }
+    }
+
+    /// Update the selected channel when a board selection changes
+    fn update_selected_channel(&mut self) {
+        if let Some(ref selection) = self.board_selection {
+            let new_channel = match selection {
+                BoardSelection::Channel(ch) => ch.clone(),
+                BoardSelection::Task(ch, _) => ch.clone(),
+            };
+
+            // Only reload messages if the channel actually changed
+            if new_channel != self.selected_channel {
+                self.selected_channel = new_channel;
+                self.load_channel_messages();
+            }
+        }
+    }
+
+    /// Load messages from the currently selected channel
+    fn load_channel_messages(&mut self) {
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+
+        // Try to open the channel file
+        if let Ok(channel) = midtown::Channel::new(&base_dir, &self.selected_channel) {
+            // Load last N messages
+            if let Ok((messages, start_pos)) = channel.read_last_n_messages(INITIAL_MESSAGE_COUNT) {
+                self.messages = VecDeque::from(messages);
+                self.history_start_position = start_pos;
+                self.history_fully_loaded = start_pos == 0;
+                self.scroll_offset = 0;
+
+                // Update the channel reference for future refresh
+                self.channel = Some(channel);
+
+                // Set cursor to end for new messages
+                if let Some(ref ch) = self.channel {
+                    let _ = ch.set_cursor_to_end("chat-tui");
+                }
+            }
+        }
     }
 
     /// Maximum scroll offset
@@ -1607,7 +1737,8 @@ pub(super) mod tests {
             usage_receiver: None,
             usage_last_refresh: Instant::now(),
             focused_pane: FocusedPane::Board,
-            selected_channel_index: 0,
+            board_selection: None,
+            selected_channel: "midtown".to_string(),
             input_text: String::new(),
             input_cursor: 0,
             selection_mode: false,
@@ -2220,5 +2351,106 @@ pub(super) mod tests {
             Some(&1),
             "After new message arrives, unread count should be 1"
         );
+    }
+
+    #[test]
+    fn test_board_selection_navigation() {
+        let mut app = App {
+            tasks: vec![
+                KanbanTask {
+                    id: "1".to_string(),
+                    subject: "Task 1".to_string(),
+                    owner: None,
+                    status: TaskStatus::Pending,
+                    modified_at: None,
+                    channel: Some("midtown".to_string()),
+                },
+                KanbanTask {
+                    id: "2".to_string(),
+                    subject: "Task 2".to_string(),
+                    owner: Some("park".to_string()),
+                    status: TaskStatus::InProgress,
+                    modified_at: None,
+                    channel: Some("midtown".to_string()),
+                },
+                KanbanTask {
+                    id: "3".to_string(),
+                    subject: "Task 3".to_string(),
+                    owner: None,
+                    status: TaskStatus::Pending,
+                    modified_at: None,
+                    channel: Some("features".to_string()),
+                },
+            ],
+            ..test_app()
+        };
+
+        // Initial state: no selection
+        assert_eq!(app.board_selection, None);
+
+        // Navigate down - should select first item (first channel)
+        app.board_selection_down();
+        assert!(
+            matches!(
+                &app.board_selection,
+                Some(BoardSelection::Channel(ch)) if ch == "features"
+            ),
+            "First down should select first channel"
+        );
+
+        // Navigate down again - should select first task in that channel
+        app.board_selection_down();
+        assert!(
+            matches!(
+                &app.board_selection,
+                Some(BoardSelection::Task(ch, id)) if ch == "features" && id == "3"
+            ),
+            "Second down should select first task"
+        );
+
+        // Navigate up - should go back to channel
+        app.board_selection_up();
+        assert!(
+            matches!(
+                &app.board_selection,
+                Some(BoardSelection::Channel(ch)) if ch == "features"
+            ),
+            "Up should go back to channel"
+        );
+    }
+
+    #[test]
+    fn test_board_selection_changes_selected_channel() {
+        let mut app = App {
+            tasks: vec![
+                KanbanTask {
+                    id: "1".to_string(),
+                    subject: "Task 1".to_string(),
+                    owner: None,
+                    status: TaskStatus::Pending,
+                    modified_at: None,
+                    channel: Some("midtown".to_string()),
+                },
+                KanbanTask {
+                    id: "2".to_string(),
+                    subject: "Task 2".to_string(),
+                    owner: None,
+                    status: TaskStatus::Pending,
+                    modified_at: None,
+                    channel: Some("features".to_string()),
+                },
+            ],
+            ..test_app()
+        };
+
+        // Initial selected channel
+        assert_eq!(app.selected_channel, "midtown");
+
+        // Select a channel
+        app.board_selection = Some(BoardSelection::Channel("features".to_string()));
+        app.update_selected_channel();
+
+        // Selected channel should update
+        assert_eq!(app.selected_channel, "features");
     }
 }

@@ -307,12 +307,21 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         }
 
         let channel_header = header_parts.join("");
-        lines.push(Line::from(vec![Span::styled(
-            channel_header,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]));
+
+        // Check if this channel is selected
+        let is_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
+            super::app::BoardSelection::Channel(ch) => ch == channel_name,
+            _ => false,
+        });
+
+        let mut style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        if is_selected {
+            style = style.bg(Color::DarkGray);
+        }
+
+        lines.push(Line::from(vec![Span::styled(channel_header, style)]));
         lines.push(Line::from("")); // Blank line after header
 
         // Render tasks for this channel
@@ -334,6 +343,12 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                 status_marker, task.id, task.subject, owner_text
             );
 
+            // Check if this task is selected
+            let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
+                super::app::BoardSelection::Task(ch, tid) => ch == channel_name && tid == &task.id,
+                _ => false,
+            });
+
             // Pre-wrap the task line if it exceeds available width
             let wrapped_lines = wrap_content(&task_line, wrap_width);
             for (i, wrapped) in wrapped_lines.iter().enumerate() {
@@ -350,10 +365,12 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                     Color::DarkGray
                 };
 
-                lines.push(Line::from(vec![Span::styled(
-                    text,
-                    Style::default().fg(color),
-                )]));
+                let mut style = Style::default().fg(color);
+                if is_task_selected {
+                    style = style.bg(Color::DarkGray);
+                }
+
+                lines.push(Line::from(vec![Span::styled(text, style)]));
             }
         }
     }
@@ -929,9 +946,9 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 /// Draw the chat messages area (top of chat panel)
 fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let title = if app.selection_mode {
-        " #midtown [SELECT] "
+        format!(" #{} [SELECT] ", app.selected_channel)
     } else {
-        " #midtown "
+        format!(" #{} ", app.selected_channel)
     };
     let border_color = if app.selection_mode {
         Color::Yellow
