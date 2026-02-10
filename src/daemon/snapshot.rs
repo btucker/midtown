@@ -32,6 +32,8 @@ pub struct ProcessHealth {
     /// Whether the coworker hit a usage/rate limit (detected from
     /// `StreamEvent::Result { is_error: true }` with usage limit content).
     pub has_usage_limit: bool,
+    /// When the usage limit will reset (if known).
+    pub usage_limit_reset_at: Option<DateTime<Utc>>,
     /// Whether the coworker is experiencing API errors (transient failures
     /// that may resolve on retry).
     pub has_api_error: bool,
@@ -57,6 +59,7 @@ impl Default for ProcessHealth {
             is_alive: true,
             last_event_at: None,
             has_usage_limit: false,
+            usage_limit_reset_at: None,
             has_api_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
@@ -909,6 +912,7 @@ mod tests {
                 is_alive: true,
                 last_event_at: Some(Utc::now()),
                 has_usage_limit: false,
+                usage_limit_reset_at: None,
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
@@ -922,6 +926,7 @@ mod tests {
                 is_alive: true,
                 last_event_at: Some(Utc::now()),
                 has_usage_limit: false,
+                usage_limit_reset_at: None,
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
@@ -935,6 +940,7 @@ mod tests {
                 is_alive: false, // stopped
                 last_event_at: Some(Utc::now()),
                 has_usage_limit: false,
+                usage_limit_reset_at: None,
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
