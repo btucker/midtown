@@ -3556,7 +3556,7 @@ mod tests {
         // On update (allow_clear=true), empty string clears the mapping
         let changed = apply_task_channel_mapping(&mut map, "42", Some(""), true);
         assert!(changed);
-        assert!(map.get("42").is_none());
+        assert!(!map.contains_key("42"));
     }
 
     #[test]
