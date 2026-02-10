@@ -8,6 +8,7 @@
 mod architect;
 mod chat;
 mod clusterer;
+mod clustering;
 mod constants;
 mod dispatch;
 pub(crate) mod effects;
