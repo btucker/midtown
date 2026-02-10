@@ -59,6 +59,17 @@ pub(super) fn check_and_recover_orphans(
                 None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
             };
 
+            // Check if task is already completed
+            // Race condition: coworker reports completion via RPC, task is marked completed,
+            // but snapshot was collected before in_progress_tasks refreshed.
+            if task.status == crate::tasks::TaskStatus::Completed {
+                debug!(
+                    "Skipping orphan recovery for task !{}: already completed",
+                    task_id
+                );
+                return false;
+            }
+
             // Check if this task references a PR that's already merged
             if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(&task)
                 && let Ok(pr_num) = pr_num_str.parse::<u64>()
