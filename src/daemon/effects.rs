@@ -317,6 +317,15 @@ pub enum Effect {
         pr_number: u64,
         repo_name: String,
     },
+    /// Create a new task.
+    ///
+    /// Used by reconciliation logic to generate tasks for orphaned PRs or other
+    /// conditions discovered during polling ticks.
+    CreateTask {
+        repo_name: String,
+        subject: String,
+        description: String,
+    },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -1240,6 +1249,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     ));
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post abandoned task message: {}", e);
+                    }
+                }
+            }
+            Effect::CreateTask {
+                repo_name,
+                subject,
+                description,
+            } => {
+                // Derive active_form from subject (simple present progressive form)
+                let active_form = if subject.starts_with("Merge") {
+                    subject.replace("Merge", "Merging")
+                } else {
+                    format!("Working on: {}", subject)
+                };
+
+                match crate::tasks::create_task_for_repo(
+                    &subject,
+                    &description,
+                    &active_form,
+                    "", // owner (empty = unassigned)
+                    &repo_name,
+                    None, // blocked_by
+                    None, // channel
+                ) {
+                    Ok(task_id) => {
+                        info!("Created task !{}: {}", task_id, subject);
+                        // Post channel notification
+                        let msg =
+                            crate::message::Message::system(format!("created task: {}", subject));
+                        if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                            warn!("Failed to post task creation message: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to create task '{}': {}", subject, e);
                     }
                 }
             }

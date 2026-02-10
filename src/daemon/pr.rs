@@ -2887,6 +2887,100 @@ fn collect_stale_check_effects_with_time(
 /// Generate cleanup effects for recently merged PRs.
 ///
 /// Uses the pre-computed `merged_pr_branches` map from WorldSnapshot to avoid I/O.
+/// Reconciles orphaned PRs: creates tasks for PRs that are reviewed + CI green
+/// but have no associated in_progress task.
+///
+/// This handles the case where a PR was opened under the old lifecycle (task completed
+/// on PR open), leaving the PR orphaned with no one to merge it even after review + CI green.
+///
+/// A PR is considered orphaned if:
+/// 1. It has a coworker or task branch prefix (e.g., "lexington/feature" or "task-123-fix")
+/// 2. It has a Claude review comment (in `reviewed_prs`)
+/// 3. All CI checks are passing (`all_ci_checks_passed`)
+/// 4. There's no in_progress task linked to it (not in `tasks_with_open_prs`)
+///
+/// For each orphaned PR, creates a task: "Merge PR #X — reviewed, CI green"
+/// Normal task dispatch picks it up from there.
+///
+/// This is the PR equivalent of orphan task recovery. Pure decision function that
+/// returns effects, following the same pattern as `reconcile_tasks_in_review()`.
+pub(super) fn reconcile_orphaned_prs(snap: &WorldSnapshot, state: &DaemonState) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    // Get cached PR data from the last poll
+    let prs = {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        cache.open_prs_data.clone()
+    };
+
+    for pr in prs {
+        let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Only consider PRs with coworker or task branch prefixes
+        let branch = match pr.get("headRefName").and_then(|r| r.as_str()) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // Check if it's a coworker branch or task branch
+        let has_valid_prefix = coworker_from_branch(branch).is_some()
+            || branch.starts_with("task-")
+            || is_lead_branch(branch);
+
+        if !has_valid_prefix {
+            continue;
+        }
+
+        // Skip if there's already an in_progress task linked to this PR
+        if snap.pr_task_associations.contains_key(&pr_number) {
+            continue;
+        }
+
+        // Check if PR has been reviewed (Claude review comment exists)
+        if !snap.reviewed_prs.contains(&pr_number) {
+            continue;
+        }
+
+        // Check if all CI checks are passing
+        if !all_ci_checks_passed(&pr) {
+            continue;
+        }
+
+        // Skip draft PRs
+        if pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false) {
+            continue;
+        }
+
+        // This PR is orphaned: reviewed + CI green but no active task
+        let title = pr
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("(no title)");
+
+        debug!(
+            "Found orphaned PR #{} ({}) - reviewed, CI green, no active task",
+            pr_number, title
+        );
+
+        // Create a task to handle merging this PR
+        effects.push(Effect::CreateTask {
+            repo_name: snap.repo_name.clone(),
+            subject: format!("Merge PR #{} — reviewed, CI green", pr_number),
+            description: format!(
+                "PR #{} ({}) has been reviewed and has passing CI, but the original task was \
+                 completed before the new lifecycle. Review the PR and merge if appropriate.\n\n\
+                 Branch: {}",
+                pr_number, title, branch
+            ),
+        });
+    }
+
+    effects
+}
+
 /// Generates CleanupMergedWorktree effects to remove the worktree directory and
 /// registry entry after the PR is merged.
 ///
@@ -4073,6 +4167,133 @@ mod tests {
             }),
             "should cleanup PR #123"
         );
+    }
+
+    /// Test that reconcile_orphaned_prs generates CreateTask effects for
+    /// PRs that are reviewed + CI green but have no associated task.
+    ///
+    /// This is a **snapshot-based unit test** that verifies the pure decision
+    /// logic without requiring a full DaemonState. It tests the input → output
+    /// mapping: given PR data in the cache and reviewed_prs/pr_task_associations
+    /// in the snapshot, verify that the correct CreateTask effects are generated.
+    #[test]
+    fn reconcile_orphaned_prs_creates_tasks_for_reviewed_green_prs() {
+        use serde_json::json;
+        use std::collections::{HashMap, HashSet};
+
+        // Setup: Create mock PR data matching different scenarios
+        let pr_data = vec![
+            // PR #42: reviewed, CI green, no task → ORPHANED (should create task)
+            json!({
+                "number": 42,
+                "headRefName": "lexington/fix-auth",
+                "title": "Fix authentication bug",
+                "isDraft": false,
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            }),
+            // PR #100: reviewed, CI green, has task → NOT ORPHANED
+            json!({
+                "number": 100,
+                "headRefName": "york/add-feature",
+                "title": "Add new feature",
+                "isDraft": false,
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            }),
+            // PR #200: CI green but NOT reviewed → NOT ORPHANED
+            json!({
+                "number": 200,
+                "headRefName": "amsterdam/refactor",
+                "title": "Refactor module",
+                "isDraft": false,
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            }),
+            // PR #300: reviewed but CI FAILING → NOT ORPHANED
+            json!({
+                "number": 300,
+                "headRefName": "madison/perf",
+                "title": "Performance improvements",
+                "isDraft": false,
+                "statusCheckRollup": [{"conclusion": "FAILURE"}]
+            }),
+            // PR #400: reviewed, CI green, but DRAFT → NOT ORPHANED
+            json!({
+                "number": 400,
+                "headRefName": "broadway/draft",
+                "title": "Draft PR",
+                "isDraft": true,
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            }),
+            // PR #500: reviewed, CI green, but invalid branch prefix → NOT ORPHANED
+            json!({
+                "number": 500,
+                "headRefName": "feature/something",
+                "title": "Feature branch",
+                "isDraft": false,
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}]
+            }),
+        ];
+
+        // Setup: Mock DaemonState with cached PR data
+        // Only the pr_coworker_cache field is needed for this test.
+        let cache = super::super::PrCoworkerCache {
+            open_prs_data: pr_data,
+            ..Default::default()
+        };
+        let state = super::super::DaemonState {
+            pr_coworker_cache: std::sync::RwLock::new(cache),
+            ..super::super::minimal_daemon_state_for_test()
+        };
+
+        // Setup: Snapshot with reviewed PRs and task associations
+        let mut reviewed_prs = HashSet::new();
+        reviewed_prs.insert(42); // PR #42 is reviewed (ORPHANED)
+        reviewed_prs.insert(100); // PR #100 is reviewed (has task)
+        reviewed_prs.insert(300); // PR #300 is reviewed (CI failing)
+
+        let mut pr_task_associations = HashMap::new();
+        pr_task_associations.insert(100, "1234".to_string()); // PR #100 has task
+
+        let snap = crate::daemon::snapshot::WorldSnapshot {
+            reviewed_prs,
+            pr_task_associations,
+            repo_name: "test-repo".to_string(),
+            // All other fields use defaults from helper
+            ..crate::daemon::snapshot::minimal_snapshot_for_test()
+        };
+
+        // Execute: Call the pure decision function
+        let effects = reconcile_orphaned_prs(&snap, &state);
+
+        // Verify: Should generate exactly one CreateTask effect for PR #42
+        assert_eq!(effects.len(), 1, "should generate 1 task for orphaned PR");
+
+        match &effects[0] {
+            Effect::CreateTask {
+                repo_name,
+                subject,
+                description,
+            } => {
+                assert_eq!(repo_name, "test-repo");
+                assert!(subject.contains("42"), "subject should mention PR #42");
+                assert!(
+                    subject.contains("reviewed"),
+                    "subject should say 'reviewed'"
+                );
+                assert!(
+                    subject.contains("CI green"),
+                    "subject should say 'CI green'"
+                );
+                assert!(
+                    description.contains("Fix authentication bug"),
+                    "description should include PR title"
+                );
+                assert!(
+                    description.contains("lexington/fix-auth"),
+                    "description should include branch name"
+                );
+            }
+            _ => panic!("expected CreateTask effect, got {:?}", effects[0]),
+        }
     }
 
     /// Bug fix test for !1067: Cooldown should be cleared when coworker dies

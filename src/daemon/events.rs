@@ -102,6 +102,9 @@ pub async fn evaluate_tick(
             // Always run merged PR cleanup (pure function, no API calls)
             effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
 
+            // Reconcile orphaned PRs: create tasks for reviewed + CI green PRs with no active task
+            effects.extend(super::pr::reconcile_orphaned_prs(snap, state));
+
             dedup_spawn_effects(effects)
         }
         DaemonEvent::RateLimitCheckTick => {
