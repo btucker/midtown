@@ -4,6 +4,7 @@
   import { tick, onMount } from 'svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
+  import Autocomplete from './Autocomplete.svelte'
 
   let inputText = $state('')
   let messagesContainer = $state(null)
@@ -11,9 +12,165 @@
   let selectedTask = $state(null)
   let pendingFile = $state(null)
   let uploading = $state(false)
+  let textareaElement = $state(null)
+
+  // Autocomplete state
+  let showAutocomplete = $state(false)
+  let autocompleteType = $state(null) // '@' | '!' | '#'
+  let autocompleteQuery = $state('')
+  let autocompleteItems = $state([])
+  let autocompletePosition = $state({ top: 0, left: 0 })
+  let autocompleteSelectedIndex = $state(0)
+  let autocompleteStartPos = $state(0)
 
   // Filter messages by active channel
   let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
+
+  // Autocomplete filtering and data preparation
+  function getAutocompleteItems(type, query) {
+    const lowerQuery = query.toLowerCase()
+
+    if (type === '@') {
+      // Coworkers + lead
+      const people = [
+        { name: 'lead', type: 'lead' },
+        ...$coworkers.map(cw => ({ name: cw.name, type: 'coworker', task: cw.current_task }))
+      ]
+      return people.filter(p => p.name.toLowerCase().includes(lowerQuery))
+    }
+
+    if (type === '!') {
+      // Tasks from daemon status
+      const tasks = $daemonStatus?.tasks || []
+      return tasks
+        .filter(t => {
+          const idMatch = String(t.id).includes(query)
+          const subjectMatch = t.subject?.toLowerCase().includes(lowerQuery)
+          return idMatch || subjectMatch
+        })
+        .slice(0, 10) // Limit to 10 results
+    }
+
+    if (type === '#') {
+      // PRs from kanban data + channels
+      const prs = $kanbanData.review.map(pr => ({
+        type: 'pr',
+        number: pr.number,
+        title: pr.title,
+        status: pr.status
+      }))
+      const channelList = $channels.map(ch => ({
+        type: 'channel',
+        name: ch.name
+      }))
+      const combined = [...prs, ...channelList]
+      return combined.filter(item => {
+        if (item.type === 'pr') {
+          return String(item.number).includes(query) || item.title?.toLowerCase().includes(lowerQuery)
+        }
+        return item.name.toLowerCase().includes(lowerQuery)
+      }).slice(0, 10)
+    }
+
+    return []
+  }
+
+  function getAutocompleteLabel(item) {
+    if (typeof item === 'object' && item !== null) {
+      if (item.type === 'coworker' || item.type === 'lead') return `@${item.name}`
+      if (item.type === 'pr') return `#${item.number}`
+      if (item.type === 'channel') return `#${item.name}`
+      if (item.id !== undefined) return `!${item.id}` // task
+    }
+    return String(item)
+  }
+
+  function getAutocompleteValue(item) {
+    if (typeof item === 'object' && item !== null) {
+      if (item.type === 'coworker' || item.type === 'lead') return `@${item.name}`
+      if (item.type === 'pr') return `#${item.number}`
+      if (item.type === 'channel') return `#${item.name}`
+      if (item.id !== undefined) return `!${item.id}` // task
+    }
+    return String(item)
+  }
+
+  function getAutocompleteDescription(item) {
+    if (typeof item === 'object' && item !== null) {
+      if ((item.type === 'coworker' || item.type === 'lead') && item.task) return item.task
+      if (item.type === 'pr') return item.title
+      if (item.subject) return item.subject // task
+    }
+    return null
+  }
+
+  function calculateAutocompletePosition() {
+    if (!textareaElement) return { top: 0, left: 0 }
+
+    const rect = textareaElement.getBoundingClientRect()
+    // Position dropdown above the textarea
+    return {
+      top: rect.top - 20, // Will be adjusted by max-height in CSS
+      left: rect.left + 20
+    }
+  }
+
+  function detectAutocompleteTrigger() {
+    const cursorPos = textareaElement?.selectionStart || 0
+    const text = inputText
+
+    // Look backward from cursor to find trigger character
+    let triggerPos = -1
+    let triggerChar = null
+
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      const char = text[i]
+      const prevChar = i > 0 ? text[i - 1] : ' '
+
+      // Check if this is a trigger character preceded by whitespace or start of line
+      if (('@!#'.includes(char)) && (prevChar === ' ' || prevChar === '\n' || i === 0)) {
+        triggerPos = i
+        triggerChar = char
+        break
+      }
+
+      // Stop if we hit whitespace (no trigger found in current word)
+      if (char === ' ' || char === '\n') {
+        break
+      }
+    }
+
+    if (triggerPos >= 0 && triggerChar) {
+      const query = text.slice(triggerPos + 1, cursorPos)
+      autocompleteStartPos = triggerPos
+      autocompleteType = triggerChar
+      autocompleteQuery = query
+      autocompleteItems = getAutocompleteItems(triggerChar, query)
+      autocompletePosition = calculateAutocompletePosition()
+      autocompleteSelectedIndex = 0
+      showAutocomplete = autocompleteItems.length > 0
+    } else {
+      showAutocomplete = false
+    }
+  }
+
+  function insertAutocompleteItem(item) {
+    const value = getAutocompleteValue(item)
+    const beforeTrigger = inputText.slice(0, autocompleteStartPos)
+    const afterCursor = inputText.slice(textareaElement?.selectionStart || 0)
+
+    inputText = beforeTrigger + value + ' ' + afterCursor
+    showAutocomplete = false
+
+    // Set cursor position after inserted text
+    tick().then(() => {
+      if (textareaElement) {
+        const newPos = beforeTrigger.length + value.length + 1
+        textareaElement.focus()
+        textareaElement.setSelectionRange(newPos, newPos)
+      }
+    })
+  }
 
   // Cache current tasks to avoid recalculating on every render
   let currentTasks = $derived(getCurrentTasks($coworkers))
@@ -296,6 +453,34 @@
   }
 
   function handleKeyDown(e) {
+    // Handle autocomplete navigation
+    if (showAutocomplete) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        autocompleteSelectedIndex = (autocompleteSelectedIndex + 1) % autocompleteItems.length
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        autocompleteSelectedIndex = autocompleteSelectedIndex === 0
+          ? autocompleteItems.length - 1
+          : autocompleteSelectedIndex - 1
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        if (autocompleteItems[autocompleteSelectedIndex]) {
+          insertAutocompleteItem(autocompleteItems[autocompleteSelectedIndex])
+        }
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        showAutocomplete = false
+        return
+      }
+    }
+
     // Submit on Enter, allow Shift+Enter for new lines
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -313,6 +498,10 @@
     if (messagesContainer) {
       messagesContainer.scrollTop = messagesContainer.scrollHeight
     }
+  }
+
+  function handleInput() {
+    detectAutocompleteTrigger()
   }
 </script>
 
@@ -435,17 +624,31 @@
     {/if}
     <div class="input-row">
       <textarea
+        bind:this={textareaElement}
         bind:value={inputText}
         placeholder="Message to #{$activeChannel}..."
         rows="1"
         onkeydown={handleKeyDown}
         onpaste={handlePaste}
+        oninput={handleInput}
       ></textarea>
       <button type="submit" disabled={!inputText.trim() && !pendingFile || uploading}>
         {uploading ? 'Uploading...' : 'Send'}
       </button>
     </div>
   </form>
+
+  <!-- Autocomplete dropdown -->
+  <Autocomplete
+    bind:show={showAutocomplete}
+    bind:selectedIndex={autocompleteSelectedIndex}
+    items={autocompleteItems}
+    position={autocompletePosition}
+    getLabel={getAutocompleteLabel}
+    getValue={getAutocompleteValue}
+    getDescription={getAutocompleteDescription}
+    onSelect={insertAutocompleteItem}
+  />
 </div>
 
 <!-- Task detail modal (opened by clicking !N task links in chat) -->
