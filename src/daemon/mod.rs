@@ -17,6 +17,7 @@ mod pr;
 mod rpc;
 pub(crate) mod sessions;
 pub(crate) mod snapshot;
+pub(crate) mod specialized;
 mod startup;
 pub(crate) mod state;
 mod trackers;
