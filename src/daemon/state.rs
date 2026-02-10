@@ -77,6 +77,13 @@ pub struct DaemonPersistentState {
     /// Persisted so the daemon can resume sessions after restart.
     #[serde(default)]
     pub headless_sessions: HashMap<String, HeadlessSessionInfo>,
+
+    /// Task-to-channel assignment mapping for message routing.
+    /// Maps task ID → channel name. Used by the daemon to route coworker messages
+    /// to the appropriate topic channel based on the task they're working on.
+    /// Persists across daemon restarts so channel routing survives.
+    #[serde(default)]
+    pub task_channel: HashMap<String, String>,
 }
 
 impl DaemonPersistentState {
@@ -96,11 +103,12 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
-                    state.worktree_registry.len()
+                    state.worktree_registry.len(),
+                    state.task_channel.len()
                 );
                 Ok(state)
             }
@@ -123,11 +131,12 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
-            self.worktree_registry.len()
+            self.worktree_registry.len(),
+            self.task_channel.len()
         );
         Ok(())
     }
@@ -165,6 +174,7 @@ impl DaemonPersistentState {
             ci_stats: CiCheckStats::default(),
             worktree_registry: WorktreeRegistry::default(),
             headless_sessions: HashMap::new(),
+            task_channel: HashMap::new(),
         };
 
         // Save the unified file
@@ -364,5 +374,31 @@ mod tests {
         assert!(loaded.github.has_cached_review(10));
         assert_eq!(loaded.github.pending_review_spawns.len(), 1);
         assert_eq!(loaded.reminders.reminders.len(), 2);
+    }
+
+    #[test]
+    fn test_task_channel_mapping() {
+        let mut state = DaemonPersistentState::default();
+        state
+            .task_channel
+            .insert("42".to_string(), "auth".to_string());
+        state
+            .task_channel
+            .insert("43".to_string(), "frontend".to_string());
+
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.task_channel.len(), 2);
+        assert_eq!(loaded.task_channel.get("42"), Some(&"auth".to_string()));
+        assert_eq!(loaded.task_channel.get("43"), Some(&"frontend".to_string()));
+    }
+
+    #[test]
+    fn test_task_channel_default_empty() {
+        // Existing state without task_channel should deserialize fine
+        let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
+        let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+        assert!(state.task_channel.is_empty());
     }
 }

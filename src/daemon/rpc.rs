@@ -1382,6 +1382,18 @@ async fn handle_task_create(
         channel,
     ) {
         Ok(task_id) => {
+            // Update daemon-side task-to-channel mapping if channel was provided
+            if let Some(channel_name) = channel
+                && !channel_name.is_empty()
+            {
+                let mut ps = state.persistent_state.lock().await;
+                ps.task_channel
+                    .insert(task_id.to_string(), channel_name.to_string());
+                if let Err(e) = ps.save_for_repo(&repo_name) {
+                    warn!("Failed to save task-channel mapping: {}", e);
+                }
+            }
+
             // Post to channel so team is aware
             let msg = Message::text("lead", format!("created task: {}", subject));
             if let Err(e) = state.send_and_broadcast_async(&msg).await {
@@ -1495,6 +1507,22 @@ fn handle_task_update(
     // Clear assignment when task is completed or reset to pending
     if matches!(status, Some("completed") | Some("pending")) {
         state.clear_task_assignment_by_task(task_id);
+    }
+
+    // Update daemon-side task-to-channel mapping
+    if let Some(channel_name) = channel {
+        let mut ps = state.persistent_state.blocking_lock();
+        if channel_name.is_empty() {
+            // Empty string means clear the mapping
+            ps.task_channel.remove(task_id);
+        } else {
+            ps.task_channel
+                .insert(task_id.to_string(), channel_name.to_string());
+        }
+        // Save persistent state with the new mapping
+        if let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!("Failed to save task-channel mapping: {}", e);
+        }
     }
 
     info!("Updated task !{}", task_id);
