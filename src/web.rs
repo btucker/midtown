@@ -306,6 +306,9 @@ pub struct ChannelMessageData {
     /// Channel name (defaults to "midtown" for backward compat)
     #[serde(default = "default_channel")]
     pub channel: String,
+    /// Optional source channel for cross-posted insights (None if not a cross-post)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_channel: Option<String>,
 }
 
 #[allow(dead_code)] // Used by serde default attribute
@@ -371,7 +374,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
     Router::new()
         .route("/api/ws", get(ws_handler))
         .route("/api/health", get(api_health))
-        .route("/api/channel", get(api_channel_history))
+        .route("/api/channels/history", get(api_channel_history))
         .route("/api/channels", get(api_channels_list))
         .route("/api/channels/create", post(api_channels_create))
         .route("/api/status", get(api_status))
@@ -532,6 +535,7 @@ async fn api_channel_history(
                 timestamp: m.timestamp.to_rfc3339(),
                 msg_type: format!("{:?}", m.message_type).to_lowercase(),
                 channel,
+                source_channel: m.source_channel,
             }
         })
         .collect();
@@ -1681,6 +1685,7 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         timestamp: message.timestamp.to_rfc3339(),
         msg_type: format!("{:?}", message.message_type).to_lowercase(),
         channel: message.channel_name().to_string(),
+        source_channel: message.source_channel.clone(),
     })
 }
 
@@ -1742,6 +1747,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             msg_type: "text".to_string(),
             channel: "midtown".to_string(),
+            source_channel: None,
         });
 
         let json = serde_json::to_string(&update).unwrap();
