@@ -241,7 +241,7 @@ fn active_reviewer_not_sent_on_break() {
 #[test]
 fn isolated_reviewer_immediate_break() {
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
-    let (coworkers, data) = load_snapshot(fixture);
+    let (_coworkers, data) = load_snapshot(fixture);
 
     // Broadway is an active reviewer in this snapshot
     // All coworkers now have isolated task lists (TaskMode::Shared removed)

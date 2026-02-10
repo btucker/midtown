@@ -493,7 +493,7 @@ fn isolated_coworker_identification() {
     let snap = load_health_snapshot(fixture);
 
     // Broadway is isolated (reviewer)
-    let broadway = snap
+    let _broadway = snap
         .coworkers
         .iter()
         .find(|c| c.name == "broadway")
