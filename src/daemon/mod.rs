@@ -7,6 +7,7 @@
 
 mod architect;
 mod chat;
+mod clusterer;
 mod constants;
 mod dispatch;
 pub(crate) mod effects;
@@ -17,6 +18,7 @@ mod pr;
 mod rpc;
 pub(crate) mod sessions;
 pub(crate) mod snapshot;
+mod specialized;
 mod startup;
 pub(crate) mod state;
 mod trackers;

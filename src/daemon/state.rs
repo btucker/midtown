@@ -84,6 +84,12 @@ pub struct DaemonPersistentState {
     /// Persists across daemon restarts so channel routing survives.
     #[serde(default)]
     pub task_channel: HashMap<String, String>,
+
+    /// Clusterer session ID for resume-on-demand.
+    /// The clusterer accumulates context about channel assignments across
+    /// invocations, so we persist the session ID to resume it on next task creation.
+    #[serde(default)]
+    pub clusterer_session_id: Option<String>,
 }
 
 impl DaemonPersistentState {
@@ -175,6 +181,7 @@ impl DaemonPersistentState {
             worktree_registry: WorktreeRegistry::default(),
             headless_sessions: HashMap::new(),
             task_channel: HashMap::new(),
+            clusterer_session_id: None,
         };
 
         // Save the unified file

@@ -1458,6 +1458,8 @@ async fn handle_task_request(
 ///
 /// Only performs I/O (write task, post to channel). Dispatch for the new task
 /// happens on the next `TaskDispatchTick` via the canonical event loop pipeline.
+///
+/// If no channel is provided, invokes the clusterer to assign one automatically.
 async fn handle_task_create(
     id: RequestId,
     subject: &str,
@@ -1471,6 +1473,22 @@ async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
+    // If no channel was provided, invoke clusterer to assign one
+    let assigned_channel = if channel.is_none() {
+        match invoke_clusterer_for_task(subject, description, state).await {
+            Ok(ch) => Some(ch),
+            Err(e) => {
+                warn!(
+                    "Clusterer failed to assign channel: {} — using 'midtown' as fallback",
+                    e
+                );
+                Some("midtown".to_string())
+            }
+        }
+    } else {
+        channel.map(String::from)
+    };
+
     match crate::tasks::create_task_for_repo(
         subject,
         description,
@@ -1478,7 +1496,7 @@ async fn handle_task_create(
         "",
         &repo_name,
         blocked_by,
-        channel,
+        assigned_channel.as_deref(),
     ) {
         Ok(task_id) => {
             // Update daemon-side task-to-channel mapping if channel was provided
@@ -3137,6 +3155,117 @@ async fn handle_session_list(id: RequestId, state: &DaemonState) -> Response {
             "sessions": sessions,
         }),
     )
+}
+
+/// Invoke the clusterer to assign a channel for a new task.
+///
+/// Builds a ClustererRequest with minimal information (for MVP) and invokes
+/// the clusterer headless session. The clusterer accumulates context across
+/// invocations via session resume.
+///
+/// Returns the assigned channel name or an error.
+async fn invoke_clusterer_for_task(
+    subject: &str,
+    description: &str,
+    state: &DaemonState,
+) -> Result<String, String> {
+    use crate::daemon::clusterer::{
+        ChannelInfo, ClustererRequest, CompletedTaskInfo, assign_channel,
+    };
+    use crate::tasks::TaskStatus;
+
+    // Collect channel information: list all channels and their active task counts
+    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+    let channel_names = crate::channel::Channel::list(&base_dir).unwrap_or_else(|e| {
+        warn!("Failed to list channels for clusterer: {}", e);
+        vec!["midtown".to_string()]
+    });
+
+    // Read all tasks to compute per-channel stats and recent completions
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+
+    // Build map of task_id -> channel from persistent state
+    let task_channel_map = {
+        let ps = state.persistent_state.lock().await;
+        ps.task_channel.clone()
+    };
+
+    // Group tasks by channel and collect stats
+    let mut channel_info_map: std::collections::HashMap<String, ChannelInfo> = channel_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                ChannelInfo {
+                    name: name.clone(),
+                    active_task_count: 0,
+                    recent_tasks: vec![],
+                },
+            )
+        })
+        .collect();
+
+    // Track recently completed tasks (last 10)
+    let mut recent_completions = vec![];
+
+    for task in &all_tasks {
+        let task_channel = task
+            .channel
+            .as_ref()
+            .or_else(|| task_channel_map.get(&task.id))
+            .map(|s| s.as_str())
+            .unwrap_or("midtown");
+
+        match task.status {
+            TaskStatus::Completed => {
+                // Collect completed tasks for context
+                if recent_completions.len() < 10 {
+                    recent_completions.push(CompletedTaskInfo {
+                        subject: task.subject.clone(),
+                        channel: Some(task_channel.to_string()),
+                    });
+                }
+            }
+            TaskStatus::InProgress | TaskStatus::Pending => {
+                // Count active tasks per channel and track recent subjects
+                if let Some(info) = channel_info_map.get_mut(task_channel) {
+                    info.active_task_count += 1;
+                    if info.recent_tasks.len() < 3 {
+                        info.recent_tasks.push(task.subject.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let channels: Vec<ChannelInfo> = channel_info_map.into_values().collect();
+
+    let request = ClustererRequest {
+        task_subject: subject.to_string(),
+        task_description: description.to_string(),
+        channels,
+        recent_completions,
+    };
+
+    // Get working directory (use primary repo path)
+    let cwd = state
+        .all_repo_paths
+        .first()
+        .ok_or("No repo paths configured")?
+        .clone();
+
+    // Lock persistent state to pass to clusterer
+    let mut ps = state.persistent_state.lock().await;
+
+    // Invoke clusterer
+    let response = assign_channel(request, cwd, &mut ps).await?;
+
+    // Save persistent state with updated session ID
+    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        warn!("Failed to save clusterer session ID: {}", e);
+    }
+
+    Ok(response.channel)
 }
 
 // ============================================================================
