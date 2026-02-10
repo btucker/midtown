@@ -671,10 +671,13 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
     // the coworker is not tracked (already deregistered, crashed, or broken twice)
     // but still has an active reviewer assignment. Otherwise the daemon would
     // respawn them on the next tick.
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.clear_reviewer_assignment(name, &state.repo_name);
-    }
+    //
+    // Uses the Effect-based architecture to stay consistent with other RPC handlers
+    // and avoid duplicating cleanup logic.
+    let cleanup_effects = vec![effects::Effect::ClearOrphanedReviewerAssignments {
+        orphaned_coworkers: vec![name.to_string()],
+    }];
+    effects::execute_effects(cleanup_effects, state).await;
 
     // Check if the coworker is tracked - if not, they're already "on break"
     if state.coworkers.get(name).is_none() {
