@@ -113,6 +113,11 @@ pub struct WorldSnapshot {
     pub in_progress_tasks: Vec<(String, String, String)>,
     /// Names of coworkers who are busy (have in-progress tasks), lowercase.
     pub busy_coworkers: HashSet<String>,
+    /// Coworker → task assignment mapping (from daemon in-memory tracking).
+    /// Maps coworker name (lowercase) → task_id. Used by task dispatch to prevent
+    /// re-assigning the same task to the same coworker (nudge/spawn loop prevention).
+    #[serde(default)]
+    pub coworker_task_assignments: HashMap<String, String>,
     /// All tasks from disk (for relationship lookups).
     pub all_tasks: Vec<Task>,
     /// Pending tasks that have an owner: `(task_id, subject, owner)`.
@@ -139,6 +144,7 @@ pub struct WorldSnapshot {
     pub review_feedback_pr_coworkers: HashSet<String>,
     /// Open PR data (from last GitHub poll). Used by orphan PR reconciliation.
     /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
+    #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
     /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
@@ -361,6 +367,16 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
     let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
+
+    // Coworker → task assignments (for nudge/spawn loop prevention in dispatch)
+    let coworker_task_assignments: HashMap<String, String> = {
+        let assignments = state.coworker_task_assignments.lock().unwrap();
+        assignments
+            .iter()
+            .map(|(coworker, assignment)| (coworker.clone(), assignment.task_id.clone()))
+            .collect()
+    };
+
     let all_tasks = crate::tasks::read_tasks();
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
@@ -554,6 +570,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         attached_coworkers,
         in_progress_tasks,
         busy_coworkers,
+        coworker_task_assignments,
         all_tasks,
         pending_tasks_with_owners,
         pending_tasks_without_owners,
@@ -617,6 +634,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         coworker_stop_times: HashMap::new(),
         headless_process_health: HashMap::new(),
         attached_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
         in_progress_tasks: vec![],
         busy_coworkers: HashSet::new(),
         all_tasks: vec![],
@@ -719,6 +737,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -809,6 +828,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -964,6 +984,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -1038,6 +1059,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],

@@ -850,6 +850,11 @@ impl DaemonState {
     ///
     /// Used to prevent duplicate task assignment in Case 2 grouped task logic.
     /// Returns true if the coworker's current assignment matches the given task_id.
+    ///
+    /// NOTE: This method is retained for potential debugging use but should NOT be
+    /// called from decision functions (evaluate_tick path). Decision logic should use
+    /// `snap.coworker_task_assignments` instead to maintain the pure decision pattern.
+    #[allow(dead_code)]
     pub(crate) fn is_coworker_assigned_to_task(&self, coworker: &str, task_id: &str) -> bool {
         let assignments = self.coworker_task_assignments.lock().unwrap();
         assignments
