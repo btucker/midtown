@@ -141,3 +141,20 @@ describe('getChannelPrs', () => {
     expect(prs).toEqual([])
   })
 })
+
+describe('matchesChannel - hyphenated word boundaries', () => {
+  it('does not match partial hyphenated words', () => {
+    expect(matchesChannel('pr-42', 'pr')).toBe(false)
+    expect(matchesChannel('auth-refactor', 'auth')).toBe(false)
+  })
+
+  it('matches exact hyphenated channel names', () => {
+    expect(matchesChannel('pr-42', 'pr-42')).toBe(true)
+    expect(matchesChannel('auth-refactor task', 'auth-refactor')).toBe(true)
+  })
+
+  it('matches channel names surrounded by spaces', () => {
+    expect(matchesChannel('task pr task', 'pr')).toBe(true)
+    expect(matchesChannel('start auth end', 'auth')).toBe(true)
+  })
+})

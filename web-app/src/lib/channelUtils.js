@@ -2,13 +2,17 @@
 
 /**
  * Match channel name as a whole word in task text (avoids "auth" matching "authentication").
- * Escapes all special regex characters including hyphen to be safe for any regex context.
+ * Uses lookahead/lookbehind to ensure the channel name is not part of a hyphenated word.
+ * For example, "pr" won't match "pr-42", but "pr-42" will match "pr-42".
  */
 export function matchesChannel(text, channelName) {
   if (!text) return false
-  // Escape all special regex characters, including hyphen which could cause issues
-  // in character classes if this function is reused in a different regex context
-  const pattern = new RegExp(`\\b${channelName.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}\\b`, 'i')
+  // Escape special regex characters (excluding hyphen since it's handled in the pattern)
+  const escaped = channelName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Match only at boundaries that are NOT adjacent to word characters or hyphens
+  // (?<![\w-]) - negative lookbehind: not preceded by word char or hyphen
+  // (?![\w-]) - negative lookahead: not followed by word char or hyphen
+  const pattern = new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, 'i')
   return pattern.test(text)
 }
 
