@@ -238,11 +238,17 @@ impl DaemonClient {
 
     // Coworker commands
 
-    pub fn coworker_spawn(&self, resume: bool, prompt: Option<&str>) -> Result<Response, String> {
+    pub fn coworker_spawn(
+        &self,
+        resume: bool,
+        prompt: Option<&str>,
+        provider: midtown::auth::AuthProvider,
+    ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "resume": resume });
         if let Some(p) = prompt {
             params["prompt"] = serde_json::json!(p);
         }
+        params["provider"] = serde_json::json!(provider.as_str());
         self.send("coworker.spawn", Some(params))
     }
 

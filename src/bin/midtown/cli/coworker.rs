@@ -3,6 +3,21 @@ use clap::Subcommand;
 use super::Response;
 use crate::client::DaemonClient;
 
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderArg {
+    Claude,
+    Codex,
+}
+
+impl From<ProviderArg> for midtown::auth::AuthProvider {
+    fn from(value: ProviderArg) -> Self {
+        match value {
+            ProviderArg::Claude => midtown::auth::AuthProvider::Claude,
+            ProviderArg::Codex => midtown::auth::AuthProvider::Codex,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum CoworkerCommand {
     /// Call in a new coworker
@@ -14,6 +29,9 @@ pub enum CoworkerCommand {
         /// Initial prompt to send after calling in (avoids separate nudge step)
         #[arg(long, short)]
         prompt: Option<String>,
+        /// Execution provider for this coworker
+        #[arg(long, value_enum, default_value = "claude")]
+        provider: ProviderArg,
     },
     /// Send a coworker on a break
     Break {
@@ -39,9 +57,11 @@ pub enum CoworkerCommand {
 
 pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        CoworkerCommand::CallIn { resume, prompt } => {
-            client.coworker_spawn(*resume, prompt.as_deref())
-        }
+        CoworkerCommand::CallIn {
+            resume,
+            prompt,
+            provider,
+        } => client.coworker_spawn(*resume, prompt.as_deref(), (*provider).into()),
         CoworkerCommand::Break { name } => client.coworker_break(name),
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::View { name } => handle_view(name, client),

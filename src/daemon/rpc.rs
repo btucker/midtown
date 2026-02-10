@@ -52,6 +52,22 @@ async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
     false
 }
 
+/// Parse an optional auth provider from RPC params.
+///
+/// Defaults to Claude when the `provider` field is missing.
+fn parse_provider_param(
+    params: Option<&serde_json::Value>,
+) -> Result<crate::auth::AuthProvider, String> {
+    let provider = params
+        .and_then(|p| p.get("provider"))
+        .and_then(|v| v.as_str())
+        .map(str::parse::<crate::auth::AuthProvider>)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    Ok(provider)
+}
+
 // ============================================================================
 // Connection handling
 // ============================================================================
@@ -182,7 +198,11 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|p| p.get("prompt"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            handle_coworker_spawn(request.id, state, resume, prompt).await
+            let provider = match parse_provider_param(params) {
+                Ok(provider) => provider,
+                Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
+            };
+            handle_coworker_spawn(request.id, state, resume, prompt, provider).await
         }
 
         "coworker.break" => {
@@ -630,6 +650,7 @@ async fn handle_coworker_spawn(
     state: &DaemonState,
     resume: bool,
     prompt: Option<String>,
+    provider: crate::auth::AuthProvider,
 ) -> Response {
     // Check dev coworkers limit (reserve slots for reviewers)
     if state.is_at_dev_limit() {
@@ -679,7 +700,7 @@ async fn handle_coworker_spawn(
         model: "sonnet".to_string(),
         channel: None,
         auth_profile_dir: None,
-        auth_provider: crate::auth::AuthProvider::Claude, // Resolved by spawn_coworker()
+        auth_provider: provider, // Resolved by spawn_coworker()
     };
 
     // Spawn via the headless path (creates worktree + headless session)
@@ -3596,6 +3617,26 @@ mod tests {
         assert_eq!(claude[0].name, "lexington");
         assert_eq!(codex.len(), 1);
         assert_eq!(codex[0].name, "park");
+    }
+
+    #[test]
+    fn test_parse_provider_param_defaults_to_claude() {
+        let provider = parse_provider_param(None).expect("should parse default provider");
+        assert_eq!(provider, crate::auth::AuthProvider::Claude);
+    }
+
+    #[test]
+    fn test_parse_provider_param_parses_codex() {
+        let params = serde_json::json!({ "provider": "codex" });
+        let provider = parse_provider_param(Some(&params)).expect("should parse codex");
+        assert_eq!(provider, crate::auth::AuthProvider::Codex);
+    }
+
+    #[test]
+    fn test_parse_provider_param_rejects_unknown_provider() {
+        let params = serde_json::json!({ "provider": "unknown" });
+        let err = parse_provider_param(Some(&params)).expect_err("provider should be rejected");
+        assert!(err.contains("Unsupported provider"));
     }
 
     #[test]
