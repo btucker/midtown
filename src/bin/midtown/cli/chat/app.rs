@@ -91,6 +91,8 @@ pub struct KanbanTask {
     /// When the task file was last modified (used as proxy for status change time)
     #[allow(dead_code)] // Will be used in future PR detail views
     pub modified_at: Option<DateTime<Utc>>,
+    /// Optional channel assignment for routing coworker messages
+    pub channel: Option<String>,
 }
 
 /// Task status for kanban columns
@@ -871,6 +873,12 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 .and_then(|m| m.modified().ok())
                 .map(DateTime::<Utc>::from);
 
+            // Read channel assignment
+            let channel = task_data
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+
             if !id.is_empty() {
                 tasks.push(KanbanTask {
                     id,
@@ -878,6 +886,7 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                     owner,
                     status,
                     modified_at,
+                    channel,
                 });
             }
         }

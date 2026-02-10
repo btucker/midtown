@@ -221,87 +221,126 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
 
 /// Draw the board panel (left side) with channel swimlanes
 fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
-    // Phase 6 scaffolding: Until backend multi-channel support (Phase 4a) is complete,
-    // we'll show a mock channel list. The UI is ready for real channels.
+    use std::collections::{BTreeMap, HashMap};
 
-    // For now, show a single #midtown channel with all tasks
     let mut lines = Vec::new();
     let hyperlinks = Vec::new();
 
-    // Channel header: #midtown (X tasks)
-    let task_count = app.tasks.len();
-    let channel_header = format!("  #midtown ({})", task_count);
-    lines.push(Line::from(vec![Span::styled(
-        channel_header,
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )]));
-    lines.push(Line::from("")); // Blank line after header
+    // Discover available channels
+    let channel_repo = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+    let channels = midtown::Channel::list(&base_dir).unwrap_or_default();
 
-    // Show tasks grouped under this channel
+    // Group tasks by channel (use main channel name for tasks with no channel)
+    let main_channel = channels.first().map(|s| s.as_str()).unwrap_or("midtown");
+
+    let mut tasks_by_channel: BTreeMap<String, Vec<&super::app::KanbanTask>> = BTreeMap::new();
     let (pending, in_progress, _completed) = app.tasks_by_status();
+
+    // Combine all active tasks and group by channel
+    for task in in_progress.iter().chain(pending.iter()) {
+        let channel_key = task.channel.as_deref().unwrap_or(main_channel).to_string();
+        tasks_by_channel.entry(channel_key).or_default().push(task);
+    }
 
     // Calculate available width for wrapping (subtract 2 for borders)
     let wrap_width = area.width.saturating_sub(2).max(20) as usize;
 
-    // In Progress tasks
-    for task in &in_progress {
-        let status_marker = "● ";
-        let owner_text = if let Some(ref owner) = task.owner {
-            format!(" [{}]", owner)
-        } else {
-            String::new()
-        };
-
-        let task_line = format!(
-            "    {} #{} {}{}",
-            status_marker, task.id, task.subject, owner_text
-        );
-
-        // Pre-wrap the task line if it exceeds available width
-        let wrapped_lines = wrap_content(&task_line, wrap_width);
-        for (i, wrapped) in wrapped_lines.iter().enumerate() {
-            let text = if i == 0 {
-                wrapped.to_string()
-            } else {
-                // Continuation lines: indent to align with subject text
-                format!("        {}", wrapped.trim_start())
-            };
-            lines.push(Line::from(vec![Span::styled(
-                text,
-                Style::default().fg(Color::Green),
-            )]));
+    // Count active PRs per channel (for CI status indicators)
+    let mut prs_by_channel: HashMap<String, Vec<&super::app::KanbanPr>> = HashMap::new();
+    for pr in &app.prs {
+        if let Some(task_id) = midtown::tasks::extract_task_id_from_pr_title(&pr.title) {
+            // Find which channel this task belongs to
+            let task_id_str = task_id.to_string();
+            if let Some(task) = app.tasks.iter().find(|t| t.id == task_id_str) {
+                let channel_key = task.channel.as_deref().unwrap_or(main_channel).to_string();
+                prs_by_channel.entry(channel_key).or_default().push(pr);
+            }
         }
     }
 
-    // Pending tasks
-    for task in &pending {
-        let status_marker = "○ ";
-        let owner_text = if let Some(ref owner) = task.owner {
-            format!(" [{}]", owner)
-        } else {
-            String::new()
-        };
+    // Render each channel as a swimlane
+    let mut first_channel = true;
+    for (channel_name, tasks) in &tasks_by_channel {
+        if !first_channel {
+            lines.push(Line::from("")); // Blank line between channels
+        }
+        first_channel = false;
 
-        let task_line = format!(
-            "    {} #{} {}{}",
-            status_marker, task.id, task.subject, owner_text
-        );
+        // Channel header with task count and CI status
+        let task_count = tasks.len();
+        let mut header_parts = vec![format!("  #{} ({})", channel_name, task_count)];
 
-        // Pre-wrap the task line if it exceeds available width
-        let wrapped_lines = wrap_content(&task_line, wrap_width);
-        for (i, wrapped) in wrapped_lines.iter().enumerate() {
-            let text = if i == 0 {
-                wrapped.to_string()
+        // Add CI status indicator if there are active PRs for this channel
+        if let Some(channel_prs) = prs_by_channel.get(channel_name)
+            && !channel_prs.is_empty()
+        {
+            // Determine overall CI status: red if any failed, yellow if any running, green if all passed
+            let has_failed = channel_prs
+                .iter()
+                .any(|pr| pr.ci_status == super::app::CiStatus::Failed);
+            let has_running = channel_prs
+                .iter()
+                .any(|pr| pr.ci_status == super::app::CiStatus::Running);
+
+            let ci_indicator = if has_failed {
+                " 🔴"
+            } else if has_running {
+                " 🟡"
             } else {
-                // Continuation lines: indent to align with subject text
-                format!("        {}", wrapped.trim_start())
+                " 🟢"
             };
-            lines.push(Line::from(vec![Span::styled(
-                text,
-                Style::default().fg(Color::DarkGray),
-            )]));
+            header_parts.push(ci_indicator.to_string());
+        }
+
+        let channel_header = header_parts.join("");
+        lines.push(Line::from(vec![Span::styled(
+            channel_header,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]));
+
+        // Render tasks for this channel
+        for task in tasks {
+            let status_marker = if task.status == super::app::TaskStatus::InProgress {
+                "● "
+            } else {
+                "○ "
+            };
+
+            let owner_text = if let Some(ref owner) = task.owner {
+                format!(" [{}]", owner)
+            } else {
+                String::new()
+            };
+
+            let task_line = format!(
+                "    {} #{} {}{}",
+                status_marker, task.id, task.subject, owner_text
+            );
+
+            // Pre-wrap the task line if it exceeds available width
+            let wrapped_lines = wrap_content(&task_line, wrap_width);
+            for (i, wrapped) in wrapped_lines.iter().enumerate() {
+                let text = if i == 0 {
+                    wrapped.to_string()
+                } else {
+                    // Continuation lines: indent to align with subject text
+                    format!("        {}", wrapped.trim_start())
+                };
+
+                let color = if task.status == super::app::TaskStatus::InProgress {
+                    Color::Green
+                } else {
+                    Color::DarkGray
+                };
+
+                lines.push(Line::from(vec![Span::styled(
+                    text,
+                    Style::default().fg(color),
+                )]));
+            }
         }
     }
 
