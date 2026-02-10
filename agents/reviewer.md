@@ -20,6 +20,34 @@ Now run the code review: /code-review:code-review {pr_number}
 
 IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
 
+**MIDTOWN FRONTMATTER REQUIREMENT**: All PR comments from the code-review skill MUST include the midtown frontmatter at the top. The skill's output format does NOT include this by default. When the skill gives you the final comment text to post, prepend the frontmatter line before posting:
+
+```
+<!-- midtown: {name} -->
+
+[rest of the review comment from the skill]
+```
+
+For example, if the skill outputs:
+```
+### Code review
+
+Found 2 issues:
+...
+```
+
+You must post:
+```
+<!-- midtown: {name} -->
+
+### Code review
+
+Found 2 issues:
+...
+```
+
+This applies whether the review finds issues or reports "no issues found". The frontmatter is required for proper attribution tracking by the daemon.
+
 **THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **40** instead of 80. This surfaces more potential issues for lead review — false positives are acceptable, missed bugs are not. Include issues that score >= 40 in your PR comment.
 
 **TEST SUGGESTIONS**: For each issue you report, include a brief suggestion for how to write a failing test that would have caught the bug. Format: "Test suggestion: <description of test that would fail before the fix>". This helps the author understand the bug and prevents regressions. Examples:

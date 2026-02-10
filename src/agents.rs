@@ -703,4 +703,33 @@ mod tests {
             "Reviewer system prompt should not contain unreplaced {{name}}"
         );
     }
+
+    #[test]
+    fn test_reviewer_prompts_include_frontmatter_requirement() {
+        // Task !1068: The code-review skill doesn't include midtown frontmatter by default.
+        // The reviewer prompts must explicitly instruct reviewers to prepend frontmatter.
+        let system_prompt = reviewer_system_prompt("park");
+        let resume_prompt = reviewer_resume_prompt(42);
+
+        // The system prompt (which merges reviewer.md) should contain the frontmatter requirement
+        assert!(
+            system_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
+            "Reviewer system prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
+        );
+        // After substitution, {name} becomes "park", so verify the complete frontmatter string
+        assert!(
+            system_prompt.contains("<!-- midtown: park -->"),
+            "Reviewer system prompt should show the frontmatter format with substituted name"
+        );
+        assert!(
+            system_prompt.contains("prepend the frontmatter"),
+            "Reviewer system prompt should instruct to prepend frontmatter"
+        );
+
+        // Resume prompt should also have the frontmatter requirement
+        assert!(
+            resume_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
+            "Reviewer resume prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
+        );
+    }
 }
