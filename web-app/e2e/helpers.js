@@ -108,7 +108,7 @@ export async function mockAllRoutes(page, overrides = {}) {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_PROJECTS) })
   )
 
-  await page.route('**/api/channel', (route) =>
+  await page.route('**/api/channels/history', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(msgs) })
   )
 
