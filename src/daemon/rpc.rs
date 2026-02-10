@@ -150,7 +150,11 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|p| p.get("prompt"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            handle_coworker_spawn(request.id, state, resume, prompt).await
+            let model = params
+                .and_then(|p| p.get("model"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            handle_coworker_spawn(request.id, state, resume, prompt, model).await
         }
 
         "coworker.break" => {
@@ -329,6 +333,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let channel = params
                 .and_then(|p| p.get("channel"))
                 .and_then(|v| v.as_str());
+            let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
 
             match subject {
                 Some(subject) => {
@@ -338,6 +343,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         description,
                         blocked_by.as_deref(),
                         channel,
+                        model,
                         state,
                     )
                     .await
@@ -370,6 +376,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                     let channel = params
                         .and_then(|p| p.get("channel"))
                         .and_then(|v| v.as_str());
+                    let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
 
                     handle_task_update(
                         request.id,
@@ -379,6 +386,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         description,
                         blocked_by.as_deref(),
                         channel,
+                        model,
                         state,
                     )
                 }
@@ -588,6 +596,7 @@ async fn handle_coworker_spawn(
     state: &DaemonState,
     resume: bool,
     prompt: Option<String>,
+    model: Option<String>,
 ) -> Response {
     // Check dev coworkers limit (reserve slots for reviewers)
     if state.is_at_dev_limit() {
@@ -634,7 +643,7 @@ async fn handle_coworker_spawn(
         pr_number: None,
         team_name: Some(team),
         working_dir: None,
-        model: "sonnet".to_string(),
+        model: model.unwrap_or_else(|| "sonnet".to_string()),
         channel: None,
         auth_profile_dir: None, // Resolved by spawn_coworker()
     };
@@ -1414,6 +1423,7 @@ async fn handle_task_create(
     description: &str,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
+    model: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -1429,6 +1439,7 @@ async fn handle_task_create(
         &repo_name,
         blocked_by,
         channel,
+        model,
     ) {
         Ok(task_id) => {
             // Update daemon-side task-to-channel mapping if channel was provided
@@ -1550,6 +1561,7 @@ fn handle_task_update(
     description: Option<&str>,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
+    model: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Validate status if provided
@@ -1569,6 +1581,7 @@ fn handle_task_update(
         description,
         blocked_by,
         channel,
+        model,
     ) {
         return Response::error(
             id,
@@ -1679,6 +1692,7 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
             &repo_name,
             Some(from),
             Some("in_progress"),
+            None,
             None,
             None,
             None,

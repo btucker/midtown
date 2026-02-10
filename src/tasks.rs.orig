@@ -22,9 +22,6 @@ pub struct Task {
     /// Optional channel to route coworker messages for this task.
     #[serde(default)]
     pub channel: Option<String>,
-    /// Optional model override for this task (e.g., "haiku", "sonnet", "opus").
-    #[serde(default)]
-    pub model: Option<String>,
     /// File creation time, populated from filesystem metadata (not serialized).
     #[serde(skip)]
     pub created_at: Option<std::time::SystemTime>,
@@ -197,11 +194,6 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    let model = value
-        .get("model")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
     Ok(Task {
         id,
         subject,
@@ -210,7 +202,6 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
         description,
         blocked_by,
         channel,
-        model,
         created_at: None,
     })
 }
@@ -522,8 +513,7 @@ fn update_task_owner_in_dir(
 /// Only fields that are `Some` are updated; `None` fields are left unchanged.
 /// This is the daemon's direct write path — no Lead proxy needed.
 ///
-/// Supports updating: owner, status, description, blocked_by, channel, model.
-#[allow(clippy::too_many_arguments)]
+/// Supports updating: owner, status, description, blocked_by, channel.
 pub fn update_task_fields_for_repo(
     task_id: &str,
     repo_name: &str,
@@ -532,7 +522,6 @@ pub fn update_task_fields_for_repo(
     description: Option<&str>,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
-    model: Option<&str>,
 ) -> Result<(), String> {
     use fs2::FileExt;
 
@@ -573,9 +562,6 @@ pub fn update_task_fields_for_repo(
     }
     if let Some(ch) = channel {
         task["channel"] = serde_json::json!(ch);
-    }
-    if let Some(m) = model {
-        task["model"] = serde_json::json!(m);
     }
 
     let updated_content = serde_json::to_string_pretty(&task)
@@ -985,7 +971,6 @@ pub fn shared_tasks_dir_for_repo(repo: &str) -> std::path::PathBuf {
 ///
 /// Assigns the next sequential ID by scanning existing task files.
 /// Returns the assigned task ID on success.
-#[allow(clippy::too_many_arguments)]
 pub fn create_task_for_repo(
     subject: &str,
     description: &str,
@@ -994,7 +979,6 @@ pub fn create_task_for_repo(
     repo_name: &str,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
-    model: Option<&str>,
 ) -> Result<String, String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
@@ -1017,7 +1001,6 @@ pub fn create_task_for_repo(
         owner,
         blocked_by,
         channel,
-        model,
     )
 }
 
@@ -1026,7 +1009,6 @@ pub fn create_task_for_repo(
 /// Reads existing tasks once to both determine the next ID and check for duplicates.
 /// A task with the same subject and owner (regardless of status) is considered a duplicate.
 /// Uses directory-level locking to prevent concurrent ID collisions.
-#[allow(clippy::too_many_arguments)]
 fn create_task_in_dir(
     tasks_dir: &std::path::Path,
     subject: &str,
@@ -1035,7 +1017,6 @@ fn create_task_in_dir(
     owner: &str,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
-    model: Option<&str>,
 ) -> Result<String, String> {
     use fs2::FileExt;
 
@@ -1086,11 +1067,6 @@ fn create_task_in_dir(
     // Add optional channel field if provided
     if let Some(ch) = channel {
         task["channel"] = serde_json::json!(ch);
-    }
-
-    // Add optional model field if provided
-    if let Some(m) = model {
-        task["model"] = serde_json::json!(m);
     }
 
     let path = tasks_dir.join(format!("{}.json", task_id));

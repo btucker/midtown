@@ -14,6 +14,9 @@ pub enum CoworkerCommand {
         /// Initial prompt to send after calling in (avoids separate nudge step)
         #[arg(long, short)]
         prompt: Option<String>,
+        /// Model to use (haiku, sonnet, opus)
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Send a coworker on a break
     Break {
@@ -39,9 +42,11 @@ pub enum CoworkerCommand {
 
 pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        CoworkerCommand::CallIn { resume, prompt } => {
-            client.coworker_spawn(*resume, prompt.as_deref())
-        }
+        CoworkerCommand::CallIn {
+            resume,
+            prompt,
+            model,
+        } => client.coworker_spawn(*resume, prompt.as_deref(), model.as_deref()),
         CoworkerCommand::Break { name } => client.coworker_break(name),
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::View { name } => handle_view(name, client),

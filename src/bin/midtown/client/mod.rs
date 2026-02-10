@@ -238,10 +238,18 @@ impl DaemonClient {
 
     // Coworker commands
 
-    pub fn coworker_spawn(&self, resume: bool, prompt: Option<&str>) -> Result<Response, String> {
+    pub fn coworker_spawn(
+        &self,
+        resume: bool,
+        prompt: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "resume": resume });
         if let Some(p) = prompt {
             params["prompt"] = serde_json::json!(p);
+        }
+        if let Some(m) = model {
+            params["model"] = serde_json::json!(m);
         }
         self.send("coworker.spawn", Some(params))
     }
@@ -304,6 +312,7 @@ impl DaemonClient {
         description: &str,
         blocked_by: Option<&[String]>,
         channel: Option<&str>,
+        model: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -315,9 +324,13 @@ impl DaemonClient {
         if let Some(ch) = channel {
             params["channel"] = serde_json::json!(ch);
         }
+        if let Some(m) = model {
+            params["model"] = serde_json::json!(m);
+        }
         self.send("task.create", Some(params))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn task_update(
         &self,
         id: &str,
@@ -326,6 +339,7 @@ impl DaemonClient {
         description: Option<&str>,
         blocked_by: Option<&[String]>,
         channel: Option<&str>,
+        model: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "id": id });
         if let Some(o) = owner {
@@ -342,6 +356,9 @@ impl DaemonClient {
         }
         if let Some(ch) = channel {
             params["channel"] = serde_json::json!(ch);
+        }
+        if let Some(m) = model {
+            params["model"] = serde_json::json!(m);
         }
         self.send("task.update", Some(params))
     }

@@ -19,6 +19,9 @@ pub enum TaskCommand {
         /// Optional channel to route coworker messages for this task
         #[arg(long)]
         channel: Option<String>,
+        /// Optional model to use for this task (haiku, sonnet, opus)
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -44,6 +47,9 @@ pub enum TaskCommand {
         /// Set channel for coworker messages
         #[arg(long)]
         channel: Option<String>,
+        /// Set model for this task (haiku, sonnet, opus)
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Mark a task as done
     Done {
@@ -85,11 +91,13 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             description,
             blocked_by,
             channel,
+            model,
         } => client.task_create(
             subject,
             description,
             blocked_by.as_deref(),
             channel.as_deref(),
+            model.as_deref(),
         ),
         TaskCommand::Update {
             id,
@@ -98,6 +106,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             description,
             blocked_by,
             channel,
+            model,
         } => client.task_update(
             id,
             owner.as_deref(),
@@ -105,6 +114,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             description.as_deref(),
             blocked_by.as_deref(),
             channel.as_deref(),
+            model.as_deref(),
         ),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),

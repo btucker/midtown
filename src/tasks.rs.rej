@@ -1,0 +1,16 @@
+@@ -513,12 +522,14 @@
+ /// Only fields that are `Some` are updated; `None` fields are left unchanged.
+ /// This is the daemon's direct write path — no Lead proxy needed.
+ ///
+-/// Supports updating: owner, status, description, blocked_by, channel.
++/// Supports updating: owner, status, description, blocked_by, channel, model.
++#[allow(clippy::too_many_arguments)]
+ pub fn update_task_fields_for_repo(
+     task_id: &str,
+     repo_name: &str,
+     owner: Option<&str>,
+     status: Option<&str>,
+     description: Option<&str>,
+     blocked_by: Option<&[String]>,
+     channel: Option<&str>,
++    model: Option<&str>,
