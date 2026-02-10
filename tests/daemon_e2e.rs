@@ -2518,14 +2518,21 @@ fn test_daemon_rpc_channel_read_all_param() {
             "from": "test",
             "message": format!("Message {}", i)
         });
-        fixture.rpc_call("channel.post", Some(params));
+        let post_response = fixture.rpc_call("channel.post", Some(params));
+        assert!(
+            post_response.is_some(),
+            "Failed to post message {} to channel",
+            i
+        );
     }
 
     // Read with all=false (default) should return 20
     let response = fixture
         .rpc_call("channel.read", Some(serde_json::json!({"all": false})))
-        .unwrap();
-    let messages = response["result"]["messages"].as_array().unwrap();
+        .expect("channel.read should succeed");
+    let messages = response["result"]["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("Expected messages array in response, got: {:?}", response));
     assert!(
         messages.len() <= 20,
         "Default read should return max 20 messages"
@@ -2534,8 +2541,10 @@ fn test_daemon_rpc_channel_read_all_param() {
     // Read with all=true should return all 25
     let response = fixture
         .rpc_call("channel.read", Some(serde_json::json!({"all": true})))
-        .unwrap();
-    let messages = response["result"]["messages"].as_array().unwrap();
+        .expect("channel.read with all=true should succeed");
+    let messages = response["result"]["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("Expected messages array in response, got: {:?}", response));
     assert!(
         messages.len() >= 25,
         "all=true should return all {} messages",
