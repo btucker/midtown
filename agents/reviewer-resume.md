@@ -12,4 +12,32 @@ Task descriptions can evolve after a coworker starts working. The coworker may n
 
 If you haven't already run the code review skill, run it now: /code-review:code-review {pr_number}
 
+**MIDTOWN FRONTMATTER REQUIREMENT**: All PR comments from the code-review skill MUST include the midtown frontmatter at the top. The skill's output format does NOT include this by default. When the skill gives you the final comment text to post, prepend the frontmatter line before posting:
+
+```
+<!-- midtown: {name} -->
+
+[rest of the review comment from the skill]
+```
+
+For example, if the skill outputs:
+```
+### Code review
+
+Found 2 issues:
+...
+```
+
+You must post:
+```
+<!-- midtown: {name} -->
+
+### Code review
+
+Found 2 issues:
+...
+```
+
+This applies whether the review finds issues or reports "no issues found". The frontmatter is required for proper attribution tracking by the daemon.
+
 REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@lead PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
