@@ -1081,7 +1081,6 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
     let config = midtown::launch::LaunchConfig {
         name: "test-claude".to_string(),
         session_mode: midtown::launch::SessionMode::Fresh,
-        task_mode: midtown::launch::TaskMode::Isolated,
         role: midtown::launch::CoworkerRole::default(),
         initial_prompt: Some("Say 'ready' and wait.".to_string()),
         additional_dirs: vec![],
@@ -1372,7 +1371,6 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
     let config = midtown::launch::LaunchConfig {
         name: "test-coworker".to_string(),
         session_mode: midtown::launch::SessionMode::Fresh,
-        task_mode: midtown::launch::TaskMode::Isolated,
         role: midtown::launch::CoworkerRole::default(),
         initial_prompt: Some("Say hello and wait for instructions.".to_string()),
         additional_dirs: vec![],
@@ -1687,7 +1685,6 @@ fn test_kill_orphaned_claude_processes_real() {
     let config = midtown::launch::LaunchConfig {
         name: "orphan-test".to_string(),
         session_mode: midtown::launch::SessionMode::Fresh,
-        task_mode: midtown::launch::TaskMode::Isolated,
         role: midtown::launch::CoworkerRole::default(),
         initial_prompt: Some("Say 'ready' and wait.".to_string()),
         additional_dirs: vec![],

@@ -1897,9 +1897,15 @@ pub fn spawn_lead(
     let command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
         test_cmd
     } else {
-        config
+        let task_list_id = crate::paths::task_list_id_for_repo(project_name);
+        let claude_cmd = config
             .to_shell_command(&settings_file, &prompt_file, None)
-            .shell_command
+            .shell_command;
+        // Prepend CLAUDE_CODE_TASK_LIST_ID export so leads share task storage with coworkers
+        format!(
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; {}",
+            task_list_id, claude_cmd
+        )
     };
 
     create_window(session, "lead", working_dir, Some(&command))?;

@@ -73,9 +73,9 @@ pub struct HeadlessConfig {
     pub settings_path: Option<String>,
     /// Additional environment variables to set on the child process.
     ///
-    /// Applied after the default env_remove calls (MIDTOWN_AGENT, CLAUDE_CODE_TASK_LIST_ID),
-    /// so values here take precedence. Use this to pass coworker-specific env vars
-    /// like `MIDTOWN_AGENT`, `CLAUDE_CODE_TASK_LIST_ID`, and `CLAUDE_CONFIG_DIR`.
+    /// Applied after the default env_remove call (MIDTOWN_AGENT), so values here
+    /// take precedence. Use this to pass coworker-specific env vars like
+    /// `MIDTOWN_AGENT` and `CLAUDE_CONFIG_DIR`.
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
 }
@@ -236,9 +236,8 @@ impl HeadlessSession {
         }
 
         // Clear inherited daemon env vars, then re-apply from config.env
-        // so coworker-specific values (MIDTOWN_AGENT, CLAUDE_CODE_TASK_LIST_ID) take effect.
+        // so coworker-specific values (MIDTOWN_AGENT) take effect.
         cmd.env_remove("MIDTOWN_AGENT");
-        cmd.env_remove("CLAUDE_CODE_TASK_LIST_ID");
         cmd.env("DISABLE_AUTOUPDATER", "1");
 
         // Agent teams requires this env var

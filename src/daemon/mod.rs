@@ -394,9 +394,9 @@ pub(crate) struct DaemonState {
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
     /// Internal tracking of coworker task assignments (coworker name → assignment).
     ///
-    /// With isolated task lists (TaskMode::Isolated), the daemon can't see
-    /// coworker tasks on disk. This map tracks which coworker is working on
-    /// which task, enabling busy detection for dispatch and idle protection.
+    /// With isolated task lists, the daemon can't see coworker tasks on disk.
+    /// This map tracks which coworker is working on which task, enabling busy
+    /// detection for dispatch and idle protection.
     ///
     /// Updated when: AssignAndSpawn succeeds, task.claim RPC is received.
     /// Cleared when: coworker shuts down, task is completed or reset to pending.
@@ -798,7 +798,7 @@ impl DaemonState {
     ///
     /// This is the canonical way to check busy status. Callers should use this
     /// instead of `crate::tasks::get_busy_coworkers_for_repo()` directly, since
-    /// the disk-based reader cannot see isolated task lists.
+    /// the disk-based reader cannot see coworker task lists.
     pub(crate) fn get_all_busy_coworkers(&self) -> Vec<String> {
         let mut busy: HashSet<String> = crate::tasks::get_busy_coworkers_for_repo(&self.repo_name)
             .into_iter()
