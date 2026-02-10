@@ -1480,8 +1480,8 @@ fn apply_task_channel_mapping(
     match channel {
         Some(ch) if ch.is_empty() && allow_clear => {
             // Empty string means clear the mapping (only on update, not create)
-            task_channel.remove(task_id);
-            true
+            // Returns true only if a mapping was actually removed
+            task_channel.remove(task_id).is_some()
         }
         Some(ch) if !ch.is_empty() => {
             task_channel.insert(task_id.to_string(), ch.to_string());
@@ -3562,9 +3562,9 @@ mod tests {
     #[test]
     fn test_apply_task_channel_mapping_clear_nonexistent_is_noop() {
         let mut map = HashMap::new();
-        // Clearing a mapping that doesn't exist still returns true (remove was called)
+        // Clearing a mapping that doesn't exist returns false (no state modification)
         let changed = apply_task_channel_mapping(&mut map, "99", Some(""), true);
-        assert!(changed);
+        assert!(!changed);
         assert!(map.is_empty());
     }
 
