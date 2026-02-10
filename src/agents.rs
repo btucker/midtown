@@ -98,9 +98,12 @@ fn load_prompt_file(filename: &str) -> Option<String> {
 /// 1. `<git-repo-root>/MIDTOWN.md` (project-level)
 /// 2. `~/.midtown/MIDTOWN.md` (user-level)
 /// 3. Returns None if not found (optional file)
-fn load_midtown_md() -> Option<String> {
+fn load_midtown_md_from_paths(
+    project_root: Option<PathBuf>,
+    midtown_home: Option<PathBuf>,
+) -> Option<String> {
     // Try project root first
-    if let Some(repo_root) = git_repo_root() {
+    if let Some(repo_root) = project_root {
         let path = repo_root.join("MIDTOWN.md");
         if let Ok(content) = std::fs::read_to_string(&path) {
             return Some(content);
@@ -108,7 +111,7 @@ fn load_midtown_md() -> Option<String> {
     }
 
     // Try user midtown directory
-    if let Some(midtown_dir) = user_midtown_dir() {
+    if let Some(midtown_dir) = midtown_home {
         let path = midtown_dir.join("MIDTOWN.md");
         if let Ok(content) = std::fs::read_to_string(&path) {
             return Some(content);
@@ -118,15 +121,23 @@ fn load_midtown_md() -> Option<String> {
     None
 }
 
+fn load_midtown_md() -> Option<String> {
+    load_midtown_md_from_paths(git_repo_root(), user_midtown_dir())
+}
+
+fn merge_common_with_midtown(common: String, midtown: Option<String>) -> String {
+    match midtown {
+        Some(midtown) => format!("{common}\n{midtown}"),
+        None => common,
+    }
+}
+
 /// Load the common prompt content shared by both agents.
 ///
 /// Combines `agents/common.md` with `MIDTOWN.md` (if present).
 fn common_prompt() -> String {
     let common = load_prompt_file("common.md").unwrap_or_else(|| DEFAULT_COMMON_PROMPT.to_string());
-    match load_midtown_md() {
-        Some(midtown) => format!("{common}\n{midtown}"),
-        None => common,
-    }
+    merge_common_with_midtown(common, load_midtown_md())
 }
 
 /// Load custom prompt files from global and project-level locations.
@@ -465,6 +476,32 @@ mod tests {
             prompt.contains("<!-- midtown: broadway -->"),
             "Coworker prompt should have {{name}} replaced in common content"
         );
+    }
+
+    #[test]
+    fn test_load_midtown_md_from_paths_prefers_project_file() {
+        let project = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+
+        std::fs::write(project.path().join("MIDTOWN.md"), "project-level").unwrap();
+        std::fs::write(user.path().join("MIDTOWN.md"), "user-level").unwrap();
+
+        let loaded = load_midtown_md_from_paths(
+            Some(project.path().to_path_buf()),
+            Some(user.path().to_path_buf()),
+        )
+        .expect("MIDTOWN.md should load from one of the provided paths");
+
+        assert_eq!(loaded, "project-level");
+    }
+
+    #[test]
+    fn test_merge_common_with_midtown_appends_midtown_content() {
+        let merged = merge_common_with_midtown(
+            "base common prompt".to_string(),
+            Some("project steer".into()),
+        );
+        assert_eq!(merged, "base common prompt\nproject steer");
     }
 
     #[test]
