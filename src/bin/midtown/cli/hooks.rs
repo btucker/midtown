@@ -586,8 +586,8 @@ fn handle_task_hook() -> Result<Response, String> {
 
     // For the Lead agent: ensure tasks are persisted to the shared directory.
     // This is a write-through safety net for the /resume case where Claude Code
-    // doesn't honor CLAUDE_CODE_TASK_LIST_ID and stores tasks only in-memory.
-    // The hook mirrors task data to the shared dir so the daemon can see it.
+    // stores tasks only in-memory. The hook mirrors task data to the shared dir
+    // so the daemon can see it.
     let _remapped_task_id = if agent == "lead" {
         ensure_lead_task_persistence(&repo, tool_name, tool_input, &context)
     } else {
@@ -638,10 +638,9 @@ fn handle_task_hook() -> Result<Response, String> {
 
 /// Ensure the Lead's task is persisted to the shared directory.
 ///
-/// Claude Code may fail to persist tasks to the `CLAUDE_CODE_TASK_LIST_ID` directory
-/// after `/resume`, storing them only in-memory with IDs starting from 1. This function
-/// acts as a write-through layer: it checks whether the task exists in the shared
-/// directory and creates it if missing.
+/// Claude Code may fail to persist tasks after `/resume`, storing them only in-memory
+/// with IDs starting from 1. This function acts as a write-through layer: it checks
+/// whether the task exists in the shared directory and creates it if missing.
 ///
 /// For TaskCreate: creates the task with the next sequential ID and stores an
 /// internal→shared ID mapping for future TaskUpdate remapping.

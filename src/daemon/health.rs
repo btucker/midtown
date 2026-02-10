@@ -1042,7 +1042,6 @@ mod tests {
             started_at: chrono::Utc::now(),
             current_task: None,
             session_id: None,
-            isolated_tasks: false,
             model: "sonnet".to_string(),
         };
         let stopping = Coworker {
@@ -1053,7 +1052,6 @@ mod tests {
             started_at: chrono::Utc::now(),
             current_task: None,
             session_id: None,
-            isolated_tasks: false,
             model: "sonnet".to_string(),
         };
 

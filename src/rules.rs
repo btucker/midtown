@@ -20,7 +20,6 @@ use chrono::{DateTime, Utc};
 pub(crate) struct CoworkerSnapshot {
     pub name: String,
     pub started_at: DateTime<Utc>,
-    pub isolated_tasks: bool,
     /// Claude Code session UUID, if known. Enables session-first lookups
     /// alongside name-based lookups during the multi-session migration.
     pub session_id: Option<String>,
@@ -1567,18 +1566,13 @@ mod tests {
         CoworkerSnapshot {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
-            isolated_tasks: false,
             session_id: None,
         }
     }
 
+    // Legacy alias — all coworkers are now isolated
     fn cw_isolated(name: &str, minutes_old: i64) -> CoworkerSnapshot {
-        CoworkerSnapshot {
-            name: name.to_string(),
-            started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
-            isolated_tasks: true,
-            session_id: None,
-        }
+        cw(name, minutes_old)
     }
 
     fn set(items: &[&str]) -> HashSet<String> {

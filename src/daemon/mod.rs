@@ -402,9 +402,9 @@ pub(crate) struct DaemonState {
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
     /// Internal tracking of coworker task assignments (coworker name → assignment).
     ///
-    /// With isolated task lists (TaskMode::Isolated), the daemon can't see
-    /// coworker tasks on disk. This map tracks which coworker is working on
-    /// which task, enabling busy detection for dispatch and idle protection.
+    /// With isolated task lists, the daemon can't see coworker tasks on disk.
+    /// This map tracks which coworker is working on which task, enabling busy
+    /// detection for dispatch and idle protection.
     ///
     /// Updated when: AssignAndSpawn succeeds, task.claim RPC is received.
     /// Cleared when: coworker shuts down, task is completed or reset to pending.
@@ -727,15 +727,10 @@ impl DaemonState {
 
         // Register in the CoworkerManager tracking map (keyed by slot_id)
         // session_id is None initially — it arrives later via the init StreamEvent
-        let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
-        if let Err(e) = self.coworkers.register(
-            &slot_id,
-            &name,
-            working_dir,
-            None,
-            isolated_tasks,
-            config.model.clone(),
-        ) {
+        if let Err(e) =
+            self.coworkers
+                .register(&slot_id, &name, working_dir, None, config.model.clone())
+        {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
             tracing::warn!(
@@ -838,7 +833,7 @@ impl DaemonState {
     ///
     /// This is the canonical way to check busy status. Callers should use this
     /// instead of `crate::tasks::get_busy_coworkers_for_repo()` directly, since
-    /// the disk-based reader cannot see isolated task lists.
+    /// the disk-based reader cannot see coworker task lists.
     pub(crate) fn get_all_busy_coworkers(&self) -> Vec<String> {
         let mut busy: HashSet<String> = crate::tasks::get_busy_coworkers_for_repo(&self.repo_name)
             .into_iter()
@@ -1239,9 +1234,18 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
         if let Some(info) = session_info.get_mut(&coworker.name) {
             info.working_dir = Some(coworker.working_dir.clone());
 
-            // Determine coworker type and assignment based on current_task and isolated_tasks
-            if coworker.isolated_tasks {
-                // Isolated coworker - likely a reviewer
+            // Determine coworker type and assignment based on current_task and PR assignment
+            // Check if this coworker is assigned as a reviewer
+            let persistent = state.persistent_state.lock().await;
+            let is_reviewer = persistent
+                .github
+                .pr_reviewers
+                .values()
+                .any(|assignment| assignment.reviewer == coworker.name);
+            drop(persistent);
+
+            if is_reviewer {
+                // Reviewer coworker
                 info.coworker_type = Some("reviewer".to_string());
 
                 // Look up PR assignment from persistent state

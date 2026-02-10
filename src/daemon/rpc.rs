@@ -627,7 +627,6 @@ async fn handle_coworker_spawn(
         } else {
             crate::launch::SessionMode::Fresh
         },
-        task_mode: crate::launch::TaskMode::Isolated,
         role: crate::launch::CoworkerRole::Coworker,
         initial_prompt: prompt,
         additional_dirs: vec![],
@@ -1229,10 +1228,9 @@ async fn handle_coworker_report_state(
     }
 
     // For Completed phase, sync the shared task list so the daemon stops
-    // reassigning the task. With isolated task lists (PR #656), coworker
-    // completions write to their isolated list, not the shared list the daemon
-    // reads. This closes the loop by updating the shared list when a coworker
-    // reports completion via RPC.
+    // reassigning the task. Coworker completions write to their isolated list,
+    // not the shared list the daemon reads. This closes the loop by updating the
+    // shared list when a coworker reports completion via RPC.
     //
     // Uses the existing Effect::CompleteTask and Effect::ClearBlockedBy variants
     // to stay consistent with the effect-based architecture and avoid duplicating

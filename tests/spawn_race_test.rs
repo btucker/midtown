@@ -2,9 +2,9 @@
 //!
 //! # Bug Description (2026-02-02)
 //!
-//! A reviewer coworker (madison) got access to the shared task list, which should
-//! NEVER happen. Reviewers are spawned with `isolated_tasks: true` (isolated task
-//! list), but this madison instance ended up with `isolated_tasks: false`.
+//! A race condition allowed multiple concurrent spawn attempts for the same coworker
+//! name to succeed, with the last spawn overwriting the first. This could lead to
+//! unexpected behavior when different spawn paths tried to create the same coworker.
 //!
 //! ## Timeline from daemon.log
 //!
@@ -39,9 +39,8 @@
 //!
 //! ## Consequence
 //!
-//! The second spawn (isolated=false for task dispatch) overwrote the first spawn
-//! (isolated=true for reviewer). Madison ended up with shared task list access
-//! and started claiming tasks from the team's task list while also reviewing a PR.
+//! The second spawn overwrote the first spawn, potentially causing unexpected behavior
+//! when the coworker was being created for different purposes simultaneously.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -143,7 +142,6 @@ fn test_concurrent_name_allocation_no_overwrites() {
                         started_at: chrono::Utc::now(),
                         current_task: None,
                         session_id: None,
-                        isolated_tasks: false,
                         model: "sonnet".to_string(),
                     });
 
@@ -247,7 +245,6 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             started_at: chrono::Utc::now(),
             current_task: None,
             session_id: None,
-            isolated_tasks: true, // Reviewer should be isolated!
             model: "sonnet".to_string(),
         });
         *spawn1_result_clone.lock().unwrap() = Some(inserted);
@@ -279,7 +276,6 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             started_at: chrono::Utc::now(),
             current_task: None,
             session_id: None,
-            isolated_tasks: false, // Task coworker has shared access
             model: "sonnet".to_string(),
         });
         *spawn2_result_clone.lock().unwrap() = Some(inserted);
@@ -292,7 +288,6 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
     let spawn2_succeeded = spawn2_result.lock().unwrap().unwrap_or(false);
 
     // Check the final state
-    let final_isolated = manager.get("madison").map(|c| c.isolated_tasks);
 
     println!("Spawn race test results:");
     println!(
@@ -311,12 +306,11 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
             "failed"
         }
     );
-    println!("  Final isolated_tasks value: {:?}", final_isolated);
 
     // This test SHOULD FAIL until the race condition is fixed.
     //
     // The bug: both spawns can succeed due to TOCTTOU race, and the last one
-    // overwrites the first. This can leave a "reviewer" with isolated_tasks=false.
+    // overwrites the first.
     //
     // Correct behavior: exactly one spawn should succeed (the other should fail
     // because the name is already taken).
@@ -327,16 +321,6 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
         spawn1_succeeded,
         spawn2_succeeded
     );
-
-    // If the reviewer spawn won, the coworker should remain isolated
-    if spawn1_succeeded {
-        assert_eq!(
-            final_isolated,
-            Some(true),
-            "Reviewer's isolated_tasks setting was overwritten! Expected true, got {:?}",
-            final_isolated
-        );
-    }
 }
 
 /// Test documenting the expected fix: atomic check-and-insert for spawn.
@@ -344,12 +328,11 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
 /// The fix should ensure that:
 /// 1. If a coworker name is already in use, spawn fails
 /// 2. The check and insert are atomic (no gap for races)
-/// 3. The first successful spawn's isolation setting is preserved
 #[test]
 fn test_spawn_should_be_atomic() {
     let (manager, _temp_dir) = test_manager();
 
-    // First spawn: reviewer with isolated=true
+    // First spawn: reviewer
     manager.insert_for_testing(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: "madison".to_string(),
@@ -358,7 +341,6 @@ fn test_spawn_should_be_atomic() {
         started_at: chrono::Utc::now(),
         current_task: None,
         session_id: None,
-        isolated_tasks: true,
         model: "sonnet".to_string(),
     });
 
@@ -368,14 +350,5 @@ fn test_spawn_should_be_atomic() {
     assert!(
         already_exists,
         "Second spawn should see madison already exists"
-    );
-
-    // Original isolation setting should be preserved
-    let isolated = manager.get("madison").map(|c| c.isolated_tasks);
-
-    assert_eq!(
-        isolated,
-        Some(true),
-        "Reviewer's isolated_tasks setting should be preserved"
     );
 }

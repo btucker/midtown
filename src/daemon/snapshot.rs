@@ -288,7 +288,6 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|cw| CoworkerSnapshot {
             name: cw.name.clone(),
             started_at: cw.started_at,
-            isolated_tasks: cw.isolated_tasks,
             session_id: cw.session_id.clone(),
         })
         .collect();
@@ -831,7 +830,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: Some("session-aaa".to_string()),
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
                 Coworker {
@@ -842,7 +840,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: Some("session-bbb".to_string()),
-                    isolated_tasks: false,
                     model: "sonnet".to_string(),
                 },
                 Coworker {
@@ -853,7 +850,6 @@ mod tests {
                     started_at: Utc::now(),
                     current_task: None,
                     session_id: Some("session-ccc".to_string()),
-                    isolated_tasks: true,
                     model: "sonnet".to_string(),
                 },
             ],

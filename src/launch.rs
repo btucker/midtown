@@ -22,15 +22,6 @@ pub enum SessionMode {
     ResumeSession(String),
 }
 
-/// Whether this coworker shares the team task list or is isolated.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TaskMode {
-    /// Shares the team task list via CLAUDE_CODE_TASK_LIST_ID env var.
-    Shared { repo_name: String },
-    /// Private task list — no shared env var (used for reviewers).
-    Isolated,
-}
-
 /// The role of a coworker, which determines their system prompt.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum CoworkerRole {
@@ -52,8 +43,6 @@ pub struct LaunchConfig {
     pub name: String,
     /// How to start or resume the session.
     pub session_mode: SessionMode,
-    /// Shared vs isolated task list.
-    pub task_mode: TaskMode,
     /// The coworker's role (determines which system prompt to use).
     pub role: CoworkerRole,
     /// Optional prompt to pre-fill at startup (task instructions, review prompt, etc.).
@@ -95,12 +84,10 @@ pub struct LaunchCommand {
 }
 
 impl LaunchConfig {
-    /// Create a config for a standard coworker with an isolated task list.
+    /// Create a config for a standard coworker.
     ///
-    /// Coworkers don't share the lead's task list. The daemon bakes the task
+    /// Coworkers each have isolated task lists. The daemon bakes the task
     /// description into the initial prompt and tracks assignment internally.
-    /// The `repo_name` parameter is retained for compatibility but is no longer
-    /// used for task list sharing.
     pub fn coworker(
         name: impl Into<String>,
         repo_name: impl Into<String>,
@@ -112,7 +99,6 @@ impl LaunchConfig {
         LaunchConfig {
             name: name.into(),
             session_mode,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt,
             additional_dirs: vec![],
@@ -126,7 +112,7 @@ impl LaunchConfig {
         }
     }
 
-    /// Create a config for an isolated reviewer coworker.
+    /// Create a config for a reviewer coworker.
     ///
     /// Reviewers get a specialized system prompt that merges coworker.md +
     /// common.md + reviewer.md, ensuring they follow reviewer instructions
@@ -135,7 +121,6 @@ impl LaunchConfig {
         LaunchConfig {
             name: name.into(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Reviewer,
             initial_prompt: Some(crate::agents::reviewer_launch_prompt(pr_number)),
             additional_dirs: vec![],
@@ -181,7 +166,6 @@ impl LaunchConfig {
         LaunchConfig {
             name: name.into(),
             session_mode: SessionMode::ResumeSession(session_id),
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::Coworker,
             initial_prompt: Some(initial_prompt),
             additional_dirs: vec![],
@@ -224,10 +208,6 @@ impl LaunchConfig {
         // Build env vars for the coworker process
         let mut env = std::collections::HashMap::new();
         env.insert("MIDTOWN_AGENT".to_string(), self.name.clone());
-        if let TaskMode::Shared { ref repo_name } = self.task_mode {
-            let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
-            env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), task_list_id);
-        }
         // Set Claude config directory from the resolved auth profile
         let config_dir = self
             .auth_profile_dir
@@ -279,10 +259,6 @@ impl LaunchConfig {
             format!("MIDTOWN_AGENT='{}'", self.name),
             "DISABLE_AUTOUPDATER=1".to_string(),
         ];
-        if let TaskMode::Shared { ref repo_name } = self.task_mode {
-            let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
-            env_parts.push(format!("CLAUDE_CODE_TASK_LIST_ID='{}'", task_list_id));
-        }
         // Set Claude config directory from the resolved auth profile
         let config_dir = self
             .auth_profile_dir
@@ -439,7 +415,6 @@ mod tests {
         );
         assert_eq!(config.name, "park");
         assert_eq!(config.session_mode, SessionMode::Fresh);
-        assert_eq!(config.task_mode, TaskMode::Isolated);
         assert_eq!(config.role, CoworkerRole::Coworker);
         assert_eq!(config.initial_prompt, Some("Do the thing".to_string()));
         assert!(config.restrict_setting_sources);

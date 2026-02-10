@@ -1595,7 +1595,6 @@ pub use crate::launch::CoworkerRole;
 pub use crate::launch::LaunchCommand;
 pub use crate::launch::LaunchConfig as ClaudeLaunchConfig;
 pub use crate::launch::SessionMode;
-pub use crate::launch::TaskMode;
 
 /// Spawn a Claude Code coworker in a tmux window.
 ///
@@ -1887,9 +1886,6 @@ pub fn spawn_lead(
     let config = ClaudeLaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::Fresh,
-        task_mode: TaskMode::Shared {
-            repo_name: project_name.to_string(),
-        },
         role: CoworkerRole::Coworker, // Lead uses its own prompt; role only affects coworker spawns
         initial_prompt: None,
         additional_dirs: additional_dirs.to_vec(),
@@ -1906,9 +1902,15 @@ pub fn spawn_lead(
     let command = if let Ok(test_cmd) = std::env::var("MIDTOWN_LEAD_COMMAND") {
         test_cmd
     } else {
-        config
+        let task_list_id = crate::paths::task_list_id_for_repo(project_name);
+        let claude_cmd = config
             .to_shell_command(&settings_file, &prompt_file, None)
-            .shell_command
+            .shell_command;
+        // Prepend CLAUDE_CODE_TASK_LIST_ID export so leads share task storage with coworkers
+        format!(
+            "export CLAUDE_CODE_TASK_LIST_ID='{}'; {}",
+            task_list_id, claude_cmd
+        )
     };
 
     create_window(session, "lead", working_dir, Some(&command))?;
@@ -2673,9 +2675,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "lead".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Shared {
-                repo_name: "myrepo".to_string(),
-            },
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2701,8 +2700,8 @@ Claude is now processing the request
             "lead must use exec"
         );
         assert!(
-            result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
-            "lead must have shared task list"
+            !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
+            "lead has isolated task list (like all coworkers)"
         );
     }
 
@@ -2711,7 +2710,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2751,7 +2749,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Resume,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2787,7 +2784,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::ResumeSession("abc-123".to_string()),
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2815,11 +2811,10 @@ Claude is now processing the request
     }
 
     #[test]
-    fn test_launch_config_isolated_omits_task_list_env() {
+    fn test_launch_config_omits_task_list_env() {
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2838,7 +2833,7 @@ Claude is now processing the request
         );
         assert!(
             !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID"),
-            "isolated must not set task list ID"
+            "coworkers have isolated task lists, never shared"
         );
         assert!(
             result.shell_command.contains("MIDTOWN_AGENT='park'"),
@@ -2847,41 +2842,10 @@ Claude is now processing the request
     }
 
     #[test]
-    fn test_launch_config_shared_includes_task_list_env() {
-        let config = ClaudeLaunchConfig {
-            name: "park".to_string(),
-            session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Shared {
-                repo_name: "myrepo".to_string(),
-            },
-            role: CoworkerRole::default(),
-            initial_prompt: None,
-            additional_dirs: vec![],
-            restrict_setting_sources: true,
-            pr_number: None,
-            team_name: None,
-            working_dir: None,
-            model: "sonnet".to_string(),
-            channel: None,
-            auth_profile_dir: None,
-        };
-        let result = config.to_shell_command(
-            std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.md"),
-            None,
-        );
-        assert!(
-            result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
-            "shared must set task list ID"
-        );
-    }
-
-    #[test]
     fn test_launch_config_includes_claude_config_dir() {
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2915,7 +2879,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: Some("Do the thing".to_string()),
             additional_dirs: vec![],
@@ -2955,7 +2918,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -2985,7 +2947,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![PathBuf::from("/extra/repo1"), PathBuf::from("/extra/repo2")],
@@ -3017,7 +2978,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -3045,7 +3005,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],
@@ -3075,7 +3034,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "park".to_string(),
             session_mode: SessionMode::Resume,
-            task_mode: TaskMode::Isolated,
             role: CoworkerRole::default(),
             initial_prompt: Some("task prompt".to_string()),
             additional_dirs: vec![],
@@ -3169,9 +3127,6 @@ Claude is now processing the request
         let config = ClaudeLaunchConfig {
             name: "lead".to_string(),
             session_mode: SessionMode::Fresh,
-            task_mode: TaskMode::Shared {
-                repo_name: "myrepo".to_string(),
-            },
             role: CoworkerRole::default(),
             initial_prompt: None,
             additional_dirs: vec![],

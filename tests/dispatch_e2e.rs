@@ -790,25 +790,7 @@ fn reviewers_excluded_from_idle_pool() {
     }
 }
 
-/// Test reviewer state isolation.
-///
-/// Reviewers may be in isolated_tasks mode (their task list is separate).
-#[test]
-fn reviewer_isolation_tracked() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
-    let v: Value = serde_json::from_str(fixture).expect("valid JSON");
-
-    // Check coworker_snapshots for isolated_tasks flag
-    if let Some(coworkers) = v["coworker_snapshots"].as_array() {
-        for cw in coworkers {
-            let name = cw["name"].as_str().unwrap_or("");
-            let isolated = cw["isolated_tasks"].as_bool().unwrap_or(false);
-            if isolated {
-                println!("Coworker {} is in isolated task mode (reviewer)", name);
-            }
-        }
-    }
-}
+// Test removed: isolated_tasks field no longer exists (all coworkers use isolated task lists)
 
 // =============================================================================
 // Tests: Snapshot data integrity

@@ -31,7 +31,6 @@ struct Task {
 struct CoworkerSnapshot {
     name: String,
     started_at: DateTime<Utc>,
-    isolated_tasks: bool,
 }
 
 /// Parsed snapshot data for task dispatch tests.
@@ -71,7 +70,6 @@ fn load_snapshot(json_str: &str) -> (Vec<CoworkerSnapshot>, DispatchSnapshotData
             )
             .unwrap()
             .with_timezone(&Utc),
-            isolated_tasks: cw["isolated_tasks"].as_bool().unwrap_or(false),
         })
         .collect();
 
