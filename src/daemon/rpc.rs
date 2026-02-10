@@ -559,6 +559,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         agent_name: None,
                         settings_path: None,
                         setting_sources: None,
+                        auth_provider: crate::auth::AuthProvider::Claude,
                         env: std::collections::HashMap::new(),
                     };
                     handle_headless_execute(request.id, prompt, &config).await

@@ -75,11 +75,14 @@ pub struct HeadlessConfig {
     /// Common value: "project,local" to exclude user-level settings.
     #[serde(default)]
     pub setting_sources: Option<String>,
+    /// Auth provider backing this session (`claude` or `codex`).
+    #[serde(default)]
+    pub auth_provider: crate::auth::AuthProvider,
     /// Additional environment variables to set on the child process.
     ///
     /// Applied after the default env_remove call (MIDTOWN_AGENT), so values here
     /// take precedence. Use this to pass coworker-specific env vars like
-    /// `MIDTOWN_AGENT` and `CLAUDE_CONFIG_DIR`.
+    /// `MIDTOWN_AGENT` and provider config vars (`CLAUDE_CONFIG_DIR`/`CODEX_HOME`).
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
 }
@@ -169,7 +172,7 @@ pub struct HeadlessSession {
 impl HeadlessSession {
     /// Spawn a new headless Claude Code session.
     ///
-    /// Launches `claude` with the provided configuration. The process is spawned
+    /// Launches the provider CLI with the provided configuration. The process is spawned
     /// with piped stdin/stdout for bidirectional JSON streaming.
     ///
     /// Two modes:
@@ -177,7 +180,7 @@ impl HeadlessSession {
     /// - **Resume session** (`resume_session_id: Some(id)`): Uses `--resume <id>`,
     ///   omits `--system-prompt` and `--json-schema`.
     pub fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
-        let mut cmd = Command::new("claude");
+        let mut cmd = Command::new(config.auth_provider.cli_command());
 
         let is_resume = config.resume_session_id.is_some();
 
@@ -603,6 +606,7 @@ mod tests {
             agent_name: None,
             settings_path: None,
             setting_sources: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
             env: std::collections::HashMap::new(),
         }
     }
@@ -635,6 +639,13 @@ mod tests {
         let json = r#"{"model":"haiku","system_prompt":"test","allow_tools":false}"#;
         let config: HeadlessConfig = serde_json::from_str(json).unwrap();
         assert!(!config.persist_session);
+    }
+
+    #[test]
+    fn test_headless_config_auth_provider_default_claude() {
+        let json = r#"{"model":"haiku","system_prompt":"test","allow_tools":false}"#;
+        let config: HeadlessConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.auth_provider, crate::auth::AuthProvider::Claude);
     }
 
     #[test]
@@ -706,6 +717,17 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.setting_sources, Some("project,local".to_string()));
+    }
+
+    #[test]
+    fn test_headless_config_auth_provider_roundtrip() {
+        let config = HeadlessConfig {
+            auth_provider: crate::auth::AuthProvider::Codex,
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.auth_provider, crate::auth::AuthProvider::Codex);
     }
 
     #[test]

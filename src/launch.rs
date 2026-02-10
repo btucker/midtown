@@ -246,6 +246,7 @@ impl LaunchConfig {
             } else {
                 None
             },
+            auth_provider: self.auth_provider,
             env,
         }
     }
@@ -612,6 +613,7 @@ mod tests {
             headless.env.get("CODEX_HOME"),
             Some(&"/tmp/midtown-codex-profile".to_string())
         );
+        assert_eq!(headless.auth_provider, crate::auth::AuthProvider::Codex);
         assert!(
             !headless.env.contains_key("CLAUDE_CONFIG_DIR"),
             "Codex provider should not inject CLAUDE_CONFIG_DIR"
