@@ -2221,6 +2221,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 // Per-coworker decision helpers for unit tests. The batch `decide_*` functions
 // in `rules.rs` handle the full coworker set; these single-coworker variants
 // make individual test cases easier to write.
+
 #[cfg(test)]
 mod tests {
     use super::helpers::*;

@@ -1078,6 +1078,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
