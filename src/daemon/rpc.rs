@@ -2014,9 +2014,18 @@ async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     // Get cached PR data from the daemon's periodic polling (every 30s for open PRs,
     // every 5 minutes for merged PRs). This avoids synchronous gh CLI calls that can
     // timeout under GitHub API rate limiting.
+    //
+    // During daemon startup (before the first PR poll completes), return empty arrays
+    // rather than stale data. The first open PR poll completes within ~5 seconds, so
+    // this window is brief.
     let (pull_requests, merged_prs) = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
+        if cache.pr_poll_initialized {
+            (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
+        } else {
+            // PR poll hasn't completed yet - return empty arrays during startup
+            (Vec::new(), Vec::new())
+        }
     };
 
     // Run blocking file I/O operations in spawn_blocking.

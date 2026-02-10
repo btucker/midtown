@@ -106,7 +106,7 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
             "--state",
             "merged",
             "--limit",
-            "10", // Match the limit used by get_merged_prs in rpc.rs
+            "10", // Limit merged PR fetches to last 10 PRs
             "--json",
             "headRefName,number,title,mergedAt",
         ])
@@ -137,7 +137,7 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
                     .iter()
                     .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
                     .collect();
-                // Store full PR data for RPC cache (same format as get_merged_prs in rpc.rs)
+                // Store full PR data for RPC cache (includes number, headRefName, title, mergedAt)
                 (coworkers, branches, numbers, prs)
             } else {
                 (HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
