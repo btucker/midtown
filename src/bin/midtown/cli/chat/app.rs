@@ -246,6 +246,34 @@ pub struct App {
     pub message_render_cache: Option<MessageRenderCache>,
     /// Unread message counts per channel (channel_name -> unread_count)
     pub channel_unread_counts: HashMap<String, usize>,
+    /// Autocomplete state
+    pub autocomplete: AutocompleteState,
+}
+
+/// Autocomplete state for @mentions, #channels, and !task-ids
+#[derive(Debug, Clone, Default)]
+pub struct AutocompleteState {
+    /// Whether autocomplete dropdown is shown
+    pub show: bool,
+    /// Type of autocomplete trigger: '@' for mentions, '#' for channels, '!' for tasks
+    pub trigger_type: Option<char>,
+    /// Query string after the trigger character
+    pub query: String,
+    /// Filtered autocomplete items to display
+    pub items: Vec<AutocompleteItem>,
+    /// Selected index in the items list
+    pub selected_index: usize,
+    /// Byte position in input_text where the trigger character starts
+    pub trigger_start_pos: usize,
+}
+
+/// An autocomplete suggestion item
+#[derive(Debug, Clone)]
+pub struct AutocompleteItem {
+    /// The full value to insert (e.g., "@park", "#auth-refactor", "!42")
+    pub value: String,
+    /// Optional description (e.g., coworker's current task, channel purpose, task subject)
+    pub description: Option<String>,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -311,6 +339,7 @@ impl App {
             selection_mode: false,
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),
+            autocomplete: AutocompleteState::default(),
         };
 
         // Initial load
@@ -1054,6 +1083,205 @@ impl App {
             }
         }
     }
+
+    /// Detect autocomplete trigger and update autocomplete state
+    ///
+    /// Scans backward from the cursor position to find trigger characters (@, #, !)
+    /// that are preceded by whitespace or start of line.
+    pub fn detect_autocomplete_trigger(&mut self) {
+        let cursor_pos = self.input_cursor;
+        let text = &self.input_text;
+
+        // Look backward from cursor to find trigger character
+        let mut trigger_pos: Option<usize> = None;
+        let mut trigger_char: Option<char> = None;
+
+        // Convert character indices to byte positions
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        if cursor_pos > chars.len() {
+            self.autocomplete.show = false;
+            return;
+        }
+
+        // Find byte position of cursor
+        let cursor_byte_pos = if cursor_pos < chars.len() {
+            chars[cursor_pos].0
+        } else {
+            text.len()
+        };
+
+        // Scan backward from cursor
+        for i in (0..cursor_pos).rev() {
+            let (byte_idx, ch) = chars[i];
+            let prev_char = if i > 0 { Some(chars[i - 1].1) } else { None };
+
+            // Check if this is a trigger character preceded by whitespace or start of line
+            if matches!(ch, '@' | '#' | '!')
+                && (prev_char.is_none() || prev_char == Some(' ') || prev_char == Some('\n'))
+            {
+                trigger_pos = Some(byte_idx);
+                trigger_char = Some(ch);
+                break;
+            }
+
+            // Stop if we hit a space or newline (no trigger found in this word)
+            if ch == ' ' || ch == '\n' {
+                break;
+            }
+        }
+
+        if let (Some(trigger_byte_pos), Some(trigger)) = (trigger_pos, trigger_char) {
+            // Extract query string between trigger and cursor
+            let query = text[trigger_byte_pos + 1..cursor_byte_pos].to_string();
+
+            // Update autocomplete state
+            self.autocomplete.trigger_type = Some(trigger);
+            self.autocomplete.query = query.clone();
+            self.autocomplete.trigger_start_pos = trigger_byte_pos;
+            self.autocomplete.items = self.get_autocomplete_items(trigger, &query);
+            self.autocomplete.selected_index = 0;
+            self.autocomplete.show = !self.autocomplete.items.is_empty();
+        } else {
+            self.autocomplete.show = false;
+        }
+    }
+
+    /// Get autocomplete items for the given trigger and query
+    fn get_autocomplete_items(&self, trigger: char, query: &str) -> Vec<AutocompleteItem> {
+        let query_lower = query.to_lowercase();
+
+        match trigger {
+            '@' => self.get_mention_items(&query_lower),
+            '#' => self.get_channel_items(&query_lower),
+            '!' => self.get_task_items(&query_lower),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Get @mention autocomplete items (coworkers + lead)
+    fn get_mention_items(&self, query: &str) -> Vec<AutocompleteItem> {
+        use crate::cli::response::Response;
+        use crate::client::DaemonClient;
+
+        let mut items = Vec::new();
+
+        // Add "lead" first
+        if "lead".contains(query) {
+            items.push(AutocompleteItem {
+                value: "@lead".to_string(),
+                description: None,
+            });
+        }
+
+        // Try to get coworkers from daemon
+        if let Ok(client) = DaemonClient::connect()
+            && let Ok(Response::Status(status)) = client.status()
+            && let Some(ref full_status) = status.full_status
+        {
+            for cw in &full_status.coworkers {
+                if cw.name.to_lowercase().contains(query) {
+                    items.push(AutocompleteItem {
+                        value: format!("@{}", cw.name),
+                        description: cw.current_task.clone(),
+                    });
+                }
+            }
+        }
+
+        items
+    }
+
+    /// Get #channel autocomplete items
+    fn get_channel_items(&self, query: &str) -> Vec<AutocompleteItem> {
+        let mut items = Vec::new();
+
+        // Get available channels from the channel system
+        if let Some(ref channel) = self.channel {
+            let base_dir = channel.base_dir();
+            if let Ok(channels) = Channel::list(base_dir) {
+                for channel_name in channels {
+                    if channel_name.to_lowercase().contains(query) {
+                        items.push(AutocompleteItem {
+                            value: format!("#{}", channel_name),
+                            description: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        items
+    }
+
+    /// Get !task autocomplete items
+    fn get_task_items(&self, query: &str) -> Vec<AutocompleteItem> {
+        self.tasks
+            .iter()
+            .filter(|task| task.id.contains(query) || task.subject.to_lowercase().contains(query))
+            .map(|task| AutocompleteItem {
+                value: format!("!{}", task.id),
+                description: Some(task.subject.clone()),
+            })
+            .collect()
+    }
+
+    /// Insert the selected autocomplete item into the input text
+    pub fn insert_autocomplete_item(&mut self) {
+        if !self.autocomplete.show
+            || self.autocomplete.selected_index >= self.autocomplete.items.len()
+        {
+            return;
+        }
+
+        let item = &self.autocomplete.items[self.autocomplete.selected_index];
+        let value = item.value.clone(); // Clone to avoid borrow issues
+
+        // Convert cursor position (character index) to byte position
+        let chars: Vec<(usize, char)> = self.input_text.char_indices().collect();
+        let cursor_byte_pos = if self.input_cursor < chars.len() {
+            chars[self.input_cursor].0
+        } else {
+            self.input_text.len()
+        };
+
+        // Extract parts before trigger and after cursor
+        let before_trigger = self.input_text[..self.autocomplete.trigger_start_pos].to_string();
+        let after_cursor = self.input_text[cursor_byte_pos..].to_string();
+
+        // Construct new input text with selected value + space
+        self.input_text = format!("{}{} {}", before_trigger, value, after_cursor);
+
+        // Update cursor position (in character indices)
+        let new_cursor_chars = format!("{}{} ", before_trigger, value).chars().count();
+        self.input_cursor = new_cursor_chars;
+
+        // Hide autocomplete
+        self.autocomplete.show = false;
+    }
+
+    /// Navigate autocomplete selection up
+    pub fn autocomplete_select_prev(&mut self) {
+        if self.autocomplete.show && !self.autocomplete.items.is_empty() {
+            if self.autocomplete.selected_index == 0 {
+                self.autocomplete.selected_index = self.autocomplete.items.len() - 1;
+            } else {
+                self.autocomplete.selected_index -= 1;
+            }
+        }
+    }
+
+    /// Navigate autocomplete selection down
+    pub fn autocomplete_select_next(&mut self) {
+        if self.autocomplete.show && !self.autocomplete.items.is_empty() {
+            self.autocomplete.selected_index =
+                (self.autocomplete.selected_index + 1) % self.autocomplete.items.len();
+        }
+    }
+
+    /// Dismiss autocomplete dropdown
+    pub fn dismiss_autocomplete(&mut self) {
+        self.autocomplete.show = false;
+    }
 }
 
 /// Fetch tasks from Claude Code's task storage.
@@ -1778,6 +2006,7 @@ pub(super) mod tests {
             selection_mode: false,
             message_render_cache: None,
             channel_unread_counts: HashMap::new(),
+            autocomplete: AutocompleteState::default(),
         }
     }
 

@@ -941,6 +941,11 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
     draw_chat_messages(f, app, chunks[0]);
     draw_input_bar(f, app, chunks[1]);
+
+    // Draw autocomplete dropdown overlay if showing
+    if app.autocomplete.show {
+        draw_autocomplete_dropdown(f, app, chunks[1]);
+    }
 }
 
 /// Draw the chat messages area (top of chat panel)
@@ -1147,6 +1152,80 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+}
+
+/// Draw autocomplete dropdown above the input bar
+fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
+    let items = &app.autocomplete.items;
+    if items.is_empty() {
+        return;
+    }
+
+    // Calculate dropdown dimensions
+    let item_count = items.len().min(8); // Show max 8 items
+    let dropdown_height = (item_count * 2) as u16; // 2 lines per item (value + description or blank)
+    let dropdown_width = 40u16.min(input_area.width.saturating_sub(4));
+
+    // Position dropdown above input bar (with 1-line gap)
+    let dropdown_y = input_area
+        .y
+        .saturating_sub(dropdown_height)
+        .saturating_sub(1);
+    let dropdown_x = input_area.x + 2; // Indent slightly from input bar
+
+    let dropdown_area = Rect {
+        x: dropdown_x,
+        y: dropdown_y,
+        width: dropdown_width,
+        height: dropdown_height,
+    };
+
+    // Build dropdown lines
+    let mut lines = Vec::new();
+    for (i, item) in items.iter().enumerate().take(item_count) {
+        let is_selected = i == app.autocomplete.selected_index;
+
+        // Item value line (highlighted if selected)
+        let value_style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {} ", item.value),
+            value_style,
+        )]));
+
+        // Description line (if present)
+        if let Some(ref desc) = item.description {
+            let desc_text = if desc.len() > dropdown_width as usize - 4 {
+                format!(" {}...", &desc[..dropdown_width as usize - 7])
+            } else {
+                format!(" {}", desc)
+            };
+            let desc_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            lines.push(Line::from(vec![Span::styled(desc_text, desc_style)]));
+        } else {
+            // Blank line for spacing
+            lines.push(Line::from(""));
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::Black));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, dropdown_area);
 }
 
 /// Render a single message into one or more Lines
