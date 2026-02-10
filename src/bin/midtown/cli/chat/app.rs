@@ -45,6 +45,23 @@ struct KanbanData {
     merged_prs: Vec<MergedPr>,
     /// Repo metadata from daemon RPC (label, full_name)
     repos: Vec<(String, String)>,
+    /// Coworker status data from daemon
+    coworkers: Vec<CoworkerInfo>,
+}
+
+/// Coworker status information for the TUI board sidebar
+#[derive(Debug, Clone)]
+pub struct CoworkerInfo {
+    /// Coworker name (e.g., "amsterdam")
+    pub name: String,
+    /// Current task ID being worked on
+    pub task_id: Option<u32>,
+    /// Workflow phase abbreviation (e.g., "dev", "PR", "test")
+    pub phase: Option<String>,
+    /// PR number if one is open for this task
+    pub pr_number: Option<u64>,
+    /// Health status: "green", "yellow", "red"
+    pub health: String,
 }
 
 /// Info about a repo in a multi-repo project
@@ -187,6 +204,8 @@ pub struct App {
     pub prs: Vec<KanbanPr>,
     /// Merged PRs for the Done column
     pub merged_prs: Vec<MergedPr>,
+    /// Active coworkers with their current status
+    pub coworkers: Vec<CoworkerInfo>,
     /// Repository name with owner (e.g., "btucker/midtown")
     /// Used for constructing GitHub PR URLs in kanban hyperlinks
     pub repo_name: String,
@@ -314,6 +333,7 @@ impl App {
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
+            coworkers: Vec::new(),
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
@@ -399,6 +419,7 @@ impl App {
                 Ok(data) => {
                     self.prs = data.prs;
                     self.merged_prs = data.merged_prs;
+                    self.coworkers = data.coworkers;
                     // Update repo info from daemon if available
                     if !data.repos.is_empty() {
                         let new_repos: Vec<RepoInfo> = data
@@ -528,13 +549,14 @@ impl App {
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let (prs, merged_prs, repos) = fetch_kanban_data_via_rpc()
-                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new()));
+            let (prs, merged_prs, repos, coworkers) = fetch_kanban_data_via_rpc()
+                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new(), Vec::new()));
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData {
                 prs,
                 merged_prs,
                 repos,
+                coworkers,
             });
         });
     }
@@ -1668,7 +1690,12 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
 ///
 /// Returns None if the daemon is not available, allowing fallback to direct gh CLI.
 #[allow(clippy::type_complexity)]
-fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(String, String)>)> {
+fn fetch_kanban_data_via_rpc() -> Option<(
+    Vec<KanbanPr>,
+    Vec<MergedPr>,
+    Vec<(String, String)>,
+    Vec<CoworkerInfo>,
+)> {
     use crate::client::DaemonClient;
 
     let client = DaemonClient::connect().ok()?;
@@ -1676,6 +1703,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
 
     let prs_json = data.get("prs").and_then(|v| v.as_array())?;
     let merged_json = data.get("merged_prs").and_then(|v| v.as_array())?;
+    let coworkers_json = data.get("coworkers").and_then(|v| v.as_array());
 
     // Extract repo metadata if present
     let repos: Vec<(String, String)> = data
@@ -1796,7 +1824,40 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
         })
         .collect();
 
-    Some((prs, merged_prs, repos))
+    // Parse coworker data from the daemon response
+    let coworkers: Vec<CoworkerInfo> = coworkers_json
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|cw| {
+                    let name = cw.get("name").and_then(|v| v.as_str())?.to_string();
+                    let task_id = cw
+                        .get("task_id")
+                        .and_then(|v| v.as_u64())
+                        .map(|id| id as u32);
+                    let phase = cw
+                        .get("phase")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let pr_number = cw.get("pr_number").and_then(|v| v.as_u64());
+                    let health = cw
+                        .get("health")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("green")
+                        .to_string();
+
+                    Some(CoworkerInfo {
+                        name,
+                        task_id,
+                        phase,
+                        pr_number,
+                        health,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some((prs, merged_prs, repos, coworkers))
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -1981,6 +2042,7 @@ pub(super) mod tests {
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
+            coworkers: Vec::new(),
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,

@@ -2382,11 +2382,64 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         }
     };
 
+    // Collect coworker data from daemon state
+    let coworkers_data = {
+        let active_coworkers = state.coworkers.list();
+        let coworker_records = state.coworker_records.read().await;
+        let headless_health = state.headless_health.read().unwrap();
+        let prs_by_task_id = build_pr_task_map(&prs);
+
+        active_coworkers
+            .iter()
+            .filter_map(|cw| {
+                // Get coworker's workflow state from records
+                let record = coworker_records.get(&cw.name);
+                let workflow_phase = record.and_then(|r| r.workflow_phase);
+                let task_id = record.and_then(|r| r.task_id);
+
+                // Skip idle coworkers (phase = Idle or Completed)
+                if matches!(
+                    workflow_phase,
+                    Some(crate::coworker_state::WorkflowPhase::Idle)
+                        | Some(crate::coworker_state::WorkflowPhase::Completed)
+                ) {
+                    return None;
+                }
+
+                // Get health status
+                let health = headless_health.get(&cw.name);
+                let health_color = if let Some(h) = health {
+                    if !h.is_alive {
+                        "red" // dead
+                    } else if h.has_usage_limit || h.has_api_error {
+                        "yellow" // degraded
+                    } else {
+                        "green" // healthy
+                    }
+                } else {
+                    "green" // default healthy
+                };
+
+                // Find PR number for this task
+                let pr_number = task_id.and_then(|tid| prs_by_task_id.get(&tid).copied());
+
+                Some(serde_json::json!({
+                    "name": cw.name,
+                    "task_id": task_id,
+                    "phase": workflow_phase.map(|p| p.abbreviation()),
+                    "pr_number": pr_number,
+                    "health": health_color,
+                }))
+            })
+            .collect::<Vec<_>>()
+    };
+
     // Build response and cache it
     let response_data = serde_json::json!({
         "prs": prs,
         "merged_prs": merged_prs,
         "repos": repos,
+        "coworkers": coworkers_data,
     });
 
     state.kanban_cache.set(response_data.clone(), repo_hash);
@@ -2400,6 +2453,23 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
 
 /// TTL for kanban data cache (30 seconds, matching web server's CACHE_TTL).
 const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Build a map of task_id -> pr_number from PR data.
+///
+/// Extracts task IDs from PR titles (e.g., "[Midtown !1234]") and maps them
+/// to their PR numbers for coworker status display.
+fn build_pr_task_map(prs: &[serde_json::Value]) -> HashMap<u32, u64> {
+    prs.iter()
+        .filter_map(|pr| {
+            let title = pr.get("title")?.as_str()?;
+            let pr_number = pr.get("number")?.as_u64()?;
+            let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
+            // extract_task_id_from_pr_title returns u64, but task_id in CoworkerRecord is u32
+            let task_id_u32 = u32::try_from(task_id).ok()?;
+            Some((task_id_u32, pr_number))
+        })
+        .collect()
+}
 
 /// Thread-safe TTL cache for kanban GraphQL data.
 ///
