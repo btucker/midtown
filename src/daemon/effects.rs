@@ -195,15 +195,18 @@ pub enum Effect {
     ///
     /// When a coworker opens a PR, we store their session ID so any other
     /// coworker can later resume work on that PR with full context preserved.
+    /// Also extracts and stores the task ID from the PR title.
     StorePrAuthorSession {
         pr_number: u64,
         session_id: String,
         branch: String,
         author: String,
+        title: String,
     },
-    /// Mark a task as completed (e.g., when its PR is opened).
+    /// Mark a task as completed.
     ///
-    /// Called when a PR is opened with `[Midtown #XX]` in the title.
+    /// Called when a PR is merged with `[Midtown !XX]` in the title (dispatch.rs),
+    /// or for non-PR tasks when the coworker reports completion (rpc.rs).
     CompleteTask { task_id: String, repo_name: String },
     /// Clear a completed task ID from all dependent tasks' `blockedBy` arrays.
     ///
@@ -802,10 +805,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 session_id,
                 branch,
                 author,
+                title,
             } => {
                 let mut ps = state.persistent_state.lock().await;
                 ps.github
-                    .store_pr_author_session(pr_number, &session_id, &branch, &author);
+                    .store_pr_author_session(pr_number, &session_id, &branch, &author, &title);
                 // Link the PR to the worktree by matching branch name.
                 // Use get_by_branch instead of get_by_coworker because coworkers can have
                 // multiple worktrees (one per task), and we need to match the exact branch.

@@ -1800,6 +1800,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                                 session_id,
                                 branch: pr_opened.branch.clone(),
                                 author: author.clone(),
+                                title: pr_opened.title.clone(),
                             });
                         } else {
                             debug!(
