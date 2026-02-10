@@ -55,6 +55,26 @@ pub fn handle(
     }
 }
 
+pub fn handle_list_all_providers() -> Result<Response, String> {
+    let mut sections = Vec::new();
+
+    for provider in midtown::auth::AuthProvider::all() {
+        let rows = fetch_sorted_profiles(*provider)?;
+        if rows.is_empty() {
+            sections.push(format!(
+                "{}\n  No profiles found. Create one with: midtown auth --provider {} login <email>",
+                provider, provider
+            ));
+            continue;
+        }
+        sections.push(format!("{}\n{}", provider, format_table(&rows)));
+    }
+
+    Ok(Response::Message {
+        message: sections.join("\n\n"),
+    })
+}
+
 fn handle_login(email: &str, provider: midtown::auth::AuthProvider) -> Result<Response, String> {
     // Validate email format (must contain @)
     if !email.contains('@') {

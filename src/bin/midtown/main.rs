@@ -153,6 +153,10 @@ enum Commands {
     },
     /// Manage authentication profiles for multi-account support
     Auth {
+        /// Show account/profile status for all supported providers (list only)
+        #[arg(long, default_value_t = false)]
+        all_providers: bool,
+
         /// Auth provider to manage
         #[arg(long, value_enum, default_value = "claude")]
         provider: AuthProviderArg,
@@ -514,9 +518,22 @@ fn main() {
 
     // Auth command (no daemon required - profile management)
     // Bare `midtown auth` defaults to `midtown auth list`
-    if let Commands::Auth { provider, command } = &command {
+    if let Commands::Auth {
+        all_providers,
+        provider,
+        command,
+    } = &command
+    {
         let cmd = command.clone().unwrap_or(AuthCommand::List);
-        let result = cli::handle_auth(&cmd, (*provider).into());
+        let result = if *all_providers {
+            if !matches!(cmd, AuthCommand::List) {
+                Err("--all-providers is only supported with `midtown auth list`".to_string())
+            } else {
+                cli::handle_auth_list_all_providers()
+            }
+        } else {
+            cli::handle_auth(&cmd, (*provider).into())
+        };
         handle_result(format, result);
         return;
     }

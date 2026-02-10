@@ -45,6 +45,14 @@ pub enum AuthProvider {
 }
 
 impl AuthProvider {
+    /// Providers supported by this build, in display order.
+    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+
+    /// Iterate all supported providers.
+    pub const fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
     /// Stable lower-case provider name used in config and paths.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -541,6 +549,12 @@ mod tests {
     #[test]
     fn test_default_profile_constant() {
         assert_eq!(DEFAULT_PROFILE, "default");
+    }
+
+    #[test]
+    fn test_auth_provider_all_contains_expected_providers() {
+        let providers = AuthProvider::all();
+        assert_eq!(providers, &[AuthProvider::Claude, AuthProvider::Codex]);
     }
 
     #[test]
