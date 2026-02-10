@@ -113,25 +113,39 @@ test.describe('Channel switching', () => {
       route.fulfill({ status: 200, contentType: 'text/plain', body: 'ok' })
     )
 
-    // Route per-channel API calls
-    await page.route('**/api/channel?channel=midtown', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_MAIN_MESSAGES) })
+    await page.route('**/api/usage', (route) =>
+      route.fulfill({ status: 204 }) // No credentials available
     )
 
-    await page.route('**/api/channel?channel=auth-refactor', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_AUTH_MESSAGES) })
-    )
+    // Route per-channel API calls using URL inspection
+    await page.route('**/api/channel', (route) => {
+      const url = new URL(route.request().url())
+      const channelParam = url.searchParams.get('channel')
 
-    await page.route('**/api/channel?channel=ui-improvements', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_UI_MESSAGES) })
-    )
+      let messages
+      if (channelParam === 'midtown') {
+        messages = MOCK_MAIN_MESSAGES
+      } else if (channelParam === 'auth-refactor') {
+        messages = MOCK_AUTH_MESSAGES
+      } else if (channelParam === 'ui-improvements') {
+        messages = MOCK_UI_MESSAGES
+      } else if (!channelParam) {
+        // Default channel endpoint (initial load, no query param)
+        messages = MOCK_MAIN_MESSAGES
+      } else {
+        messages = []
+      }
 
-    // Default channel endpoint (initial load)
-    await page.route('**/api/channel', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOCK_MAIN_MESSAGES) })
-    )
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(messages),
+      })
+    })
 
     await page.goto('/')
+    // Wait for the Svelte app to hydrate and make API calls
+    await page.waitForLoadState('networkidle')
     await expect(page.locator('.channel-list').first()).toBeVisible()
   })
 
