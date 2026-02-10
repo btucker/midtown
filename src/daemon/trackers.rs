@@ -88,6 +88,16 @@ impl PrIssueTracker {
         self.nudged.insert((pr_number, issue_type), Instant::now());
     }
 
+    /// Clear a specific nudge entry (e.g., when retrying after coworker death)
+    pub fn clear_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
+        self.nudged.remove(&(pr_number, issue_type));
+    }
+
+    /// Check if a nudge has been recorded for this issue
+    pub fn has_nudge(&self, pr_number: u64, issue_type: PrIssueType) -> bool {
+        self.nudged.contains_key(&(pr_number, issue_type))
+    }
+
     /// Clean up old entries (older than cooldown period)
     pub fn cleanup(&mut self) {
         let cutoff = Duration::from_secs(PR_NUDGE_COOLDOWN_SECS);
