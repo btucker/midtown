@@ -74,7 +74,7 @@ const SNAPSHOT_DAEMON_LOG_LINES: usize = 100;
 /// side effects on the underlying state.
 ///
 /// The struct is serializable (for debugging and test fixtures).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
     /// All coworkers (any status).
@@ -173,7 +173,7 @@ pub struct WorldSnapshot {
     pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
     /// Freshly fetched rate limit data (only populated during RateLimitCheckTick).
     /// This carries the new rate limit state from the API fetch to the decision phase.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub freshly_fetched_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
 
     // ── Dependency state ──────────────────────────────────────────────────

@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 // ---------------------------------------------------------------------------
 
 /// Lightweight snapshot of a coworker at a point in time.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CoworkerSnapshot {
     pub name: String,
     pub started_at: DateTime<Utc>,
