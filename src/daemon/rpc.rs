@@ -497,6 +497,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         agent_id: None,
                         agent_name: None,
                         settings_path: None,
+                        setting_sources: None,
                         env: std::collections::HashMap::new(),
                     };
                     handle_headless_execute(request.id, prompt, &config).await
