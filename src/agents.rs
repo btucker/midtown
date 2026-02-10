@@ -38,6 +38,9 @@ const DEFAULT_REVIEWER_PROMPT: &str = include_str!("../agents/reviewer.md");
 /// Embedded default for the reviewer resume prompt template.
 const DEFAULT_REVIEWER_RESUME_PROMPT: &str = include_str!("../agents/reviewer-resume.md");
 
+/// Embedded default for the clusterer system prompt.
+const DEFAULT_CLUSTERER_PROMPT: &str = include_str!("../agents/clusterer.md");
+
 /// Find the git repository root directory.
 fn git_repo_root() -> Option<PathBuf> {
     let output = std::process::Command::new("git")
@@ -348,6 +351,18 @@ pub fn reviewer_resume_prompt(pr_number: u64) -> String {
     let template = load_prompt_file("reviewer-resume.md")
         .unwrap_or_else(|| DEFAULT_REVIEWER_RESUME_PROMPT.to_string());
     template.replace("{pr_number}", &pr_number.to_string())
+}
+
+/// Load the clusterer system prompt.
+///
+/// Returns the prompt from `agents/clusterer.md` if found, otherwise returns
+/// the embedded default. This prompt guides the AI clusterer in organizing tasks
+/// into topic channels based on code locality and thematic grouping.
+///
+/// The clusterer uses the haiku model to keep costs low while analyzing task
+/// relationships and channel structure.
+pub fn clusterer_system_prompt() -> String {
+    load_prompt_file("clusterer.md").unwrap_or_else(|| DEFAULT_CLUSTERER_PROMPT.to_string())
 }
 
 #[cfg(test)]
@@ -730,6 +745,56 @@ mod tests {
         assert!(
             resume_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
             "Reviewer resume prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
+        );
+    }
+
+    #[test]
+    fn test_clusterer_system_prompt_loads() {
+        let prompt = clusterer_system_prompt();
+        assert!(
+            prompt.contains("AI Channel Clusterer"),
+            "Clusterer prompt should contain title"
+        );
+        assert!(
+            prompt.contains("Output Format"),
+            "Clusterer prompt should describe output format"
+        );
+        assert!(
+            prompt.contains("create_channels"),
+            "Clusterer prompt should describe create_channels field"
+        );
+        assert!(
+            prompt.contains("archive_channels"),
+            "Clusterer prompt should describe archive_channels field"
+        );
+        assert!(
+            prompt.contains("merge_channels"),
+            "Clusterer prompt should describe merge_channels field"
+        );
+        assert!(
+            prompt.contains("assign_tasks"),
+            "Clusterer prompt should describe assign_tasks field"
+        );
+    }
+
+    #[test]
+    fn test_clusterer_prompt_contains_constraints() {
+        let prompt = clusterer_system_prompt();
+        assert!(
+            prompt.contains("Code Locality"),
+            "Clusterer prompt should contain Code Locality heuristics"
+        );
+        assert!(
+            prompt.contains("Do NOT reassign in-flight tasks"),
+            "Clusterer prompt should warn against reassigning in-progress tasks"
+        );
+        assert!(
+            prompt.contains("kebab-case"),
+            "Clusterer prompt should specify kebab-case for channel names"
+        );
+        assert!(
+            prompt.contains("main channel"),
+            "Clusterer prompt should explain main channel behavior"
         );
     }
 }
