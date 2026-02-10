@@ -859,6 +859,18 @@ pub(super) fn spawn_for_pending_tasks(
             continue;
         }
 
+        // Skip if this owner is already assigned to THIS SPECIFIC TASK.
+        // Prevents nudge loops where the same pending-with-owner task gets
+        // re-nudged every time the 300s cooldown expires. Once a task is assigned,
+        // it stays assigned until the coworker completes it or shuts down.
+        if state.is_coworker_assigned_to_task(owner, task_id) {
+            debug!(
+                "Task !{}: skipping {} (already assigned to this task)",
+                task_id, owner
+            );
+            continue;
+        }
+
         // Check nudge cooldown for this task
         let task_key = format!("pending-{}", task_id);
         let on_nudge_cooldown = {
@@ -908,10 +920,16 @@ pub(super) fn spawn_for_pending_tasks(
                     name: o.clone(),
                     message: nudge_msg,
                     session_id: None,
-                    on_success: vec![Effect::RecordCooldown {
-                        category: "task_nudge".to_string(),
-                        key: task_key.clone(),
-                    }],
+                    on_success: vec![
+                        Effect::RecordCooldown {
+                            category: "task_nudge".to_string(),
+                            key: task_key.clone(),
+                        },
+                        Effect::RecordTaskAssignment {
+                            coworker: o.clone(),
+                            task_id: tid.clone(),
+                        },
+                    ],
                 });
             }
             crate::rules::PendingTaskAction::SpawnOwner {
@@ -1189,6 +1207,18 @@ pub(super) fn spawn_for_pending_tasks(
         if dispatched_by_case1 {
             debug!(
                 "Task !{}: skipping {} (already dispatched by Case 1 pending-with-owners)",
+                task.id, coworker_name
+            );
+            continue;
+        }
+
+        // Skip if this coworker is already assigned to THIS SPECIFIC TASK.
+        // Prevents nudge/spawn loops where grouped tasks get re-assigned every tick
+        // because the busy check is bypassed for grouped tasks. The coworker may be
+        // busy with this exact task from a previous tick's assignment.
+        if state.is_coworker_assigned_to_task(&coworker_name, &task.id) {
+            debug!(
+                "Task !{}: skipping {} (already assigned to this task)",
                 task.id, coworker_name
             );
             continue;
@@ -3282,6 +3312,181 @@ mod tests {
         assert!(
             effects.is_empty(),
             "Should not unassign already-unowned task"
+        );
+    }
+
+    #[test]
+    fn test_grouped_task_skips_if_already_assigned() {
+        // Regression test for nudge/spawn loop bug, using captured production snapshot.
+        // Scenario: Task !1107 (pending, no owner) references PR #912 in its subject.
+        // Task !1106 (in_progress, owned by york) mentions "PR #912" in its description.
+        // The grouping logic finds york as the PR owner → groups !1107 to york.
+        // York is already running and busy, but grouped tasks bypass the busy check.
+        // Without the is_coworker_assigned_to_task guard, this nudge fires every tick.
+        let fixture = include_str!(
+            "../../tests/fixtures/snapshot/snapshot-spawn-loop-york-1107-20260210-205810.json"
+        );
+        let snap: snapshot::WorldSnapshot =
+            serde_json::from_str(fixture).expect("deserialize captured snapshot");
+
+        // Verify fixture prerequisites: york is active and busy, task !1107 is pending
+        assert!(snap.active_names.contains("york"), "york should be active");
+        assert!(snap.busy_coworkers.contains("york"), "york should be busy");
+        assert!(
+            snap.pending_tasks_without_owners
+                .iter()
+                .any(|t| t.id == "1107"),
+            "task !1107 should be pending without owner"
+        );
+
+        let state = make_test_state();
+
+        // Tick 1: Task !1107 groups to york (PR #912), generates nudge
+        let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_count_tick1 = effects_tick1
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick1, 1,
+            "Tick 1 should nudge york with task !1107"
+        );
+
+        // Simulate the nudge executing and recording the assignment
+        state.record_task_assignment("york", "1107");
+
+        // Tick 2: Task !1107 is still pending, york is busy with !1107 now
+        let effects_tick2 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_count_tick2 = effects_tick2
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick2, 0,
+            "Tick 2 should NOT re-nudge york — task !1107 is already assigned to york"
+        );
+    }
+
+    #[test]
+    fn test_spawn_coworker_with_callbacks_records_task_assignment() {
+        // Regression test for spawn loop bug (Case 1: pending task with owner).
+        // When a coworker isn't running but has a pending task, SpawnCoworkerWithCallbacks
+        // must include RecordTaskAssignment in on_success to prevent re-spawning every tick.
+        //
+        // Note: The captured fixture snapshot-spawn-loop-york-1110 doesn't contain
+        // pending-with-owner tasks (tasks were already in_progress when captured), so
+        // this test uses a minimal constructed snapshot to isolate Case 1 behavior.
+        let fixture = include_str!(
+            "../../tests/fixtures/snapshot/snapshot-spawn-loop-york-1107-20260210-205810.json"
+        );
+        let mut snap: snapshot::WorldSnapshot =
+            serde_json::from_str(fixture).expect("deserialize captured snapshot");
+
+        // Override to test Case 1: pending task WITH owner, coworker NOT running.
+        // Clear Case 2 tasks and set up a Case 1 scenario.
+        snap.pending_tasks_without_owners.clear();
+        snap.pending_tasks_with_owners = vec![(
+            "1107".to_string(),
+            "Investigate PR #912 — no CI checks running".to_string(),
+            "york".to_string(),
+        )];
+        snap.active_names.clear(); // york is NOT running
+        snap.busy_coworkers.clear();
+        snap.in_progress_tasks.clear();
+
+        let state = make_test_state();
+
+        // Tick 1: generates SpawnCoworkerWithCallbacks with RecordTaskAssignment
+        let effects = spawn_for_pending_tasks(&snap, &state);
+        let spawn_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(spawn_count, 1, "Tick 1 should spawn york");
+
+        // Verify the effect has RecordTaskAssignment in on_success
+        let has_record_assignment = effects.iter().any(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                on_success
+                    .iter()
+                    .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_record_assignment,
+            "SpawnCoworkerWithCallbacks should have RecordTaskAssignment in on_success"
+        );
+
+        // Mark in-flight (daemon does this between evaluate_tick and execute_effects)
+        state.mark_in_flight_spawns_from_effects(&effects);
+        assert!(
+            state.is_task_spawn_in_flight("1107"),
+            "Task !1107 should be marked in-flight before execution"
+        );
+    }
+
+    #[test]
+    fn test_case1_nudge_records_assignment_and_prevents_loop() {
+        // Regression test: Case 1 (pending task with owner) NudgeOwner must include
+        // RecordTaskAssignment in on_success, so that after the nudge cooldown
+        // expires, the task isn't re-nudged indefinitely.
+        let fixture = include_str!(
+            "../../tests/fixtures/snapshot/snapshot-spawn-loop-york-1107-20260210-205810.json"
+        );
+        let mut snap: snapshot::WorldSnapshot =
+            serde_json::from_str(fixture).expect("deserialize captured snapshot");
+
+        // Set up Case 1 scenario: task with owner, coworker IS running but NOT busy
+        // (triggers NudgeOwner rather than Skip due to has_in_progress_task)
+        snap.pending_tasks_without_owners.clear();
+        snap.pending_tasks_with_owners = vec![(
+            "1107".to_string(),
+            "Investigate PR #912 — no CI checks running".to_string(),
+            "york".to_string(),
+        )];
+        // york is active (already in fixture), but clear busy state so NudgeOwner fires
+        snap.busy_coworkers.clear();
+        snap.in_progress_tasks.clear();
+
+        let state = make_test_state();
+
+        // Tick 1: NudgeOwner fires with RecordTaskAssignment in on_success
+        let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_effects: Vec<_> = effects_tick1
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .collect();
+        assert_eq!(nudge_effects.len(), 1, "Tick 1 should nudge york");
+
+        // Verify RecordTaskAssignment is in on_success
+        let has_assignment = nudge_effects.iter().any(|e| {
+            if let Effect::NudgeCoworkerWithCallbacks { on_success, .. } = e {
+                on_success
+                    .iter()
+                    .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_assignment,
+            "NudgeOwner on_success should include RecordTaskAssignment"
+        );
+
+        // Simulate the nudge executing and recording the assignment
+        state.record_task_assignment("york", "1107");
+
+        // Tick 2: is_coworker_assigned_to_task guard blocks re-nudge
+        let effects_tick2 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_count_tick2 = effects_tick2
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick2, 0,
+            "Tick 2 should NOT re-nudge york — already assigned to task !1107"
         );
     }
 
