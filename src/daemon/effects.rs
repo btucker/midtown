@@ -502,7 +502,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::PostToChannel { sender, message } => {
                 let msg = Message::text(&sender, &message);
-                if let Err(e) = state.send_and_broadcast(&msg) {
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
                 }
             }
@@ -676,7 +676,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::PostSystemMessage { message } => {
                 let msg = Message::system(message);
-                if let Err(e) = state.send_and_broadcast(&msg) {
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post system message: {}", e);
                 }
             }
@@ -998,7 +998,7 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post workflow rerun message: {}", e);
         }
     } else {
@@ -1054,7 +1054,7 @@ async fn rebase_pr_on_main(state: &DaemonState, pr_number: u64, reason: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post branch update message: {}", e);
         }
     } else {
@@ -1100,7 +1100,7 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post auto-merge message: {}", e);
         }
     } else {
@@ -1117,7 +1117,7 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post auto-merge failure message: {}", e);
         }
     }
