@@ -17,7 +17,7 @@ use crossterm::{
     cursor::MoveTo,
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-        MouseEventKind,
+        KeyModifiers, MouseEventKind,
     },
     execute,
     style::{Color as CrosstermColor, Print, ResetColor, SetForegroundColor},
@@ -99,6 +99,9 @@ async fn run_app_async(
     // and forgot. Prevents the chat from appearing frozen when it's just scrolled up.
     let mut auto_scroll_interval = interval(Duration::from_secs(30));
 
+    // Track previous hyperlinks to skip redundant OSC 8 rendering
+    let mut last_hyperlinks: Vec<Hyperlink> = Vec::new();
+
     loop {
         // Draw UI and collect post-render overlays (hyperlinks)
         let mut hyperlinks = Vec::new();
@@ -106,9 +109,13 @@ async fn run_app_async(
             hyperlinks = ui::draw(f, app);
         })?;
 
-        // Write hyperlinks using OSC 8 sequences (after ratatui draws)
-        // This bypasses ratatui's buffer system which doesn't support escape sequences
-        render_hyperlinks(terminal.backend_mut(), &hyperlinks)?;
+        // Write hyperlinks using OSC 8 sequences only when they've changed.
+        // This avoids cursor-moving escape sequences on every keystroke when
+        // only the input bar changed.
+        if hyperlinks != last_hyperlinks {
+            render_hyperlinks(terminal.backend_mut(), &hyperlinks)?;
+            last_hyperlinks = hyperlinks;
+        }
 
         // Use tokio::select! to wait for either:
         // 1. Terminal events (keyboard/mouse)
@@ -125,6 +132,9 @@ async fn run_app_async(
                             EventResult::OpenDiagramInBrowser(idx) => {
                                 open_diagram_in_browser(app, idx);
                             }
+                            EventResult::ToggleMouseCapture => {
+                                toggle_mouse_capture(app, terminal.backend_mut());
+                            }
                             EventResult::Continue => {}
                         }
 
@@ -139,6 +149,9 @@ async fn run_app_async(
                                 EventResult::Exit => return Ok(()),
                                 EventResult::OpenDiagramInBrowser(idx) => {
                                     open_diagram_in_browser(app, idx);
+                                }
+                                EventResult::ToggleMouseCapture => {
+                                    toggle_mouse_capture(app, terminal.backend_mut());
                                 }
                                 EventResult::Continue => {}
                             }
@@ -309,6 +322,8 @@ enum EventResult {
     Exit,
     /// Open a diagram in the browser (0-based index into diagram_sources)
     OpenDiagramInBrowser(usize),
+    /// Toggle mouse capture (selection mode)
+    ToggleMouseCapture,
 }
 
 /// Handle a terminal event, returns the result.
@@ -316,136 +331,150 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
     use app::FocusedPane;
 
     match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Esc => {
-                // Esc exits when in Board or Chat, clears input when in InputBar
-                if app.focused_pane == FocusedPane::InputBar {
-                    app.input_text.clear();
-                    app.input_cursor = 0;
-                    EventResult::Continue
-                } else {
-                    EventResult::Exit
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // Handle Ctrl+key combinations first (before character input catch-all)
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Char('q') => return EventResult::Exit,
+                    KeyCode::Char('s') => return EventResult::ToggleMouseCapture,
+                    _ => {}
                 }
             }
-            // Tab cycles focus: Board → Chat → InputBar → Board
-            KeyCode::Tab => {
-                app.cycle_focus();
-                EventResult::Continue
-            }
-            // Number keys 1-9 open diagrams - only when diagrams exist
-            // This is checked BEFORE auto-focus to input to preserve diagram shortcuts
-            KeyCode::Char(c @ '1'..='9') => {
-                let idx = (c as usize) - ('1' as usize); // 0-based
-                if idx < app.diagram_sources.len() {
-                    // Diagram exists, open it (don't insert into input)
-                    EventResult::OpenDiagramInBrowser(idx)
-                } else {
-                    // No diagram at this index - treat as regular character input
+            match key.code {
+                KeyCode::Esc => {
+                    // Esc exits when in Board or Chat, clears input when in InputBar
+                    if app.focused_pane == FocusedPane::InputBar {
+                        app.input_text.clear();
+                        app.input_cursor = 0;
+                        EventResult::Continue
+                    } else {
+                        EventResult::Exit
+                    }
+                }
+                // Tab cycles focus: Board → Chat → InputBar → Board
+                KeyCode::Tab => {
+                    app.cycle_focus();
+                    EventResult::Continue
+                }
+                // Number keys 1-9 open diagrams - only when diagrams exist
+                // This is checked BEFORE auto-focus to input to preserve diagram shortcuts
+                KeyCode::Char(c @ '1'..='9') => {
+                    let idx = (c as usize) - ('1' as usize); // 0-based
+                    if idx < app.diagram_sources.len() {
+                        // Diagram exists, open it (don't insert into input)
+                        EventResult::OpenDiagramInBrowser(idx)
+                    } else {
+                        // No diagram at this index - treat as regular character input
+                        auto_focus_and_insert_char(app, c);
+                        EventResult::Continue
+                    }
+                }
+                // Arrow keys for scrolling - don't auto-focus input
+                KeyCode::Up => {
+                    match app.focused_pane {
+                        FocusedPane::Board => {
+                            // Navigate channel/task list (future implementation)
+                            EventResult::Continue
+                        }
+                        FocusedPane::Chat | FocusedPane::InputBar => {
+                            app.scroll_up();
+                            EventResult::Continue
+                        }
+                    }
+                }
+                KeyCode::Down => {
+                    match app.focused_pane {
+                        FocusedPane::Board => {
+                            // Navigate channel/task list (future implementation)
+                            EventResult::Continue
+                        }
+                        FocusedPane::Chat | FocusedPane::InputBar => {
+                            app.scroll_down();
+                            EventResult::Continue
+                        }
+                    }
+                }
+                KeyCode::PageUp => {
+                    app.page_up();
+                    EventResult::Continue
+                }
+                KeyCode::PageDown => {
+                    app.page_down();
+                    EventResult::Continue
+                }
+                KeyCode::Home => {
+                    app.scroll_to_top();
+                    EventResult::Continue
+                }
+                KeyCode::End => {
+                    app.scroll_to_bottom();
+                    EventResult::Continue
+                }
+                // Enter: auto-focus InputBar, send message if there's text
+                KeyCode::Enter => {
+                    if app.focused_pane != FocusedPane::InputBar {
+                        app.focused_pane = FocusedPane::InputBar;
+                    } else if !app.input_text.is_empty() {
+                        // TODO: Post message to channel
+                        app.input_text.clear();
+                        app.input_cursor = 0;
+                    }
+                    EventResult::Continue
+                }
+                // Backspace: auto-focus if input has text, then delete
+                KeyCode::Backspace => {
+                    if !app.input_text.is_empty() && app.input_cursor == 0 {
+                        // Input has text but cursor is at start - auto-focus but don't delete
+                        app.focused_pane = FocusedPane::InputBar;
+                    } else if !app.input_text.is_empty()
+                        || app.focused_pane == FocusedPane::InputBar
+                    {
+                        // Either input has text or already focused - auto-focus and delete
+                        app.focused_pane = FocusedPane::InputBar;
+                        if app.input_cursor > 0 {
+                            app.input_cursor -= 1;
+                            let byte_idx =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            app.input_text.remove(byte_idx);
+                        }
+                    }
+                    EventResult::Continue
+                }
+                // Delete: auto-focus if input has text, then delete forward
+                KeyCode::Delete => {
+                    if !app.input_text.is_empty() || app.focused_pane == FocusedPane::InputBar {
+                        app.focused_pane = FocusedPane::InputBar;
+                        if app.input_cursor < app.input_text.chars().count() {
+                            let byte_idx =
+                                char_index_to_byte_index(&app.input_text, app.input_cursor);
+                            app.input_text.remove(byte_idx);
+                        }
+                    }
+                    EventResult::Continue
+                }
+                // Left/Right for cursor movement - only when in InputBar
+                KeyCode::Left => {
+                    if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
+                        app.input_cursor -= 1;
+                    }
+                    EventResult::Continue
+                }
+                KeyCode::Right => {
+                    if app.focused_pane == FocusedPane::InputBar
+                        && app.input_cursor < app.input_text.chars().count()
+                    {
+                        app.input_cursor += 1;
+                    }
+                    EventResult::Continue
+                }
+                // All other character input: auto-focus InputBar and insert
+                KeyCode::Char(c) => {
                     auto_focus_and_insert_char(app, c);
                     EventResult::Continue
                 }
+                _ => EventResult::Continue,
             }
-            // Arrow keys for scrolling - don't auto-focus input
-            KeyCode::Up => {
-                match app.focused_pane {
-                    FocusedPane::Board => {
-                        // Navigate channel/task list (future implementation)
-                        EventResult::Continue
-                    }
-                    FocusedPane::Chat | FocusedPane::InputBar => {
-                        app.scroll_up();
-                        EventResult::Continue
-                    }
-                }
-            }
-            KeyCode::Down => {
-                match app.focused_pane {
-                    FocusedPane::Board => {
-                        // Navigate channel/task list (future implementation)
-                        EventResult::Continue
-                    }
-                    FocusedPane::Chat | FocusedPane::InputBar => {
-                        app.scroll_down();
-                        EventResult::Continue
-                    }
-                }
-            }
-            KeyCode::PageUp => {
-                app.page_up();
-                EventResult::Continue
-            }
-            KeyCode::PageDown => {
-                app.page_down();
-                EventResult::Continue
-            }
-            KeyCode::Home => {
-                app.scroll_to_top();
-                EventResult::Continue
-            }
-            KeyCode::End => {
-                app.scroll_to_bottom();
-                EventResult::Continue
-            }
-            // Enter: auto-focus InputBar, send message if there's text
-            KeyCode::Enter => {
-                if app.focused_pane != FocusedPane::InputBar {
-                    app.focused_pane = FocusedPane::InputBar;
-                } else if !app.input_text.is_empty() {
-                    // TODO: Post message to channel
-                    app.input_text.clear();
-                    app.input_cursor = 0;
-                }
-                EventResult::Continue
-            }
-            // Backspace: auto-focus if input has text, then delete
-            KeyCode::Backspace => {
-                if !app.input_text.is_empty() && app.input_cursor == 0 {
-                    // Input has text but cursor is at start - auto-focus but don't delete
-                    app.focused_pane = FocusedPane::InputBar;
-                } else if !app.input_text.is_empty() || app.focused_pane == FocusedPane::InputBar {
-                    // Either input has text or already focused - auto-focus and delete
-                    app.focused_pane = FocusedPane::InputBar;
-                    if app.input_cursor > 0 {
-                        app.input_cursor -= 1;
-                        let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
-                        app.input_text.remove(byte_idx);
-                    }
-                }
-                EventResult::Continue
-            }
-            // Delete: auto-focus if input has text, then delete forward
-            KeyCode::Delete => {
-                if !app.input_text.is_empty() || app.focused_pane == FocusedPane::InputBar {
-                    app.focused_pane = FocusedPane::InputBar;
-                    if app.input_cursor < app.input_text.chars().count() {
-                        let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
-                        app.input_text.remove(byte_idx);
-                    }
-                }
-                EventResult::Continue
-            }
-            // Left/Right for cursor movement - only when in InputBar
-            KeyCode::Left => {
-                if app.focused_pane == FocusedPane::InputBar && app.input_cursor > 0 {
-                    app.input_cursor -= 1;
-                }
-                EventResult::Continue
-            }
-            KeyCode::Right => {
-                if app.focused_pane == FocusedPane::InputBar
-                    && app.input_cursor < app.input_text.chars().count()
-                {
-                    app.input_cursor += 1;
-                }
-                EventResult::Continue
-            }
-            // All other character input: auto-focus InputBar and insert
-            KeyCode::Char(c) => {
-                auto_focus_and_insert_char(app, c);
-                EventResult::Continue
-            }
-            _ => EventResult::Continue,
-        },
+        }
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => {
                 app.mouse_scroll_up();
@@ -458,6 +487,18 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             _ => EventResult::Continue,
         },
         _ => EventResult::Continue,
+    }
+}
+
+/// Toggle mouse capture for text selection mode.
+/// When selection mode is on, mouse capture is disabled so the terminal handles
+/// text selection natively. Scrollwheel won't work in the TUI during selection mode.
+fn toggle_mouse_capture(app: &mut App, backend: &mut CrosstermBackend<io::Stdout>) {
+    app.selection_mode = !app.selection_mode;
+    if app.selection_mode {
+        let _ = execute!(backend, DisableMouseCapture);
+    } else {
+        let _ = execute!(backend, EnableMouseCapture);
     }
 }
 

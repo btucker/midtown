@@ -10,8 +10,34 @@ use chrono::{DateTime, Utc};
 use midtown::tasks::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
+use ratatui::text::Line;
+
 use super::mermaid::MermaidCache;
 use midtown::usage::{self, UsageData};
+
+/// Cached output from draw_chat_messages() to avoid recomputation on input-only redraws.
+///
+/// The chat message area is the most expensive part of the render pipeline due to
+/// mermaid parsing, markdown rendering, and text wrapping. This cache stores the
+/// fully-rendered lines so they can be reused when only the input bar changes.
+pub struct MessageRenderCache {
+    /// Pre-rendered lines for the chat messages area
+    pub lines: Vec<Line<'static>>,
+    /// Diagram sources from this render pass
+    pub diagram_sources: Vec<String>,
+    /// Cache key: hash of inputs that affect message rendering
+    pub cache_key: u64,
+}
+
+impl MessageRenderCache {
+    pub fn new(lines: Vec<Line<'static>>, diagram_sources: Vec<String>, cache_key: u64) -> Self {
+        Self {
+            lines,
+            diagram_sources,
+            cache_key,
+        }
+    }
+}
 
 /// Data fetched from background thread for kanban refresh
 struct KanbanData {
@@ -202,6 +228,10 @@ pub struct App {
     pub input_text: String,
     /// Cursor position in the input text
     pub input_cursor: usize,
+    /// Whether selection mode is active (mouse capture disabled for text selection)
+    pub selection_mode: bool,
+    /// Cached rendered message lines and hyperlinks to skip recomputation on input-only redraws
+    pub message_render_cache: Option<MessageRenderCache>,
 }
 
 /// Interval between kanban data refreshes (30 seconds)
@@ -263,6 +293,8 @@ impl App {
             selected_channel_index: 0,
             input_text: String::new(),
             input_cursor: 0,
+            selection_mode: false,
+            message_render_cache: None,
         };
 
         // Initial load
@@ -592,8 +624,6 @@ impl App {
         self.intentionally_at_top = false;
     }
 
-    /// Toggle selection mode (disables mouse capture for text selection)
-    /// Note: No keyboard shortcut currently bound to this - reserved for future use
     /// Cycle focus between panes: Board → Chat → InputBar → Board
     pub fn cycle_focus(&mut self) {
         self.focused_pane = match self.focused_pane {
@@ -722,6 +752,29 @@ impl App {
             self.tasks_cache_hash = new_hash;
         }
         &self.current_tasks_cache
+    }
+
+    /// Compute a cache key for message rendering.
+    ///
+    /// This captures all inputs that affect the rendered output of draw_chat_messages():
+    /// scroll position, message count, terminal width, selection mode, and the last
+    /// message ID as a proxy for content changes.
+    pub fn message_cache_key(&self, width: u16) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.scroll_offset.hash(&mut hasher);
+        self.messages.len().hash(&mut hasher);
+        width.hash(&mut hasher);
+        self.selection_mode.hash(&mut hasher);
+        // Hash last message ID as proxy for content changes
+        if let Some(last) = self.messages.back() {
+            last.id.hash(&mut hasher);
+        }
+        // Hash task cache state (current_tasks affects sender labels)
+        self.tasks_cache_hash.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Compute a hash of the relevant task state for cache invalidation
@@ -1465,6 +1518,8 @@ pub(super) mod tests {
             selected_channel_index: 0,
             input_text: String::new(),
             input_cursor: 0,
+            selection_mode: false,
+            message_render_cache: None,
         }
     }
 

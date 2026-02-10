@@ -14,11 +14,11 @@ use ratatui::{
 
 use midtown::{Message, MessageType};
 
-use super::app::{App, CiStatus, RepoStatus};
+use super::app::{App, CiStatus, MessageRenderCache, RepoStatus};
 use super::mermaid::{self, ContentSegment, MermaidCache};
 
 /// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Hyperlink {
     /// Screen x coordinate
     pub x: u16,
@@ -872,10 +872,20 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Draw the chat messages area (top of chat panel)
 fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
+    let title = if app.selection_mode {
+        " #midtown [SELECT] "
+    } else {
+        " #midtown "
+    };
+    let border_color = if app.selection_mode {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
     let block = Block::default()
-        .title(" #midtown ")
+        .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
 
@@ -886,6 +896,21 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     // This fixes a bug where kanban board resizing could cause the chat to
     // unexpectedly scroll to the beginning of history.
     app.clamp_scroll_offset();
+
+    // Check if we can reuse cached rendered lines (avoids expensive mermaid/markdown
+    // parsing when only the input bar changed between frames).
+    let cache_key = app.message_cache_key(inner.width);
+    if let Some(ref cache) = app.message_render_cache
+        && cache.cache_key == cache_key
+    {
+        let paragraph = Paragraph::new(cache.lines.clone());
+        f.render_widget(block, area);
+        f.render_widget(paragraph, inner);
+        app.diagram_sources.clone_from(&cache.diagram_sources);
+        return;
+    }
+
+    // Cache miss — full render
 
     // Get cached current_tasks lookup first, then visible messages.
     // We clone current_tasks and visible messages to avoid holding a mutable
@@ -961,6 +986,13 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         lines
     };
+
+    // Store in cache for future frames
+    app.message_render_cache = Some(MessageRenderCache::new(
+        visible_lines.clone(),
+        app.diagram_sources.clone(),
+        cache_key,
+    ));
 
     let paragraph = Paragraph::new(visible_lines);
 
