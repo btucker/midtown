@@ -13,8 +13,7 @@ use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::message::Message;
-
-use super::specialized::{SpecializedCoworker, SpecializedRole};
+use crate::specialized::{SpecializedCoworker, SpecializedRole};
 
 /// Maximum number of concurrent architect sessions.
 const MAX_CONCURRENT_SESSIONS: usize = 2;
@@ -102,7 +101,8 @@ Rules:
         // Extract mermaid fence block
         match extract_mermaid_block(raw) {
             Some(diagram) => {
-                // Validate with selkie
+                // Safety net: verify the diagram renders with selkie. The architect should
+                // have already validated via CLI, but LLMs don't always follow instructions.
                 if let Err(e) = selkie::render::render_text(&diagram) {
                     return Err(format!("Diagram failed selkie validation: {}", e));
                 }

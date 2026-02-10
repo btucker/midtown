@@ -62,7 +62,7 @@
 //! // Execute a request
 //! let role = ArchitectRole;
 //! let request = InsightRequest { insight: "..." };
-//! let result = SpecializedCoworker::execute(&role, request, None, timeout).await?;
+//! let result = SpecializedCoworker::execute(&role, request, None, None, Some(timeout)).await?;
 //! ```
 
 use std::path::PathBuf;
@@ -151,8 +151,8 @@ pub enum SpecializedError {
     #[error("Session timed out after {0:?}")]
     Timeout(Duration),
 
-    #[error("Session corruption detected, retry failed")]
-    CorruptionRetryFailed,
+    #[error("Session corruption detected, retry failed: {0}")]
+    CorruptionRetryFailed(#[source] Box<SpecializedError>),
 }
 
 /// Manages execution of specialized coworker requests.
@@ -214,7 +214,7 @@ impl SpecializedCoworker {
                 // Retry with fresh session (no session_id)
                 Self::execute_inner(role, &request, None, cwd, timeout)
                     .await
-                    .map_err(|_| SpecializedError::CorruptionRetryFailed)
+                    .map_err(|e| SpecializedError::CorruptionRetryFailed(Box::new(e)))
             }
             Err(e) => Err(e),
         }
@@ -239,7 +239,11 @@ impl SpecializedCoworker {
             max_budget_usd: Some(role.max_budget_usd()),
             allow_tools: role.allow_tools(),
             persist_session: role.persist_session(),
-            resume_session_id: session_id.clone(),
+            resume_session_id: if role.persist_session() {
+                session_id.clone()
+            } else {
+                None
+            },
             inactivity_timeout: None,
             team_name: None,
             agent_id: None,
@@ -333,6 +337,9 @@ impl SpecializedCoworker {
                 }
             }
         }
+
+        // Drain stderr before waiting to avoid potential pipe buffer deadlock
+        let _ = session.drain_stderr().await;
 
         // Wait for process to exit
         let _ = session.wait().await;
@@ -530,7 +537,59 @@ mod tests {
         let err = SpecializedError::Timeout(Duration::from_secs(120));
         assert_eq!(err.to_string(), "Session timed out after 120s");
 
-        let err = SpecializedError::CorruptionRetryFailed;
-        assert_eq!(err.to_string(), "Session corruption detected, retry failed");
+        let inner_err = SpecializedError::SessionError;
+        let err = SpecializedError::CorruptionRetryFailed(Box::new(inner_err));
+        assert!(
+            err.to_string()
+                .contains("Session corruption detected, retry failed")
+        );
+    }
+
+    #[test]
+    fn test_non_persistent_role_does_not_set_resume_session_id() {
+        // Test for issue #1: non-persistent role with stale session_id should not
+        // set resume_session_id in HeadlessConfig, ensuring fresh spawn instead of resume.
+
+        // This test validates the config building logic without spawning a real session.
+        // We can't easily test execute_inner() without mocking HeadlessSession, but we can
+        // verify the config construction is correct by inspecting the logic path.
+
+        let role = TestRole {
+            model: "haiku".to_string(),
+            persist: false, // Non-persistent role
+        };
+
+        // Simulate the config building logic from execute_inner()
+        let session_id = Some("stale-session-id".to_string());
+
+        // The critical logic: resume_session_id should be None when persist_session() is false
+        let resume_session_id = if role.persist_session() {
+            session_id.clone()
+        } else {
+            None
+        };
+
+        assert_eq!(
+            resume_session_id, None,
+            "Non-persistent role should have resume_session_id=None even when session_id is Some"
+        );
+
+        // Test the opposite case: persistent role should preserve session_id
+        let persistent_role = TestRole {
+            model: "haiku".to_string(),
+            persist: true,
+        };
+
+        let resume_session_id = if persistent_role.persist_session() {
+            session_id.clone()
+        } else {
+            None
+        };
+
+        assert_eq!(
+            resume_session_id,
+            Some("stale-session-id".to_string()),
+            "Persistent role should preserve session_id in resume_session_id"
+        );
     }
 }

@@ -125,6 +125,9 @@ pub mod session_key;
 // API usage data (session + weekly utilization from Anthropic OAuth API)
 pub mod usage;
 
+// Specialized headless coworker abstraction
+pub mod specialized;
+
 pub use channel::{Channel, ChannelRouter};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
