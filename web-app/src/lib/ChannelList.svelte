@@ -1,51 +1,12 @@
 <script>
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel } from './store.js'
   import { fetchHistory, fetchChannels } from './api.js'
+  import { getChannelTaskCount, getChannelCiStatus } from './channelUtils.js'
 
   let showCreateInput = false
   let newChannelName = ''
   let createError = ''
   let isCreating = false
-
-  // Match channel name as a whole word in task text (avoids "auth" matching "authentication")
-  function matchesChannel(text, channelName) {
-    if (!text) return false
-    const pattern = new RegExp(`\\b${channelName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
-    return pattern.test(text)
-  }
-
-  // Get CI status for a channel based on its PRs
-  function getChannelCiStatus(channelName, kanban) {
-    const channelPrs = kanban.review.filter((pr) => matchesChannel(pr.task_name, channelName))
-    if (channelPrs.length === 0) return null
-
-    // Check if any PR has failing CI
-    if (channelPrs.some((pr) => pr.status === 'ci_failed')) return 'failed'
-    if (channelPrs.some((pr) => pr.status === 'ci_pending')) return 'pending'
-    if (channelPrs.every((pr) => pr.status === 'ci_passed' || pr.status === 'approved')) return 'passed'
-    return null
-  }
-
-  // Get task count for a channel
-  function getTaskCount(channelName, kanban) {
-    if (channelName === 'midtown') {
-      // Main channel shows all tasks
-      return {
-        inProgress: kanban.inProgress.length,
-        pending: kanban.backlog.length,
-        review: kanban.review.length,
-      }
-    }
-    // Topic channels filter by channel name as whole word in task description
-    const filter = (list) => list.filter((item) =>
-      matchesChannel(item.title || item.task_name || '', channelName)
-    )
-    return {
-      inProgress: filter(kanban.inProgress).length,
-      pending: filter(kanban.backlog).length,
-      review: filter(kanban.review).length,
-    }
-  }
 
   async function selectChannel(channelName) {
     activeChannel.set(channelName)
@@ -171,7 +132,7 @@
   {/if}
 
   {#each $channels as channel}
-    {@const counts = getTaskCount(channel.name, $kanbanData)}
+    {@const counts = getChannelTaskCount(channel.name, $kanbanData)}
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
     {@const totalTasks = counts.inProgress + counts.pending + counts.review}
     {@const isActive = $activeChannel === channel.name}
