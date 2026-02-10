@@ -790,25 +790,7 @@ fn reviewers_excluded_from_idle_pool() {
     }
 }
 
-/// Test reviewer state isolation.
-///
-/// Reviewers may be in isolated_tasks mode (their task list is separate).
-#[test]
-fn reviewer_isolation_tracked() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
-    let v: Value = serde_json::from_str(fixture).expect("valid JSON");
-
-    // Check coworker_snapshots for isolated_tasks flag
-    if let Some(coworkers) = v["coworker_snapshots"].as_array() {
-        for cw in coworkers {
-            let name = cw["name"].as_str().unwrap_or("");
-            let isolated = cw["isolated_tasks"].as_bool().unwrap_or(false);
-            if isolated {
-                println!("Coworker {} is in isolated task mode (reviewer)", name);
-            }
-        }
-    }
-}
+// Test removed: isolated_tasks field no longer exists (all coworkers use isolated task lists)
 
 // =============================================================================
 // Tests: Snapshot data integrity
@@ -1046,11 +1028,9 @@ fn unserved_prs_needing_review(snap: &DispatchSnapshot) -> usize {
 
 /// Should task dispatch be deferred to prioritize reviewer spawning?
 /// This mirrors the deferral condition in dispatch.rs spawn_for_pending_tasks().
-const MAX_CONCURRENT_REVIEWS: usize = 4;
+/// Task dispatch is deferred when the dev coworker limit is reached (preserving review headroom).
 fn should_defer_task_dispatch(snap: &DispatchSnapshot) -> bool {
-    let active_review_count = snap.active_reviewers.len();
-    let unserved = unserved_prs_needing_review(snap);
-    unserved > 0 && active_review_count < MAX_CONCURRENT_REVIEWS && !snap.is_at_coworker_limit
+    snap.is_at_dev_limit
 }
 
 /// Regression test: dispatch deferral should NOT block when all PRs needing review

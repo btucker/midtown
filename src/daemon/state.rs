@@ -31,6 +31,21 @@ pub struct HeadlessSessionInfo {
     pub last_active: DateTime<Utc>,
     /// Human-readable purpose (e.g., "task !5: Add auth endpoint", "reviewer for PR #42").
     pub purpose: String,
+    /// OS process ID for zombie detection and cleanup.
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// Coworker type: "dev" or "reviewer".
+    #[serde(default)]
+    pub coworker_type: Option<String>,
+    /// Task ID if this is a dev coworker working on a task.
+    #[serde(default)]
+    pub task_id: Option<u64>,
+    /// PR number if this is a reviewer coworker.
+    #[serde(default)]
+    pub pr_number: Option<u64>,
+    /// Working directory (worktree path) for this session.
+    #[serde(default)]
+    pub working_dir: Option<String>,
 }
 
 /// All persistent daemon state in one struct.
@@ -239,11 +254,21 @@ mod tests {
             session_id: "abc-123-def".to_string(),
             last_active: Utc::now(),
             purpose: "task !5: Add auth endpoint".to_string(),
+            pid: Some(12345),
+            coworker_type: Some("dev".to_string()),
+            task_id: Some(5),
+            pr_number: None,
+            working_dir: Some("/path/to/worktree".to_string()),
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.session_id, "abc-123-def");
         assert_eq!(parsed.purpose, "task !5: Add auth endpoint");
+        assert_eq!(parsed.pid, Some(12345));
+        assert_eq!(parsed.coworker_type, Some("dev".to_string()));
+        assert_eq!(parsed.task_id, Some(5));
+        assert_eq!(parsed.pr_number, None);
+        assert_eq!(parsed.working_dir, Some("/path/to/worktree".to_string()));
     }
 
     #[test]
@@ -255,6 +280,11 @@ mod tests {
                 session_id: "session-42".to_string(),
                 last_active: Utc::now(),
                 purpose: "task !3: Fix login bug".to_string(),
+                pid: Some(9999),
+                coworker_type: Some("dev".to_string()),
+                task_id: Some(3),
+                pr_number: None,
+                working_dir: Some("/path/to/park-worktree".to_string()),
             },
         );
 
@@ -264,6 +294,8 @@ mod tests {
         let park = loaded.headless_sessions.get("park").unwrap();
         assert_eq!(park.session_id, "session-42");
         assert_eq!(park.purpose, "task !3: Fix login bug");
+        assert_eq!(park.pid, Some(9999));
+        assert_eq!(park.task_id, Some(3));
     }
 
     #[test]
@@ -272,6 +304,24 @@ mod tests {
         let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
         let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
         assert!(state.headless_sessions.is_empty());
+    }
+
+    #[test]
+    fn test_headless_session_info_backward_compat() {
+        // Old format without new fields should deserialize with defaults
+        let json = r#"{
+            "session_id": "old-session",
+            "last_active": "2026-02-09T10:00:00Z",
+            "purpose": "task !1: Old task"
+        }"#;
+        let info: HeadlessSessionInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.session_id, "old-session");
+        assert_eq!(info.purpose, "task !1: Old task");
+        assert_eq!(info.pid, None);
+        assert_eq!(info.coworker_type, None);
+        assert_eq!(info.task_id, None);
+        assert_eq!(info.pr_number, None);
+        assert_eq!(info.working_dir, None);
     }
 
     #[test]

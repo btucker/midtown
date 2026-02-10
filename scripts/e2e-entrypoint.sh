@@ -50,10 +50,7 @@ run_coordination_tests() {
     cargo test --release --test nudge_delivery_e2e -- --ignored "${test_args[@]}"
 
     echo "--- chat_e2e ---"
-    # chat_e2e may fail in some environments; run but don't block on it
-    cargo test --release --test chat_e2e -- --ignored "${test_args[@]}" || {
-        echo "WARNING: chat_e2e failed (non-fatal in container)"
-    }
+    cargo test --release --test chat_e2e -- --ignored "${test_args[@]}"
 
     echo "--- task_sharing ---"
     cargo test --release --test task_sharing -- "${test_args[@]}"

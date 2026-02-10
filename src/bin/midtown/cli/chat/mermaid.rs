@@ -140,6 +140,14 @@ impl MermaidCache {
         }
     }
 
+    /// Number of completed diagram renders.
+    ///
+    /// Used as part of the message render cache key — when a diagram finishes
+    /// rendering, this count changes and invalidates the cache.
+    pub fn completed_count(&self) -> usize {
+        self.diagrams.len()
+    }
+
     /// Get a cached rendered diagram, or queue it for rendering
     ///
     /// Returns Some(RenderedDiagram) if cached, None if not yet rendered.

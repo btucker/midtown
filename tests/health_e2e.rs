@@ -24,7 +24,6 @@ use serde_json::Value;
 struct TestCoworker {
     name: String,
     started_at: DateTime<Utc>,
-    isolated_tasks: bool,
 }
 
 /// Parsed snapshot data for health check tests.
@@ -60,7 +59,6 @@ fn load_health_snapshot(json_str: &str) -> HealthSnapshot {
             )
             .unwrap()
             .with_timezone(&Utc),
-            isolated_tasks: cw["isolated_tasks"].as_bool().unwrap_or(false),
         })
         .collect();
 
@@ -500,21 +498,8 @@ fn isolated_coworker_identification() {
         .iter()
         .find(|c| c.name == "broadway")
         .unwrap();
-    assert!(
-        broadway.isolated_tasks,
-        "Broadway should have isolated_tasks=true (is a reviewer)"
-    );
-
-    // Other coworkers are not isolated
-    for cw in &snap.coworkers {
-        if cw.name != "broadway" {
-            assert!(
-                !cw.isolated_tasks,
-                "{} should not have isolated_tasks (is a developer)",
-                cw.name
-            );
-        }
-    }
+    // All coworkers now have isolated task lists (TaskMode::Shared removed)
+    // Broadway is a reviewer (in active_reviewers set)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

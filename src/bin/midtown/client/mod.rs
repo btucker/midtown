@@ -11,10 +11,17 @@ use crate::cli::Response;
 /// Client for communicating with the midtown daemon over Unix socket using JSON-RPC 2.0.
 pub struct DaemonClient {
     socket_path: PathBuf,
+    /// Timeout for socket read/write operations.
+    /// Hooks use short timeouts (5s) since they block Claude Code.
+    /// CLI commands use longer timeouts (15s) to tolerate slow GitHub API calls.
+    timeout: std::time::Duration,
 }
 
 /// Request ID counter for JSON-RPC correlation.
 static REQUEST_ID: AtomicI64 = AtomicI64::new(1);
+
+/// Process ID, cached at startup for request ID generation.
+static PID: std::sync::LazyLock<u32> = std::sync::LazyLock::new(std::process::id);
 
 /// JSON-RPC 2.0 request.
 #[derive(Debug, Serialize)]
@@ -23,16 +30,17 @@ struct JsonRpcRequest {
     method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<Value>,
-    id: i64,
+    id: String,
 }
 
 impl JsonRpcRequest {
     fn new(method: impl Into<String>, params: Option<Value>) -> Self {
+        let counter = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             jsonrpc: "2.0",
             method: method.into(),
             params,
-            id: REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            id: format!("{}-{}", *PID, counter),
         }
     }
 }
@@ -59,8 +67,25 @@ struct JsonRpcError {
 }
 
 impl DaemonClient {
-    /// Connect to the daemon, returning a client handle.
+    /// Connect to the daemon with default timeout (15s for CLI commands).
+    ///
+    /// CLI commands use a 15-second timeout to accommodate slow GitHub API calls
+    /// under rate limiting. The daemon now caches PR data, but task/channel operations
+    /// may still involve file I/O that can be delayed by spawn_blocking pool contention.
     pub fn connect() -> Result<Self, String> {
+        Self::connect_with_timeout(std::time::Duration::from_secs(15))
+    }
+
+    /// Connect to the daemon with a short timeout (5s for hooks).
+    ///
+    /// Hooks run synchronously during Claude Code execution and must not block
+    /// for too long. Use this for PostToolUse and other hook contexts.
+    pub fn connect_for_hook() -> Result<Self, String> {
+        Self::connect_with_timeout(std::time::Duration::from_secs(5))
+    }
+
+    /// Connect to the daemon with a custom timeout.
+    fn connect_with_timeout(timeout: std::time::Duration) -> Result<Self, String> {
         let socket_path = Self::socket_path();
 
         // Verify socket exists
@@ -71,7 +96,10 @@ impl DaemonClient {
             ));
         }
 
-        Ok(DaemonClient { socket_path })
+        Ok(DaemonClient {
+            socket_path,
+            timeout,
+        })
     }
 
     /// Get the socket path for the current repository.
@@ -101,20 +129,15 @@ impl DaemonClient {
         let mut stream = UnixStream::connect(&self.socket_path)
             .map_err(|e| format!("Connection failed: {}", e))?;
 
-        // Set timeouts to prevent hooks from blocking Claude Code indefinitely.
-        // PostToolUse hooks run synchronously — Claude waits for the hook to finish.
-        // Without timeouts, a busy daemon causes the hook (and Claude) to hang.
-        //
-        // The daemon's RPC handlers use spawn_blocking for gh CLI calls (status,
-        // kanban.data) which can take 2-3 seconds due to GitHub API latency and
-        // auth switching. Use a 5-second timeout to accommodate these slow methods
-        // while still providing reasonable CLI feedback.
-        let timeout = Some(std::time::Duration::from_secs(5));
+        // Set timeouts to prevent indefinite blocking.
+        // Hooks use short timeouts (5s) since they block Claude Code synchronously.
+        // CLI commands use longer timeouts (15s) to tolerate slow operations under
+        // GitHub API rate limiting or spawn_blocking pool contention.
         stream
-            .set_write_timeout(timeout)
+            .set_write_timeout(Some(self.timeout))
             .map_err(|e| format!("Failed to set write timeout: {}", e))?;
         stream
-            .set_read_timeout(timeout)
+            .set_read_timeout(Some(self.timeout))
             .map_err(|e| format!("Failed to set read timeout: {}", e))?;
 
         let request = JsonRpcRequest::new(method, params);
@@ -128,12 +151,12 @@ impl DaemonClient {
 
         // Read response with retry logic for EAGAIN/EWOULDBLOCK.
         // These errors occur when the socket has no data yet but isn't closed.
-        // We retry up to the socket timeout (5 seconds) to handle slow daemon responses.
+        // We retry up to the socket timeout to handle slow daemon responses.
         // Note: On macOS, a socket timeout may return WouldBlock instead of TimedOut.
         let mut reader = BufReader::new(stream);
         let mut response_line = String::new();
         let start = std::time::Instant::now();
-        let max_duration = std::time::Duration::from_secs(5);
+        let max_duration = self.timeout;
 
         loop {
             match reader.read_line(&mut response_line) {
@@ -170,6 +193,9 @@ impl DaemonClient {
     pub fn channel_post(&self, message: &str, channel: Option<&str>) -> Result<Response, String> {
         // Use MIDTOWN_AGENT env var for sender, defaulting to "lead"
         let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "lead".to_string());
+        // If no explicit channel provided, check MIDTOWN_CHANNEL env var
+        let default_channel = std::env::var("MIDTOWN_CHANNEL").ok();
+        let channel = channel.or(default_channel.as_deref());
         self.channel_post_as(message, &from, channel)
     }
 
@@ -299,6 +325,7 @@ impl DaemonClient {
         status: Option<&str>,
         description: Option<&str>,
         blocked_by: Option<&[String]>,
+        channel: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "id": id });
         if let Some(o) = owner {
@@ -312,6 +339,9 @@ impl DaemonClient {
         }
         if let Some(bb) = blocked_by {
             params["blocked_by"] = serde_json::json!(bb);
+        }
+        if let Some(ch) = channel {
+            params["channel"] = serde_json::json!(ch);
         }
         self.send("task.update", Some(params))
     }
@@ -394,10 +424,10 @@ impl DaemonClient {
 
     // Auth commands
 
-    pub fn auth_switch(&self, profile: &str) -> Result<Response, String> {
+    pub fn auth_switch(&self, profile: &str, all: bool) -> Result<Response, String> {
         self.send(
             "auth.switch",
-            Some(serde_json::json!({ "profile": profile })),
+            Some(serde_json::json!({ "profile": profile, "all": all })),
         )
     }
 

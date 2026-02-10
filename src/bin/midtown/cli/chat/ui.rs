@@ -14,11 +14,11 @@ use ratatui::{
 
 use midtown::{Message, MessageType};
 
-use super::app::{App, CiStatus, RepoStatus};
+use super::app::{App, CiStatus, MessageRenderCache, RepoStatus};
 use super::mermaid::{self, ContentSegment, MermaidCache};
 
 /// A hyperlink to be rendered after ratatui draws (using OSC 8 sequences)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Hyperlink {
     /// Screen x coordinate
     pub x: u16,
@@ -242,6 +242,9 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
     // Show tasks grouped under this channel
     let (pending, in_progress, _completed) = app.tasks_by_status();
 
+    // Calculate available width for wrapping (subtract 2 for borders)
+    let wrap_width = area.width.saturating_sub(2).max(20) as usize;
+
     // In Progress tasks
     for task in &in_progress {
         let status_marker = "● ";
@@ -255,10 +258,21 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
             "    {} #{} {}{}",
             status_marker, task.id, task.subject, owner_text
         );
-        lines.push(Line::from(vec![Span::styled(
-            task_line,
-            Style::default().fg(Color::Green),
-        )]));
+
+        // Pre-wrap the task line if it exceeds available width
+        let wrapped_lines = wrap_content(&task_line, wrap_width);
+        for (i, wrapped) in wrapped_lines.iter().enumerate() {
+            let text = if i == 0 {
+                wrapped.to_string()
+            } else {
+                // Continuation lines: indent to align with subject text
+                format!("        {}", wrapped.trim_start())
+            };
+            lines.push(Line::from(vec![Span::styled(
+                text,
+                Style::default().fg(Color::Green),
+            )]));
+        }
     }
 
     // Pending tasks
@@ -274,10 +288,21 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
             "    {} #{} {}{}",
             status_marker, task.id, task.subject, owner_text
         );
-        lines.push(Line::from(vec![Span::styled(
-            task_line,
-            Style::default().fg(Color::DarkGray),
-        )]));
+
+        // Pre-wrap the task line if it exceeds available width
+        let wrapped_lines = wrap_content(&task_line, wrap_width);
+        for (i, wrapped) in wrapped_lines.iter().enumerate() {
+            let text = if i == 0 {
+                wrapped.to_string()
+            } else {
+                // Continuation lines: indent to align with subject text
+                format!("        {}", wrapped.trim_start())
+            };
+            lines.push(Line::from(vec![Span::styled(
+                text,
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
     }
 
     // Render the panel
@@ -455,30 +480,40 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
 
     let (pending, in_progress, _completed) = app.tasks_by_status();
 
-    // Backlog column (pending tasks) - single line items
+    // Backlog column (pending tasks) - wrapped text items
+    let col0_width = columns[0].width.saturating_sub(2).max(1) as usize;
     let backlog_items: Vec<KanbanItem> = pending
         .iter()
-        .map(|t| KanbanItem {
-            lines: vec![format!("#{} {}", t.id, t.subject)],
-            url: None,
-            ci_status: None,
+        .map(|t| {
+            let text = format!("#{} {}", t.id, t.subject);
+            let lines = wrap_kanban_text(&text, col0_width);
+            KanbanItem {
+                lines,
+                url: None,
+                ci_status: None,
+            }
         })
         .collect();
     draw_kanban_column(f, columns[0], "Backlog", Color::Blue, &backlog_items);
 
-    // In Progress column (with owner and duration) - 2-line items
+    // In Progress column (with owner and duration) - wrapped text items
+    let col1_width = columns[1].width.saturating_sub(2).max(1) as usize;
     let in_progress_items: Vec<KanbanItem> = in_progress
         .iter()
         .map(|t| {
-            let line1 = format!("#{} {}", t.id, t.subject);
+            let text = format!("#{} {}", t.id, t.subject);
+            let mut lines = wrap_kanban_text(&text, col1_width);
+
             let owner = t.owner.as_deref().unwrap_or("?");
             let duration = t
                 .modified_at
                 .map(format_duration_minutes)
                 .unwrap_or_default();
-            let line2 = format!("  └ {} {}", owner, duration);
+            let metadata_line = format!("  └ {} {}", owner, duration);
+            lines.push(metadata_line);
+
             KanbanItem {
-                lines: vec![line1, line2],
+                lines,
                 url: None,
                 ci_status: None,
             }
@@ -494,7 +529,8 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
 
     let mut hyperlinks = Vec::new();
 
-    // Review column (open PRs with repo#XX format, CI status dot, author/reviewer) - 3-line items
+    // Review column (open PRs with repo#XX format, CI status dot, author/reviewer) - wrapped items
+    let col2_width = columns[2].width.saturating_sub(2).max(1) as usize;
     let review_items: Vec<KanbanItem> = app
         .prs
         .iter()
@@ -505,7 +541,7 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 .as_ref()
                 .map(|r| format!("[{}] ", r))
                 .unwrap_or_default();
-            let line1 = build_review_card_line1(
+            let text = build_review_card_line1(
                 ci_dot,
                 &repo_badge,
                 pr.number,
@@ -513,9 +549,13 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 pr.task_id,
                 pr.task_name.as_deref(),
             );
+            let mut lines = wrap_kanban_text(&text, col2_width);
+
             let pr_age = format_duration_minutes(pr.created_at);
-            let line2 = format!("  └ PR #{} {}", pr.number, pr_age);
-            let line3 = match (&pr.reviewer, &pr.reviewed_at) {
+            let pr_line = format!("  └ PR #{} {}", pr.number, pr_age);
+            lines.push(pr_line);
+
+            let reviewer_line = match (&pr.reviewer, &pr.reviewed_at) {
                 (Some(reviewer), Some(at)) => {
                     if pr.review_posted {
                         format!("  └ R: {} (done)", reviewer)
@@ -526,9 +566,11 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 (Some(reviewer), None) => format!("  └ R: {}", reviewer),
                 _ => "  └ R: pending".to_string(),
             };
+            lines.push(reviewer_line);
+
             let url = format!("https://github.com/{}/pull/{}", app.repo_name, pr.number);
             KanbanItem {
-                lines: vec![line1, line2, line3],
+                lines,
                 url: Some(url),
                 ci_status: Some(pr.ci_status.clone()),
             }
@@ -538,7 +580,8 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
         draw_kanban_column(f, columns[2], "Review", Color::Magenta, &review_items);
     hyperlinks.extend(review_hyperlinks);
 
-    // Done column (merged PRs with repo#XX format) - single line, reverse chronological, max 10
+    // Done column (merged PRs with repo#XX format) - wrapped items, reverse chronological, max 10
+    let col3_width = columns[3].width.saturating_sub(2).max(1) as usize;
     let done_items: Vec<KanbanItem> = app
         .merged_prs
         .iter()
@@ -550,8 +593,10 @@ fn draw_kanban_panel(f: &mut Frame, app: &App, area: Rect) -> Vec<Hyperlink> {
                 .as_ref()
                 .map(|r| format!("[{}] ", r))
                 .unwrap_or_default();
+            let text = format!("{}PR#{} {}", repo_badge, pr.number, pr.title);
+            let lines = wrap_kanban_text(&text, col3_width);
             KanbanItem {
-                lines: vec![format!("{}PR#{} {}", repo_badge, pr.number, pr.title)],
+                lines,
                 url: Some(url),
                 ci_status: None,
             }
@@ -798,6 +843,18 @@ fn extract_identifier(s: &str) -> Option<String> {
     Some(format!("#{}", digits))
 }
 
+/// Wrap a kanban item's text to fit within the column width
+///
+/// Returns a vector of owned strings (since wrap_line returns string slices).
+/// Text is wrapped to fit within the given width, splitting at word boundaries when possible.
+#[allow(dead_code)]
+fn wrap_kanban_text(text: &str, width: usize) -> Vec<String> {
+    wrap_line(text, width)
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Draw the chat panel showing messages
 fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Split chat panel vertically: messages (top) + input bar (bottom)
@@ -815,9 +872,8 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Draw the chat messages area (top of chat panel)
 fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
-    // Show selection mode indicator in title
     let title = if app.selection_mode {
-        " #midtown [SELECT: press 's' to exit] "
+        " #midtown [SELECT] "
     } else {
         " #midtown "
     };
@@ -840,6 +896,21 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     // This fixes a bug where kanban board resizing could cause the chat to
     // unexpectedly scroll to the beginning of history.
     app.clamp_scroll_offset();
+
+    // Check if we can reuse cached rendered lines (avoids expensive mermaid/markdown
+    // parsing when only the input bar changed between frames).
+    let cache_key = app.message_cache_key(inner.width);
+    if let Some(ref cache) = app.message_render_cache
+        && cache.cache_key == cache_key
+    {
+        let paragraph = Paragraph::new(cache.lines.clone());
+        f.render_widget(block, area);
+        f.render_widget(paragraph, inner);
+        app.diagram_sources.clone_from(&cache.diagram_sources);
+        return;
+    }
+
+    // Cache miss — full render
 
     // Get cached current_tasks lookup first, then visible messages.
     // We clone current_tasks and visible messages to avoid holding a mutable
@@ -915,6 +986,13 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         lines
     };
+
+    // Store in cache for future frames
+    app.message_render_cache = Some(MessageRenderCache::new(
+        visible_lines.clone(),
+        app.diagram_sources.clone(),
+        cache_key,
+    ));
 
     let paragraph = Paragraph::new(visible_lines);
 
@@ -1461,6 +1539,9 @@ fn parse_markdown(text: &str, base_style: Style) -> Vec<Span<'static>> {
 /// Uses word boundaries when possible, falls back to character wrapping.
 /// Handles UTF-8 multi-byte characters correctly by using character indices.
 fn wrap_line(text: &str, width: usize) -> Vec<&str> {
+    // Clamp width to minimum 1 to prevent infinite loop
+    let width = width.max(1);
+
     if text.is_empty() {
         return vec![""];
     }
@@ -1527,9 +1608,18 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let session_line =
-        render_usage_line("Session", usage.session_util, &usage.session_resets, true);
-    let week_line = render_usage_line("Week   ", usage.week_util, &usage.week_resets, false);
+    let session_line = render_usage_line(
+        "Session",
+        usage.session_util,
+        usage.session_resets.as_ref(),
+        true,
+    );
+    let week_line = render_usage_line(
+        "Week   ",
+        usage.week_util,
+        usage.week_resets.as_ref(),
+        false,
+    );
 
     let lines = vec![session_line, week_line];
     let paragraph = Paragraph::new(lines);
@@ -1542,7 +1632,7 @@ fn draw_usage_bars(f: &mut Frame, app: &App, area: Rect) {
 fn render_usage_line(
     label: &str,
     utilization: f64,
-    resets_at: &DateTime<Utc>,
+    resets_at: Option<&DateTime<Utc>>,
     is_session: bool,
 ) -> Line<'static> {
     let color = usage_color(utilization);
@@ -1557,8 +1647,13 @@ fn render_usage_line(
     let bar_filled: String = "█".repeat(filled);
     let bar_empty: String = "░".repeat(empty);
 
-    let estimate_text = estimate_time_to_full(utilization, resets_at, is_session);
-    let reset_text = format_reset_time(resets_at, is_session);
+    let (estimate_text, reset_text) = match resets_at {
+        Some(r) => (
+            estimate_time_to_full(utilization, r, is_session),
+            format_reset_time(r, is_session),
+        ),
+        None => ("—".to_string(), "—".to_string()),
+    };
 
     Line::from(vec![
         Span::styled(format!(" {label} "), Style::default().fg(Color::DarkGray)),
@@ -1719,6 +1814,14 @@ mod tests {
     }
 
     #[test]
+    fn test_wrap_line_zero_width() {
+        // Zero width should not cause infinite loop - clamp to minimum 1
+        let wrapped = wrap_line("hello", 0);
+        // Should produce single-character chunks
+        assert_eq!(wrapped, vec!["h", "e", "l", "l", "o"]);
+    }
+
+    #[test]
     fn test_truncate_str_narrow_preserves_identifier() {
         // When column is narrow, we should show the PR/task identifier
         // not just useless first characters like "P" from "PR #42"
@@ -1817,6 +1920,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
@@ -1826,6 +1930,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1869,6 +1974,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let msg2 = Message {
             id: "2".to_string(),
@@ -1878,6 +1984,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1918,6 +2025,7 @@ mod tests {
             message_type: MessageType::Action,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -1983,6 +2091,7 @@ mod tests {
             message_type: MessageType::System,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let current_tasks = HashMap::new();
@@ -2065,6 +2174,7 @@ mod tests {
                 message_type: MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -2167,6 +2277,7 @@ mod tests {
                 message_type: MessageType::Text,
                 channel: None,
                 source_channel: None,
+                session_id: None,
             })
             .collect();
 
@@ -2304,6 +2415,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let daemon_msg = Message {
             id: "2".to_string(),
@@ -2313,6 +2425,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let daemon_lines = render_message(&daemon_msg, 80, Some("madison"), &current_tasks, None);
@@ -2330,6 +2443,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let daemon_lines2 = render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2347,6 +2461,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2364,6 +2479,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2406,6 +2522,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let github_lines = render_message(&github_msg, 80, Some("daemon"), &current_tasks, None);
         assert_eq!(
@@ -2423,6 +2540,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let daemon_lines = render_message(&daemon_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2448,6 +2566,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None);
         assert_eq!(
@@ -2488,6 +2607,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         // Test with a current task
@@ -2545,6 +2665,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -2578,6 +2699,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
 
         // Task stored with lowercase "park"
@@ -2626,6 +2748,31 @@ mod tests {
             height, 8,
             "2 review PRs at 3 lines = 6 > 2 in-progress at 2 lines = 4, so 6 + 2 border = 8"
         );
+    }
+
+    #[test]
+    fn test_wrap_kanban_text_fits() {
+        let text = "#42 Short title";
+        let result = wrap_kanban_text(text, 30);
+        assert_eq!(result, vec!["#42 Short title"]);
+    }
+
+    #[test]
+    fn test_wrap_kanban_text_wraps_long_text() {
+        let text = "#123 This is a very long task title that should wrap";
+        let result = wrap_kanban_text(text, 20);
+        assert_eq!(result.len(), 3, "Should wrap into 3 lines");
+        assert!(
+            result[0].starts_with("#123"),
+            "First line should start with task ID"
+        );
+    }
+
+    #[test]
+    fn test_wrap_kanban_text_empty() {
+        let text = "";
+        let result = wrap_kanban_text(text, 20);
+        assert_eq!(result, vec![""]);
     }
 
     #[test]
@@ -2708,7 +2855,7 @@ mod tests {
     #[test]
     fn test_render_usage_line_produces_spans() {
         let resets_at = Utc::now() + chrono::Duration::hours(3);
-        let line = render_usage_line("Session", 50.0, &resets_at, true);
+        let line = render_usage_line("Session", 50.0, Some(&resets_at), true);
         // Should have 6 spans: label, filled bar, empty bar, pct, estimate, reset
         assert_eq!(line.spans.len(), 6);
     }
@@ -2717,7 +2864,7 @@ mod tests {
     fn test_render_usage_line_bar_proportions() {
         let resets_at = Utc::now();
         // At 50%, should have 10 filled (out of 20) and 10 empty
-        let line = render_usage_line("Test   ", 50.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 50.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 10);
@@ -2727,7 +2874,7 @@ mod tests {
     #[test]
     fn test_render_usage_line_zero_percent() {
         let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 0.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 0.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 0);
@@ -2737,11 +2884,30 @@ mod tests {
     #[test]
     fn test_render_usage_line_full_percent() {
         let resets_at = Utc::now();
-        let line = render_usage_line("Test   ", 100.0, &resets_at, true);
+        let line = render_usage_line("Test   ", 100.0, Some(&resets_at), true);
         let filled_content = &line.spans[1].content;
         let empty_content = &line.spans[2].content;
         assert_eq!(filled_content.chars().count(), 20);
         assert_eq!(empty_content.chars().count(), 0);
+    }
+
+    #[test]
+    fn test_render_usage_line_none_resets_at() {
+        let line = render_usage_line("Session", 0.0, None, true);
+        // Should still produce 6 spans with em-dash placeholders for estimate and reset
+        assert_eq!(line.spans.len(), 6);
+        let estimate = &line.spans[4].content;
+        let reset = &line.spans[5].content;
+        assert!(
+            estimate.contains('—'),
+            "Estimate should contain em-dash when resets_at is None: {:?}",
+            estimate
+        );
+        assert!(
+            reset.contains('—'),
+            "Reset should contain em-dash when resets_at is None: {:?}",
+            reset
+        );
     }
 
     #[test]
@@ -2846,6 +3012,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None,
             source_channel: None,
+            session_id: None,
         }
     }
 
@@ -3227,6 +3394,7 @@ mod tests {
             message_type: MessageType::Action,
             channel: None,
             source_channel: None,
+            session_id: None,
         };
         let segments = vec![ContentSegment::Mermaid(source.to_string())];
         let current_tasks = HashMap::new();

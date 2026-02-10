@@ -158,6 +158,8 @@ pub struct HeadlessSession {
     stderr_reader: BufReader<tokio::process::ChildStderr>,
     stdin: Option<tokio::process::ChildStdin>,
     session_id: Option<String>,
+    /// When true, don't kill the child process on drop (for daemon restart survival).
+    detach_on_drop: bool,
 }
 
 impl HeadlessSession {
@@ -279,6 +281,7 @@ impl HeadlessSession {
             stderr_reader,
             stdin,
             session_id: None,
+            detach_on_drop: false,
         })
     }
 
@@ -434,14 +437,26 @@ impl HeadlessSession {
     pub fn pid(&self) -> Option<u32> {
         self.child.id()
     }
+
+    /// Mark this session to be detached instead of killed on drop.
+    ///
+    /// Used during daemon shutdown to allow sessions to survive restarts.
+    /// The daemon will kill the orphaned process after restart and resume
+    /// the session with the persisted session_id.
+    pub fn detach_on_drop(&mut self) {
+        self.detach_on_drop = true;
+    }
 }
 
 impl Drop for HeadlessSession {
     fn drop(&mut self) {
-        // Ensure the child process is killed when the session is dropped.
+        // Ensure the child process is killed when the session is dropped,
+        // UNLESS detach_on_drop is set (for daemon restart survival).
         // tokio::process::Child does NOT kill on drop (it detaches), so we
         // must explicitly start_kill() to prevent orphaned claude processes.
-        let _ = self.child.start_kill();
+        if !self.detach_on_drop {
+            let _ = self.child.start_kill();
+        }
     }
 }
 

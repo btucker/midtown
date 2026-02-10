@@ -15,7 +15,14 @@ pub enum Effect {
     /// Spawn a coworker using a typed launch configuration.
     SpawnCoworker(crate::launch::LaunchConfig),
     /// Shut down a running coworker with a message.
-    ShutdownCoworker { name: String, message: String },
+    ShutdownCoworker {
+        name: String,
+        message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        /// When `None`, targets by name (legacy behavior).
+        #[allow(dead_code)]
+        session_id: Option<String>,
+    },
     /// Shut down a coworker with conditional follow-up effects on success.
     ///
     /// On success, `on_success` effects are executed. On failure, nothing extra
@@ -24,17 +31,25 @@ pub enum Effect {
     ShutdownCoworkerWithCallbacks {
         name: String,
         message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        #[allow(dead_code)]
+        session_id: Option<String>,
         on_success: Vec<Effect>,
     },
     /// Nudge a coworker by sending a message to their headless session.
-    NudgeCoworker { name: String, message: String },
+    NudgeCoworker {
+        name: String,
+        message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        #[allow(dead_code)]
+        session_id: Option<String>,
+    },
     /// Nudge the Lead by sending a message to their tmux pane.
     NudgeLead { message: String },
     /// Resume a stopped headless coworker session.
     ///
     /// Uses `SessionManager::spawn` with `SessionMode::ResumeSession` to
     /// restart a coworker from a previously saved session ID.
-    #[allow(dead_code)]
     ResumeCoworker {
         name: String,
         session_id: String,
@@ -55,7 +70,12 @@ pub enum Effect {
         summary: Option<String>,
     },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
-    PostToChannel { sender: String, message: String },
+    /// If `channel` is None, posts to the default "midtown" channel.
+    PostToChannel {
+        sender: String,
+        message: String,
+        channel: Option<String>,
+    },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
     PostSystemMessage { message: String },
     /// Broadcast a coworker status update to WebSocket clients.
@@ -90,6 +110,9 @@ pub enum Effect {
     NudgeCoworkerWithCallbacks {
         name: String,
         message: String,
+        /// Session ID for targeting a specific session (multi-session support).
+        #[allow(dead_code)]
+        session_id: Option<String>,
         on_success: Vec<Effect>,
     },
     /// Spawn a coworker for a pending task.
@@ -130,7 +153,25 @@ pub enum Effect {
         pr_number: u64,
         reviewer_name: String,
         source: crate::github_state::AssignmentSource,
+        /// How many times this reviewer has been restarted for this PR.
+        /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
+        restart_count: u32,
+        /// Claude session ID for the reviewer, if known.
+        /// Initially `None` for optimistic assignments (before spawn completes);
+        /// backfilled by `backfill_reviewer_session_ids()` during subsequent poll ticks.
+        reviewer_session_id: Option<String>,
     },
+    /// Remove a reviewer assignment for a specific PR.
+    ///
+    /// Used when a reviewer spawn fails after the assignment was already recorded
+    /// (optimistic assignment to prevent race conditions).
+    RemoveReviewerAssignment { pr_number: u64 },
+    /// Record that a reviewer escalation warning has been posted for a PR.
+    ///
+    /// Prevents the escalation warning from firing every tick. The in-memory
+    /// `reviewer_escalations_posted` set is checked via WorldSnapshot before
+    /// emitting escalation effects.
+    RecordReviewerEscalation { pr_number: u64 },
     /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
     ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
     /// Re-run a GitHub Actions workflow that appears to be stuck.
@@ -273,6 +314,7 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::NudgeCoworkerWithCallbacks {
                 ref name,
                 message,
+                session_id,
                 on_success,
             } => {
                 let key = name.to_lowercase();
@@ -299,6 +341,7 @@ fn dedup_nudge_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 result.push(Effect::NudgeCoworkerWithCallbacks {
                     name: name.clone(),
                     message,
+                    session_id,
                     on_success,
                 });
             }
@@ -393,6 +436,12 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
 /// Before execution, nudge effects targeting the same coworker are deduplicated
 /// to prevent rapid-fire nudges within a single tick (e.g., when CI green,
 /// review complete, and merge conflict each independently nudge the same coworker).
+///
+/// Spawn effects (`AssignAndSpawn`, `SpawnCoworkerWithCallbacks`, `SpawnCoworker`,
+/// `EnsureWorktree`) are parallelized using `tokio::spawn` to avoid sequential
+/// blocking during startup when processing multiple pending tasks. Non-spawn effects
+/// execute sequentially as before. This keeps the daemon responsive to RPC requests
+/// during startup by avoiding long sequential pauses from worktree creation (1-5s each).
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     let effects = dedup_nudge_effects(effects);
     for effect in effects {
@@ -408,7 +457,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::ShutdownCoworker { name, message } => {
+            Effect::ShutdownCoworker { name, message, .. } => {
                 info!(
                     coworker = %name,
                     message_preview = %message.chars().take(50).collect::<String>(),
@@ -420,6 +469,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 name,
                 message,
                 on_success,
+                ..
             } => {
                 info!(
                     coworker = %name,
@@ -436,7 +486,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::NudgeCoworker { name, message } => {
+            Effect::NudgeCoworker { name, message, .. } => {
                 match state.session_manager.send_message(&name, &message).await {
                     Ok(()) => {
                         // Record pending nudge for attribution tracking
@@ -500,9 +550,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::PostToChannel { sender, message } => {
-                let msg = Message::text(&sender, &message);
-                if let Err(e) = state.send_and_broadcast(&msg) {
+            Effect::PostToChannel {
+                sender,
+                message,
+                channel,
+            } => {
+                let msg = if let Some(ch) = channel {
+                    Message::for_channel(&ch, &sender, &message, crate::message::MessageType::Text)
+                } else {
+                    Message::text(&sender, &message)
+                };
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
                 }
             }
@@ -555,6 +613,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 name,
                 message,
                 on_success,
+                ..
             } => {
                 // Extract task IDs from on_success RecordTaskAssignment effects
                 // to clear their in-flight markers after the nudge completes.
@@ -655,6 +714,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut tracker = state.pr_issue_tracker.lock().await;
                 tracker.record_nudge(pr_number, issue_type);
             }
+            Effect::RecordReviewerEscalation { pr_number } => {
+                let mut posted = state.reviewer_escalations_posted.lock().unwrap();
+                posted.insert(pr_number);
+                debug!("Recorded reviewer escalation for PR #{}", pr_number);
+            }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 state.record_task_assignment(&coworker, &task_id);
             }
@@ -667,16 +731,50 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 pr_number,
                 reviewer_name,
                 source,
+                restart_count,
+                reviewer_session_id,
             } => {
                 let mut ps = state.persistent_state.lock().await;
-                ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                if restart_count > 0 {
+                    ps.github.assign_reviewer_with_restart_count(
+                        pr_number,
+                        &reviewer_name,
+                        source,
+                        restart_count,
+                    );
+                } else {
+                    ps.github.assign_reviewer(pr_number, &reviewer_name, source);
+                }
+                // Set the session ID if provided (assign_reviewer* methods don't take it yet)
+                if let Some(sid) = reviewer_session_id
+                    && let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number)
+                {
+                    assignment.reviewer_session_id = Some(sid);
+                }
                 if let Err(e) = ps.save_for_repo(&state.repo_name) {
                     warn!("Failed to save daemon-state.json: {}", e);
                 }
             }
+            Effect::RemoveReviewerAssignment { pr_number } => {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(assignment) = ps.github.remove_assignment(pr_number) {
+                    debug!(
+                        "Removed reviewer assignment for PR #{} (was assigned to {})",
+                        pr_number, assignment.reviewer
+                    );
+                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        warn!(
+                            "Failed to save daemon-state.json after removing assignment: {}",
+                            e
+                        );
+                    }
+                } else {
+                    debug!("No reviewer assignment to remove for PR #{}", pr_number);
+                }
+            }
             Effect::PostSystemMessage { message } => {
                 let msg = Message::system(message);
-                if let Err(e) = state.send_and_broadcast(&msg) {
+                if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post system message: {}", e);
                 }
             }
@@ -998,7 +1096,7 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post workflow rerun message: {}", e);
         }
     } else {
@@ -1054,7 +1152,7 @@ async fn rebase_pr_on_main(state: &DaemonState, pr_number: u64, reason: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post branch update message: {}", e);
         }
     } else {
@@ -1100,7 +1198,7 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post auto-merge message: {}", e);
         }
     } else {
@@ -1117,7 +1215,7 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
             ),
             crate::message::MessageType::Text,
         );
-        if let Err(e) = state.send_and_broadcast(&msg) {
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
             warn!("Failed to post auto-merge failure message: {}", e);
         }
     }
@@ -1151,14 +1249,17 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "first nudge".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "second nudge".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "third nudge".into(),
+                session_id: None,
             },
         ];
 
@@ -1178,6 +1279,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "CI green".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::Approved,
@@ -1186,6 +1288,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "review complete".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::ReviewComplete,
@@ -1194,6 +1297,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "merge conflict".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::MergeConflict,
@@ -1231,14 +1335,17 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge riverside".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "broadway".into(),
                 message: "nudge broadway".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "duplicate riverside".into(),
+                session_id: None,
             },
         ];
 
@@ -1257,10 +1364,12 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "plain nudge".into(),
+                session_id: None,
             },
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "callback nudge".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 42,
                     issue_type: PrIssueType::Approved,
@@ -1287,10 +1396,12 @@ mod tests {
             Effect::PostToChannel {
                 sender: "midtown".into(),
                 message: "hello".into(),
+                channel: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge 1".into(),
+                session_id: None,
             },
             Effect::RecordCooldown {
                 category: "test".into(),
@@ -1299,10 +1410,12 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge 2".into(),
+                session_id: None,
             },
             Effect::PostToChannel {
                 sender: "midtown".into(),
                 message: "world".into(),
+                channel: None,
             },
         ];
 
@@ -1318,10 +1431,12 @@ mod tests {
             Effect::NudgeCoworker {
                 name: "Riverside".into(),
                 message: "nudge 1".into(),
+                session_id: None,
             },
             Effect::NudgeCoworker {
                 name: "riverside".into(),
                 message: "nudge 2".into(),
+                session_id: None,
             },
         ];
 
@@ -1337,6 +1452,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - CI checks passed".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::Approved,
@@ -1345,6 +1461,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - Review complete".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::ReviewComplete,
@@ -1353,6 +1470,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - Merge conflict".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::MergeConflict,
@@ -1361,6 +1479,7 @@ mod tests {
             Effect::NudgeCoworkerWithCallbacks {
                 name: "riverside".into(),
                 message: "PR #181 - Green with feedback".into(),
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number: 181,
                     issue_type: PrIssueType::GreenWithFeedback,

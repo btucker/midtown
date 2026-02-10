@@ -22,7 +22,6 @@ fn load_snapshot(json_str: &str) -> (Vec<TestCoworker>, SnapshotData) {
             started_at: DateTime::parse_from_rfc3339(cw["started_at"].as_str().unwrap())
                 .unwrap()
                 .with_timezone(&Utc),
-            isolated_tasks: cw["isolated_tasks"].as_bool().unwrap_or(false),
         })
         .collect();
 
@@ -103,7 +102,6 @@ fn load_snapshot(json_str: &str) -> (Vec<TestCoworker>, SnapshotData) {
 struct TestCoworker {
     name: String,
     started_at: DateTime<Utc>,
-    isolated_tasks: bool,
 }
 
 #[derive(Debug)]
@@ -245,16 +243,8 @@ fn isolated_reviewer_immediate_break() {
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
     let (coworkers, data) = load_snapshot(fixture);
 
-    // Broadway is isolated (isolated_tasks: true) in this snapshot
-    let broadway = coworkers.iter().find(|c| c.name == "broadway").unwrap();
-    assert!(
-        broadway.isolated_tasks,
-        "broadway should have isolated_tasks=true"
-    );
-
-    // Broadway is also an active reviewer, so it won't be sent on break
-    // But if it weren't a reviewer, an isolated coworker would go on break
-    // immediately without waiting for idle_break_duration
+    // Broadway is an active reviewer in this snapshot
+    // All coworkers now have isolated task lists (TaskMode::Shared removed)
     assert!(
         data.active_reviewers.contains("broadway"),
         "broadway is still an active reviewer in this snapshot"

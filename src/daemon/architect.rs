@@ -60,7 +60,16 @@ Rules:
 /// This is designed to be called from `tokio::spawn` — it runs independently
 /// and posts the result to the channel. Errors are logged and silently skipped;
 /// the insight itself has already been posted before this function runs.
-pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: String) {
+///
+/// Diagrams are posted to the same channel as the originating insight. If
+/// `channel_name` is None (insight from main channel), the diagram is skipped
+/// entirely to avoid noise in the main channel.
+pub async fn generate_insight_diagram(
+    insight: String,
+    cwd: PathBuf,
+    repo_name: String,
+    channel_name: Option<String>,
+) {
     // Limit concurrent architect sessions to prevent resource exhaustion.
     // If all permits are taken, skip this diagram rather than queuing up.
     let _permit = match ARCHITECT_SEMAPHORE.try_acquire() {
@@ -144,7 +153,16 @@ pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: 
         return;
     }
 
-    // Post diagram to channel as "architect"
+    // Post diagram to the same channel as the originating insight.
+    // Diagrams are NOT posted to main channel to avoid noise — if channel_name
+    // is None (insight from main), skip posting the diagram entirely.
+    let Some(ref ch_name) = channel_name else {
+        info!(
+            "Architect: skipping diagram post — insight was from main channel (no dedicated channel for diagrams)"
+        );
+        return;
+    };
+
     let channel = match crate::Channel::for_repo(&repo_name) {
         Ok(ch) => ch,
         Err(e) => {
@@ -152,11 +170,16 @@ pub async fn generate_insight_diagram(insight: String, cwd: PathBuf, repo_name: 
             return;
         }
     };
-    let msg = Message::text("architect", format!("```mermaid\n{}\n```", diagram));
+    let msg = Message::for_channel(
+        ch_name.clone(),
+        "architect",
+        format!("```mermaid\n{}\n```", diagram),
+        crate::message::MessageType::Text,
+    );
     if let Err(e) = channel.send(&msg) {
         warn!("Architect: failed to post diagram to channel: {}", e);
     } else {
-        info!("Architect: posted diagram to channel");
+        info!("Architect: posted diagram to topic channel '{}'", ch_name);
     }
 }
 

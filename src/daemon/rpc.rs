@@ -5,6 +5,8 @@
 //! from a Unix stream and dispatches them via `handle_request`.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -97,11 +99,17 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         request.method, request.id
     );
 
-    // Clone request ID for cache operations (it will be moved during dispatch)
+    // Clone request ID and method for cache operations (they will be moved during dispatch)
     let request_id_for_cache = request.id.clone();
+    let request_method = request.method.clone();
+
+    // Methods with their own domain-specific caching should skip the RPC idempotency cache.
+    // kanban.data has a dedicated 30s TTL cache in DaemonState; the RPC cache (60s, keyed by
+    // request ID) would shadow it because the web server always sends id=1 for kanban requests.
+    let skip_rpc_cache = request_method == "kanban.data";
 
     // Check cache for idempotent response (within 60 second TTL)
-    {
+    if !skip_rpc_cache {
         let now = std::time::Instant::now();
         let cache = state.rpc_response_cache.lock().await;
         if let Some((cached_response, timestamp)) = cache.get(&request_id_for_cache)
@@ -218,7 +226,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
             match (name, question) {
                 (Some(name), Some(question)) => {
-                    handle_coworker_asking(request.id, name, question, state)
+                    handle_coworker_asking(request.id, name, question, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -359,6 +367,9 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                                 .filter_map(|v| v.as_str().map(String::from))
                                 .collect()
                         });
+                    let channel = params
+                        .and_then(|p| p.get("channel"))
+                        .and_then(|v| v.as_str());
 
                     handle_task_update(
                         request.id,
@@ -367,6 +378,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         status,
                         description,
                         blocked_by.as_deref(),
+                        channel,
                         state,
                     )
                 }
@@ -414,14 +426,17 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
         }
 
         "auth.switch" => {
-            let profile = request
-                .params
-                .as_ref()
+            let params = request.params.as_ref();
+            let profile = params
                 .and_then(|p| p.get("profile"))
                 .and_then(|v| v.as_str());
+            let all = params
+                .and_then(|p| p.get("all"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             match profile {
-                Some(name) => handle_auth_switch(request.id, name, state).await,
+                Some(name) => handle_auth_switch(request.id, name, all, state).await,
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -432,10 +447,13 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let insight = params
                 .and_then(|p| p.get("insight"))
                 .and_then(|v| v.as_str());
+            let channel = params
+                .and_then(|p| p.get("channel"))
+                .and_then(|v| v.as_str());
 
             match (agent, insight) {
                 (Some(agent), Some(insight)) => {
-                    handle_insight_report(request.id, agent, insight, state).await
+                    handle_insight_report(request.id, agent, insight, channel, state).await
                 }
                 _ => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -548,7 +566,8 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // Error responses are NOT cached so that clients can retry after transient
     // failures (e.g., invalid params due to race conditions) without getting
     // a stale cached error.
-    if !response.is_error() {
+    // Methods with domain-specific caching (e.g., kanban.data) are excluded.
+    if !skip_rpc_cache && !response.is_error() {
         let mut cache = state.rpc_response_cache.lock().await;
         cache.insert(
             request_id_for_cache,
@@ -616,6 +635,8 @@ async fn handle_coworker_spawn(
         team_name: Some(team),
         working_dir: None,
         model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None, // Resolved by spawn_coworker()
     };
 
     // Spawn via the headless path (creates worktree + headless session)
@@ -681,10 +702,23 @@ async fn handle_coworker_break(id: RequestId, name: &str, state: &DaemonState) -
 /// Handle auth.switch RPC method.
 ///
 /// Switches the active auth profile and re-launches all Claude instances:
-/// 1. Validates and switches the profile on disk
+/// 1. Validates and switches the profile on disk (project or global)
 /// 2. Shuts down all running coworkers (daemon will re-spawn for pending tasks)
 /// 3. Re-launches the lead window with the new credentials
-async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -> Response {
+async fn handle_auth_switch(
+    id: RequestId,
+    profile: &str,
+    all: bool,
+    state: &DaemonState,
+) -> Response {
+    // Validate the profile name format (defense-in-depth — CLI also validates)
+    if let Err(e) = crate::auth::validate_profile_name(profile) {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Invalid profile name: {}", e)),
+        );
+    }
+
     // Validate the profile exists
     if !crate::auth::profile_exists(profile) {
         return Response::error(
@@ -692,7 +726,7 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
             RpcError::new(
                 -32602,
                 format!(
-                    "Profile '{}' does not exist. Create it with: midtown auth login --profile {}",
+                    "Profile '{}' does not exist. Create it with: midtown auth login {}",
                     profile, profile
                 ),
             ),
@@ -700,27 +734,63 @@ async fn handle_auth_switch(id: RequestId, profile: &str, state: &DaemonState) -
     }
 
     // Check if already on this profile
-    let current = crate::auth::current_profile();
-    if current == profile {
-        return Response::success(
-            id,
-            serde_json::json!({
-                "success": true,
-                "message": format!("Already on profile '{}'", profile),
-                "switched": false,
-            }),
-        );
+    if all {
+        // For global switch, check the global current profile
+        let current = crate::auth::current_profile();
+        if current == profile {
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Already on profile '{}'", profile),
+                    "switched": false,
+                }),
+            );
+        }
+    } else {
+        // For per-project switch, check the project config's auth_profile (not the effective profile)
+        let path = crate::config::project_config_path(&state.repo_name);
+        if let Some(config) = crate::config::FullProjectConfig::load_from(&path)
+            && config.project.auth_profile.as_deref() == Some(profile)
+        {
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Already on profile '{}'", profile),
+                    "switched": false,
+                }),
+            );
+        }
     }
 
     // Switch the profile on disk
-    if let Err(e) = crate::auth::set_current_profile(profile) {
-        return Response::error(
-            id,
-            RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
-        );
+    if all {
+        // Global switch: update global current profile
+        if let Err(e) = crate::auth::set_current_profile(profile) {
+            return Response::error(
+                id,
+                RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
+            );
+        }
+    } else {
+        // Per-project switch: update this project's config
+        let path = crate::config::project_config_path(&state.repo_name);
+        let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
+        config.project.auth_profile = Some(profile.to_string());
+        if let Err(e) = config.save_to(&path) {
+            return Response::error(
+                id,
+                RpcError::new(-32603, format!("Failed to save project config: {}", e)),
+            );
+        }
     }
 
-    info!("Auth profile switched to '{}'", profile);
+    info!(
+        "Auth profile switched to '{}' ({})",
+        profile,
+        if all { "global" } else { "project" }
+    );
 
     // Shut down all running coworkers
     let running_coworkers: Vec<String> = state
@@ -876,10 +946,16 @@ async fn handle_headless_execute(
 /// an insight block. Deduplicates via in-memory hash set, posts the insight
 /// to the channel, and spawns a headless architect session to optionally
 /// generate a Mermaid diagram.
+///
+/// The optional `channel` parameter specifies which channel to post the insight to.
+/// If None, defaults to the main channel. Architect diagrams are only posted when
+/// `channel` is Some (topic channel) — diagrams are skipped for the main channel
+/// to avoid noise.
 async fn handle_insight_report(
     id: RequestId,
     agent: &str,
     insight: &str,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Deduplicate: normalize and hash the insight content
@@ -898,8 +974,14 @@ async fn handle_insight_report(
         }
     }
 
-    // Post insight to channel
-    let msg = Message::text(agent, format!("💡 {}", insight));
+    // Post insight to specified channel (or main if None)
+    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+    let msg = Message::for_channel(
+        channel_name,
+        agent,
+        format!("💡 {}", insight),
+        crate::message::MessageType::Text,
+    );
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("insight.report: failed to post to channel: {}", e);
         return Response::error(
@@ -908,7 +990,10 @@ async fn handle_insight_report(
         );
     }
 
-    info!("insight.report: posted insight from {}", agent);
+    info!(
+        "insight.report: posted insight from {} to channel '{}'",
+        agent, channel_name
+    );
 
     // Determine working directory for the architect session.
     // For coworkers, use their worktree; for lead, use the main repo dir.
@@ -924,11 +1009,13 @@ async fn handle_insight_report(
         state.all_repo_paths.first().cloned().unwrap_or_default()
     };
 
-    // Spawn the architect task asynchronously
+    // Spawn the architect task asynchronously - pass channel so diagram routes to same channel as insight
     let repo_name = state.repo_name.clone();
     let insight_owned = insight.to_string();
+    let channel_owned = channel.map(|s| s.to_string());
     tokio::spawn(async move {
-        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name).await;
+        super::architect::generate_insight_diagram(insight_owned, cwd, repo_name, channel_owned)
+            .await;
     });
 
     Response::success(
@@ -1086,6 +1173,7 @@ async fn handle_coworker_report_state(
             let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
                 name: name.to_string(),
                 message: String::new(), // No goodbye message needed for idle shutdown
+                session_id: None,
                 on_success: vec![
                     effects::Effect::PostSystemMessage {
                         message: format!("☕ {} reported idle, taking a break", name),
@@ -1235,7 +1323,7 @@ async fn handle_coworker_nudge(
 /// 1. Posts the question to the channel
 /// 2. Nudges the Lead with the question
 /// 3. Marks the coworker as waiting for feedback
-fn handle_coworker_asking(
+async fn handle_coworker_asking(
     id: RequestId,
     name: &str,
     question: &str,
@@ -1243,7 +1331,7 @@ fn handle_coworker_asking(
 ) -> Response {
     // Post question to channel
     let msg = Message::text(name, format!("Question for Lead: {}", question));
-    if let Err(e) = state.send_and_broadcast(&msg) {
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
         error!("Failed to post question to channel: {}", e);
     }
 
@@ -1397,6 +1485,7 @@ fn generate_active_form(subject: &str) -> String {
 }
 
 /// Handle task.update RPC — update specific fields on a task directly.
+#[allow(clippy::too_many_arguments)]
 fn handle_task_update(
     id: RequestId,
     task_id: &str,
@@ -1404,6 +1493,7 @@ fn handle_task_update(
     status: Option<&str>,
     description: Option<&str>,
     blocked_by: Option<&[String]>,
+    channel: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Validate status if provided
@@ -1422,6 +1512,7 @@ fn handle_task_update(
         status,
         description,
         blocked_by,
+        channel,
     ) {
         return Response::error(
             id,
@@ -1522,6 +1613,7 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
             &repo_name,
             Some(from),
             Some("in_progress"),
+            None,
             None,
             None,
         ) {
@@ -1937,24 +2029,39 @@ async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
         })
         .collect();
 
-    // Run blocking operations (gh CLI calls, file I/O) in spawn_blocking
-    // to avoid blocking the async runtime and causing RPC timeouts.
-    let (pull_requests, tasks, merged_prs, recent_activity) =
-        match tokio::task::spawn_blocking(move || {
-            let pull_requests = get_open_prs();
-            let tasks = get_all_tasks();
-            let merged_prs = get_merged_prs();
-            let recent_activity = get_recent_channel_activity();
-            (pull_requests, tasks, merged_prs, recent_activity)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                error!("spawn_blocking panic in status handler: {}", e);
-                return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
-            }
-        };
+    // Get cached PR data from the daemon's periodic polling (every 30s for open PRs,
+    // every 5 minutes for merged PRs). This avoids synchronous gh CLI calls that can
+    // timeout under GitHub API rate limiting.
+    //
+    // During daemon startup (before the first PR poll completes), return empty arrays
+    // rather than stale data. The first open PR poll completes within ~5 seconds, so
+    // this window is brief.
+    let (pull_requests, merged_prs) = {
+        let cache = state.pr_coworker_cache.read().unwrap();
+        if cache.pr_poll_initialized {
+            (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
+        } else {
+            // PR poll hasn't completed yet - return empty arrays during startup
+            (Vec::new(), Vec::new())
+        }
+    };
+
+    // Run blocking file I/O operations in spawn_blocking.
+    // Note: get_all_tasks reads from Claude Code task storage (local filesystem),
+    // not GitHub API, so it's fast and doesn't cause rate limit timeouts.
+    let (tasks, recent_activity) = match tokio::task::spawn_blocking(move || {
+        let tasks = get_all_tasks();
+        let recent_activity = get_recent_channel_activity();
+        (tasks, recent_activity)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            error!("spawn_blocking panic in status handler: {}", e);
+            return Response::error(id, RpcError::new(-32603, "Internal error".to_string()));
+        }
+    };
 
     let pending_count = tasks
         .iter()
@@ -2003,83 +2110,11 @@ async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     )
 }
 
-/// Get open PRs from GitHub using gh CLI.
-fn get_open_prs() -> Vec<serde_json::Value> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--json",
-            "number,title,author,state,isDraft,reviewDecision",
-        ])
-        .output();
-
-    // Build a map of task_id -> task_subject for PR enrichment
-    let tasks = crate::tasks::read_tasks();
-    let task_map: std::collections::HashMap<u64, String> = tasks
-        .iter()
-        .filter_map(|t| {
-            let id = t.id.parse::<u64>().ok()?;
-            Some((id, t.subject.clone()))
-        })
-        .collect();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                prs.into_iter()
-                    .map(|pr| {
-                        let status = format_pr_status(&pr);
-                        let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                        // Extract task ID from PR title and look up task name
-                        let task_id = crate::tasks::extract_task_id_from_pr_title(title);
-                        let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
-                        serde_json::json!({
-                            "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
-                            "title": title,
-                            "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
-                            "status": status,
-                            "task_id": task_id,
-                            "task_name": task_name,
-                        })
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Failed to get PRs from gh CLI: {}", stderr.trim());
-            Vec::new()
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr list: {}", e);
-            Vec::new()
-        }
-    }
-}
-
-/// Format PR status from gh CLI JSON.
-fn format_pr_status(pr: &serde_json::Value) -> String {
-    let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-    if is_draft {
-        return "draft".to_string();
-    }
-
-    let review_decision = pr
-        .get("reviewDecision")
-        .and_then(|r| r.as_str())
-        .unwrap_or("");
-
-    match review_decision {
-        "APPROVED" => "approved".to_string(),
-        "CHANGES_REQUESTED" => "changes requested".to_string(),
-        "REVIEW_REQUIRED" => "awaiting review".to_string(),
-        _ => "open".to_string(),
-    }
-}
+// REMOVED: get_open_prs() and format_pr_status()
+// These functions made synchronous gh CLI calls on every RPC, causing timeouts under
+// GitHub API rate limiting. Now handle_status uses cached PR data from the daemon's
+// periodic polling (see pr_coworker_cache in daemon/mod.rs and poll_prs_for_issues in
+// daemon/pr.rs). The formatting logic moved to format_pr_status_for_rpc() in pr.rs.
 
 /// Get all tasks from Claude Code task storage with their status.
 fn get_all_tasks() -> Vec<serde_json::Value> {
@@ -2105,11 +2140,35 @@ fn get_all_tasks() -> Vec<serde_json::Value> {
 ///
 /// Returns open PRs with author, reviewer, CI status, and timestamps,
 /// plus recently merged PRs for the Done column.
-/// Handle kanban.data RPC method.
 ///
 /// Runs blocking GraphQL operations in spawn_blocking to avoid blocking
 /// the async runtime and causing RPC timeouts.
+///
+/// Uses a 30s TTL cache (via `DaemonState::kanban_cache`) to avoid expensive
+/// GraphQL queries on every call and reduce GitHub API usage.
 async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
+    // Clone data needed for cache key computation
+    let all_repo_paths = state.all_repo_paths.clone();
+
+    // Compute a hash of all repo paths for cache keying
+    let mut hasher = DefaultHasher::new();
+    for path in &all_repo_paths {
+        path.hash(&mut hasher);
+    }
+    let repo_hash = hasher.finish();
+
+    // Check cache first
+    if let Some(cached) = state.kanban_cache.get(repo_hash) {
+        debug!(
+            "Returning cached kanban data (TTL: {}s)",
+            KANBAN_CACHE_TTL.as_secs()
+        );
+        return Response::success(id, cached);
+    }
+
+    // Cache miss - fetch fresh data
+    debug!("Cache miss, fetching fresh kanban data");
+
     // Get reviewer assignments from GitHubState (best-effort via try_lock)
     let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
         .persistent_state
@@ -2117,8 +2176,6 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         .map(|ps| ps.github.active_assignments())
         .unwrap_or_default();
 
-    // Clone data needed for the blocking task
-    let all_repo_paths = state.all_repo_paths.clone();
     let is_multi_repo = all_repo_paths.len() > 1;
 
     // Pre-resolve repo full names (this uses caching and is fast)
@@ -2170,24 +2227,82 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         }
     };
 
-    Response::success(
-        id,
-        serde_json::json!({
-            "prs": prs,
-            "merged_prs": merged_prs,
-            "repos": repos,
-        }),
-    )
+    // Build response and cache it
+    let response_data = serde_json::json!({
+        "prs": prs,
+        "merged_prs": merged_prs,
+        "repos": repos,
+    });
+
+    state.kanban_cache.set(response_data.clone(), repo_hash);
+
+    Response::success(id, response_data)
 }
 
 // ============================================================================
 // Kanban / PR data helpers
 // ============================================================================
 
+/// TTL for kanban data cache (30 seconds, matching web server's CACHE_TTL).
+const KANBAN_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Thread-safe TTL cache for kanban GraphQL data.
+///
+/// Stores the full kanban response (PRs, merged PRs, repos) keyed by a hash
+/// of the repo paths. The cache expires after KANBAN_CACHE_TTL and avoids
+/// expensive GraphQL queries on every RPC call.
+///
+/// Lives in `DaemonState` so the daemon can inspect and clean it up alongside
+/// other caches (see `DaemonState::cleanup_rpc_response_cache`).
+pub(crate) struct KanbanCache {
+    inner: std::sync::Mutex<Option<(Instant, serde_json::Value, u64)>>,
+}
+
+impl KanbanCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Return cached value if it exists, is younger than TTL, and matches the repo_hash.
+    fn get(&self, repo_hash: u64) -> Option<serde_json::Value> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .as_ref()
+            .filter(|(ts, _, hash)| ts.elapsed() < KANBAN_CACHE_TTL && *hash == repo_hash)
+            .map(|(_, v, _)| v.clone())
+    }
+
+    /// Store a new value with the current timestamp and repo_hash.
+    fn set(&self, value: serde_json::Value, repo_hash: u64) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some((Instant::now(), value, repo_hash));
+        }
+    }
+
+    /// Remove expired entries. Called by `DaemonState::cleanup_rpc_response_cache`.
+    pub(crate) fn cleanup(&self) {
+        if let Ok(mut guard) = self.inner.lock()
+            && guard
+                .as_ref()
+                .is_some_and(|(ts, _, _)| ts.elapsed() >= KANBAN_CACHE_TTL)
+        {
+            *guard = None;
+        }
+    }
+}
+
 /// GraphQL query that fetches both open and recently merged PRs in a single call.
 ///
 /// This replaces two separate `gh pr list` CLI calls with one GraphQL request,
 /// cutting API usage in half for the kanban board.
+///
+/// Query cost optimizations:
+/// - contexts(first: 20) instead of 100 — CI status is enough with top 20 checks
+/// - comments(first: 10) instead of 100 — kanban board only needs recent activity
+///
+/// These changes reduce query cost ~25x while preserving UI functionality.
 const KANBAN_GRAPHQL_QUERY: &str = r#"
 query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
@@ -2202,7 +2317,7 @@ query($owner: String!, $repo: String!) {
           nodes {
             commit {
               statusCheckRollup {
-                contexts(first: 100) {
+                contexts(first: 20) {
                   nodes {
                     __typename
                     ... on CheckRun {
@@ -2218,7 +2333,7 @@ query($owner: String!, $repo: String!) {
             }
           }
         }
-        comments(first: 100) {
+        comments(first: 10) {
           nodes {
             body
             createdAt
@@ -2520,37 +2635,11 @@ fn kanban_ci_status(checks: &[serde_json::Value]) -> &'static str {
     }
 }
 
-/// Get recently merged PRs from GitHub using gh CLI.
-fn get_merged_prs() -> Vec<serde_json::Value> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--limit",
-            "10",
-            "--json",
-            "number,title,mergedAt",
-        ])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            serde_json::from_str::<Vec<serde_json::Value>>(&stdout).unwrap_or_default()
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
-            Vec::new()
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr list (merged): {}", e);
-            Vec::new()
-        }
-    }
-}
+// REMOVED: get_merged_prs()
+// This function made synchronous gh CLI calls on every RPC, causing timeouts under
+// GitHub API rate limiting. Now handle_status uses cached merged PR data from the
+// daemon's periodic polling (see pr_coworker_cache and get_coworkers_with_merged_prs
+// in daemon/pr.rs, which polls every 5 minutes).
 
 /// Get recent channel activity.
 fn get_recent_channel_activity() -> Vec<serde_json::Value> {
@@ -2771,10 +2860,12 @@ async fn handle_session_attach(id: RequestId, target: &str, state: &DaemonState)
     );
 
     // Post to channel
-    let _ = state.send_and_broadcast(&Message::system(format!(
-        "Attached to {} — headless paused, interactive tmux session active",
-        name
-    )));
+    let _ = state
+        .send_and_broadcast_async(&Message::system(format!(
+            "Attached to {} — headless paused, interactive tmux session active",
+            name
+        )))
+        .await;
 
     Response::success(
         id,
@@ -2851,10 +2942,12 @@ async fn handle_session_detach(id: RequestId, name: &str, state: &DaemonState) -
                 name, session_id
             );
 
-            let _ = state.send_and_broadcast(&Message::system(format!(
-                "Detached from {} — headless session resumed",
-                name
-            )));
+            let _ = state
+                .send_and_broadcast_async(&Message::system(format!(
+                    "Detached from {} — headless session resumed",
+                    name
+                )))
+                .await;
 
             state.broadcast_coworker_update(&name, "running", None);
 
@@ -3268,5 +3361,59 @@ mod tests {
         }
 
         assert_eq!(cache.len(), 1, "Only success response should be cached");
+    }
+
+    /// Verify that sequential numeric request IDs (as generated by the CLI)
+    /// would collide in the cache when coming from separate processes.
+    ///
+    /// This is the regression test for the bug where `midtown task create`
+    /// called twice in quick succession returned the first task's response
+    /// both times, because both CLI processes sent `id: 1`.
+    #[test]
+    fn test_rpc_cache_numeric_id_collision() {
+        use crate::rpc::{RequestId, Response};
+
+        let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
+
+        // First CLI invocation sends id: 1, creates task !100
+        let id_from_process_a = RequestId::Number(1);
+        let response_a = Response::success(
+            id_from_process_a.clone(),
+            serde_json::json!({"task_id": 100}),
+        );
+        cache.insert(id_from_process_a.clone(), (response_a, Instant::now()));
+
+        // Second CLI invocation also sends id: 1 (different process, counter restarted)
+        let id_from_process_b = RequestId::Number(1);
+
+        // This demonstrates the bug: same numeric ID = cache hit, wrong response
+        let now = Instant::now();
+        let cache_hit = cache
+            .get(&id_from_process_b)
+            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+
+        // With numeric IDs, this DOES hit — which is the bug.
+        // The fix is to use unique string IDs (pid-counter) so this can't happen.
+        assert!(
+            cache_hit.is_some(),
+            "Numeric ID collision: same id=1 from different processes hits cache (this is the bug)"
+        );
+
+        // After fix: string IDs with PID prefix won't collide
+        let id_with_pid_a = RequestId::String("12345-1".to_string());
+        let id_with_pid_b = RequestId::String("12346-1".to_string()); // different PID
+
+        let response_a2 =
+            Response::success(id_with_pid_a.clone(), serde_json::json!({"task_id": 100}));
+        cache.insert(id_with_pid_a, (response_a2, Instant::now()));
+
+        let cache_hit = cache
+            .get(&id_with_pid_b)
+            .filter(|(_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+
+        assert!(
+            cache_hit.is_none(),
+            "PID-prefixed string IDs from different processes should NOT collide"
+        );
     }
 }

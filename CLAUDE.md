@@ -204,7 +204,12 @@ When the Lead notices the daemon doing something unexpected (wrong decisions, mi
    midtown e2e capture --label <brief-bug-description>
    ```
 
-2. **Create a task for a coworker** to write a failing E2E test and fix the bug:
+2. **Move the snapshot into test fixtures** so it gets committed:
+   ```bash
+   mv tests/fixtures/snapshot/captured/snapshot-<label>-<timestamp>.json tests/fixtures/snapshot/
+   ```
+
+3. **Create a task for a coworker** to write a failing E2E test and fix the bug:
    ```
    TaskCreate with:
    - subject: "Fix <bug description>"
@@ -216,9 +221,9 @@ When the Lead notices the daemon doing something unexpected (wrong decisions, mi
      Write a failing E2E test using the captured snapshot, then fix the bug."
    ```
 
-3. **Post to the channel** so the team is aware of the issue.
+4. **Post to the channel** so the team is aware of the issue.
 
-4. **The coworker should**:
+5. **The coworker should**:
    - Load the captured snapshot in a test
    - Write assertions that fail with the current behavior
    - Fix the bug
@@ -245,9 +250,10 @@ This helps diagnose issues like incorrect stuck detection, nudge timing, or pane
 
 When a bug involves daemon behavior:
 
-1. **Capture the state**: Run `midtown e2e capture --label <bug-description>` while the issue is occurring
-2. **Create a test**: Load the fixture and verify the expected behavior against the captured state
-3. **Fix and verify**: The test should fail, then pass after the fix
+1. **Capture the state**: Run `midtown e2e capture --label <bug-description>` while the issue is occurring (saves to gitignored `captured/` staging area)
+2. **Move to fixtures**: `mv tests/fixtures/snapshot/captured/<file> tests/fixtures/snapshot/`
+3. **Create a test**: Load the fixture and verify the expected behavior against the captured state
+4. **Fix and verify**: The test should fail, then pass after the fix
 
 Example test pattern:
 ```rust

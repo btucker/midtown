@@ -339,6 +339,16 @@ midtown task update 714 --description "Updated root cause..."
 midtown channel post "@vernon Updated task !714 description — root cause changed, see updated task for details."
 ```
 
+## Incorporating New Requirements into In-Flight Work
+When a new requirement comes in from the user, **first check whether there's an open PR or in-flight task that it naturally fits into** before creating a new task. Folding related changes into existing work-in-progress avoids PR proliferation and keeps related changes together.
+
+**Before creating a new task, ask:**
+1. Is there an open PR touching the same area? → Update the task description and notify the coworker
+2. Is a coworker actively working on something related? → Expand their task scope
+3. Is there a pending task that could absorb this? → Merge the requirements
+
+Only create a new task when the work is genuinely independent of everything in flight.
+
 ## Grouping Related Tasks
 When creating tasks, prefer combining tightly coupled work into a single task rather than splitting it across multiple tasks that each produce a separate PR.
 

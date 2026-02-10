@@ -135,6 +135,7 @@ fn test_concurrent_name_allocation_no_overwrites() {
 
                     // Try to insert the coworker (with check-before-insert)
                     let inserted = manager.insert_for_testing(Coworker {
+                        slot_id: uuid::Uuid::new_v4().to_string(),
                         name: name.clone(),
                         status: CoworkerStatus::Running,
                         working_dir: "/tmp".to_string(),
@@ -237,6 +238,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
         // Simulate spawn_with_name insert phase with the fix:
         // Check again before insert, fail if name is taken
         let inserted = manager1.insert_for_testing(Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "madison".to_string(),
             status: CoworkerStatus::Running,
             working_dir: "/tmp".to_string(),
@@ -267,6 +269,7 @@ fn test_spawn_race_reviewer_gets_shared_tasks() {
         // Simulate spawn_with_name insert phase with the fix:
         // Check again before insert, fail if name is taken
         let inserted = manager2.insert_for_testing(Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "madison".to_string(),
             status: CoworkerStatus::Running,
             working_dir: "/tmp".to_string(),
@@ -331,6 +334,7 @@ fn test_spawn_should_be_atomic() {
 
     // First spawn: reviewer
     manager.insert_for_testing(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
         name: "madison".to_string(),
         status: CoworkerStatus::Running,
         working_dir: "/tmp".to_string(),

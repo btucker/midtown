@@ -25,7 +25,7 @@ mod webhook_fwd;
 use constants::*;
 pub use constants::{
     DEFAULT_MAX_COWORKERS, DEFAULT_PR_POLL_INTERVAL_SECS, DEFAULT_WEBHOOK_PORT,
-    DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, MAX_CONCURRENT_REVIEWS, PR_NUDGE_COOLDOWN_SECS,
+    DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, PR_NUDGE_COOLDOWN_SECS,
     PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
 };
 pub use trackers::{
@@ -305,6 +305,14 @@ struct PrCoworkerCache {
     /// Count of open PRs that need review (not draft, no Claude review, no formal review).
     /// Updated every PR poll tick. Used to prioritize PR reviews over new task pickup.
     prs_needing_review: usize,
+    /// Full open PR data from the last poll, formatted for RPC responses.
+    /// Cached to avoid re-fetching via gh CLI on every `midtown status` call.
+    /// Updated every PR poll tick (~30s).
+    open_prs_data: Vec<serde_json::Value>,
+    /// Full merged PR data from the last poll, formatted for RPC responses.
+    /// Cached to avoid re-fetching via gh CLI on every `midtown status` call.
+    /// Updated every `MERGED_PRS_FETCH_INTERVAL_SECS` (5 minutes).
+    merged_prs_data: Vec<serde_json::Value>,
     /// Whether the first PR poll has completed. Used to delay orphan worktree
     /// flagging until we have PR data - otherwise we'd incorrectly flag worktrees
     /// with open PRs during startup when the cache is empty.
@@ -420,6 +428,13 @@ pub(crate) struct DaemonState {
     /// from being posted to the channel multiple times. Resets on daemon restart,
     /// which is acceptable because transcript cursors prevent re-extraction.
     insight_hashes: std::sync::Mutex<HashSet<u64>>,
+    /// PR numbers for which a reviewer escalation warning has been posted.
+    ///
+    /// Prevents the escalation warning (stuck reviewer after max restarts) from
+    /// firing every tick. Once posted, the PR number is added here and the warning
+    /// is not repeated. Resets on daemon restart, which is acceptable because
+    /// reviewer assignments also reset.
+    reviewer_escalations_posted: std::sync::Mutex<HashSet<u64>>,
     /// In-memory deduplication for reviewer `[Review Note]` channel messages.
     ///
     /// Tracks (reviewer, PR number) → timestamp of first note. When a reviewer
@@ -456,6 +471,12 @@ pub(crate) struct DaemonState {
     /// to "exactly-once" semantics.
     rpc_response_cache:
         Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
+    /// Kanban data cache with 30s TTL.
+    ///
+    /// Stores the full kanban GraphQL response (PRs, merged PRs, repos) keyed by
+    /// a hash of the repo paths. Integrated into DaemonState (rather than a global
+    /// static) so the daemon can inspect and clean it up alongside other caches.
+    kanban_cache: rpc::KanbanCache,
 }
 
 impl DaemonState {
@@ -516,6 +537,8 @@ impl DaemonState {
         let now = std::time::Instant::now();
         let mut cache = self.rpc_response_cache.lock().await;
         cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
+        // Also clean up expired kanban cache entries
+        self.kanban_cache.cleanup();
     }
 
     /// Check if the daemon is at the maximum coworker limit (absolute cap).
@@ -628,11 +651,13 @@ impl DaemonState {
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
+            reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashSet::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
+            kanban_cache: rpc::KanbanCache::new(),
         })
     }
 
@@ -643,6 +668,7 @@ impl DaemonState {
     /// `CoworkerManager::register` to add the coworker to the tracking map.
     async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<()> {
         let name = config.name.clone();
+        let slot_id = uuid::Uuid::new_v4().to_string();
 
         // Idempotent: if this coworker is already running, skip silently.
         // Multiple code paths (orphan recovery, task dispatch, PR call-in) can
@@ -655,11 +681,20 @@ impl DaemonState {
             return Ok(());
         }
 
+        // Inject project-resolved auth profile if not already set
+        let config = if config.auth_profile_dir.is_none() {
+            let mut c = config.clone();
+            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(&self.repo_name));
+            c
+        } else {
+            config.clone()
+        };
+
         // Prepare worktree and augment config with additional dirs
         // Note: Worktree creation now happens via Effect::EnsureWorktree in the
         // decision layer (rules.rs), not inline here. This follows the effect-based
         // architecture: I/O goes through the Effect pipeline.
-        let (working_dir, launch_config) = self.coworkers.prepare_spawn(config)?;
+        let (working_dir, launch_config) = self.coworkers.prepare_spawn(&config)?;
 
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config();
@@ -684,17 +719,17 @@ impl DaemonState {
             }
         }
 
-        // Spawn the headless session
+        // Spawn the headless session (keyed by slot_id)
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
-            .spawn(&name, &headless_config, initial_prompt)
+            .spawn(&name, &slot_id, &headless_config, initial_prompt)
             .await?;
 
-        // Register in the CoworkerManager tracking map
+        // Register in the CoworkerManager tracking map (keyed by slot_id)
         // session_id is None initially — it arrives later via the init StreamEvent
-        if let Err(e) = self
-            .coworkers
-            .register(&name, working_dir, None, config.model.clone())
+        if let Err(e) =
+            self.coworkers
+                .register(&slot_id, &name, working_dir, None, config.model.clone())
         {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
@@ -864,14 +899,6 @@ impl DaemonState {
         if let Some(ref tx) = self.web_updates_tx {
             let _ = tx.send(update);
         }
-    }
-
-    /// Send a message to the appropriate channel (based on Message.channel field)
-    /// and broadcast it to WebSocket clients.
-    fn send_and_broadcast(&self, message: &Message) -> crate::Result<()> {
-        self.channel_router.send(message)?;
-        self.broadcast_web_update(web::channel_message_update(message));
-        Ok(())
     }
 
     /// Async version of send_and_broadcast that uses spawn_blocking for the channel write.
@@ -1193,6 +1220,77 @@ fn acquire_pid_lock(pid_path: &PathBuf) -> crate::Result<File> {
     }
 }
 
+/// Persist session info for all running coworkers before daemon shutdown.
+///
+/// Collects session data from SessionManager and enriches it with task/PR/purpose
+/// info from CoworkerManager and persistent state, then saves to daemon-state.json.
+async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> {
+    // Collect base session info (session_id, pid, last_active) from SessionManager
+    let mut session_info = state.session_manager.collect_session_info().await;
+
+    // Enrich with task/PR assignments and working directories from CoworkerManager
+    let coworkers = state.coworkers.list();
+    for coworker in coworkers {
+        if let Some(info) = session_info.get_mut(&coworker.name) {
+            info.working_dir = Some(coworker.working_dir.clone());
+
+            // Determine coworker type and assignment based on current_task and PR assignment
+            // Check if this coworker is assigned as a reviewer
+            let persistent = state.persistent_state.lock().await;
+            let is_reviewer = persistent
+                .github
+                .pr_reviewers
+                .values()
+                .any(|assignment| assignment.reviewer == coworker.name);
+            drop(persistent);
+
+            if is_reviewer {
+                // Reviewer coworker
+                info.coworker_type = Some("reviewer".to_string());
+
+                // Look up PR assignment from persistent state
+                let persistent = state.persistent_state.lock().await;
+                if let Some(assignment) = persistent
+                    .github
+                    .pr_reviewers
+                    .values()
+                    .find(|assignment| assignment.reviewer == coworker.name)
+                {
+                    let pr_num = assignment.pr_number;
+                    info.pr_number = Some(pr_num);
+                    info.purpose = format!("reviewer for PR #{}", pr_num);
+                } else {
+                    info.purpose = "reviewer (unassigned)".to_string();
+                }
+            } else {
+                // Regular dev coworker
+                info.coworker_type = Some("dev".to_string());
+                if let Some(task_str) = &coworker.current_task {
+                    // Parse task ID from string like "!42" or "42"
+                    let task_id: Option<u64> = task_str.trim_start_matches('!').parse().ok();
+                    info.task_id = task_id;
+                    info.purpose = format!("task {}", task_str);
+                } else {
+                    info.purpose = "dev (no task)".to_string();
+                }
+            }
+        }
+    }
+
+    // Save enriched session info to persistent state
+    {
+        let mut persistent = state.persistent_state.lock().await;
+        persistent.headless_sessions = session_info;
+        persistent.save_for_repo(&state.repo_name)?;
+        info!(
+            "Persisted {} session(s) for restart survival",
+            persistent.headless_sessions.len()
+        );
+    }
+
+    Ok(())
+}
+
 /// Run the full snapshot→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
     let mut snap = snapshot::collect_world_snapshot(state).await;
@@ -1478,6 +1576,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     // Recover coworker workflow state from their state files across daemon restarts.
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
+    // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
+    // This must run BEFORE session recovery to clean up processes before spawning new ones.
+    startup::kill_zombie_claude_processes();
+
+    // Recover headless coworker sessions from persisted state (session survival).
+    // This kills orphaned processes and spawns with --resume to continue previous work.
+    let recovery_effects =
+        startup::recover_headless_sessions(&state.persistent_state, &repo_name).await;
+    if !recovery_effects.is_empty() {
+        info!(
+            "Executing {} session recovery effect(s)",
+            recovery_effects.len()
+        );
+        effects::execute_effects(recovery_effects, &state).await;
+    }
+
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let mut sigterm = signal(SignalKind::terminate())?;
@@ -1627,7 +1741,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     debug!("Buffering CI success for batching: {} on {}", ci_check.check_name, ci_check.target);
                     let mut buffer = state.ci_notification_buffer.lock().await;
                     buffer.add(ci_check);
-                } else if let Err(e) = state.send_and_broadcast(&webhook_event.message) {
+                } else if let Err(e) = state.send_and_broadcast_async(&webhook_event.message).await {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
 
@@ -1693,7 +1807,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                         pr_number, state.default_branch
                     );
                     let channel_msg = Message::text("system", channel_text);
-                    if let Err(e) = state.send_and_broadcast(&channel_msg) {
+                    if let Err(e) = state.send_and_broadcast_async(&channel_msg).await {
                         warn!("Failed to post merge notification for PR #{}: {}", pr_number, e);
                     }
                     // Direct nudge includes the actionable instruction
@@ -1874,7 +1988,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     };
 
                     let msg = crate::message::Message::text("system", message_text);
-                    if let Err(e) = state.send_and_broadcast(&msg) {
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post session exit message for {}: {}", name, e);
                     }
                 }
@@ -1959,7 +2073,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                             let msg = Message::system(
                                 format!("Channel log rotated: {} old messages archived", archived)
                             );
-                            if let Err(e) = state.send_and_broadcast(&msg) {
+                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
                                 warn!("Failed to send rotation notification: {}", e);
                             }
                         }
@@ -1991,7 +2105,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     for batch in batched {
                         let msg = trackers::format_batched_ci_notification(&batch);
                         let message = Message::text("github", msg);
-                        if let Err(e) = state.send_and_broadcast(&message) {
+                        if let Err(e) = state.send_and_broadcast_async(&message).await {
                             error!("Failed to post batched CI notification: {}", e);
                         }
                     }
@@ -2027,11 +2141,28 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         }
     }
 
-    // Shut down all coworker sessions to prevent orphaned processes
-    info!("Shutting down all coworker sessions...");
+    // Persist session info for survival across daemon restarts
+    info!("Persisting session info for restart survival...");
+    if let Err(e) = persist_sessions_for_restart(&state).await {
+        warn!(
+            "Failed to persist sessions for restart (sessions will not survive): {}",
+            e
+        );
+    }
+
+    // Mark all sessions to be detached (not killed) on drop
+    // CRITICAL: Always detach even if persistence failed above - sessions should
+    // survive the restart even if we can't restore their context
+    state.session_manager.detach_all().await;
+
+    // Shut down all coworker sessions (detach instead of kill)
+    info!("Shutting down all coworker sessions (detach mode)...");
     let shutdown_count = state.session_manager.shutdown_all().await;
     if shutdown_count > 0 {
-        info!("Shut down {} coworker session(s)", shutdown_count);
+        info!(
+            "Detached {} coworker session(s) for restart survival",
+            shutdown_count
+        );
     }
 
     // Signal webhook forwarder watchdog to stop
@@ -2772,6 +2903,9 @@ mod tests {
         assert!(SKIP_SENDERS.contains(&"system"));
         assert!(SKIP_SENDERS.contains(&"github"));
         assert!(SKIP_SENDERS.contains(&"user"));
+        // "architect" is skipped to prevent diagram messages from triggering
+        // @mention routing in the chat monitor.
+        assert!(SKIP_SENDERS.contains(&"architect"));
     }
 
     #[test]
@@ -3389,6 +3523,7 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
             effects::Effect::NudgeCoworkerWithCallbacks {
                 name: "pleasant".to_string(),
                 message: "task prompt".to_string(),
+                session_id: None,
                 on_success: vec![effects::Effect::RecordTaskAssignment {
                     coworker: "pleasant".to_string(),
                     task_id: "873".to_string(),

@@ -139,7 +139,7 @@ enum Commands {
     /// Manage authentication profiles for multi-account support
     Auth {
         #[command(subcommand)]
-        command: AuthCommand,
+        command: Option<AuthCommand>,
     },
     /// Report coworker workflow state (called by coworkers to update status)
     State {
@@ -183,6 +183,12 @@ enum Commands {
     Webserver {
         #[command(subcommand)]
         command: WebserverCommand,
+    },
+    /// Run Claude Code using the current midtown auth profile
+    Claude {
+        /// Additional arguments to pass to the claude CLI
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Run a headless Claude Code session via the daemon (JSON streaming)
     Headless {
@@ -488,8 +494,10 @@ fn main() {
     }
 
     // Auth command (no daemon required - profile management)
+    // Bare `midtown auth` defaults to `midtown auth list`
     if let Commands::Auth { command } = &command {
-        let result = cli::handle_auth(command);
+        let cmd = command.clone().unwrap_or(AuthCommand::List);
+        let result = cli::handle_auth(&cmd);
         handle_result(format, result);
         return;
     }
@@ -684,6 +692,43 @@ fn main() {
         }
     }
 
+    // Claude command (exec into claude with auth profile — replaces this process)
+    if let Commands::Claude { args } = &command {
+        use std::os::unix::process::CommandExt;
+
+        // Use project-aware resolution when inside a project
+        let project = midtown::paths::detect_repo_name().unwrap_or_default();
+        let (profile, profile_dir) = if project.is_empty() {
+            (
+                midtown::auth::current_profile(),
+                midtown::auth::current_profile_dir(),
+            )
+        } else {
+            let p = midtown::auth::active_profile_for_project(&project);
+            let d = midtown::auth::profile_dir(&p);
+            (p, d)
+        };
+
+        // Ensure the profile directory exists
+        if !profile_dir.exists() {
+            eprintln!(
+                "Error: Auth profile '{}' has no config directory at {}",
+                profile,
+                profile_dir.display()
+            );
+            eprintln!("Run `midtown auth login {}` first.", profile);
+            std::process::exit(1);
+        }
+
+        let mut cmd = std::process::Command::new("claude");
+        cmd.env("CLAUDE_CONFIG_DIR", &profile_dir);
+        cmd.args(args);
+
+        let err = cmd.exec();
+        eprintln!("Failed to exec claude: {}", err);
+        std::process::exit(1);
+    }
+
     // Task list/view commands (no daemon required — reads from disk)
     if let Commands::Task { command } = &command
         && let Some(result) = cli::handle_task_local(command)
@@ -736,6 +781,7 @@ fn main() {
         | Commands::Chat
         | Commands::E2e { .. }
         | Commands::Auth { .. }
+        | Commands::Claude { .. }
         | Commands::State { .. }
         | Commands::Hook { .. }
         | Commands::Diagram { .. }
