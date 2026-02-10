@@ -21,6 +21,9 @@ pub(crate) struct CoworkerSnapshot {
     pub name: String,
     pub started_at: DateTime<Utc>,
     pub isolated_tasks: bool,
+    /// Claude Code session UUID, if known. Enables session-first lookups
+    /// alongside name-based lookups during the multi-session migration.
+    pub session_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,52 +1177,6 @@ pub fn decide_review_complete_action(
 }
 
 // ---------------------------------------------------------------------------
-// Reviewer liveness decision
-// ---------------------------------------------------------------------------
-
-/// Decision about whether a reviewer assignment is still valid.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReviewerLivenessDecision {
-    /// Reviewer is still active and working — skip spawning a replacement.
-    Active,
-    /// Reviewer is dead (not in active_names) — spawn a replacement.
-    Dead,
-    /// Reviewer is running but usage-limited — can't complete review, spawn a replacement.
-    UsageLimited,
-}
-
-/// Pure decision function: should we spawn a replacement reviewer for a PR?
-///
-/// Checks whether the assigned reviewer is still alive and capable of completing
-/// the review. Uses snapshot data only (no I/O).
-///
-/// - `active_names`: coworkers currently running (from `WorldSnapshot::active_names`)
-/// - `usage_limited_coworkers`: coworkers at usage limit (from `WorldSnapshot::usage_limited_coworkers`)
-/// - `active_reviewer_names`: coworkers that are currently acting as reviewers
-///   (i.e., their current_task indicates they're reviewing). If a coworker is in
-///   `active_names` but not in `active_reviewer_names`, it was respawned as a dev
-///   coworker and the reviewer assignment is stale.
-pub fn decide_reviewer_liveness(
-    reviewer_name: &str,
-    active_names: &std::collections::HashSet<String>,
-    usage_limited_coworkers: &std::collections::HashSet<String>,
-    active_reviewer_names: &std::collections::HashSet<String>,
-) -> ReviewerLivenessDecision {
-    if !active_names.contains(reviewer_name) {
-        // Process not running at all
-        ReviewerLivenessDecision::Dead
-    } else if !active_reviewer_names.contains(reviewer_name) {
-        // Process is running but as a dev coworker, not a reviewer.
-        // The reviewer session died and the name was reused for dev work.
-        ReviewerLivenessDecision::Dead
-    } else if usage_limited_coworkers.contains(reviewer_name) {
-        ReviewerLivenessDecision::UsageLimited
-    } else {
-        ReviewerLivenessDecision::Active
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Task assignment decision types and functions
 // ---------------------------------------------------------------------------
 
@@ -1611,6 +1568,7 @@ mod tests {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
             isolated_tasks: false,
+            session_id: None,
         }
     }
 
@@ -1619,6 +1577,7 @@ mod tests {
             name: name.to_string(),
             started_at: Utc::now() - chrono::Duration::minutes(minutes_old),
             isolated_tasks: true,
+            session_id: None,
         }
     }
 
@@ -4492,136 +4451,6 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
         assert!(
             has_api_error_pattern(stuck_with_chrome),
             "UI chrome after API error should not count as recovery"
-        );
-    }
-
-    // ── Reviewer liveness decision tests ──────────────────────────────
-
-    #[test]
-    fn reviewer_active_when_in_active_names_and_reviewing() {
-        let active_names: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-        let usage_limited: HashSet<String> = HashSet::new();
-        let active_reviewers: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::Active,
-            "reviewer in active_names and active_reviewers should be Active"
-        );
-    }
-
-    #[test]
-    fn reviewer_dead_when_not_in_active_names() {
-        let active_names: HashSet<String> =
-            ["park", "madison"].iter().map(|s| s.to_string()).collect();
-        let usage_limited: HashSet<String> = HashSet::new();
-        let active_reviewers: HashSet<String> = HashSet::new();
-
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::Dead,
-            "reviewer not in active_names should be Dead"
-        );
-    }
-
-    #[test]
-    fn reviewer_dead_when_active_names_empty() {
-        let active_names: HashSet<String> = HashSet::new();
-        let usage_limited: HashSet<String> = HashSet::new();
-        let active_reviewers: HashSet<String> = HashSet::new();
-
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::Dead,
-            "reviewer should be Dead when no coworkers are active"
-        );
-    }
-
-    #[test]
-    fn reviewer_dead_when_active_but_doing_dev_work() {
-        // columbus is alive but was respawned as a dev coworker, not a reviewer.
-        // The ghost reviewer assignment should be treated as Dead.
-        let active_names: HashSet<String> = ["columbus"].iter().map(|s| s.to_string()).collect();
-        let usage_limited: HashSet<String> = HashSet::new();
-        let active_reviewers: HashSet<String> = HashSet::new(); // columbus is NOT reviewing
-
-        assert_eq!(
-            decide_reviewer_liveness("columbus", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::Dead,
-            "active coworker doing dev work (not in active_reviewers) should be Dead"
-        );
-    }
-
-    #[test]
-    fn reviewer_usage_limited_when_active_but_at_limit() {
-        let active_names: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-        let usage_limited: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-        let active_reviewers: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::UsageLimited,
-            "reviewer active but usage-limited should be UsageLimited (can't complete review)"
-        );
-    }
-
-    #[test]
-    fn reviewer_dead_takes_priority_over_usage_limited() {
-        // If a coworker is both not active and in usage_limited (stale data),
-        // Dead should take priority because the process isn't running.
-        let active_names: HashSet<String> = HashSet::new();
-        let usage_limited: HashSet<String> = ["york"].iter().map(|s| s.to_string()).collect();
-        let active_reviewers: HashSet<String> = HashSet::new();
-
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::Dead,
-            "dead reviewer should return Dead even if usage_limited contains the name"
-        );
-    }
-
-    #[test]
-    fn reviewer_liveness_unaffected_by_other_coworkers() {
-        // Other coworkers being active/usage-limited shouldn't affect this reviewer's decision
-        let active_names: HashSet<String> = ["park", "madison", "amsterdam"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let usage_limited: HashSet<String> = ["park"].iter().map(|s| s.to_string()).collect();
-        // amsterdam and park are reviewing; madison is doing dev work
-        let active_reviewers: HashSet<String> = ["amsterdam", "park"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        // york is not in active_names
-        assert_eq!(
-            decide_reviewer_liveness("york", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::Dead,
-        );
-
-        // amsterdam is active and reviewing
-        assert_eq!(
-            decide_reviewer_liveness(
-                "amsterdam",
-                &active_names,
-                &usage_limited,
-                &active_reviewers
-            ),
-            ReviewerLivenessDecision::Active,
-        );
-
-        // park is active and reviewing but usage-limited
-        assert_eq!(
-            decide_reviewer_liveness("park", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::UsageLimited,
-        );
-
-        // madison is active but doing dev work (not in active_reviewers)
-        assert_eq!(
-            decide_reviewer_liveness("madison", &active_names, &usage_limited, &active_reviewers),
-            ReviewerLivenessDecision::Dead,
-            "active dev coworker should be Dead for reviewer liveness"
         );
     }
 

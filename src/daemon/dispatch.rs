@@ -296,6 +296,7 @@ fn decide_discovered_coworker_nudges(
             effects.push(Effect::NudgeCoworker {
                 name: name.clone(),
                 message: prompt,
+                session_id: None,
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -316,6 +317,7 @@ fn decide_discovered_coworker_nudges(
             effects.push(Effect::NudgeCoworker {
                 name: name.clone(),
                 message: prompt,
+                session_id: None,
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -431,6 +433,7 @@ pub(super) fn check_for_duplicate_task_workers(
             effects.push(Effect::ShutdownCoworker {
                 name: duplicate.clone(),
                 message: String::new(),
+                session_id: None,
             });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -887,6 +890,7 @@ pub(super) fn spawn_for_pending_tasks(
                 effects.push(Effect::NudgeCoworkerWithCallbacks {
                     name: o.clone(),
                     message: nudge_msg,
+                    session_id: None,
                     on_success: vec![Effect::RecordCooldown {
                         category: "task_nudge".to_string(),
                         key: task_key.clone(),
@@ -1217,6 +1221,7 @@ pub(super) fn spawn_for_pending_tasks(
             effects.push(Effect::NudgeCoworkerWithCallbacks {
                 name: coworker_name.clone(),
                 message: prompt,
+                session_id: None,
                 on_success: vec![
                     Effect::RecordTaskAssignment {
                         coworker: coworker_name.clone(),
@@ -1848,7 +1853,7 @@ mod tests {
         // NudgeCoworker + PostToChannel
         assert_eq!(effects.len(), 2);
         match &effects[0] {
-            Effect::NudgeCoworker { name, message } => {
+            Effect::NudgeCoworker { name, message, .. } => {
                 assert_eq!(name, "lexington");
                 assert!(message.contains("Resume task !42"));
             }
@@ -2001,6 +2006,7 @@ mod tests {
             merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             running_coworkers: vec![],
             active_coworkers: vec![],
             coworker_snapshots: vec![],
@@ -2136,6 +2142,7 @@ mod tests {
             merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             active_reviewers: HashSet::new(),
             busy_coworkers: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -2227,6 +2234,7 @@ mod tests {
                 "lexington".to_string(),
             )],
             active_names: HashSet::new(), // lexington is NOT active (orphaned)
+            active_session_ids: HashSet::new(),
             coworkers_with_open_prs: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             coworker_stop_times: HashMap::new(),
@@ -2350,6 +2358,7 @@ mod tests {
                 "lexington".to_string(),
             )],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             coworkers_with_open_prs: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             coworker_stop_times: HashMap::new(),
@@ -2498,6 +2507,7 @@ mod tests {
             merged_pr_branches: HashMap::new(),
             is_at_dev_limit: false,
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             running_coworkers: vec![],
             active_coworkers: vec![],
             coworker_snapshots: vec![],

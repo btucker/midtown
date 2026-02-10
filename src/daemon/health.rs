@@ -372,6 +372,7 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
+            session_id: None,
         });
     }
 
@@ -437,6 +438,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
+            session_id: None,
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::PostToChannel {
@@ -495,6 +497,7 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
+            session_id: None,
         });
 
         // Respawn with incremented restart count
@@ -525,6 +528,7 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
                 reviewer_name: restart.name.clone(),
                 source: crate::github_state::AssignmentSource::Manual,
                 restart_count: new_restart_count,
+                reviewer_session_id: None,
             },
         ];
 
@@ -717,6 +721,7 @@ pub(super) fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> 
         effects.push(Effect::NudgeCoworker {
             name: cw.name.clone(),
             message: "continue".to_string(),
+            session_id: None,
         });
     }
 
@@ -779,6 +784,7 @@ pub(super) fn check_and_nudge_api_errors(
         effects.push(Effect::NudgeCoworker {
             name: name.clone(),
             message: "The API error may have cleared. Try continuing your work.".to_string(),
+            session_id: None,
         });
         effects.push(Effect::RecordCooldown {
             category: "api_error_nudge".to_string(),
@@ -881,6 +887,7 @@ pub(super) async fn check_and_respawn_dead_processes(
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
+            session_id: None,
         });
         effects.push(Effect::SpawnCoworker(config));
         effects.push(Effect::RecordCooldown {
@@ -1028,6 +1035,7 @@ mod tests {
         use std::collections::{HashMap, HashSet};
 
         let running = Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "lexington".to_string(),
             status: CoworkerStatus::Running,
             working_dir: "/tmp/test".to_string(),
@@ -1038,6 +1046,7 @@ mod tests {
             model: "sonnet".to_string(),
         };
         let stopping = Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
             name: "park".to_string(),
             status: CoworkerStatus::Stopping,
             working_dir: "/tmp/test".to_string(),
@@ -1054,6 +1063,7 @@ mod tests {
             running_coworkers: vec![running.clone()],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "midtown-test".to_string(),
             coworker_start_times: HashMap::new(),
             coworker_stop_times: HashMap::new(),

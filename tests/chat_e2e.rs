@@ -76,6 +76,32 @@ fn capture_pane(session: &str) -> Option<String> {
     }
 }
 
+/// Wait for the TUI to fully render by polling for expected content.
+/// Returns the captured content when ready, or panics after timeout.
+fn wait_for_tui_ready(session: &str, timeout_secs: u64) -> String {
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(timeout_secs);
+    loop {
+        let content = capture_pane(session).unwrap_or_default();
+        // Check for TUI-specific content that indicates rendering is complete.
+        // The split-panel layout always shows "#midtown" in the chat panel header
+        // or "Backlog"/"In Progress" in the kanban board.
+        if content.contains("#midtown")
+            || content.contains("Backlog")
+            || content.contains("In Progress")
+        {
+            return content;
+        }
+        if start.elapsed() > timeout {
+            panic!(
+                "TUI did not render within {}s. Last capture:\n{}",
+                timeout_secs, content
+            );
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// Helper to send keys to a tmux pane.
 fn send_keys(session: &str, keys: &str) {
     let _ = Command::new("tmux")
@@ -526,15 +552,20 @@ fn test_full_tui_rendering() {
     send_keys(&session, "Enter");
     thread::sleep(Duration::from_millis(200));
 
+    // Create .midtown/projects/<repo>/ so the TUI can find its channel
+    // HOME is set to std::env::temp_dir(), repo name comes from the git dir basename
+    let midtown_project_dir = std::env::temp_dir()
+        .join(".midtown")
+        .join("projects")
+        .join(test_dir.file_name().unwrap());
+    let _ = fs::create_dir_all(&midtown_project_dir);
+
     // Start midtown chat
     send_keys(&session, &format!("{} chat", binary_path.display()));
     send_keys(&session, "Enter");
 
-    // Wait for TUI to start
-    thread::sleep(Duration::from_millis(2000));
-
-    // Capture the rendered output
-    let content = capture_pane(&session).unwrap_or_default();
+    // Wait for TUI to render
+    let content = wait_for_tui_ready(&session, 10);
 
     // Verify basic TUI structure is visible
     // The kanban board should show column headers
@@ -690,6 +721,14 @@ fn test_message_appears_in_tui_promptly() {
         .join("delay-test-repo");
     fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
 
+    // Create channel.jsonl so the TUI uses this legacy path instead of channels/midtown.jsonl
+    let channel_file = midtown_dir.join("channel.jsonl");
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&channel_file)
+        .expect("Failed to create channel file");
+
     // Initialize git in test directory (midtown requires it)
     let git_dir = test_dir.join("delay-test-repo");
     fs::create_dir_all(&git_dir).expect("Failed to create git dir");
@@ -718,22 +757,11 @@ fn test_message_appears_in_tui_promptly() {
     send_keys(&session, &format!("{} chat", binary_path.display()));
     send_keys(&session, "Enter");
 
-    // Wait for TUI to start and render initial state
-    thread::sleep(Duration::from_secs(2));
-
-    // Verify TUI started
-    let initial_content = capture_pane(&session).unwrap_or_default();
-    if !initial_content.contains("#midtown") && !initial_content.contains("Backlog") {
-        eprintln!(
-            "TUI may not have started correctly. Content:\n{}",
-            initial_content
-        );
-        // Still continue - the TUI might be running but showing different content
-    }
+    // Wait for TUI to render
+    let _initial_content = wait_for_tui_ready(&session, 10);
 
     // Write a message with a unique identifier directly to the channel file
     let unique_msg = format!("DELAY_TEST_{}", std::process::id());
-    let channel_file = midtown_dir.join("channel.jsonl");
 
     use chrono::Utc;
     let timestamp = Utc::now().to_rfc3339();
@@ -886,9 +914,8 @@ fn test_message_update_in_existing_channel() {
     send_keys(&session, &format!("{} chat", binary_path.display()));
     send_keys(&session, "Enter");
 
-    // Wait for TUI to start and load existing messages
-    // Use longer delay to ensure TUI has completed initial refresh cycle
-    thread::sleep(Duration::from_secs(3));
+    // Wait for TUI to render
+    let _ = wait_for_tui_ready(&session, 10);
 
     // Capture initial TUI state
     let initial_content = capture_pane(&session).unwrap_or_default();
@@ -1033,7 +1060,12 @@ fn test_selection_mode_toggle() {
 
     // Create test directory structure
     let test_dir = std::env::temp_dir().join(format!("midtown-select-test-{}", std::process::id()));
-    let midtown_dir = test_dir.join(".midtown").join("select-test-repo");
+    // Use the projects/ path that midtown chat expects (auto_migrate moves old-style
+    // ~/.midtown/<repo>/ to ~/.midtown/projects/<repo>/, breaking subsequent writes)
+    let midtown_dir = test_dir
+        .join(".midtown")
+        .join("projects")
+        .join("select-test-repo");
     fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
 
     // Initialize git
@@ -1064,31 +1096,31 @@ fn test_selection_mode_toggle() {
     send_keys(&session, &format!("{} chat", binary_path.display()));
     send_keys(&session, "Enter");
 
-    // Wait for TUI to start
-    thread::sleep(Duration::from_secs(2));
+    // Wait for TUI to render
+    let _ = wait_for_tui_ready(&session, 10);
 
     // Capture initial state - should NOT show [SELECT] indicator
     let initial_content = capture_pane(&session).unwrap_or_default();
     let initially_in_select_mode = initial_content.contains("[SELECT");
 
-    // Press 's' to toggle selection mode
-    send_keys(&session, "s");
+    // Press Ctrl+S to toggle selection mode
+    send_keys(&session, "C-s");
     thread::sleep(Duration::from_millis(500));
 
-    // Capture state after pressing 's' - should show [SELECT] indicator
+    // Capture state after pressing Ctrl+S - should show [SELECT] indicator
     let select_mode_content = capture_pane(&session).unwrap_or_default();
     let in_select_mode = select_mode_content.contains("[SELECT");
 
-    // Press 's' again to exit selection mode
-    send_keys(&session, "s");
+    // Press Ctrl+S again to exit selection mode
+    send_keys(&session, "C-s");
     thread::sleep(Duration::from_millis(500));
 
-    // Capture state after pressing 's' again - should NOT show [SELECT] indicator
+    // Capture state after pressing Ctrl+S again - should NOT show [SELECT] indicator
     let normal_mode_content = capture_pane(&session).unwrap_or_default();
     let back_to_normal = !normal_mode_content.contains("[SELECT");
 
-    // Quit the TUI
-    send_keys(&session, "q");
+    // Quit the TUI via Ctrl+Q
+    send_keys(&session, "C-q");
     thread::sleep(Duration::from_millis(200));
 
     // Cleanup
@@ -1101,12 +1133,12 @@ fn test_selection_mode_toggle() {
     );
     assert!(
         in_select_mode,
-        "After pressing 's', TUI should show [SELECT] indicator. Got:\n{}",
+        "After pressing Ctrl+S, TUI should show [SELECT] indicator. Got:\n{}",
         select_mode_content
     );
     assert!(
         back_to_normal,
-        "After pressing 's' again, TUI should exit selection mode. Got:\n{}",
+        "After pressing Ctrl+S again, TUI should exit selection mode. Got:\n{}",
         normal_mode_content
     );
 }
@@ -1148,7 +1180,12 @@ fn test_scrollwheel_scrolling() {
 
     // Create test directory structure
     let test_dir = std::env::temp_dir().join(format!("midtown-scroll-test-{}", std::process::id()));
-    let midtown_dir = test_dir.join(".midtown").join("scroll-test-repo");
+    // Use the projects/ path that midtown chat expects (auto_migrate moves old-style
+    // ~/.midtown/<repo>/ to ~/.midtown/projects/<repo>/, breaking subsequent writes)
+    let midtown_dir = test_dir
+        .join(".midtown")
+        .join("projects")
+        .join("scroll-test-repo");
     fs::create_dir_all(&midtown_dir).expect("Failed to create midtown dir");
 
     // Initialize git
@@ -1208,8 +1245,8 @@ fn test_scrollwheel_scrolling() {
     send_keys(&session, &format!("{} chat", binary_path.display()));
     send_keys(&session, "Enter");
 
-    // Wait for TUI to start and load messages
-    thread::sleep(Duration::from_secs(3));
+    // Wait for TUI to render
+    let _ = wait_for_tui_ready(&session, 10);
 
     // Capture initial state - should show newest messages (90-99)
     let initial_content = capture_pane(&session).unwrap_or_default();
@@ -1241,8 +1278,8 @@ fn test_scrollwheel_scrolling() {
         || scrolled_content.contains("SCROLL_MSG_3")
         || scrolled_content.contains("SCROLL_MSG_4");
 
-    // Scroll back down using 'G' (go to end/bottom)
-    send_keys(&session, "G");
+    // Scroll back down using End key (go to end/bottom)
+    send_keys(&session, "End");
     thread::sleep(Duration::from_millis(500));
 
     // Capture after scrolling to bottom
@@ -1271,7 +1308,7 @@ fn test_scrollwheel_scrolling() {
     );
     assert!(
         back_at_bottom,
-        "After pressing 'G', should be back at bottom (90-99). Got:\n{}",
+        "After pressing End, should be back at bottom (90-99). Got:\n{}",
         bottom_content
     );
 }

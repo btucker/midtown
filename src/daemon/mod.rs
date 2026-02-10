@@ -660,6 +660,7 @@ impl DaemonState {
     /// `CoworkerManager::register` to add the coworker to the tracking map.
     async fn spawn_coworker(&self, config: &crate::launch::LaunchConfig) -> crate::Result<()> {
         let name = config.name.clone();
+        let slot_id = uuid::Uuid::new_v4().to_string();
 
         // Idempotent: if this coworker is already running, skip silently.
         // Multiple code paths (orphan recovery, task dispatch, PR call-in) can
@@ -710,16 +711,17 @@ impl DaemonState {
             }
         }
 
-        // Spawn the headless session
+        // Spawn the headless session (keyed by slot_id)
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
-            .spawn(&name, &headless_config, initial_prompt)
+            .spawn(&name, &slot_id, &headless_config, initial_prompt)
             .await?;
 
-        // Register in the CoworkerManager tracking map
+        // Register in the CoworkerManager tracking map (keyed by slot_id)
         // session_id is None initially — it arrives later via the init StreamEvent
         let isolated_tasks = matches!(config.task_mode, crate::launch::TaskMode::Isolated);
         if let Err(e) = self.coworkers.register(
+            &slot_id,
             &name,
             working_dir,
             None,
@@ -3514,6 +3516,7 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
             effects::Effect::NudgeCoworkerWithCallbacks {
                 name: "pleasant".to_string(),
                 message: "task prompt".to_string(),
+                session_id: None,
                 on_success: vec![effects::Effect::RecordTaskAssignment {
                     coworker: "pleasant".to_string(),
                     task_id: "873".to_string(),

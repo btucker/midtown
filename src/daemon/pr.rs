@@ -7,7 +7,7 @@
 //! - Process pending review spawns from webhook-triggered delays
 //! - Nudge PR owners when their PR receives comments
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -243,13 +243,40 @@ pub(super) async fn poll_prs_for_issues(
     // Get running coworkers for cleanup_expired_preserving, which removes timed-out
     // reviewer assignments but preserves those for still-running reviewers (i.e., reviews
     // that are taking longer than the timeout but the reviewer is still actively working).
-    // Exclude usage-limited coworkers: they're running but can't complete reviews,
-    // so their expired assignments should be cleaned up to allow reassignment.
+    // Only include coworkers that own a review worktree branch — if a reviewer name was
+    // reused for dev work after restart, the stale assignment should expire naturally
+    // rather than being preserved by the dev coworker's presence.
+    // Also exclude usage-limited coworkers: they can't complete reviews.
+    // Normalize to lowercase for consistent matching — worktree_branch_owners
+    // comes from WorktreeAssignment.current_coworker (external input), while
+    // running_coworkers uses names from AVENUE_NAMES (always lowercase).
+    let review_branch_owners: HashSet<String> = snap
+        .worktree_branch_owners
+        .iter()
+        .filter(|(branch, _)| branch.starts_with("review-pr-"))
+        .map(|(_, owner)| owner.to_lowercase())
+        .collect();
     let running_coworker_names: HashSet<String> = snap
         .running_coworkers
         .iter()
         .map(|c| c.name.clone())
-        .filter(|name| !snap.usage_limited_coworkers.contains(&name.to_lowercase()))
+        .filter(|name| {
+            review_branch_owners.contains(&name.to_lowercase())
+                && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
+        })
+        .collect();
+    // Build session ID set for same reviewer-subset — enables session-based matching
+    // in cleanup_expired_preserving when assignments carry a reviewer_session_id.
+    let running_reviewer_session_ids: HashSet<String> = snap
+        .running_coworkers
+        .iter()
+        .filter(|c| {
+            review_branch_owners.contains(&c.name.to_lowercase())
+                && !snap
+                    .usage_limited_coworkers
+                    .contains(&c.name.to_lowercase())
+        })
+        .filter_map(|c| c.session_id.clone())
         .collect();
 
     // Get list of idle coworkers for handoff decisions
@@ -321,8 +348,24 @@ pub(super) async fn poll_prs_for_issues(
     }
     {
         let mut ps = state.persistent_state.lock().await;
+        ps.github.cleanup_expired_preserving(
+            &running_coworker_names,
+            Some(&running_reviewer_session_ids),
+        );
+        // Backfill reviewer_session_id for assignments created before the session
+        // started (optimistic assignment pattern: assign before spawn completes).
+        let reviewer_session_map: HashMap<String, String> = snap
+            .running_coworkers
+            .iter()
+            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
+            .filter_map(|c| {
+                c.session_id
+                    .as_ref()
+                    .map(|sid| (c.name.clone(), sid.clone()))
+            })
+            .collect();
         ps.github
-            .cleanup_expired_preserving(&running_coworker_names);
+            .backfill_reviewer_session_ids(&reviewer_session_map);
         ps.github.cleanup_stale_webhook_events();
     }
     {
@@ -410,8 +453,10 @@ pub(super) async fn poll_prs_for_issues(
             .collect();
         let mut ps = state.persistent_state.lock().await;
         ps.github.cleanup_closed_prs(&open_pr_numbers);
-        ps.github
-            .cleanup_expired_preserving(&running_coworker_names);
+        ps.github.cleanup_expired_preserving(
+            &running_coworker_names,
+            Some(&running_reviewer_session_ids),
+        );
         if let Err(e) = ps.save_for_repo(&state.repo_name) {
             warn!("Failed to save daemon-state.json after cleanup: {}", e);
         }
@@ -690,6 +735,7 @@ fn pr_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1027,6 +1073,7 @@ async fn collect_stuck_condition_effects(
                         effects.push(Effect::NudgeCoworker {
                             name: name.clone(),
                             message: nudge_msg,
+                            session_id: None,
                         });
                         // Post to channel so it's visible
                         effects.push(Effect::PostSystemMessage {
@@ -1338,6 +1385,7 @@ fn comment_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -1553,90 +1601,6 @@ async fn collect_reviewer_effects_with_source(
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
 
-    // FIRST: Prune dead reviewer assignments (defensive cleanup).
-    // This removes stale assignments for coworkers that have stopped, are usage-limited,
-    // or whose name was reused for a dev coworker after restart.
-    // Without MAX_CONCURRENT_REVIEWS, this is purely cleanup to keep state tidy and prevent
-    // confusion about which PRs are actively being reviewed.
-    {
-        let coworker_list = state.coworkers.list();
-        let active_names: HashSet<String> = coworker_list
-            .iter()
-            .map(|cw| cw.name.to_lowercase())
-            .collect();
-        // Build the set of coworkers that are actually acting as reviewers.
-        // A coworker whose current_task starts with "reviewing" is a reviewer;
-        // one doing dev work has a different task. This catches the case where a
-        // reviewer died and the name was reused for a dev coworker after restart.
-        let active_reviewer_names: HashSet<String> = coworker_list
-            .iter()
-            .filter(|cw| {
-                cw.current_task
-                    .as_deref()
-                    .is_some_and(|t| t.starts_with("reviewing"))
-            })
-            .map(|cw| cw.name.to_lowercase())
-            .collect();
-        let usage_limited_coworkers: HashSet<String> = {
-            let health = state.headless_health.read().unwrap();
-            health
-                .iter()
-                .filter_map(|(name, h)| {
-                    if h.has_usage_limit {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
-        let mut ps = state.persistent_state.lock().await;
-        let assignments: Vec<(u64, String)> = ps
-            .github
-            .pr_reviewers
-            .iter()
-            .map(|(pr, a)| (*pr, a.reviewer.clone()))
-            .collect();
-
-        for (pr_number, reviewer_name) in assignments {
-            let liveness = crate::rules::decide_reviewer_liveness(
-                &reviewer_name,
-                &active_names,
-                &usage_limited_coworkers,
-                &active_reviewer_names,
-            );
-
-            match liveness {
-                crate::rules::ReviewerLivenessDecision::Active => {
-                    // Reviewer is alive and reviewing, keep the assignment
-                }
-                crate::rules::ReviewerLivenessDecision::Dead => {
-                    debug!(
-                        "Pruning dead reviewer assignment: PR #{} was assigned to {} but reviewer is dead or doing dev work",
-                        pr_number, reviewer_name
-                    );
-                    ps.github.remove_assignment(pr_number);
-                }
-                crate::rules::ReviewerLivenessDecision::UsageLimited => {
-                    debug!(
-                        "Pruning usage-limited reviewer assignment: PR #{} was assigned to {} but reviewer is usage-limited",
-                        pr_number, reviewer_name
-                    );
-                    ps.github.remove_assignment(pr_number);
-                }
-            }
-        }
-
-        // Save the pruned state
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-            warn!(
-                "Failed to save daemon-state.json after pruning dead reviewers: {}",
-                e
-            );
-        }
-    }
-
     for pr in prs {
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         if pr_number == 0 {
@@ -1749,8 +1713,8 @@ async fn collect_reviewer_effects_with_source(
         }
 
         // Check if already assigned for review.
-        // Dead/usage-limited reviewer assignments are pruned upfront (above),
-        // so any remaining assignment here has a live, active reviewer.
+        // Stale assignments are cleaned up by cleanup_expired_preserving() during
+        // the PR poll cycle, so any remaining assignment here is still valid.
         {
             let ps = state.persistent_state.lock().await;
             if ps.github.is_assigned(pr_number) {
@@ -1814,6 +1778,7 @@ async fn collect_reviewer_effects_with_source(
             reviewer_name: reviewer_name.clone(),
             source,
             restart_count: 0,
+            reviewer_session_id: None,
         });
 
         let on_success = vec![
@@ -1891,6 +1856,7 @@ fn review_complete_action_to_effects(
             vec![Effect::NudgeCoworkerWithCallbacks {
                 name: owner,
                 message,
+                session_id: None,
                 on_success: vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -3917,6 +3883,7 @@ mod tests {
             running_coworkers: vec![],
             coworker_snapshots: vec![],
             active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
             session_name: "test".to_string(),
             repo_name: "test-repo".to_string(),
             coworker_start_times: HashMap::new(),

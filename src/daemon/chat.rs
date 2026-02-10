@@ -209,7 +209,11 @@ fn mention_action_to_effects(
 
     match action {
         crate::rules::MentionAction::Nudge { name, message } => {
-            vec![Effect::NudgeCoworker { name, message }]
+            vec![Effect::NudgeCoworker {
+                name,
+                message,
+                session_id: None,
+            }]
         }
         crate::rules::MentionAction::Spawn { name, message } => {
             let config = crate::launch::LaunchConfig::coworker(

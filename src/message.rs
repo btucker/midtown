@@ -90,6 +90,11 @@ pub struct Message {
     /// Optional source channel for cross-posts (None if not a cross-post)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_channel: Option<String>,
+    /// Optional Claude session ID for disambiguation when multiple sessions
+    /// share the same coworker name. `None` for messages from system, lead,
+    /// or legacy messages before session tracking was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl Message {
@@ -118,6 +123,7 @@ impl Message {
             message_type,
             channel: None,
             source_channel: None,
+            session_id: None,
         }
     }
 
@@ -145,6 +151,7 @@ impl Message {
             message_type,
             channel: Some(channel.into()),
             source_channel: None,
+            session_id: None,
         }
     }
 
@@ -325,6 +332,7 @@ mod tests {
             message_type: MessageType::Text,
             channel: None, // Explicitly set to None for old code
             source_channel: None,
+            session_id: None,
         };
         assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
     }

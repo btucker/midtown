@@ -92,8 +92,15 @@ impl fmt::Display for AssignmentSource {
 pub struct PrReviewerAssignment {
     /// PR number
     pub pr_number: u64,
-    /// Coworker name assigned to review
+    /// Coworker name assigned to review (display/routing label).
     pub reviewer: String,
+    /// Claude session ID for the reviewing session, if known.
+    ///
+    /// Used to uniquely identify the session when multiple sessions share
+    /// a coworker name. `None` for assignments created before session tracking
+    /// was added (backward-compatible with persisted state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer_session_id: Option<String>,
     /// When the assignment was made
     pub assigned_at: DateTime<Utc>,
     /// How this assignment was triggered (webhook, polling fallback, or manual).
@@ -172,6 +179,7 @@ impl GitHubState {
         let assignment = PrReviewerAssignment {
             pr_number,
             reviewer: reviewer.to_string(),
+            reviewer_session_id: None,
             assigned_at: Utc::now(),
             source,
             webhook_event_id: None,
@@ -191,6 +199,7 @@ impl GitHubState {
         let assignment = PrReviewerAssignment {
             pr_number,
             reviewer: reviewer.to_string(),
+            reviewer_session_id: None,
             assigned_at: Utc::now(),
             source,
             webhook_event_id,
@@ -213,6 +222,7 @@ impl GitHubState {
         let assignment = PrReviewerAssignment {
             pr_number,
             reviewer: reviewer.to_string(),
+            reviewer_session_id: None,
             assigned_at: Utc::now(),
             source,
             webhook_event_id: None,
@@ -297,18 +307,38 @@ impl GitHubState {
     /// where the reviewer coworker is still running. This prevents losing track
     /// of a reviewer just because the review is taking longer than the timeout.
     /// Running coworkers' assignments are preserved regardless of timeout.
+    ///
+    /// **Optimistic assignment safety**: Assignments younger than `timeout` (600s)
+    /// are never pruned, even if the reviewer doesn't appear in `running_coworkers`.
+    /// This protects against the window between optimistic assignment (before spawn)
+    /// and worktree creation (after spawn completes).
+    ///
+    /// When `running_session_ids` is provided, assignments with a known
+    /// `reviewer_session_id` are matched by session ID instead of name. This
+    /// enables correct behavior when multiple sessions share a coworker name.
+    /// Assignments without a `reviewer_session_id` fall back to name matching.
     pub fn cleanup_expired_preserving(
         &mut self,
         running_coworkers: &std::collections::HashSet<String>,
+        running_session_ids: Option<&std::collections::HashSet<String>>,
     ) {
         let now = Utc::now();
         let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+
+        let is_reviewer_running = |a: &PrReviewerAssignment| -> bool {
+            // If we have session IDs and the assignment has one, prefer session-based matching
+            if let (Some(session_ids), Some(sid)) = (running_session_ids, &a.reviewer_session_id) {
+                return session_ids.contains(sid);
+            }
+            // Fall back to name-based matching
+            running_coworkers.contains(&a.reviewer)
+        };
+
         let to_remove: Vec<_> = self
             .pr_reviewers
             .iter()
             .filter(|(_, a)| {
-                now.signed_duration_since(a.assigned_at) > timeout
-                    && !running_coworkers.contains(&a.reviewer)
+                now.signed_duration_since(a.assigned_at) > timeout && !is_reviewer_running(a)
             })
             .map(|(pr, _)| *pr)
             .collect();
@@ -324,9 +354,34 @@ impl GitHubState {
         // Refresh timestamps for running coworkers whose assignments would have expired
         for assignment in self.pr_reviewers.values_mut() {
             if now.signed_duration_since(assignment.assigned_at) > timeout
-                && running_coworkers.contains(&assignment.reviewer)
+                && is_reviewer_running(assignment)
             {
                 assignment.assigned_at = now;
+            }
+        }
+    }
+
+    /// Backfill `reviewer_session_id` for assignments that were created before
+    /// the session ID was known (optimistic assignment pattern).
+    ///
+    /// During reviewer spawn, the assignment is created BEFORE the spawn completes,
+    /// so `reviewer_session_id` is initially `None`. Once the session starts and
+    /// the `init` event provides the session ID, subsequent poll ticks can observe
+    /// it in the snapshot's `running_coworkers`. This method matches assignments
+    /// by reviewer name and fills in the missing session ID.
+    pub fn backfill_reviewer_session_ids(
+        &mut self,
+        coworker_session_ids: &std::collections::HashMap<String, String>,
+    ) {
+        for assignment in self.pr_reviewers.values_mut() {
+            if assignment.reviewer_session_id.is_none()
+                && let Some(sid) = coworker_session_ids.get(&assignment.reviewer)
+            {
+                assignment.reviewer_session_id = Some(sid.clone());
+                debug!(
+                    "Backfilled reviewer_session_id for PR #{} (reviewer={}, session={})",
+                    assignment.pr_number, assignment.reviewer, sid
+                );
             }
         }
     }
@@ -427,6 +482,21 @@ impl GitHubState {
             .values()
             .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
             .map(|a| a.reviewer.clone())
+            .collect()
+    }
+
+    /// Get the set of session IDs with active (non-expired) review assignments.
+    ///
+    /// Returns only assignments that have a `reviewer_session_id` set.
+    /// Useful for session-based deduplication in the multi-session world.
+    #[allow(dead_code)]
+    pub fn active_reviewer_session_ids(&self) -> std::collections::HashSet<String> {
+        let now = Utc::now();
+        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+        self.pr_reviewers
+            .values()
+            .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
+            .filter_map(|a| a.reviewer_session_id.clone())
             .collect()
     }
 
@@ -703,7 +773,7 @@ mod tests {
         let active: std::collections::HashSet<String> =
             ["broadway".to_string()].into_iter().collect();
 
-        state.cleanup_expired_preserving(&active);
+        state.cleanup_expired_preserving(&active, None);
 
         // broadway's expired assignment should be preserved (still active coworker)
         assert!(state.pr_reviewers.contains_key(&42));
@@ -725,10 +795,92 @@ mod tests {
         // broadway is NOT active
         let active: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        state.cleanup_expired_preserving(&active);
+        state.cleanup_expired_preserving(&active, None);
 
         // Should be removed (expired + inactive)
         assert!(!state.pr_reviewers.contains_key(&42));
+    }
+
+    #[test]
+    fn test_cleanup_expired_preserving_with_session_ids() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "broadway", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "broadway", AssignmentSource::Webhook);
+
+        // Set session IDs: PR 42 has session "sess-review", PR 43 has session "sess-dev"
+        state.pr_reviewers.get_mut(&42).unwrap().reviewer_session_id =
+            Some("sess-review".to_string());
+        state.pr_reviewers.get_mut(&43).unwrap().reviewer_session_id = Some("sess-dev".to_string());
+
+        // Backdate both past timeout
+        for pr in [42, 43] {
+            state.pr_reviewers.get_mut(&pr).unwrap().assigned_at = Utc::now()
+                - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+        }
+
+        // broadway is in running_coworkers by name, but only sess-review is a running session
+        let running_names: std::collections::HashSet<String> =
+            ["broadway".to_string()].into_iter().collect();
+        let running_sessions: std::collections::HashSet<String> =
+            ["sess-review".to_string()].into_iter().collect();
+
+        state.cleanup_expired_preserving(&running_names, Some(&running_sessions));
+
+        // PR 42 (sess-review) should be preserved — session is running
+        assert!(
+            state.pr_reviewers.contains_key(&42),
+            "Assignment with running session ID should be preserved"
+        );
+        // PR 43 (sess-dev) should be removed — session is NOT running
+        assert!(
+            !state.pr_reviewers.contains_key(&43),
+            "Assignment with non-running session ID should be cleaned up"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_expired_preserving_falls_back_to_name_without_session_id() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "broadway", AssignmentSource::PollingFallback);
+        // No reviewer_session_id set (legacy assignment)
+
+        // Backdate past timeout
+        state.pr_reviewers.get_mut(&42).unwrap().assigned_at =
+            Utc::now() - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
+
+        // broadway is running by name; session IDs provided but assignment has none
+        let running_names: std::collections::HashSet<String> =
+            ["broadway".to_string()].into_iter().collect();
+        let running_sessions: std::collections::HashSet<String> =
+            ["some-other-session".to_string()].into_iter().collect();
+
+        state.cleanup_expired_preserving(&running_names, Some(&running_sessions));
+
+        // Should be preserved via name fallback (no session_id on assignment)
+        assert!(
+            state.pr_reviewers.contains_key(&42),
+            "Legacy assignment without session_id should fall back to name matching"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_session_id_persists() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("github-state.json");
+
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington", AssignmentSource::Webhook);
+        state.pr_reviewers.get_mut(&42).unwrap().reviewer_session_id =
+            Some("sess-abc-123".to_string());
+
+        state.save(&path).unwrap();
+
+        let loaded = GitHubState::load(&path).unwrap();
+        let assignment = loaded.pr_reviewers.get(&42).unwrap();
+        assert_eq!(
+            assignment.reviewer_session_id.as_deref(),
+            Some("sess-abc-123")
+        );
     }
 
     #[test]
@@ -793,6 +945,61 @@ mod tests {
         assert_eq!(assignments.len(), 1);
         assert!(!assignments.contains_key(&42));
         assert!(assignments.contains_key(&43));
+    }
+
+    #[test]
+    fn test_backfill_reviewer_session_ids() {
+        let mut state = GitHubState::default();
+        state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+        state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
+
+        // Initially, no session IDs
+        assert!(state.pr_reviewers[&42].reviewer_session_id.is_none());
+        assert!(state.pr_reviewers[&43].reviewer_session_id.is_none());
+
+        // Backfill with session IDs from running coworkers
+        let mut session_map = std::collections::HashMap::new();
+        session_map.insert("lexington".to_string(), "sess-abc".to_string());
+        // park is not in the map (session not yet initialized)
+
+        state.backfill_reviewer_session_ids(&session_map);
+
+        // lexington should have session_id backfilled
+        assert_eq!(
+            state.pr_reviewers[&42].reviewer_session_id,
+            Some("sess-abc".to_string())
+        );
+        // park should still be None
+        assert!(state.pr_reviewers[&43].reviewer_session_id.is_none());
+
+        // Second backfill with park's session
+        let mut session_map2 = std::collections::HashMap::new();
+        session_map2.insert("lexington".to_string(), "sess-abc".to_string());
+        session_map2.insert("park".to_string(), "sess-def".to_string());
+
+        state.backfill_reviewer_session_ids(&session_map2);
+
+        // Both should now have session IDs
+        assert_eq!(
+            state.pr_reviewers[&42].reviewer_session_id,
+            Some("sess-abc".to_string())
+        );
+        assert_eq!(
+            state.pr_reviewers[&43].reviewer_session_id,
+            Some("sess-def".to_string())
+        );
+
+        // Already-set session IDs should not be overwritten
+        let mut session_map3 = std::collections::HashMap::new();
+        session_map3.insert("lexington".to_string(), "sess-NEW".to_string());
+
+        state.backfill_reviewer_session_ids(&session_map3);
+
+        // lexington keeps original session_id (not overwritten)
+        assert_eq!(
+            state.pr_reviewers[&42].reviewer_session_id,
+            Some("sess-abc".to_string())
+        );
     }
 
     #[test]

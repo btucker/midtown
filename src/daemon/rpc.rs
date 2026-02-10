@@ -1136,6 +1136,7 @@ async fn handle_coworker_report_state(
             let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
                 name: name.to_string(),
                 message: String::new(), // No goodbye message needed for idle shutdown
+                session_id: None,
                 on_success: vec![
                     effects::Effect::PostSystemMessage {
                         message: format!("☕ {} reported idle, taking a break", name),
