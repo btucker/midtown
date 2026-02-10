@@ -495,13 +495,10 @@ mod tests {
 
     #[test]
     fn test_is_corruption_error() {
-        let normal_error = std::io::Error::new(std::io::ErrorKind::Other, "Some error");
+        let normal_error = std::io::Error::other("Some error");
         assert!(!SpecializedCoworker::is_corruption_error(&normal_error));
 
-        let corruption_error = std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Tool names must be unique: duplicate 'foo'",
-        );
+        let corruption_error = std::io::Error::other("Tool names must be unique: duplicate 'foo'");
         assert!(SpecializedCoworker::is_corruption_error(&corruption_error));
     }
 
