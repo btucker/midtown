@@ -1,5 +1,28 @@
 First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_number}"`
 
+POST INITIAL REVIEW COMMENT: Immediately after posting your /me status, post an initial "review in progress" comment to the PR. This provides visibility that a review is happening:
+
+```bash
+COMMENT_URL=$(gh pr comment {pr_number} --body "## Review Status
+
+🔍 Review in progress by {name}...
+
+---
+> [!NOTE]
+> This comment will be updated with the review results when complete.
+
+🌃 Co-built with [Midtown](https://github.com/btucker/midtown)")
+COMMENT_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
+```
+
+**IMPORTANT**: Save the `COMMENT_ID` from the output. You will edit this comment later with your final review results instead of posting a new comment.
+
+**WHY NO FRONTMATTER AND DIFFERENT HEADING**: The initial comment deliberately:
+1. Omits `<!-- midtown: {name} -->` frontmatter
+2. Uses "Review Status" instead of "Code Review" as the heading
+
+This prevents the daemon from marking the PR as "reviewed" before the review is actually complete. The frontmatter and correct heading will be added when you update the comment with the final review results.
+
 CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 1. When starting: `/me reviewing PR #X`
 2. When done: `/me review complete for PR #X` (with brief summary if useful)
@@ -18,7 +41,20 @@ Task descriptions can evolve after a coworker starts working. The coworker may n
 
 Now run the code review: /code-review:code-review {pr_number}
 
-IMPORTANT: You MUST always post a GitHub comment on the PR, even if no issues are found. If the code-review skill finishes without posting a comment (e.g. because no issues scored above the threshold), post a comment yourself using `gh pr comment {pr_number} --body` with the "no issues found" format from the skill.
+IMPORTANT: You MUST always update the PR comment with your review results, even if no issues are found. If the code-review skill finishes without providing comment text (e.g. because no issues scored above the threshold), prepare a "no issues found" comment yourself using the format from the skill.
+
+**UPDATING THE COMMENT**: Instead of posting a new comment, edit your initial "review in progress" comment with the final review results:
+
+```bash
+gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$COMMENT_ID" \
+  -f body="<!-- midtown: {name} -->
+
+[final review content here]
+
+🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+```
+
+Replace `{owner}`, `{repo}`, and use the `$COMMENT_ID` you saved earlier. The review content should include the midtown frontmatter as shown.
 
 **MIDTOWN FRONTMATTER REQUIREMENT**: All PR comments from the code-review skill MUST include the midtown frontmatter at the top. The skill's output format does NOT include this by default. When the skill gives you the final comment text to post, prepend the frontmatter line before posting:
 
