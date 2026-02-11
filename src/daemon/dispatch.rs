@@ -38,18 +38,26 @@ fn should_recover_task(task: &crate::tasks::Task, merged_pr_numbers: &HashSet<u6
         return false;
     }
 
-    // Check if this task references a PR that's already merged
-    if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(task)
-        && let Ok(pr_num) = pr_num_str.parse::<u64>()
-        && merged_pr_numbers.contains(&pr_num)
-    {
-        // PR is merged — task will be auto-completed, don't recover
-        debug!(
-            "Skipping orphan recovery for task !{}: PR #{} already merged",
-            task.id, pr_num
-        );
-        return false;
+    // Check if this task references any PR that's already merged
+    // Extract PRs from both subject and description using the same logic as auto-completion
+    let mut all_text = task.subject.clone();
+    if let Some(desc) = &task.description {
+        all_text.push('\n');
+        all_text.push_str(desc);
     }
+
+    let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&all_text);
+    for pr_num in pr_numbers {
+        if merged_pr_numbers.contains(&pr_num) {
+            // At least one PR is merged — task will be auto-completed, don't recover
+            debug!(
+                "Skipping orphan recovery for task !{}: PR #{} already merged",
+                task.id, pr_num
+            );
+            return false;
+        }
+    }
+
     true
 }
 
@@ -1521,25 +1529,11 @@ pub(super) fn build_task_completion_effects(
 pub(super) fn build_description_based_completion_effects(
     snap: &snapshot::WorldSnapshot,
 ) -> Vec<Effect> {
-    // Pre-compute task IDs that are already handled by the title-based completion path.
-    // These tasks have a merged PR whose title contains `[Midtown #XX]` matching their ID.
-    let title_completed_task_ids: std::collections::HashSet<String> = snap
-        .all_tasks
-        .iter()
-        .filter(|t| t.status == crate::tasks::TaskStatus::Completed)
-        .map(|t| t.id.clone())
-        .collect();
-
     let mut effects = Vec::new();
 
     for task in &snap.all_tasks {
-        // Only consider in_progress tasks
+        // Only consider in_progress tasks (completed tasks are already filtered out by this check)
         if task.status != crate::tasks::TaskStatus::InProgress {
-            continue;
-        }
-
-        // Skip tasks already completed (defensive guard against race with webhook path)
-        if title_completed_task_ids.contains(&task.id) {
             continue;
         }
 
@@ -4163,6 +4157,32 @@ mod tests {
         assert!(
             should_recover_task(&task, &merged_prs),
             "Should recover a task whose PR is NOT yet merged"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_skips_bare_hash_pr_reference() {
+        use crate::tasks::{Task, TaskStatus};
+
+        // Task with bare "#904" format (no "PR #" prefix)
+        // This format is recognized by extract_pr_numbers_from_text() in auto-completion
+        // but NOT by extract_pr_number_from_task() in orphan recovery,
+        // creating an inconsistency.
+        let task = Task {
+            id: "1122".to_string(),
+            subject: "Fix #904 review feedback".to_string(),
+            description: None,
+            status: TaskStatus::InProgress,
+            owner: Some("columbus".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs: HashSet<u64> = [904].into_iter().collect();
+        assert!(
+            !should_recover_task(&task, &merged_prs),
+            "Should NOT recover a task whose PR (#904) is already merged, even with bare # format"
         );
     }
 }
