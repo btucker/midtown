@@ -1648,11 +1648,34 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
     // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
-    // This must run BEFORE session recovery to clean up processes before spawning new ones.
+    // This only kills truly orphaned (PPID=1) processes from crashes — NOT processes
+    // that were intentionally detached during a clean daemon restart.
     startup::kill_zombie_claude_processes();
 
+    // CRITICAL: Restore task assignments from disk BEFORE session recovery.
+    // This must happen first so that the in-memory coworker_task_assignments map
+    // is populated before any dispatch ticks fire. Otherwise, the task dispatch
+    // sees in_progress tasks as "orphaned" and spawns duplicate coworkers.
+    state.restore_task_assignments_from_disk();
+
+    // Pre-register recovering coworker names so dispatch doesn't double-assign.
+    // This creates CoworkerRecords for coworkers about to be resumed, ensuring
+    // they appear in active_names before the first TaskDispatchTick fires.
+    let recovering_names = startup::recovering_coworker_names(&state.persistent_state).await;
+    if !recovering_names.is_empty() {
+        let mut records = state.coworker_records.write().await;
+        for name in &recovering_names {
+            if !records.contains_key(name) {
+                info!("Pre-registering recovering coworker: {}", name);
+                records.insert(name.to_string(), crate::rules::CoworkerRecord::new_spawn());
+            }
+        }
+    }
+
     // Recover headless coworker sessions from persisted state (session survival).
-    // This kills orphaned processes and spawns with --resume to continue previous work.
+    // Spawns new processes with --resume <session_id> to continue previous work.
+    // Old processes are NOT killed — they die naturally from broken pipes after
+    // the previous daemon detached its stdin/stdout handles during shutdown.
     let recovery_effects =
         startup::recover_headless_sessions(&state.persistent_state, &repo_name).await;
     if !recovery_effects.is_empty() {
@@ -1662,10 +1685,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         );
         effects::execute_effects(recovery_effects, &state).await;
     }
-
-    // Restore task assignments from disk (rebuild the in-memory map).
-    // This ensures coworker task assignments survive daemon restarts.
-    state.restore_task_assignments_from_disk();
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);

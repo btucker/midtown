@@ -907,8 +907,9 @@ impl HeadlessSession {
     /// Mark this session to be detached instead of killed on drop.
     ///
     /// Used during daemon shutdown to allow sessions to survive restarts.
-    /// The daemon will kill the orphaned process after restart and resume
-    /// the session with the persisted session_id.
+    /// The child process will die naturally from broken pipes (SIGPIPE)
+    /// after the daemon drops its stdin/stdout handles. The daemon will
+    /// then resume the session with `--resume <session_id>` on restart.
     pub fn detach_on_drop(&mut self) {
         self.detach_on_drop = true;
     }
