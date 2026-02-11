@@ -1213,6 +1213,40 @@ async fn handle_coworker_report_state(
     if phase == crate::coworker_state::WorkflowPhase::Idle {
         // Check if coworker is tracked (should be, since they're reporting state)
         if state.coworkers.get(name).is_some() {
+            // Check if the coworker has an in-progress task assigned.
+            // If they do, reset it to pending so it can be reassigned.
+            // This prevents orphaned tasks when a coworker goes on break.
+            let task_to_reset = {
+                let assignments = state.coworker_task_assignments.lock().unwrap();
+                assignments
+                    .get(&name.to_lowercase())
+                    .map(|a| a.task_id.clone())
+            };
+
+            // Build the on_success callbacks
+            let mut on_success_callbacks = vec![
+                effects::Effect::PostSystemMessage {
+                    message: format!("☕ {} reported idle, taking a break", name),
+                },
+                effects::Effect::BroadcastCoworkerUpdate {
+                    name: name.to_string(),
+                    status: "stopped".to_string(),
+                    current_task: None,
+                },
+            ];
+
+            // If the coworker has a task assignment, reset it to pending
+            if let Some(task_id) = task_to_reset {
+                info!(
+                    "Resetting task !{} to pending (owner {} going on break)",
+                    task_id, name
+                );
+                on_success_callbacks.push(effects::Effect::ResetTaskToPending {
+                    task_id,
+                    repo_name: state.repo_name.clone(),
+                });
+            }
+
             // Build shutdown effect with conditional follow-up effects.
             // The channel message and WebSocket broadcast only execute if shutdown succeeds.
             // This ensures all cleanup steps (cooldowns, pending nudges, worktree unbinding)
@@ -1221,16 +1255,7 @@ async fn handle_coworker_report_state(
                 name: name.to_string(),
                 message: String::new(), // No goodbye message needed for idle shutdown
                 session_id: None,
-                on_success: vec![
-                    effects::Effect::PostSystemMessage {
-                        message: format!("☕ {} reported idle, taking a break", name),
-                    },
-                    effects::Effect::BroadcastCoworkerUpdate {
-                        name: name.to_string(),
-                        status: "stopped".to_string(),
-                        current_task: None,
-                    },
-                ],
+                on_success: on_success_callbacks,
             }];
 
             effects::execute_effects(shutdown_effects, state).await;
