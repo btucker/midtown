@@ -20,12 +20,61 @@ use super::{DaemonState, snapshot};
 // Orphan task recovery
 // ============================================================================
 
+/// Check if a specific PR is merged by querying GitHub directly.
+///
+/// This bypasses the cached merged PR list to avoid race conditions where:
+/// 1. A PR merges
+/// 2. Auto-completion fails (or hasn't run yet)
+/// 3. Coworker shuts down
+/// 4. Orphan recovery runs before the next merged PR cache refresh (5 min interval)
+/// 5. Coworker gets recovered and creates duplicate PR
+///
+/// Returns `true` if the PR is merged, `false` if open/closed, `None` if the check fails.
+fn is_pr_merged(pr_number: u64) -> Option<bool> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "state",
+            "--jq",
+            ".state",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Some(state == "MERGED")
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            debug!(
+                "Failed to check PR #{} state via gh CLI: {}",
+                pr_number,
+                stderr.trim()
+            );
+            None
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr view for PR #{}: {}", pr_number, e);
+            None
+        }
+    }
+}
+
 /// Determine whether an orphaned task should be recovered.
 ///
-/// Pure decision function: returns `true` if the task should be recovered,
+/// Decision function: returns `true` if the task should be recovered,
 /// `false` if it should be skipped. A task should NOT be recovered if:
 /// - It is already completed (race condition: RPC marked it done after snapshot)
-/// - It references a PR that has already been merged
+/// - It references a PR that has already been merged (checked via cache AND direct API)
+///
+/// Note: This function performs I/O (reads task from disk, queries GitHub API) which
+/// violates the pure decision function pattern. The target architecture would move
+/// this to snapshot collection, but orphan recovery is already impure (reads tasks
+/// from disk) so we handle it here for now.
 fn should_recover_task(task: &crate::tasks::Task, merged_pr_numbers: &HashSet<u64>) -> bool {
     // Check if task is already completed
     // Race condition: coworker reports completion via RPC, task is marked completed,
@@ -38,28 +87,47 @@ fn should_recover_task(task: &crate::tasks::Task, merged_pr_numbers: &HashSet<u6
         return false;
     }
 
-    // Check if this task references any PR that's already merged
-    // Extract PRs from both subject and description using the same logic as auto-completion
-    let mut all_text = task.subject.clone();
-    if let Some(desc) = &task.description {
-        all_text.push('\n');
-        all_text.push_str(desc);
-    }
-
-    let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&all_text);
-
-    // Only skip recovery if ALL referenced PRs are merged (matching auto-completion logic)
-    // If only SOME PRs are merged, auto-completion won't trigger, so we should still recover
-    if !pr_numbers.is_empty() {
-        let all_merged = pr_numbers
-            .iter()
-            .all(|pr_num| merged_pr_numbers.contains(pr_num));
-        if all_merged {
+    // Check if this task references a PR that's already merged
+    if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(task)
+        && let Ok(pr_num) = pr_num_str.parse::<u64>()
+    {
+        // First check the cache (fast path)
+        if merged_pr_numbers.contains(&pr_num) {
             debug!(
-                "Skipping orphan recovery for task !{}: all referenced PRs are merged",
-                task.id
+                "Skipping orphan recovery for task !{}: PR #{} in merged cache",
+                task.id, pr_num
             );
             return false;
+        }
+
+        // Cache miss — check GitHub directly (safety net against stale cache)
+        // The merged PR cache only includes last 10 PRs and refreshes every 5 minutes.
+        // This direct check prevents duplicate PRs when:
+        // 1. A PR merges but auto-completion fails
+        // 2. Coworker shuts down before next cache refresh
+        // 3. Orphan recovery would otherwise spawn duplicate work
+        match is_pr_merged(pr_num) {
+            Some(true) => {
+                info!(
+                    "Skipping orphan recovery for task !{}: PR #{} is merged (direct check)",
+                    task.id, pr_num
+                );
+                return false;
+            }
+            Some(false) => {
+                debug!(
+                    "PR #{} is open/closed (not merged), allowing orphan recovery for task !{}",
+                    pr_num, task.id
+                );
+            }
+            None => {
+                // GitHub API check failed — be conservative and allow recovery.
+                // If the PR was actually merged, auto-completion will clean it up.
+                warn!(
+                    "Failed to check PR #{} merge status for task !{}, allowing recovery",
+                    pr_num, task.id
+                );
+            }
         }
     }
 
@@ -4149,7 +4217,7 @@ mod tests {
 
         let task = Task {
             id: "1120".to_string(),
-            subject: "Merge PR #923 [Midtown !1120]".to_string(),
+            subject: "Merge PR #999999 [Midtown !1120]".to_string(), // Use non-existent PR number
             description: None,
             status: TaskStatus::InProgress,
             owner: Some("vernon".to_string()),
@@ -4158,11 +4226,42 @@ mod tests {
             created_at: None,
         };
 
-        // PR #923 is NOT in the merged set
+        // PR #999999 is NOT in the merged set (and doesn't exist in repo)
+        // The GitHub API check will fail (PR not found) but the function
+        // should be conservative and allow recovery.
         let merged_prs: HashSet<u64> = [900, 910].into_iter().collect();
         assert!(
             should_recover_task(&task, &merged_prs),
-            "Should recover a task whose PR is NOT yet merged"
+            "Should recover a task whose PR is NOT yet merged (cache miss, API fails)"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_checks_github_when_cache_stale() {
+        use crate::tasks::{Task, TaskStatus};
+
+        // This test uses PR #935 which is known to be merged in the repo.
+        // It verifies that even when the cache doesn't contain the PR,
+        // we still detect it's merged via direct GitHub API check.
+        let task = Task {
+            id: "1129".to_string(),
+            subject: "Fix task !1129 [Midtown !1129]".to_string(),
+            description: Some("PR #935".to_string()),
+            status: TaskStatus::InProgress,
+            owner: Some("riverside".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // PR #935 is NOT in the cache (simulating stale cache)
+        let merged_prs: HashSet<u64> = HashSet::new();
+
+        // Despite cache miss, should_recover_task should detect PR #935 is merged
+        // via direct GitHub API check and skip recovery.
+        assert!(
+            !should_recover_task(&task, &merged_prs),
+            "Should NOT recover task when PR is merged but not in cache (tests direct GitHub check)"
         );
     }
 
