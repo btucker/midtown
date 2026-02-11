@@ -165,6 +165,17 @@ fn command_in_path(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn apple_container_is_running() -> bool {
+    // Check if Apple container system is already running without starting it
+    Command::new("container")
+        .args(["list"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn ensure_apple_container_system_started() -> Result<(), String> {
     let status = Command::new("container")
         .args(["system", "start"])
@@ -178,6 +189,18 @@ fn ensure_apple_container_system_started() -> Result<(), String> {
                 .to_string(),
         )
     }
+}
+
+fn docker_is_running() -> bool {
+    // Check if Docker is already running
+    command_in_path("docker")
+        && Command::new("docker")
+            .arg("info")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
 }
 
 fn docker_is_usable() -> Result<(), String> {
@@ -828,25 +851,67 @@ pub fn handle_start(
             start_args
         };
 
-        let apple_error = if command_in_path("container") {
+        // Determine which container runtimes to try and in what order.
+        // Prefer whichever is already running to avoid unnecessary starts.
+        let docker_running = docker_is_running();
+        let apple_running = command_in_path("container") && apple_container_is_running();
+
+        let engines_to_try: Vec<SandboxEngine> = if docker_running && !apple_running {
+            // Docker is running, try it first
+            vec![SandboxEngine::Docker, SandboxEngine::AppleContainer]
+        } else if apple_running && !docker_running {
+            // Apple container is running, try it first
+            vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
+        } else {
+            // Either both are running or neither is running - use default preference order
+            vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
+        };
+
+        let mut errors = Vec::new();
+        for engine in engines_to_try {
             let runtime = SandboxRuntimeState {
-                engine: SandboxEngine::AppleContainer,
+                engine,
                 container_name: container_name.clone(),
             };
 
-            match ensure_apple_container_system_started().and_then(|_| {
-                ensure_sandbox_container_running(
-                    runtime.engine,
-                    &runtime.container_name,
-                    &image,
-                    &primary_repo,
-                    &mounts,
-                    &home,
-                )
-            }) {
+            let result = match engine {
+                SandboxEngine::AppleContainer => {
+                    if !command_in_path("container") {
+                        Err("container command not found".to_string())
+                    } else {
+                        ensure_apple_container_system_started().and_then(|_| {
+                            ensure_sandbox_container_running(
+                                runtime.engine,
+                                &runtime.container_name,
+                                &image,
+                                &primary_repo,
+                                &mounts,
+                                &home,
+                            )
+                        })
+                    }
+                }
+                SandboxEngine::Docker => {
+                    if !command_in_path("docker") {
+                        Err("docker command not found".to_string())
+                    } else {
+                        docker_is_usable().and_then(|_| {
+                            ensure_sandbox_container_running(
+                                runtime.engine,
+                                &runtime.container_name,
+                                &image,
+                                &primary_repo,
+                                &mounts,
+                                &home,
+                            )
+                        })
+                    }
+                }
+            };
+
+            match result {
                 Ok(()) => {
                     let start_args = build_start_args();
-
                     let inner =
                         run_midtown_command_in_sandbox(&runtime, &primary_repo, &start_args)?;
                     write_sandbox_runtime_state(&repo_name, &runtime);
@@ -862,51 +927,21 @@ pub fn handle_start(
                         other => other,
                     });
                 }
-                Err(e) => e,
+                Err(e) => errors.push((engine, e)),
             }
-        } else {
-            "container command not found".to_string()
-        };
+        }
 
-        let docker_error = if command_in_path("docker") {
-            let runtime = SandboxRuntimeState {
-                engine: SandboxEngine::Docker,
-                container_name: container_name.clone(),
-            };
+        let apple_error = errors
+            .iter()
+            .find(|(e, _)| *e == SandboxEngine::AppleContainer)
+            .map(|(_, err)| err.clone())
+            .unwrap_or_else(|| "not attempted".to_string());
 
-            match docker_is_usable().and_then(|_| {
-                ensure_sandbox_container_running(
-                    runtime.engine,
-                    &runtime.container_name,
-                    &image,
-                    &primary_repo,
-                    &mounts,
-                    &home,
-                )
-            }) {
-                Ok(()) => {
-                    let start_args = build_start_args();
-
-                    let inner =
-                        run_midtown_command_in_sandbox(&runtime, &primary_repo, &start_args)?;
-                    write_sandbox_runtime_state(&repo_name, &runtime);
-                    return Ok(match inner {
-                        Response::Message { message } => Response::Message {
-                            message: format!(
-                                "{}. Sandbox: {} ({})",
-                                message,
-                                runtime.engine.display_name(),
-                                runtime.container_name
-                            ),
-                        },
-                        other => other,
-                    });
-                }
-                Err(e) => e,
-            }
-        } else {
-            "docker command not found".to_string()
-        };
+        let docker_error = errors
+            .iter()
+            .find(|(e, _)| *e == SandboxEngine::Docker)
+            .map(|(_, err)| err.clone())
+            .unwrap_or_else(|| "not attempted".to_string());
 
         if dangerously_run_without_sandbox {
             clear_sandbox_runtime_state(&repo_name);
