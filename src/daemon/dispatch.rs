@@ -93,45 +93,62 @@ fn should_recover_task(
     }
 
     // Check if this task references a PR that's already merged
-    if let Some(pr_num_str) = crate::tasks::extract_pr_number_from_task(task)
-        && let Ok(pr_num) = pr_num_str.parse::<u64>()
-    {
+    // Extract PRs from both subject and description using the same logic as auto-completion
+    let mut all_text = task.subject.clone();
+    if let Some(desc) = &task.description {
+        all_text.push('\n');
+        all_text.push_str(desc);
+    }
+
+    let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&all_text);
+
+    // If we found any PR references, check if they're all merged
+    if !pr_numbers.is_empty() {
         // First check the cache (fast path)
-        if merged_pr_numbers.contains(&pr_num) {
+        let all_in_cache_merged = pr_numbers
+            .iter()
+            .all(|pr_num| merged_pr_numbers.contains(pr_num));
+
+        if all_in_cache_merged {
             debug!(
-                "Skipping orphan recovery for task !{}: PR #{} in merged cache",
-                task.id, pr_num
+                "Skipping orphan recovery for task !{}: all referenced PRs are in merged cache",
+                task.id
             );
             return false;
         }
 
-        // Cache miss — check GitHub directly (safety net against stale cache)
-        // The merged PR cache only includes last 10 PRs and refreshes every 5 minutes.
-        // This direct check prevents duplicate PRs when:
-        // 1. A PR merges but auto-completion fails
-        // 2. Coworker shuts down before next cache refresh
-        // 3. Orphan recovery would otherwise spawn duplicate work
-        match is_pr_merged(pr_num, repo_path) {
-            Some(true) => {
-                info!(
-                    "Skipping orphan recovery for task !{}: PR #{} is merged (direct check)",
-                    task.id, pr_num
-                );
-                return false;
-            }
-            Some(false) => {
-                debug!(
-                    "PR #{} is open/closed (not merged), allowing orphan recovery for task !{}",
-                    pr_num, task.id
-                );
-            }
-            None => {
-                // GitHub API check failed — be conservative and allow recovery.
-                // If the PR was actually merged, auto-completion will clean it up.
-                warn!(
-                    "Failed to check PR #{} merge status for task !{}, allowing recovery",
-                    pr_num, task.id
-                );
+        // For the primary PR, do a direct GitHub check as safety net against stale cache
+        if let Some(&primary_pr) = pr_numbers.first()
+            && !merged_pr_numbers.contains(&primary_pr)
+        {
+            // Cache miss — check GitHub directly (safety net against stale cache)
+            // The merged PR cache only includes last 10 PRs and refreshes every 5 minutes.
+            // This direct check prevents duplicate PRs when:
+            // 1. A PR merges but auto-completion fails
+            // 2. Coworker shuts down before next cache refresh
+            // 3. Orphan recovery would otherwise spawn duplicate work
+            match is_pr_merged(primary_pr, repo_path) {
+                Some(true) => {
+                    info!(
+                        "Skipping orphan recovery for task !{}: PR #{} is merged (direct check)",
+                        task.id, primary_pr
+                    );
+                    return false;
+                }
+                Some(false) => {
+                    debug!(
+                        "PR #{} is open/closed (not merged), allowing orphan recovery for task !{}",
+                        primary_pr, task.id
+                    );
+                }
+                None => {
+                    // GitHub API check failed — be conservative and allow recovery.
+                    // If the PR was actually merged, auto-completion will clean it up.
+                    warn!(
+                        "Failed to check PR #{} merge status for task !{}, allowing recovery",
+                        primary_pr, task.id
+                    );
+                }
             }
         }
     }
