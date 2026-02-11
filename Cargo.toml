@@ -1,9 +1,9 @@
 [package]
 name = "midtown"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "Midtown - a multi-Claude Code workspace manager, inspired by Gastown"
-license = "Apache-2.0"
+license = "MIT"
 repository = "https://github.com/btucker/midtown"
 readme = "README.md"
 
