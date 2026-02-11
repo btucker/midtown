@@ -922,21 +922,16 @@ impl App {
     /// Tries daemon RPC first (preferred - allows daemon to nudge lead),
     /// then falls back to direct channel write if daemon is unavailable.
     ///
-    /// In test mode, skips daemon RPC to avoid side effects on the live system.
+    /// In test mode, all communication is disabled to prevent side effects on the live system.
     ///
     /// Returns `true` if the message was successfully posted via either path.
     pub fn post_message(&self, message: &str, sender: &str, channel_name: Option<&str>) -> bool {
         use crate::client::DaemonClient;
         use midtown::{Message, MessageType};
 
-        // In test mode, skip daemon communication to avoid side effects
+        // In test mode, skip ALL communication to avoid side effects
+        // This prevents tests from posting to live channels or calling daemon RPC
         if self.test_mode {
-            // Test mode: only try channel write if channel is available
-            if let Some(ref channel) = self.channel {
-                let mut msg = Message::new(sender, message, MessageType::Text);
-                msg.channel = channel_name.map(|s| s.to_string());
-                return channel.send(&msg).is_ok();
-            }
             return false;
         }
 
@@ -2892,5 +2887,42 @@ pub(super) mod tests {
 
         // Selected channel should update
         assert_eq!(app.selected_channel, "features");
+    }
+
+    #[test]
+    fn test_post_message_in_test_mode_never_writes_to_channel() {
+        use tempfile::TempDir;
+
+        // Create a temporary directory for the channel
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a real channel (will write to temp_dir/channel.jsonl or temp_dir/channels/midtown.jsonl)
+        let channel = midtown::Channel::new(temp_dir.path(), "midtown").unwrap();
+
+        // Create app in test mode WITH a channel (the risky scenario)
+        let app = App {
+            channel: Some(channel),
+            test_mode: true,
+            ..test_app()
+        };
+
+        // Try to post a message
+        let posted = app.post_message("test leak", "test-sender", None);
+
+        // In test mode, posting should fail (return false)
+        assert!(!posted, "post_message should return false in test mode");
+
+        // Verify no message was written to any channel file
+        // Check both legacy channel.jsonl and channels/midtown.jsonl
+        let legacy_path = temp_dir.path().join("channel.jsonl");
+        let new_path = temp_dir.path().join("channels").join("midtown.jsonl");
+
+        let legacy_content = std::fs::read_to_string(&legacy_path).unwrap_or_default();
+        let new_content = std::fs::read_to_string(&new_path).unwrap_or_default();
+
+        assert!(
+            !legacy_content.contains("test leak") && !new_content.contains("test leak"),
+            "test_mode should prevent channel writes, but found message in channel files"
+        );
     }
 }
