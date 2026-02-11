@@ -834,6 +834,8 @@ fn engine_run_sandbox_container(
         "-e".to_string(),
         "XDG_STATE_HOME=/home/midtown/.local/state".to_string(),
         "-e".to_string(),
+        "CLAUDE_CONFIG_DIR=/home/midtown/.claude".to_string(),
+        "-e".to_string(),
         "MIDTOWN_SANDBOX_CONTAINER=1".to_string(),
     ];
 
@@ -989,6 +991,10 @@ fn exec_midtown_command_in_sandbox(
 }
 
 /// Ensure the official marketplace is configured and required plugins are installed.
+///
+/// Plugin setup is best-effort — failures are logged but don't block startup.
+/// The Claude CLI may not be authenticated yet (e.g. fresh container), in which
+/// case plugin commands will fail gracefully.
 fn ensure_plugins_installed() -> Result<(), String> {
     use midtown::daemon::REQUIRED_PLUGINS;
 
@@ -997,10 +1003,19 @@ fn ensure_plugins_installed() -> Result<(), String> {
     }
 
     // First ensure marketplace is configured
-    ensure_marketplace_configured()?;
+    if let Err(e) = ensure_marketplace_configured() {
+        eprintln!("Warning: Could not configure plugin marketplace: {}", e);
+        return Ok(());
+    }
 
     // Get list of installed plugins
-    let installed = get_installed_plugins()?;
+    let installed = match get_installed_plugins() {
+        Ok(list) => list,
+        Err(e) => {
+            eprintln!("Warning: Could not list plugins: {}", e);
+            return Ok(());
+        }
+    };
 
     // Find missing plugins
     let missing: Vec<_> = REQUIRED_PLUGINS
@@ -1068,9 +1083,15 @@ fn get_installed_plugins() -> Result<std::collections::HashSet<String>, String> 
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    // Empty output means no plugins installed (e.g. fresh container)
+    if trimmed.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
 
     // Parse JSON output - it's an array of objects with "id" field
-    let plugins: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+    let plugins: Vec<serde_json::Value> = serde_json::from_str(trimmed)
         .map_err(|e| format!("Failed to parse plugin list JSON: {}", e))?;
 
     let ids: std::collections::HashSet<String> = plugins
