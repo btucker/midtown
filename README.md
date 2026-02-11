@@ -320,7 +320,7 @@ When Midtown launches a session, it sets provider-specific env vars (`CLAUDE_CON
 | `midtown auth --provider codex list` | List profiles for a specific provider. |
 | `midtown auth --all-providers list` | Show profile status for all supported providers. |
 | `midtown auth --provider <provider> login <email>` | Create/re-authenticate a profile for a provider. |
-| `midtown auth --provider <provider> switch <profile> [--all]` | Switch active profile (project-only by default, global with `--all`). |
+| `midtown auth --provider <provider> switch <profile> [--project]` | Switch active profile (global by default; use `--project` for current repo only). |
 | `midtown auth --provider <provider> remove <profile>` | Remove a profile for that provider. |
 
 ### Example Workflow
@@ -338,11 +338,11 @@ midtown auth --all-providers list
 # List only Claude profiles
 midtown auth list
 
-# Switch Claude profile for current project
+# Switch Claude profile globally (default)
 midtown auth --provider claude switch work@example.com
 
-# Switch Codex profile globally
-midtown auth --provider codex switch work@example.com --all
+# Switch Codex profile for current project only
+midtown auth --provider codex switch work@example.com --project
 ```
 
 ## How It Works

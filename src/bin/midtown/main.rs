@@ -94,6 +94,11 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
 
+        /// Container runtime override.
+        /// Use `apple`, `docker`, or `docker:<context>` (for example: `docker:default`).
+        #[arg(long)]
+        container: Option<String>,
+
         /// Additional repository paths to include
         #[arg(long = "add-repo")]
         repos: Vec<std::path::PathBuf>,
@@ -320,6 +325,7 @@ fn main() {
         daemon_only: false,
         dangerously_run_without_sandbox: false,
         project: None,
+        container: None,
         repos: vec![],
     });
 
@@ -448,6 +454,7 @@ fn main() {
         daemon_only,
         dangerously_run_without_sandbox,
         project,
+        container,
         repos,
     } = &command
     {
@@ -455,6 +462,7 @@ fn main() {
             *daemon_only,
             *dangerously_run_without_sandbox,
             project.clone(),
+            container.clone(),
             repos.clone(),
         );
         handle_result(format, result);

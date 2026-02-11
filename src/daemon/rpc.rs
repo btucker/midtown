@@ -888,20 +888,7 @@ async fn handle_auth_switch(
     }
 
     // Check if already on this profile
-    if all {
-        // For global switch, check the global current profile
-        let current = crate::auth::current_profile_for(provider);
-        if current == profile {
-            return Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("Already on {} profile '{}'", provider, profile),
-                    "switched": false,
-                }),
-            );
-        }
-    } else {
+    if !all {
         // For per-project switch, check the project config's auth_profile (not the effective profile)
         let path = crate::config::project_config_path(&state.repo_name);
         if let Some(config) = crate::config::FullProjectConfig::load_from(&path)
@@ -920,15 +907,29 @@ async fn handle_auth_switch(
 
     // Switch the profile on disk
     if all {
-        // Global switch: update global current profile and clear per-project overrides
-        if let Err(e) = crate::auth::set_current_profile_for(provider, profile) {
+        // Global switch: update global current profile and clear per-project overrides.
+        // Even when the global profile already matches, we must still clear overrides
+        // so projects stop shadowing the global setting.
+        let current = crate::auth::current_profile_for(provider);
+        let cleared = crate::config::clear_all_project_auth_profiles_for(provider);
+        if current != profile
+            && let Err(e) = crate::auth::set_current_profile_for(provider, profile)
+        {
             return Response::error(
                 id,
                 RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
             );
         }
-        // Clear all per-project overrides so they don't shadow the new global profile
-        crate::config::clear_all_project_auth_profiles();
+        if current == profile && cleared == 0 {
+            return Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Already on {} profile '{}'", provider, profile),
+                    "switched": false,
+                }),
+            );
+        }
     } else {
         // Per-project switch: update this project's config
         let path = crate::config::project_config_path(&state.repo_name);

@@ -89,7 +89,7 @@ midtown headless "Fix the bug" --allow-tools --max-budget-usd 0.50
 |---------|-------------|
 | `midtown auth login <email>` | Create a new profile or re-authenticate (launches Claude for OAuth) |
 | `midtown auth list` | List all profiles and interactively switch |
-| `midtown auth switch <profile> [--all]` | Switch to a different profile (use `--all` for all projects) |
+| `midtown auth switch <profile> [--project]` | Switch to a different profile (global by default; use `--project` for current project only) |
 | `midtown auth remove <profile>` | Remove a profile and its stored credentials |
 
 See [Authentication Profiles](authentication.md) for details.

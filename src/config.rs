@@ -764,30 +764,65 @@ pub fn project_config_path(project_name: &str) -> PathBuf {
     crate::paths::projects_dir_for_repo(project_name).join("config.toml")
 }
 
-/// Clear the `auth_profile` override from all project configs.
+/// Clear per-project auth overrides for a specific provider across all projects.
 ///
-/// When switching auth globally (`--all`), per-project overrides must be
-/// cleared so every project falls through to the global
-/// `[providers.claude].auth_profile` setting. Without this, projects that had a
-/// per-project `auth_profile` set would ignore the global switch because
-/// `active_profile_for_project()` checks the project config first.
-pub fn clear_all_project_auth_profiles() {
+/// Returns the number of project configs updated.
+pub fn clear_all_project_auth_profiles_for(provider: crate::auth::AuthProvider) -> usize {
     let projects_dir = crate::paths::midtown_base_dir().join("projects");
+    clear_project_auth_overrides_in_dir(&projects_dir, provider)
+}
 
-    let entries = match std::fs::read_dir(&projects_dir) {
+fn clear_project_auth_overrides_in_dir(
+    projects_dir: &Path,
+    provider: crate::auth::AuthProvider,
+) -> usize {
+    let mut updated = 0usize;
+
+    let entries = match std::fs::read_dir(projects_dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => return 0,
     };
 
     for entry in entries.flatten() {
         let config_path = entry.path().join("config.toml");
-        if let Some(mut config) = FullProjectConfig::load_from(&config_path)
-            && config.project.auth_profile.is_some()
-        {
-            config.project.auth_profile = None;
-            let _ = config.save_to(&config_path);
+        if let Some(mut config) = FullProjectConfig::load_from(&config_path) {
+            let mut changed = false;
+
+            if provider == crate::auth::AuthProvider::Claude
+                && config.project.auth_profile.is_some()
+            {
+                config.project.auth_profile = None;
+                changed = true;
+            }
+
+            if let Some(map) = config.project.auth_profiles.as_mut()
+                && map.remove(provider.as_str()).is_some()
+            {
+                if map.is_empty() {
+                    config.project.auth_profiles = None;
+                }
+                changed = true;
+            }
+
+            if changed && config.save_to(&config_path).is_ok() {
+                updated += 1;
+            }
         }
     }
+
+    updated
+}
+
+/// Clear per-project auth overrides for all providers.
+///
+/// Returns the number of project configs updated.
+pub fn clear_all_project_auth_profiles() -> usize {
+    let projects_dir = crate::paths::midtown_base_dir().join("projects");
+    let mut updated = 0usize;
+    for provider in crate::auth::AuthProvider::all() {
+        updated += clear_project_auth_overrides_in_dir(&projects_dir, *provider);
+    }
+    updated
 }
 
 /// Starting port for auto-assigned per-project webhook ports.
@@ -1808,6 +1843,10 @@ webhook_port = 47024
         std::fs::create_dir_all(&proj_a_dir).unwrap();
         let mut config_a = FullProjectConfig::minimal("proj-a", "/tmp/repo-a");
         config_a.project.auth_profile = Some("old@example.com".to_string());
+        config_a.project.auth_profiles = Some(std::collections::HashMap::from([
+            ("claude".to_string(), "old@example.com".to_string()),
+            ("codex".to_string(), "codex@example.com".to_string()),
+        ]));
         config_a.save_to(&proj_a_dir.join("config.toml")).unwrap();
 
         let proj_b_dir = projects_dir.join("proj-b");
@@ -1815,23 +1854,35 @@ webhook_port = 47024
         let config_b = FullProjectConfig::minimal("proj-b", "/tmp/repo-b");
         config_b.save_to(&proj_b_dir.join("config.toml")).unwrap();
 
-        // Simulate clear_all_project_auth_profiles logic on our temp dir
-        // (can't use the real function since it uses the hardcoded base dir)
-        for entry in std::fs::read_dir(&projects_dir).unwrap().flatten() {
-            let config_path = entry.path().join("config.toml");
-            if let Some(mut config) = FullProjectConfig::load_from(&config_path)
-                && config.project.auth_profile.is_some()
-            {
-                config.project.auth_profile = None;
-                config.save_to(&config_path).unwrap();
-            }
-        }
+        let updated =
+            clear_project_auth_overrides_in_dir(&projects_dir, crate::auth::AuthProvider::Claude);
+        assert_eq!(updated, 1);
 
         // Verify: proj-a's auth_profile should be cleared
         let loaded_a = FullProjectConfig::load_from(&proj_a_dir.join("config.toml")).unwrap();
         assert_eq!(
             loaded_a.project.auth_profile, None,
             "auth_profile should be cleared for proj-a after global switch"
+        );
+        assert_eq!(
+            loaded_a
+                .project
+                .auth_profiles
+                .as_ref()
+                .and_then(|m| m.get("claude"))
+                .cloned(),
+            None,
+            "provider-specific claude override should be cleared"
+        );
+        assert_eq!(
+            loaded_a
+                .project
+                .auth_profiles
+                .as_ref()
+                .and_then(|m| m.get("codex"))
+                .map(String::as_str),
+            Some("codex@example.com"),
+            "other provider override should remain"
         );
 
         // Verify: proj-b should still have no auth_profile (unchanged)
@@ -2233,6 +2284,10 @@ auth_profile = "old@example.com"
         // Create a project with a per-project auth_profile override
         let mut project_config = FullProjectConfig::minimal("test-repo", "/tmp/test-repo");
         project_config.project.auth_profile = Some("project@example.com".to_string());
+        project_config.project.auth_profiles = Some(std::collections::HashMap::from([
+            ("claude".to_string(), "project@example.com".to_string()),
+            ("codex".to_string(), "codex@example.com".to_string()),
+        ]));
         project_config
             .save_to(&proj_dir.join("config.toml"))
             .unwrap();
@@ -2245,23 +2300,33 @@ auth_profile = "old@example.com"
             "Per-project override should be set before global switch"
         );
 
-        // Simulate a global auth switch: clear all project overrides
-        // (can't use the real clear_all_project_auth_profiles since it uses hardcoded base dir)
-        for entry in std::fs::read_dir(&projects_dir).unwrap().flatten() {
-            let config_path = entry.path().join("config.toml");
-            if let Some(mut config) = FullProjectConfig::load_from(&config_path)
-                && config.project.auth_profile.is_some()
-            {
-                config.project.auth_profile = None;
-                let _ = config.save_to(&config_path);
-            }
-        }
+        // Simulate a global auth switch for Claude: clear Claude project overrides.
+        clear_project_auth_overrides_in_dir(&projects_dir, crate::auth::AuthProvider::Claude);
 
         // Verify: the project override should now be cleared
         let loaded_after = FullProjectConfig::load_from(&proj_dir.join("config.toml")).unwrap();
         assert_eq!(
             loaded_after.project.auth_profile, None,
             "Per-project override should be cleared after global switch"
+        );
+        assert_eq!(
+            loaded_after
+                .project
+                .auth_profiles
+                .as_ref()
+                .and_then(|m| m.get("claude")),
+            None,
+            "provider-specific Claude override should be cleared"
+        );
+        assert_eq!(
+            loaded_after
+                .project
+                .auth_profiles
+                .as_ref()
+                .and_then(|m| m.get("codex"))
+                .map(String::as_str),
+            Some("codex@example.com"),
+            "provider-specific non-Claude override should remain"
         );
 
         // Verify: other config fields survived
