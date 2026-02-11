@@ -90,7 +90,7 @@ run_coordination_tests() {
     # overlap with other suites safely.
 
     run_bg "daemon_e2e" \
-        cargo test --release --test daemon_e2e -- --ignored "${test_args[@]}"
+        cargo test --release --test daemon_e2e -- --ignored --test-threads=1 "${test_args[@]}"
 
     run_bg "tmux_e2e" \
         cargo test --release --test tmux_e2e -- --ignored --test-threads=1 \
