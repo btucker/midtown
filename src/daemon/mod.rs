@@ -838,6 +838,40 @@ impl DaemonState {
         assignments.remove(&coworker.to_lowercase());
     }
 
+    /// Restore task assignments from disk after daemon restart.
+    ///
+    /// Rebuilds the in-memory `coworker_task_assignments` map by reading
+    /// in_progress tasks with owners from Claude Code's task storage.
+    /// This ensures task assignments survive daemon restarts.
+    ///
+    /// Called during daemon startup, after DaemonState is constructed but
+    /// before the event loop starts.
+    pub(crate) fn restore_task_assignments_from_disk(&self) {
+        let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+
+        let mut assignments = self.coworker_task_assignments.lock().unwrap();
+        let mut restored_count = 0;
+
+        for (task_id, _subject, owner) in in_progress_tasks {
+            if !owner.is_empty() {
+                assignments.insert(
+                    owner.to_lowercase(),
+                    TaskAssignment {
+                        task_id: task_id.clone(),
+                    },
+                );
+                restored_count += 1;
+            }
+        }
+
+        if restored_count > 0 {
+            info!(
+                "Restored {} task assignment(s) from disk during daemon startup",
+                restored_count
+            );
+        }
+    }
+
     /// Get the set of coworker names that have active task assignments.
     pub(crate) fn get_busy_coworker_names(&self) -> HashSet<String> {
         let assignments = self.coworker_task_assignments.lock().unwrap();
@@ -1625,6 +1659,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         );
         effects::execute_effects(recovery_effects, &state).await;
     }
+
+    // Restore task assignments from disk (rebuild the in-memory map).
+    // This ensures coworker task assignments survive daemon restarts.
+    state.restore_task_assignments_from_disk();
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
