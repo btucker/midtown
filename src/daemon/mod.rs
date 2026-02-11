@@ -723,9 +723,21 @@ impl DaemonState {
         }
 
         // Spawn the headless session (keyed by slot_id)
+        // For resumed sessions, the session_id should be extracted from config.session_mode
+        // and passed to spawn(). For fresh sessions, pass None.
+        let session_id = match &config.session_mode {
+            crate::launch::SessionMode::ResumeSession(sid) => Some(sid.clone()),
+            _ => None,
+        };
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
-            .spawn(&name, &slot_id, &headless_config, initial_prompt)
+            .spawn(
+                &name,
+                &slot_id,
+                &headless_config,
+                initial_prompt,
+                session_id,
+            )
             .await?;
 
         // Register in the CoworkerManager tracking map (keyed by slot_id)

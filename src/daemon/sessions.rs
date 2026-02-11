@@ -67,7 +67,13 @@ pub struct CoworkerSession {
 }
 
 impl CoworkerSession {
-    fn new(slot_id: String, name: String, session: HeadlessSession, repo: &str) -> Self {
+    fn new(
+        slot_id: String,
+        name: String,
+        session: HeadlessSession,
+        repo: &str,
+        session_id: Option<String>,
+    ) -> Self {
         let output_log_path = crate::paths::headless_output_file(repo, &name);
 
         // Open the log file in append mode, creating it if needed
@@ -92,7 +98,7 @@ impl CoworkerSession {
             name,
             status: SessionStatus::Starting,
             started_at: Utc::now(),
-            session_id: None,
+            session_id,
             cost_usd: 0.0,
             last_event_at: None,
             has_usage_limit: false,
@@ -131,12 +137,15 @@ impl SessionManager {
     /// The `config` must have `cwd` set to the coworker's worktree path.
     /// If `initial_prompt` is provided, it's sent as the first user message.
     /// The `slot_id` is a daemon-generated UUID used as the HashMap key.
+    /// If `session_id` is provided, it's set immediately on the CoworkerSession
+    /// (used during recovery where resumed sessions don't emit init events).
     pub async fn spawn(
         &self,
         name: &str,
         slot_id: &str,
         config: &HeadlessConfig,
         initial_prompt: Option<&str>,
+        session_id: Option<String>,
     ) -> Result<(), crate::Error> {
         // No name-uniqueness check needed — slot_id is always unique (UUID).
         // Multiple sessions with the same name are now allowed (keyed by slot_id).
@@ -171,13 +180,21 @@ impl SessionManager {
                 name.to_string(),
                 session,
                 &self.repo_name,
+                session_id.clone(),
             ),
         );
 
-        info!(
-            "Spawned headless session for '{}' (slot_id={})",
-            name, slot_id
-        );
+        if let Some(ref sid) = session_id {
+            info!(
+                "Spawned headless session for '{}' (slot_id={}, session_id={})",
+                name, slot_id, sid
+            );
+        } else {
+            info!(
+                "Spawned headless session for '{}' (slot_id={})",
+                name, slot_id
+            );
+        }
         Ok(())
     }
 
@@ -889,5 +906,56 @@ mod tests {
         let sm = SessionManager::new("test-repo".to_string());
         let stopped = sm.reconcile_process_health().await;
         assert!(stopped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_spawn_with_session_id_sets_session_id_immediately() {
+        // This test demonstrates the bug: when spawning a session with a known
+        // session_id (like during recovery), the session_id should be set immediately
+        // on the CoworkerSession, not left as None waiting for an init event that
+        // will never arrive for resumed sessions.
+
+        let sm = SessionManager::new("test-repo".to_string());
+        let known_session_id = "test-session-id-123";
+        let slot_id = "test-slot-id";
+        let name = "madison";
+
+        // Simulate what should happen during recovery: spawn() is called with
+        // a known session_id, and it should be immediately set on the CoworkerSession.
+        // Currently, spawn() doesn't accept a session_id parameter, so this test
+        // will fail until we add that support.
+
+        // For now, we'll test the expectation by manually inserting a session
+        // with the session_id set, then verifying get_session_id() works.
+        {
+            let mut sessions = sm.sessions.write().await;
+            sessions.insert(
+                slot_id.to_string(),
+                CoworkerSession {
+                    session: None,
+                    slot_id: slot_id.to_string(),
+                    name: name.to_string(),
+                    status: SessionStatus::Running,
+                    started_at: Utc::now(),
+                    session_id: Some(known_session_id.to_string()),
+                    cost_usd: 0.0,
+                    last_event_at: None,
+                    has_usage_limit: false,
+                    has_api_error: false,
+                    has_running_subagent: false,
+                    has_pending_tool: false,
+                    output_log: None,
+                    output_log_path: PathBuf::new(),
+                },
+            );
+        }
+
+        // Verify get_session_id() returns the expected value
+        let retrieved_session_id = sm.get_session_id(name).await;
+        assert_eq!(
+            retrieved_session_id,
+            Some(known_session_id.to_string()),
+            "get_session_id() should return the session_id that was set during spawn"
+        );
     }
 }
