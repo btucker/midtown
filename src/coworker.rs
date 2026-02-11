@@ -2328,6 +2328,7 @@ mod tests {
                         .to_string_lossy()
                         .to_string(),
                 ),
+                provider: Some(crate::auth::AuthProvider::Claude),
             },
         );
         persistent_sessions.insert(
@@ -2347,6 +2348,7 @@ mod tests {
                         .to_string_lossy()
                         .to_string(),
                 ),
+                provider: Some(crate::auth::AuthProvider::Claude),
             },
         );
 

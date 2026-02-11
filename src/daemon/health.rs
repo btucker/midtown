@@ -1288,6 +1288,7 @@ mod tests {
             current_task: None,
             session_id: None,
             model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
         };
 
         // Create a minimal snapshot

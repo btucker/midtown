@@ -449,9 +449,7 @@ impl HeadlessSession {
                 // Settings file — skip on resume to avoid duplicate tool registrations.
                 // Resumed sessions already have their plugins loaded from saved state;
                 // passing --settings again causes "Tool names must be unique" API errors.
-                if !is_resume
-                    && let Some(ref settings) = config.settings_path
-                {
+                if !is_resume && let Some(ref settings) = config.settings_path {
                     cmd.arg("--settings").arg(settings);
                 }
 
