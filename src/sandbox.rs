@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 /// - `~/.midtown` (daemon state, channel logs, worktrees)
 /// - `~/.claude` (Claude Code config, sessions, tasks)
 /// - `~/.codex` (Codex config)
+/// - `~/.local/state/midtown` (daemon socket, runtime state)
 /// - `/tmp` and platform-specific temp directories
 pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
@@ -48,6 +49,13 @@ pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<S
     dirs.push(home.join(".midtown").to_string_lossy().to_string());
     dirs.push(home.join(".claude").to_string_lossy().to_string());
     dirs.push(home.join(".codex").to_string_lossy().to_string());
+
+    // XDG state directory (daemon socket, runtime state)
+    dirs.push(
+        home.join(".local/state/midtown")
+            .to_string_lossy()
+            .to_string(),
+    );
 
     // Temp directories
     dirs.push("/tmp".to_string());
