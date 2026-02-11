@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 /// - `~/.claude` (Claude Code config, sessions, tasks)
 /// - `~/.codex` (Codex config)
 /// - `~/.local/state/midtown` (daemon socket, runtime state)
+/// - Main repo `.git/` directory (when primary_repo is a git worktree)
 /// - `/tmp` and platform-specific temp directories
 pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
@@ -36,6 +37,25 @@ pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<S
 
     // Primary project repo
     dirs.push(canon(primary_repo));
+
+    // Git worktree support: if primary_repo is a worktree, its .git is a file
+    // pointing to the main repo's .git/worktrees/<name>/ directory. Git writes
+    // (commits, refs, objects) go to the main repo's .git/, so it must be writable.
+    let dot_git = primary_repo.join(".git");
+    if dot_git.is_file()
+        && let Ok(content) = std::fs::read_to_string(&dot_git)
+        && let Some(gitdir) = content.trim().strip_prefix("gitdir: ")
+    {
+        // gitdir is e.g. /path/to/main-repo/.git/worktrees/<name>
+        // We need the main .git/ dir (two parents up) for shared state
+        let gitdir_path = Path::new(gitdir);
+        if let Some(main_git_dir) = gitdir_path.parent().and_then(|p| p.parent()) {
+            let s = canon(main_git_dir);
+            if !dirs.contains(&s) {
+                dirs.push(s);
+            }
+        }
+    }
 
     // Additional repos (multi-repo projects)
     for repo in additional_repos {
@@ -221,6 +241,32 @@ mod tests {
     fn test_writable_dirs_includes_tmp() {
         let dirs = writable_dirs(Path::new("/home/user/project"), &[]);
         assert!(dirs.contains(&"/tmp".to_string()));
+    }
+
+    #[test]
+    fn test_writable_dirs_includes_main_git_dir_for_worktree() {
+        let tmp = tempfile::TempDir::new().expect("create temp dir");
+        let worktree = tmp.path().join("worktree");
+        std::fs::create_dir_all(&worktree).expect("create worktree dir");
+
+        // Simulate a git worktree .git file pointing to main repo
+        let main_git_dir = tmp.path().join("main-repo/.git");
+        let worktree_git_dir = main_git_dir.join("worktrees/my-worktree");
+        std::fs::create_dir_all(&worktree_git_dir).expect("create gitdir");
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", worktree_git_dir.display()),
+        )
+        .expect("write .git file");
+
+        let dirs = writable_dirs(&worktree, &[]);
+        let main_git = main_git_dir.canonicalize().unwrap_or(main_git_dir);
+        assert!(
+            dirs.iter()
+                .any(|d| d == &main_git.to_string_lossy().to_string()),
+            "Should include main repo .git/ dir for worktree; dirs: {:?}",
+            dirs
+        );
     }
 
     #[test]
