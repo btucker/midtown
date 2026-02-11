@@ -304,6 +304,7 @@ impl DaemonClient {
         description: &str,
         blocked_by: Option<&[String]>,
         channel: Option<&str>,
+        model: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -314,6 +315,9 @@ impl DaemonClient {
         }
         if let Some(ch) = channel {
             params["channel"] = serde_json::json!(ch);
+        }
+        if let Some(m) = model {
+            params["model"] = serde_json::json!(m);
         }
         self.send("task.create", Some(params))
     }
@@ -326,6 +330,7 @@ impl DaemonClient {
         description: Option<&str>,
         blocked_by: Option<&[String]>,
         channel: Option<&str>,
+        model: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "id": id });
         if let Some(o) = owner {
@@ -343,6 +348,9 @@ impl DaemonClient {
         if let Some(ch) = channel {
             params["channel"] = serde_json::json!(ch);
         }
+        if let Some(m) = model {
+            params["model"] = serde_json::json!(m);
+        }
         self.send("task.update", Some(params))
     }
 
@@ -356,6 +364,10 @@ impl DaemonClient {
 
     pub fn task_done(&self, id: &str) -> Result<Response, String> {
         self.send("task.done", Some(serde_json::json!({ "id": id })))
+    }
+
+    pub fn task_metadata(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.send_raw("task.metadata", Some(serde_json::json!({ "id": id })))
     }
 
     pub fn task_request(&self, description: &str) -> Result<Response, String> {

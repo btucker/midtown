@@ -19,6 +19,9 @@ pub enum TaskCommand {
         /// Optional channel to route coworker messages for this task
         #[arg(long)]
         channel: Option<String>,
+        /// Optional model for coworker (e.g., claude/opus, claude/sonnet)
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -44,6 +47,9 @@ pub enum TaskCommand {
         /// Set channel for coworker messages
         #[arg(long)]
         channel: Option<String>,
+        /// Set model for coworker (e.g., claude/opus, claude/sonnet)
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Mark a task as done
     Done {
@@ -85,11 +91,13 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             description,
             blocked_by,
             channel,
+            model,
         } => client.task_create(
             subject,
             description,
             blocked_by.as_deref(),
             channel.as_deref(),
+            model.as_deref(),
         ),
         TaskCommand::Update {
             id,
@@ -98,6 +106,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             description,
             blocked_by,
             channel,
+            model,
         } => client.task_update(
             id,
             owner.as_deref(),
@@ -105,6 +114,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             description.as_deref(),
             blocked_by.as_deref(),
             channel.as_deref(),
+            model.as_deref(),
         ),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),
@@ -144,11 +154,13 @@ fn handle_list(show_all: bool) -> Result<Response, String> {
     Ok(Response::Tasks { tasks: task_infos })
 }
 
-/// View a single task's details (client-side, no daemon needed).
+/// View a single task's details (client-side for task data, queries daemon for metadata).
 ///
 /// Reads from the shared `midtown-<repo>` task list. Task IDs in nudge messages
 /// (e.g., "midtown task view 777") reference the shared list, so this always reads
 /// from the correct location regardless of the caller's task isolation mode.
+///
+/// Queries the daemon for channel and model mappings if the daemon is running.
 fn handle_view(id: &str) -> Result<Response, String> {
     let id = id
         .strip_prefix('#')
@@ -173,6 +185,20 @@ fn handle_view(id: &str) -> Result<Response, String> {
     if let Some(ref owner) = task.owner {
         output.push_str(&format!("Owner:    {}\n", owner));
     }
+
+    // Query daemon for metadata (channel and model)
+    if let Ok(client) = crate::client::DaemonClient::connect() {
+        if let Ok(result) = client.task_metadata(id) {
+            if let Some(channel) = result.get("channel").and_then(|v| v.as_str()) {
+                output.push_str(&format!("Channel:  {}\n", channel));
+            }
+            if let Some(model) = result.get("model").and_then(|v| v.as_str()) {
+                output.push_str(&format!("Model:    {}\n", model));
+            }
+        }
+        // Silently ignore errors - daemon might not be running or metadata might not exist
+    }
+
     if !task.blocked_by.is_empty() {
         output.push_str(&format!("Blocked:  {}\n", task.blocked_by.join(", ")));
     }

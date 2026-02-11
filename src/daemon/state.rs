@@ -85,6 +85,14 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_channel: HashMap<String, String>,
 
+    /// Task-to-model assignment mapping for coworker spawn.
+    /// Maps task ID → model specification (e.g., "claude/opus", "claude/sonnet").
+    /// Used by the daemon to launch coworkers with the requested model when spawning
+    /// for a task. Stored separately from Claude Code's native task storage for
+    /// compatibility. Persists across daemon restarts.
+    #[serde(default)]
+    pub task_model: HashMap<String, String>,
+
     /// Clusterer session ID for resume-on-demand.
     /// The clusterer accumulates context about channel assignments across
     /// invocations, so we persist the session ID to resume it on next task creation.
@@ -109,12 +117,13 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
                     state.worktree_registry.len(),
-                    state.task_channel.len()
+                    state.task_channel.len(),
+                    state.task_model.len()
                 );
                 Ok(state)
             }
@@ -137,12 +146,13 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
             self.worktree_registry.len(),
-            self.task_channel.len()
+            self.task_channel.len(),
+            self.task_model.len()
         );
         Ok(())
     }
@@ -181,6 +191,7 @@ impl DaemonPersistentState {
             worktree_registry: WorktreeRegistry::default(),
             headless_sessions: HashMap::new(),
             task_channel: HashMap::new(),
+            task_model: HashMap::new(),
             clusterer_session_id: None,
         };
 
@@ -541,5 +552,67 @@ mod tests {
 
         // Try to clear a coworker with no assignment - should return false
         assert!(!state.clear_reviewer_assignment("park", "test-repo"));
+    }
+
+    #[test]
+    fn test_task_model_mapping() {
+        let mut state = DaemonPersistentState::default();
+        state
+            .task_model
+            .insert("42".to_string(), "claude/opus".to_string());
+        state
+            .task_model
+            .insert("43".to_string(), "claude/sonnet".to_string());
+
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.task_model.len(), 2);
+        assert_eq!(loaded.task_model.get("42"), Some(&"claude/opus".to_string()));
+        assert_eq!(
+            loaded.task_model.get("43"),
+            Some(&"claude/sonnet".to_string())
+        );
+    }
+
+    #[test]
+    fn test_task_model_default_empty() {
+        // Existing state without task_model should deserialize fine
+        let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
+        let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+        assert!(state.task_model.is_empty());
+    }
+
+    #[test]
+    fn test_task_model_overwrite_and_remove() {
+        let mut state = DaemonPersistentState::default();
+
+        // Add a mapping
+        state
+            .task_model
+            .insert("50".to_string(), "claude/opus".to_string());
+        assert_eq!(
+            state.task_model.get("50"),
+            Some(&"claude/opus".to_string())
+        );
+
+        // Overwrite with a different model
+        state
+            .task_model
+            .insert("50".to_string(), "claude/haiku".to_string());
+        assert_eq!(
+            state.task_model.get("50"),
+            Some(&"claude/haiku".to_string())
+        );
+        assert_eq!(state.task_model.len(), 1);
+
+        // Remove the mapping
+        state.task_model.remove("50");
+        assert!(state.task_model.is_empty());
+
+        // Roundtrip after removal
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+        assert!(loaded.task_model.is_empty());
     }
 }

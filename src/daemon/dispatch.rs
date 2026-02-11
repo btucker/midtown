@@ -281,6 +281,11 @@ pub(super) fn check_and_recover_orphans(
         .and_then(|t| t.channel.clone());
     config.channel = channel.clone();
 
+    // Set model from task_model mapping if available
+    if let Some(model) = snap.task_model_map.get(&recovery.task_id) {
+        config.model = model.clone();
+    }
+
     // Reuse existing worktree if one is registered for this task (reassignment case).
     // Otherwise, compute a new worktree_id from the task subject.
     let (worktree_id, needs_registration) =
@@ -1172,6 +1177,11 @@ pub(super) fn spawn_for_pending_tasks(
                 );
                 config.working_dir = Some(wt_path.clone());
 
+                // Set model from task_model mapping if available
+                if let Some(model) = snap.task_model_map.get(tid) {
+                    config.model = model.clone();
+                }
+
                 // Pre-spawn: create worktree and register assignment BEFORE spawning.
                 // prepare_spawn() validates working_dir exists, so the worktree must exist first.
                 effects.push(Effect::EnsureWorktree {
@@ -1537,6 +1547,11 @@ pub(super) fn spawn_for_pending_tasks(
             );
             config.working_dir = Some(wt_path.clone());
             config.channel = task.channel.clone();
+
+            // Set model from task_model mapping if available
+            if let Some(model) = snap.task_model_map.get(&task.id) {
+                config.model = model.clone();
+            }
 
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
