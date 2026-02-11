@@ -807,7 +807,6 @@ pub(super) async fn gather_orphan_cleanup_data(
         unmerged
             .into_iter()
             .filter(|name| {
-                tracker.track(name.clone());
                 // Suppress warnings for worktrees with no corresponding in_progress task.
                 // When a coworker is idle with no assigned work, their orphaned worktree
                 // represents abandoned/completed work, not an interrupted task needing recovery.
@@ -818,6 +817,10 @@ pub(super) async fn gather_orphan_cleanup_data(
                     );
                     return false;
                 }
+                // Only track worktrees that pass the filter (have an in_progress task).
+                // This ensures first_detected is set when the task is actually assigned,
+                // preserving the 60s grace period.
+                tracker.track(name.clone());
                 tracker.should_warn(name)
             })
             .collect::<Vec<_>>()
@@ -876,7 +879,7 @@ pub(super) async fn gather_orphan_cleanup_data(
         });
 
         // Prune using the FULL orphan list to preserve warned_at timestamps for
-        // orphans not in the `remaining` subset (same rationale as line 611).
+        // orphans not in the `remaining` subset (same rationale as line 802).
         if !cleaned.is_empty() {
             let mut tracker = state.orphan_tracker.write().unwrap();
             tracker.prune(&all_orphaned);
