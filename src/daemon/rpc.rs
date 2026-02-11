@@ -2741,7 +2741,9 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
                 // 1. Check explicit task.pr field first (task !1151)
                 // 2. Fall back to extracting from PR title
                 let pr_number = task_id.and_then(|tid| {
-                    task_pr_map.get(&tid).copied()
+                    task_pr_map
+                        .get(&tid)
+                        .copied()
                         .or_else(|| prs_by_task_id.get(&tid).copied())
                 });
 
