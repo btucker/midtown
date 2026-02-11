@@ -935,26 +935,7 @@ fn detect_git_repo() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Retry a fallible operation with progressive backoff to handle transient
-    /// WouldBlock from try_lock_shared() under CI load.
-    /// Same pattern as channel.rs tests — 10 * (attempt + 1) ms sleep between retries.
-    fn retry_with_backoff<T, E: std::fmt::Debug>(
-        max_attempts: u32,
-        mut f: impl FnMut() -> std::result::Result<T, E>,
-    ) -> std::result::Result<T, E> {
-        for attempt in 0..max_attempts {
-            match f() {
-                Ok(val) => return Ok(val),
-                Err(e) if attempt < max_attempts - 1 => {
-                    std::thread::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1)));
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        unreachable!()
-    }
+    use midtown::test_utils::retry_with_backoff;
 
     #[test]
     fn test_extract_insights_single() {

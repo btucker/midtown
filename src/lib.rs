@@ -131,6 +131,12 @@ pub mod clustering;
 // Specialized headless coworker abstraction
 pub mod specialized;
 
+// Test utilities
+// Note: Always available for use in both library and binary tests.
+// The retry_with_backoff function is small and has no dependencies,
+// so there's no harm in including it in production builds.
+pub mod test_utils;
+
 pub use channel::{Channel, ChannelRouter};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;

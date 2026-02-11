@@ -900,26 +900,9 @@ impl Clone for ChannelRouter {
 mod tests {
     use super::*;
     use crate::message::MessageType;
+    use crate::test_utils::retry_with_backoff;
     use std::thread;
-    use std::time::Duration;
     use tempfile::TempDir;
-
-    /// Retry a fallible operation with backoff to handle transient lock contention in CI.
-    /// All channel read methods use try_lock_shared() which returns WouldBlock when
-    /// an exclusive write lock is held by another thread.
-    fn retry_with_backoff<T>(max_attempts: u32, mut f: impl FnMut() -> Result<T>) -> Result<T> {
-        for attempt in 0..max_attempts {
-            match f() {
-                Ok(val) => return Ok(val),
-                Err(e) if attempt < max_attempts - 1 => {
-                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        unreachable!()
-    }
 
     fn read_all_with_retry(channel: &Channel, max_attempts: u32) -> Result<Vec<Message>> {
         retry_with_backoff(max_attempts, || channel.read_all())
