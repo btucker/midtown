@@ -7,15 +7,11 @@
 ///
 /// Expected behavior: These worktrees should be silently cleaned up OR ignored,
 /// not flagged with warnings to the lead every hour.
-///
 /// Root cause: The orphan detection doesn't distinguish between:
 /// 1. Orphaned tasks (work interrupted, needs recovery)
 /// 2. Abandoned worktrees (coworker on break, no active work)
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     /// Simulate orphan detection for a worktree with:
     /// - No active coworker session
     /// - No assigned task
