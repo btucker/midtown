@@ -86,6 +86,10 @@ enum Commands {
         #[arg(long)]
         daemon_only: bool,
 
+        /// Allow starting outside a container sandbox when none is available
+        #[arg(long)]
+        dangerously_run_without_sandbox: bool,
+
         /// Project name (overrides auto-detection)
         #[arg(long)]
         project: Option<String>,
@@ -314,6 +318,7 @@ fn main() {
     // Default to Start if no command provided
     let command = cli.command.unwrap_or(Commands::Start {
         daemon_only: false,
+        dangerously_run_without_sandbox: false,
         project: None,
         repos: vec![],
     });
@@ -441,11 +446,17 @@ fn main() {
     // Start command (starts daemon, doesn't need existing connection)
     if let Commands::Start {
         daemon_only,
+        dangerously_run_without_sandbox,
         project,
         repos,
     } = &command
     {
-        let result = cli::handle_start(*daemon_only, project.clone(), repos.clone());
+        let result = cli::handle_start(
+            *daemon_only,
+            *dangerously_run_without_sandbox,
+            project.clone(),
+            repos.clone(),
+        );
         handle_result(format, result);
         return;
     }
