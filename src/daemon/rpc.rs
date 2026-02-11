@@ -2695,6 +2695,17 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
         let headless_health = state.headless_health.read().unwrap();
         let prs_by_task_id = build_pr_task_map(&prs);
 
+        // Read tasks to get explicit PR associations (task !1151)
+        let all_tasks = crate::tasks::read_tasks();
+        let task_pr_map: HashMap<u32, u64> = all_tasks
+            .iter()
+            .filter_map(|task| {
+                let task_id: u32 = task.id.parse().ok()?;
+                let pr = task.pr?;
+                Some((task_id, pr))
+            })
+            .collect();
+
         active_coworkers
             .iter()
             .filter_map(|cw| {
@@ -2727,7 +2738,12 @@ async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Response {
                 };
 
                 // Find PR number for this task
-                let pr_number = task_id.and_then(|tid| prs_by_task_id.get(&tid).copied());
+                // 1. Check explicit task.pr field first (task !1151)
+                // 2. Fall back to extracting from PR title
+                let pr_number = task_id.and_then(|tid| {
+                    task_pr_map.get(&tid).copied()
+                        .or_else(|| prs_by_task_id.get(&tid).copied())
+                });
 
                 Some(serde_json::json!({
                     "name": cw.name,
