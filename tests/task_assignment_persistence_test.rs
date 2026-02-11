@@ -98,7 +98,6 @@ fn test_task_assignments_lost_after_restart() {
         "✓ Fix verified: restore would add {} assignments",
         restored_assignments.len()
     );
-    );
 }
 
 /// Helper function to rebuild coworker_task_assignments from task storage.
