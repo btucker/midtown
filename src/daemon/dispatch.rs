@@ -1509,20 +1509,37 @@ pub(super) fn build_task_completion_effects(
 
 /// Build effects to auto-complete tasks when all PRs referenced in their description are merged.
 ///
-/// This handles cases where the task title doesn't contain `[Midtown #XX]`:
+/// This handles cases where the task is NOT linked to a PR via `[Midtown #XX]` in the PR title:
 /// - Meta-tasks: "Merge reviewed PRs: #901-#910"
 /// - Sub-tasks: "Address PR #904 review feedback"
 /// - Fix-PR tasks: "Fix PR #908"
+///
+/// Tasks linked via `[Midtown #XX]` are handled by `build_task_completion_effects` (webhook path).
+/// This function skips those tasks to avoid double-completion.
 ///
 /// Returns effects to complete tasks whose description references only merged PRs.
 pub(super) fn build_description_based_completion_effects(
     snap: &snapshot::WorldSnapshot,
 ) -> Vec<Effect> {
+    // Pre-compute task IDs that are already handled by the title-based completion path.
+    // These tasks have a merged PR whose title contains `[Midtown #XX]` matching their ID.
+    let title_completed_task_ids: std::collections::HashSet<String> = snap
+        .all_tasks
+        .iter()
+        .filter(|t| t.status == crate::tasks::TaskStatus::Completed)
+        .map(|t| t.id.clone())
+        .collect();
+
     let mut effects = Vec::new();
 
     for task in &snap.all_tasks {
         // Only consider in_progress tasks
         if task.status != crate::tasks::TaskStatus::InProgress {
+            continue;
+        }
+
+        // Skip tasks already completed (defensive guard against race with webhook path)
+        if title_completed_task_ids.contains(&task.id) {
             continue;
         }
 
@@ -2125,6 +2142,65 @@ mod tests {
         assert!(
             effects.is_empty(),
             "Should not complete task with no description"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_skips_already_completed_tasks() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        // Simulate a task that was already completed by the webhook/title-based path.
+        // The description-based path should skip it to avoid double-completion.
+        let completed_task = Task {
+            id: "42".to_string(),
+            subject: "Add auth endpoint".to_string(),
+            status: TaskStatus::Completed, // Already completed by title-based path
+            owner: Some("york".to_string()),
+            description: Some("Fix PR #904 review feedback".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // Also add an in_progress task with PR references
+        let in_progress_task = Task {
+            id: "43".to_string(),
+            subject: "Meta task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("Merge PRs: #904, #905".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(904);
+        merged_pr_numbers.insert(905);
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![completed_task, in_progress_task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        // Should only produce effects for task 43, not task 42
+        let complete_task_ids: Vec<&String> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::CompleteTask { task_id, .. } => Some(task_id),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(complete_task_ids, vec!["43"]);
+        assert!(
+            !complete_task_ids.contains(&&"42".to_string()),
+            "Should not double-complete already-completed task 42"
         );
     }
 
