@@ -2710,6 +2710,11 @@ pub(super) mod tests {
             ..test_app()
         };
 
+        // Small sleep to avoid WouldBlock from lock contention after send()
+        // refresh_unread_counts() internally calls channel.read_all() which
+        // uses try_lock_shared() and can fail if send() hasn't released the write lock yet
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         // Before any reading, all messages should be unread
         app.refresh_unread_counts();
         assert_eq!(
@@ -2760,6 +2765,9 @@ pub(super) mod tests {
             Some(&messages_read[2].id),
             "Cursor should still point to message 3 before refresh"
         );
+
+        // Small sleep to avoid WouldBlock from lock contention after send()
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         // Refresh should show 1 unread
         app.refresh_unread_counts();
