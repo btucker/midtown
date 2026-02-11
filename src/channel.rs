@@ -294,10 +294,41 @@ impl Channel {
         }
 
         let file = File::open(&self.channel_file)?;
-        // Try to acquire shared lock without blocking - avoids UI freeze when
-        // writers hold exclusive locks
-        file.try_lock_shared()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
+
+        // Try to acquire shared lock with bounded retries. In high-concurrency scenarios
+        // (e.g., E2E tests), a write lock may be held briefly after a write completes due
+        // to OS-level file handle cleanup. Retry with short delays to avoid spurious failures.
+        let mut acquired = false;
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => {
+                    acquired = true;
+                    break;
+                }
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "Failed to acquire shared lock after {} attempts: {}",
+                            attempt + 1,
+                            e
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        if !acquired {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Failed to acquire shared lock after 500ms (10 attempts)",
+            )
+            .into());
+        }
 
         let reader = BufReader::new(file);
         let mut messages = Vec::new();
