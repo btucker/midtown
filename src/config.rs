@@ -222,12 +222,46 @@ impl FullProjectConfig {
 
     /// Write this config to the given path.
     ///
+    /// Loads the existing file first (to preserve comments/structure from manual edits),
+    /// then overlays the current struct values and writes back.
     /// Creates parent directories if they don't exist.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let contents = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+
+        // If file exists, load and update it to preserve comments
+        let contents = if path.exists() {
+            let existing = std::fs::read_to_string(path)?;
+            let mut doc = existing
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?;
+
+            // Serialize current struct to get new values
+            let new_values = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+            let new_table: toml_edit::Table = new_values
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?
+                .as_table()
+                .clone();
+
+            // Update document with new values while preserving comments/formatting
+            merge_tables(doc.as_table_mut(), &new_table);
+
+            // Special case: Remove auth_profile if it's None (serde omits None fields,
+            // but we need to actually remove the key from existing files)
+            if self.project.auth_profile.is_none()
+                && let Some(Item::Table(project_table)) = doc.get_mut("project")
+            {
+                project_table.remove("auth_profile");
+            }
+
+            doc.to_string()
+        } else {
+            // No existing file, just serialize normally
+            toml::to_string_pretty(self).map_err(std::io::Error::other)?
+        };
+
         std::fs::write(path, contents)
     }
 
@@ -316,6 +350,34 @@ impl ProjectConfig {
     /// Get user display name, or None if not configured (falls back to "user").
     pub fn user_display_name(&self) -> Option<&str> {
         self.user_display_name.as_deref()
+    }
+}
+
+/// Merge new TOML table values into a target table while preserving comments.
+///
+/// This function recursively merges `new_table` into `target`:
+/// - If both values are tables, recurse
+/// - Otherwise, replace the target value with the new value
+/// - If the key doesn't exist in target, add it
+///
+/// This preserves comments and formatting from the target document
+/// while updating values from the new table.
+fn merge_tables(target: &mut Table, new_table: &Table) {
+    for (key, new_value) in new_table.iter() {
+        match (target.get_mut(key), new_value) {
+            // Both are tables - recurse
+            (Some(Item::Table(target_table)), Item::Table(new_table)) => {
+                merge_tables(target_table, new_table);
+            }
+            // Target exists but isn't a table, or new value isn't a table - replace
+            (Some(existing), new_item) => {
+                *existing = new_item.clone();
+            }
+            // Key doesn't exist in target - add it
+            (None, new_item) => {
+                target.insert(key, new_item.clone());
+            }
+        }
     }
 }
 
@@ -1823,6 +1885,69 @@ bin_command = "midtown"
 "#;
         let config: GlobalConfig = toml::from_str(toml).unwrap();
         assert!(config.providers.claude.auth_profile.is_none());
+    }
+
+    #[test]
+    fn test_full_project_config_save_preserves_comments() {
+        // Bug: FullProjectConfig::save_to() uses toml::to_string_pretty() which destroys comments.
+        // This is the same bug fixed for GlobalConfig in PR #933.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Write initial config with user comments
+        let initial_toml = r#"# Project configuration for my awesome project
+# This comment explains the max_coworkers setting
+[project]
+name = "testproj"
+repos = ["/tmp/testproj"]
+primary_repo = "/tmp/testproj"
+
+[default]
+# Set to 4 for my machine's capacity
+max_coworkers = 4
+
+[daemon]
+# Custom webhook port
+webhook_port = 47024
+"#;
+        std::fs::write(&path, initial_toml).unwrap();
+
+        // Load, modify, and save
+        let mut config = FullProjectConfig::load_from(&path).unwrap();
+        config.default.personality = Some(Personality::Fun); // Add a new field
+        config.save_to(&path).unwrap();
+
+        // Verify comments are preserved
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved_contents.contains("# Project configuration for my awesome project"),
+            "Top-level comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("# This comment explains the max_coworkers setting"),
+            "Section comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("# Set to 4 for my machine's capacity"),
+            "Inline comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("# Custom webhook port"),
+            "Daemon section comment should be preserved"
+        );
+
+        // Verify the new field was added
+        assert!(
+            saved_contents.contains("personality"),
+            "New field should be added"
+        );
+
+        // Verify existing values are preserved
+        let reloaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(reloaded.project.name(), Some("testproj"));
+        assert_eq!(reloaded.default.max_coworkers(), Some(4));
+        assert_eq!(reloaded.default.personality(), Personality::Fun);
+        assert_eq!(reloaded.daemon.webhook_port, Some(47024));
     }
 
     #[test]
