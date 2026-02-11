@@ -552,6 +552,9 @@ impl WorktreeManager {
     /// squash-merge). This catches cases where `has_commits_beyond_base`
     /// returns a false positive because squash-merged commits have different
     /// SHAs than the branch commits.
+    ///
+    /// First tries to find PRs by exact branch name. If that fails (branch was deleted),
+    /// falls back to searching recent merged PRs matching the coworker name pattern.
     pub fn is_branch_pr_merged(&self, coworker_name: &str) -> bool {
         let worktree_path = self.worktree_path(coworker_name);
         if !worktree_path.exists() {
@@ -575,7 +578,7 @@ impl WorktreeManager {
             _ => return false,
         };
 
-        // Check if there's a merged PR for this branch
+        // First, try exact branch match (works if branch still exists on GitHub)
         let output = Command::new("gh")
             .current_dir(&self.repo_root)
             .args([
@@ -584,11 +587,51 @@ impl WorktreeManager {
             ])
             .output();
 
+        if let Ok(output) = output
+            && output.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if stdout != "[]" && !stdout.is_empty() {
+                return true; // Found merged PR by exact branch name
+            }
+        }
+
+        // Fallback: branch was likely deleted after merge. Search recent merged PRs
+        // that match the coworker's branch naming pattern (e.g., "amsterdam/*").
+        // Look at the last 50 merged PRs (covers ~1 week of active development).
+        let output = Command::new("gh")
+            .current_dir(&self.repo_root)
+            .args([
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--json",
+                "headRefName",
+                "--limit",
+                "50",
+            ])
+            .output();
+
         match output {
             Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                // gh returns "[]" when no merged PRs found, non-empty array otherwise
-                stdout != "[]" && !stdout.is_empty()
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // Parse JSON array to check if any PR matches the branch name pattern
+                // Example: [{"headRefName": "amsterdam/feature-x"}, ...]
+                if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+                    for pr in prs {
+                        if let Some(head_ref) = pr.get("headRefName").and_then(|v| v.as_str()) {
+                            // Check if this PR's branch matches our worktree's branch
+                            // or the coworker name pattern
+                            if head_ref == branch
+                                || head_ref.starts_with(&format!("{}/", coworker_name))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
             }
             _ => false, // If gh fails, assume not merged (safe default)
         }
