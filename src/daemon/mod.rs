@@ -409,7 +409,11 @@ pub(crate) struct DaemonState {
     /// This map tracks which coworker is working on which task, enabling busy
     /// detection for dispatch and idle protection.
     ///
-    /// Updated when: AssignAndSpawn succeeds, task.claim RPC is received.
+    /// Updated when:
+    /// - Daemon startup: restored from disk via `restore_task_assignments_from_disk()`
+    /// - AssignAndSpawn succeeds
+    /// - task.claim RPC is received
+    ///
     /// Cleared when: coworker shuts down, task is completed or reset to pending.
     coworker_task_assignments: std::sync::Mutex<HashMap<String, TaskAssignment>>,
     /// Pending nudges sent to coworkers, awaiting confirmation of submission.
@@ -846,21 +850,41 @@ impl DaemonState {
     ///
     /// Called during daemon startup, after DaemonState is constructed but
     /// before the event loop starts.
+    ///
+    /// **Note on multiple tasks per coworker**: The `coworker_task_assignments`
+    /// map stores one task per coworker. When a coworker has multiple in_progress
+    /// tasks, only the first task encountered is restored to the map. Subsequent
+    /// tasks for the same coworker are logged but skipped. This is acceptable
+    /// because the map's purpose is busy detection, not comprehensive task tracking.
     pub(crate) fn restore_task_assignments_from_disk(&self) {
-        let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+        let in_progress_tasks = crate::tasks::read_tasks_for_repo(Some(&self.repo_name))
+            .into_iter()
+            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+            .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
+            .collect::<Vec<_>>();
 
         let mut assignments = self.coworker_task_assignments.lock().unwrap();
         let mut restored_count = 0;
 
         for (task_id, _subject, owner) in in_progress_tasks {
             if !owner.is_empty() {
-                assignments.insert(
-                    owner.to_lowercase(),
-                    TaskAssignment {
-                        task_id: task_id.clone(),
-                    },
-                );
-                restored_count += 1;
+                let owner_lower = owner.to_lowercase();
+                match assignments.entry(owner_lower) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(TaskAssignment {
+                            task_id: task_id.clone(),
+                        });
+                        restored_count += 1;
+                    }
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        warn!(
+                            "Skipping task {} for coworker {} - already has task {} assigned (multiple in_progress tasks detected)",
+                            task_id,
+                            owner,
+                            e.get().task_id
+                        );
+                    }
+                }
             }
         }
 
