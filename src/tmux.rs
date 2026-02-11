@@ -1896,6 +1896,7 @@ pub fn spawn_lead(
         model: "sonnet".to_string(),
         channel: None,
         auth_profile_dir: Some(auth_dir),
+        auth_provider: crate::auth::AuthProvider::Claude,
     };
 
     // Allow tests/CI to override the lead command (claude isn't available in CI)
@@ -2685,6 +2686,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2720,6 +2722,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2759,6 +2762,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2794,6 +2798,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2825,6 +2830,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2856,6 +2862,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2889,6 +2896,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2928,6 +2936,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2957,6 +2966,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -2988,6 +2998,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3015,6 +3026,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -3044,6 +3056,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let retry = config.as_fresh_retry();
         assert_eq!(retry.session_mode, SessionMode::Fresh);
@@ -3137,6 +3150,7 @@ Claude is now processing the request
             model: "sonnet".to_string(),
             channel: None,
             auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),

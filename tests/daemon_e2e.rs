@@ -83,6 +83,27 @@ fn cleanup_orphaned_test_daemons() {
     }
 }
 
+fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            copy_dir_recursive(&src, &dst)?;
+        } else {
+            fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_profile_dirs(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
 /// Test fixture for daemon e2e tests.
 ///
 /// Creates an isolated environment with a fake git repo and manages
@@ -1375,6 +1396,119 @@ fn test_coworker_minimum_lifetime() {
          Coworkers need a minimum lifetime before an automatic break to prevent \
          race conditions where they're sent on a break before claiming work."
     );
+}
+
+/// Test Codex auth switching restarts Codex coworker sessions and leaves Lead unchanged.
+#[test]
+#[ignore] // Requires built binary and local codex auth
+fn test_daemon_rpc_auth_switch_codex_relaunches_codex_sessions() {
+    let mut fixture = match DaemonFixture::new() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let provider = midtown::auth::AuthProvider::Codex;
+    let source_dir = midtown::auth::current_profile_dir_for(provider);
+    if !source_dir.exists() {
+        eprintln!("Skipping: no Codex profile dir at {:?}", source_dir);
+        return;
+    }
+
+    let profile_a = format!("{}-codex-a@example.com", fixture.repo_name);
+    let profile_b = format!("{}-codex-b@example.com", fixture.repo_name);
+    let profile_a_dir = midtown::auth::profile_dir_for(provider, &profile_a);
+    let profile_b_dir = midtown::auth::profile_dir_for(provider, &profile_b);
+    let cleanup_paths = vec![profile_a_dir.clone(), profile_b_dir.clone()];
+
+    if copy_dir_recursive(&source_dir, &profile_a_dir).is_err()
+        || copy_dir_recursive(&source_dir, &profile_b_dir).is_err()
+    {
+        eprintln!("Skipping: failed to prepare Codex test profiles");
+        cleanup_profile_dirs(&cleanup_paths);
+        return;
+    }
+
+    let set_profile = |fixture: &DaemonFixture, profile: &str| {
+        fixture.rpc_call(
+            "auth.switch",
+            Some(serde_json::json!({
+                "profile": profile,
+                "provider": "codex",
+                "all": false
+            })),
+        )
+    };
+
+    let set_a = set_profile(&fixture, &profile_a);
+    assert!(set_a.is_some(), "auth.switch should respond");
+    let set_a = set_a.unwrap();
+    assert!(
+        set_a["error"].is_null(),
+        "auth.switch to profile_a should succeed: {:?}",
+        set_a["error"]
+    );
+
+    let spawn_name = "codex-switch-test";
+    let spawn_response = fixture.rpc_call(
+        "coworker.spawn",
+        Some(serde_json::json!({
+            "name": spawn_name,
+            "provider": "codex",
+        })),
+    );
+    assert!(
+        spawn_response.is_some(),
+        "Should receive response from coworker.spawn"
+    );
+    let spawn_response = spawn_response.unwrap();
+    if spawn_response["error"].is_object() {
+        eprintln!(
+            "Skipping: codex coworker.spawn failed in this environment: {:?}",
+            spawn_response["error"]
+        );
+        cleanup_profile_dirs(&cleanup_paths);
+        return;
+    }
+
+    let switch_response = set_profile(&fixture, &profile_b);
+    assert!(
+        switch_response.is_some(),
+        "auth.switch should respond after spawn"
+    );
+    let switch_response = switch_response.unwrap();
+    assert!(
+        switch_response["error"].is_null(),
+        "auth.switch should succeed: {:?}",
+        switch_response["error"]
+    );
+
+    let result = &switch_response["result"];
+    let shutdown = result["coworkers_shutdown"].as_u64().unwrap_or(0);
+    let relaunched = result["coworkers_relaunched"].as_u64().unwrap_or(0);
+    assert!(
+        shutdown >= 1,
+        "codex auth switch should shut down codex coworker sessions"
+    );
+    assert!(
+        relaunched >= 1,
+        "codex auth switch should relaunch codex coworker sessions"
+    );
+    assert_eq!(
+        result["lead_relaunch_status"].as_str(),
+        Some("unchanged"),
+        "Codex auth switch should not treat lead as relaunch failure"
+    );
+    assert_eq!(
+        result["lead_relaunch_attempted"].as_bool(),
+        Some(false),
+        "Lead relaunch should not be attempted for codex auth switch"
+    );
+
+    cleanup_profile_dirs(&cleanup_paths);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

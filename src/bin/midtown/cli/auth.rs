@@ -43,16 +43,39 @@ pub enum AuthCommand {
     },
 }
 
-pub fn handle(cmd: &AuthCommand) -> Result<Response, String> {
+pub fn handle(
+    cmd: &AuthCommand,
+    provider: midtown::auth::AuthProvider,
+) -> Result<Response, String> {
     match cmd {
-        AuthCommand::Login { email } => handle_login(email),
-        AuthCommand::List => handle_list(),
-        AuthCommand::Switch { profile, all } => handle_switch(profile, *all),
-        AuthCommand::Remove { profile } => handle_remove(profile),
+        AuthCommand::Login { email } => handle_login(email, provider),
+        AuthCommand::List => handle_list(provider),
+        AuthCommand::Switch { profile, all } => handle_switch(profile, *all, provider),
+        AuthCommand::Remove { profile } => handle_remove(profile, provider),
     }
 }
 
-fn handle_login(email: &str) -> Result<Response, String> {
+pub fn handle_list_all_providers() -> Result<Response, String> {
+    let mut sections = Vec::new();
+
+    for provider in midtown::auth::AuthProvider::all() {
+        let rows = fetch_sorted_profiles(*provider)?;
+        if rows.is_empty() {
+            sections.push(format!(
+                "{}\n  No profiles found. Create one with: midtown auth --provider {} login <email>",
+                provider, provider
+            ));
+            continue;
+        }
+        sections.push(format!("{}\n{}", provider, format_table(&rows)));
+    }
+
+    Ok(Response::Message {
+        message: sections.join("\n\n"),
+    })
+}
+
+fn handle_login(email: &str, provider: midtown::auth::AuthProvider) -> Result<Response, String> {
     // Validate email format (must contain @)
     if !email.contains('@') {
         return Err(format!(
@@ -61,33 +84,51 @@ fn handle_login(email: &str) -> Result<Response, String> {
         ));
     }
 
-    let profile_dir = midtown::auth::ensure_profile_dir(email)
+    let profile_dir = midtown::auth::ensure_profile_dir_for(provider, email)
         .map_err(|e| format!("Failed to create profile directory: {}", e))?;
 
-    println!("Launching Claude with profile '{}'...", email);
+    println!(
+        "Launching {} with profile '{}'...",
+        provider.cli_command(),
+        email
+    );
     println!("Config dir: {}", profile_dir.display());
     println!();
-    println!("Run /login inside the Claude session to authenticate.");
+    println!(
+        "Run login/auth commands inside the {} session to authenticate.",
+        provider.cli_command()
+    );
     println!("Once authenticated, exit the session. The tokens will be cached");
     println!("in {} for future use.", profile_dir.display());
     println!();
 
-    let status = std::process::Command::new("claude")
-        .env("CLAUDE_CONFIG_DIR", &profile_dir)
+    let status = std::process::Command::new(provider.cli_command())
+        .env(provider.env_var(), &profile_dir)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
-        .map_err(|e| format!("Failed to launch claude: {}. Is claude installed?", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to launch {}: {}. Is {} installed?",
+                provider.cli_command(),
+                e,
+                provider.cli_command()
+            )
+        })?;
 
     if !status.success() {
-        return Err(format!("Claude exited with status: {}", status));
+        return Err(format!(
+            "{} exited with status: {}",
+            provider.cli_command(),
+            status
+        ));
     }
 
     // If this is the first profile, set it as current
-    let profiles = midtown::auth::list_profiles().unwrap_or_default();
+    let profiles = midtown::auth::list_profiles_for(provider).unwrap_or_default();
     if profiles.len() == 1
-        && let Err(e) = midtown::auth::set_current_profile(email)
+        && let Err(e) = midtown::auth::set_current_profile_for(provider, email)
     {
         eprintln!(
             "Warning: Could not set '{}' as current profile: {}",
@@ -96,7 +137,10 @@ fn handle_login(email: &str) -> Result<Response, String> {
     }
 
     Ok(Response::Message {
-        message: format!("Profile '{}' authenticated successfully.", email),
+        message: format!(
+            "Profile '{}' authenticated successfully for {}.",
+            email, provider
+        ),
     })
 }
 
@@ -114,31 +158,39 @@ struct ProfileRow {
 }
 
 /// Fetch profiles with usage data, sorted by available capacity (best first).
-fn fetch_sorted_profiles() -> Result<Vec<ProfileRow>, String> {
-    let profiles =
-        midtown::auth::list_profiles().map_err(|e| format!("Failed to list profiles: {}", e))?;
+fn fetch_sorted_profiles(provider: midtown::auth::AuthProvider) -> Result<Vec<ProfileRow>, String> {
+    let profiles = midtown::auth::list_profiles_for(provider)
+        .map_err(|e| format!("Failed to list profiles for {}: {}", provider, e))?;
 
-    let current = midtown::auth::current_profile();
+    let current = midtown::auth::current_profile_for(provider);
 
     // Fetch usage data for all authenticated profiles in parallel
-    let usage_results: Vec<(String, Option<midtown::UsageData>)> = std::thread::scope(|s| {
-        let handles: Vec<_> = profiles
-            .iter()
-            .map(|name| {
-                let name = name.clone();
-                s.spawn(move || {
-                    let usage = midtown::fetch_usage_for_profile(&name);
-                    (name, usage)
-                })
+    let usage_results: Vec<(String, Option<midtown::UsageData>)> =
+        if provider == midtown::auth::AuthProvider::Claude {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = profiles
+                    .iter()
+                    .map(|name| {
+                        let name = name.clone();
+                        s.spawn(move || {
+                            let usage = midtown::fetch_usage_for_profile(&name);
+                            (name, usage)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok()).collect()
             })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
-    });
+        } else {
+            profiles
+                .iter()
+                .map(|name| (name.clone(), None))
+                .collect::<Vec<_>>()
+        };
 
     let mut rows: Vec<ProfileRow> = profiles
         .iter()
         .map(|name| {
-            let status = midtown::auth::profile_status(name);
+            let status = midtown::auth::profile_status_for(provider, name);
             let has_credentials = status.as_ref().is_some_and(|s| s.has_credentials);
             let usage = usage_results
                 .iter()
@@ -251,15 +303,17 @@ enum SelectorAction {
     Cancel,
 }
 
-fn handle_list() -> Result<Response, String> {
-    let rows = fetch_sorted_profiles()?;
+fn handle_list(provider: midtown::auth::AuthProvider) -> Result<Response, String> {
+    let rows = fetch_sorted_profiles(provider)?;
 
     // Non-TTY: static table only
     if !std::io::stdout().is_terminal() {
         if rows.is_empty() {
             return Ok(Response::Message {
-                message: "No profiles found. Create one with: midtown auth login <email>"
-                    .to_string(),
+                message: format!(
+                    "No {} profiles found. Create one with: midtown auth --provider {} login <email>",
+                    provider, provider
+                ),
             });
         }
         return Ok(Response::Message {
@@ -282,14 +336,14 @@ fn handle_list() -> Result<Response, String> {
         SelectorAction::Switch(profile) => {
             let all = run_scope_selector()?;
             match all {
-                Some(scope_all) => handle_switch(&profile, scope_all),
+                Some(scope_all) => handle_switch(&profile, scope_all, provider),
                 None => Ok(Response::Message {
                     message: String::new(),
                 }), // cancelled
             }
         }
-        SelectorAction::AddAccount => prompt_add_account(),
-        SelectorAction::Remove(profile) => confirm_and_remove(&profile),
+        SelectorAction::AddAccount => prompt_add_account(provider),
+        SelectorAction::Remove(profile) => confirm_and_remove(&profile, provider),
         SelectorAction::Cancel => Ok(Response::Message {
             message: String::new(),
         }),
@@ -297,14 +351,17 @@ fn handle_list() -> Result<Response, String> {
 }
 
 /// Confirm and remove a profile.
-fn confirm_and_remove(profile: &str) -> Result<Response, String> {
+fn confirm_and_remove(
+    profile: &str,
+    provider: midtown::auth::AuthProvider,
+) -> Result<Response, String> {
     eprint!("Remove profile '{}'? [y/N] ", profile);
     let mut input = String::new();
     std::io::stdin()
         .read_line(&mut input)
         .map_err(|e| format!("Failed to read input: {}", e))?;
     if input.trim().eq_ignore_ascii_case("y") {
-        handle_remove(profile)
+        handle_remove(profile, provider)
     } else {
         Ok(Response::Message {
             message: "Cancelled.".to_string(),
@@ -313,7 +370,7 @@ fn confirm_and_remove(profile: &str) -> Result<Response, String> {
 }
 
 /// Prompt the user for an email and run the login flow.
-fn prompt_add_account() -> Result<Response, String> {
+fn prompt_add_account(provider: midtown::auth::AuthProvider) -> Result<Response, String> {
     eprint!("Email: ");
     let mut email = String::new();
     std::io::stdin()
@@ -325,7 +382,7 @@ fn prompt_add_account() -> Result<Response, String> {
             message: "Cancelled.".to_string(),
         });
     }
-    handle_login(email)
+    handle_login(email, provider)
 }
 
 /// Format profiles as a static table string.
@@ -677,22 +734,26 @@ fn draw_selector(f: &mut ratatui::Frame, rows: &[ProfileRow], state: &mut ListSt
     f.render_stateful_widget(list, area, state);
 }
 
-fn handle_switch(profile: &str, all: bool) -> Result<Response, String> {
+fn handle_switch(
+    profile: &str,
+    all: bool,
+    provider: midtown::auth::AuthProvider,
+) -> Result<Response, String> {
     // If the daemon is running, use RPC to switch profile and re-launch all claudes.
     // This ensures running coworkers and the lead pick up the new credentials.
     if let Ok(client) = crate::client::DaemonClient::connect() {
-        return client.auth_switch(profile, all);
+        return client.auth_switch(profile, all, provider);
     }
 
     if all {
         // Global switch: update the global current profile and clear per-project overrides
-        midtown::auth::set_current_profile(profile).map_err(|e| e.to_string())?;
+        midtown::auth::set_current_profile_for(provider, profile).map_err(|e| e.to_string())?;
         midtown::config::clear_all_project_auth_profiles();
 
         Ok(Response::Message {
             message: format!(
-                "Switched all projects to profile '{}'. No daemon running — new sessions will use this profile.",
-                profile
+                "Switched all projects to {} profile '{}'. No daemon running, new sessions will use this profile.",
+                provider, profile
             ),
         })
     } else {
@@ -700,31 +761,35 @@ fn handle_switch(profile: &str, all: bool) -> Result<Response, String> {
         let project_name = midtown::paths::detect_repo_name()
             .ok_or_else(|| "Not in a git repository. Use --all to switch globally.".to_string())?;
 
-        set_project_auth_profile(&project_name, profile)?;
+        set_project_auth_profile(&project_name, profile, provider)?;
 
         Ok(Response::Message {
             message: format!(
-                "Switched project '{}' to profile '{}'. No daemon running — new sessions will use this profile.",
-                project_name, profile
+                "Switched project '{}' to {} profile '{}'. No daemon running, new sessions will use this profile.",
+                project_name, provider, profile
             ),
         })
     }
 }
 
 /// Set the auth_profile in a project's config.toml.
-fn set_project_auth_profile(project_name: &str, profile: &str) -> Result<(), String> {
+fn set_project_auth_profile(
+    project_name: &str,
+    profile: &str,
+    provider: midtown::auth::AuthProvider,
+) -> Result<(), String> {
     let path = midtown::config::project_config_path(project_name);
     let mut config = midtown::config::FullProjectConfig::load_from(&path).unwrap_or_default();
-    config.project.auth_profile = Some(profile.to_string());
+    midtown::auth::set_project_profile_override(&mut config.project, provider, profile.to_string());
     config
         .save_to(&path)
         .map_err(|e| format!("Failed to save project config: {}", e))
 }
 
-fn handle_remove(profile: &str) -> Result<Response, String> {
-    midtown::auth::remove_profile(profile).map_err(|e| e.to_string())?;
+fn handle_remove(profile: &str, provider: midtown::auth::AuthProvider) -> Result<Response, String> {
+    midtown::auth::remove_profile_for(provider, profile).map_err(|e| e.to_string())?;
 
     Ok(Response::Message {
-        message: format!("Removed profile '{}'.", profile),
+        message: format!("Removed {} profile '{}'.", provider, profile),
     })
 }

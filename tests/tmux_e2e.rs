@@ -1091,6 +1091,7 @@ fn test_spawn_and_stop_claude_kills_all_processes() {
         model: "sonnet".to_string(),
         channel: None,
         auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());
@@ -1383,6 +1384,7 @@ fn test_spawn_claude_with_initial_prompt_renders_tui() {
         model: "sonnet".to_string(),
         channel: None,
         auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
 
@@ -1699,6 +1701,7 @@ fn test_kill_orphaned_claude_processes_real() {
         model: "sonnet".to_string(),
         channel: None,
         auth_profile_dir: None,
+        auth_provider: midtown::auth::AuthProvider::Claude,
     };
     let result = midtown::tmux::spawn_claude(&session, &dir, &config);
     assert!(result.is_ok(), "spawn_claude failed: {:?}", result.err());

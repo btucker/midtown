@@ -246,6 +246,7 @@ impl SpecializedCoworker {
             agent_name: None,
             settings_path: None,
             setting_sources: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
             env: std::collections::HashMap::new(),
         };
 

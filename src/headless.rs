@@ -15,6 +15,7 @@
 //! **Input** (stdin, when `--input-format stream-json`):
 //! - `{"type":"user","message":{"role":"user","content":"..."}}`
 
+use std::collections::VecDeque;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -75,11 +76,14 @@ pub struct HeadlessConfig {
     /// Common value: "project,local" to exclude user-level settings.
     #[serde(default)]
     pub setting_sources: Option<String>,
+    /// Auth provider backing this session (`claude` or `codex`).
+    #[serde(default)]
+    pub auth_provider: crate::auth::AuthProvider,
     /// Additional environment variables to set on the child process.
     ///
     /// Applied after the default env_remove call (MIDTOWN_AGENT), so values here
     /// take precedence. Use this to pass coworker-specific env vars like
-    /// `MIDTOWN_AGENT` and `CLAUDE_CONFIG_DIR`.
+    /// `MIDTOWN_AGENT` and provider config vars (`CLAUDE_CONFIG_DIR`/`CODEX_HOME`).
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
 }
@@ -152,6 +156,203 @@ pub enum StreamEvent {
     },
 }
 
+#[derive(Debug, Clone)]
+enum SessionProtocol {
+    Claude,
+    Codex(Box<CodexProtocolState>),
+}
+
+#[derive(Debug, Clone)]
+struct CodexProtocolState {
+    initialized: bool,
+    start_request_id: Option<u64>,
+    thread_id: Option<String>,
+    turn_in_progress: bool,
+    next_request_id: u64,
+    pending_messages: VecDeque<String>,
+    latest_agent_message: Option<String>,
+    resume_thread_id: Option<String>,
+    model: String,
+    cwd: Option<String>,
+    system_prompt: String,
+    output_schema: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexPostAction {
+    None,
+    DispatchPendingTurns,
+}
+
+fn codex_translate_event(
+    parsed: &serde_json::Value,
+    state: &mut CodexProtocolState,
+    session_id: &mut Option<String>,
+) -> (Option<StreamEvent>, CodexPostAction) {
+    // JSON-RPC response: look for thread start/resume completion.
+    if parsed.get("id").is_some() {
+        let start_request_id = state.start_request_id.unwrap_or(0);
+        let response_id = parsed
+            .get("id")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default();
+
+        if response_id == start_request_id
+            && let Some(msg) = parsed
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+        {
+            return (
+                Some(StreamEvent::Result {
+                    subtype: "error".to_string(),
+                    is_error: true,
+                    result: Some(msg.to_string()),
+                    duration_ms: None,
+                    total_cost_usd: None,
+                    session_id: session_id.clone(),
+                    extra: serde_json::json!({ "provider": "codex", "phase": "thread/start" }),
+                }),
+                CodexPostAction::None,
+            );
+        }
+
+        if response_id == start_request_id
+            && let Some(thread_id) = parsed
+                .get("result")
+                .and_then(|r| r.get("thread"))
+                .and_then(|t| t.get("id"))
+                .and_then(|id| id.as_str())
+                .map(str::to_string)
+        {
+            *session_id = Some(thread_id.clone());
+            state.thread_id = Some(thread_id.clone());
+            return (
+                Some(StreamEvent::System {
+                    subtype: "init".to_string(),
+                    session_id: Some(thread_id),
+                    model: Some(state.model.clone()),
+                    extra: serde_json::json!({ "provider": "codex" }),
+                }),
+                CodexPostAction::DispatchPendingTurns,
+            );
+        }
+        return (None, CodexPostAction::None);
+    }
+
+    let Some(method) = parsed.get("method").and_then(|v| v.as_str()) else {
+        return (None, CodexPostAction::None);
+    };
+    let params = parsed
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    match method {
+        "thread/started" => {
+            if session_id.is_none()
+                && let Some(thread_id) = params
+                    .get("thread")
+                    .and_then(|t| t.get("id"))
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            {
+                *session_id = Some(thread_id.clone());
+                state.thread_id = Some(thread_id.clone());
+                return (
+                    Some(StreamEvent::System {
+                        subtype: "init".to_string(),
+                        session_id: Some(thread_id),
+                        model: Some(state.model.clone()),
+                        extra: serde_json::json!({ "provider": "codex" }),
+                    }),
+                    CodexPostAction::DispatchPendingTurns,
+                );
+            }
+        }
+        "item/agentMessage/delta" => {
+            if let Some(delta) = params.get("delta").and_then(|v| v.as_str()) {
+                let next = state.latest_agent_message.take().unwrap_or_default() + delta;
+                state.latest_agent_message = Some(next);
+                return (
+                    Some(StreamEvent::Assistant {
+                        message: serde_json::json!({
+                            "role": "assistant",
+                            "content": [{ "type": "text", "text": delta }]
+                        }),
+                        session_id: session_id.clone(),
+                        extra: serde_json::json!({ "provider": "codex" }),
+                    }),
+                    CodexPostAction::None,
+                );
+            }
+        }
+        "item/completed" => {
+            if let Some(text) = params
+                .get("item")
+                .and_then(|i| i.get("type"))
+                .and_then(|t| t.as_str())
+                .filter(|t| *t == "agentMessage")
+                .and_then(|_| params.get("item"))
+                .and_then(|i| i.get("text"))
+                .and_then(|t| t.as_str())
+                .map(str::to_string)
+            {
+                state.latest_agent_message = Some(text.clone());
+                return (
+                    Some(StreamEvent::Assistant {
+                        message: serde_json::json!({
+                            "role": "assistant",
+                            "content": [{ "type": "text", "text": text }]
+                        }),
+                        session_id: session_id.clone(),
+                        extra: serde_json::json!({ "provider": "codex", "event": "item/completed" }),
+                    }),
+                    CodexPostAction::None,
+                );
+            }
+        }
+        "turn/completed" => {
+            let status = params
+                .get("turn")
+                .and_then(|t| t.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("failed");
+            let is_error = status != "completed";
+            let result_text = if is_error {
+                params
+                    .get("turn")
+                    .and_then(|t| t.get("error"))
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            } else {
+                state.latest_agent_message.clone()
+            };
+            state.turn_in_progress = false;
+            return (
+                Some(StreamEvent::Result {
+                    subtype: if is_error {
+                        "error".to_string()
+                    } else {
+                        "success".to_string()
+                    },
+                    is_error,
+                    result: result_text,
+                    duration_ms: None,
+                    total_cost_usd: None,
+                    session_id: session_id.clone(),
+                    extra: serde_json::json!({ "provider": "codex", "status": status }),
+                }),
+                CodexPostAction::DispatchPendingTurns,
+            );
+        }
+        _ => {}
+    }
+
+    (None, CodexPostAction::None)
+}
+
 /// A running headless Claude Code session.
 ///
 /// Owns the child process and provides methods to read streaming events
@@ -162,6 +363,7 @@ pub struct HeadlessSession {
     stderr_reader: BufReader<tokio::process::ChildStderr>,
     stdin: Option<tokio::process::ChildStdin>,
     session_id: Option<String>,
+    protocol: SessionProtocol,
     /// When true, don't kill the child process on drop (for daemon restart survival).
     detach_on_drop: bool,
 }
@@ -169,7 +371,7 @@ pub struct HeadlessSession {
 impl HeadlessSession {
     /// Spawn a new headless Claude Code session.
     ///
-    /// Launches `claude` with the provided configuration. The process is spawned
+    /// Launches the provider CLI with the provided configuration. The process is spawned
     /// with piped stdin/stdout for bidirectional JSON streaming.
     ///
     /// Two modes:
@@ -177,72 +379,95 @@ impl HeadlessSession {
     /// - **Resume session** (`resume_session_id: Some(id)`): Uses `--resume <id>`,
     ///   omits `--system-prompt` and `--json-schema`.
     pub fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
-        let mut cmd = Command::new("claude");
-
         let is_resume = config.resume_session_id.is_some();
+        let mut cmd = match config.auth_provider {
+            crate::auth::AuthProvider::Claude => {
+                let mut cmd = Command::new("claude");
 
-        if is_resume {
-            // Resume mode: --resume <id>, no -p flag
-            cmd.arg("--resume")
-                .arg(config.resume_session_id.as_ref().unwrap());
-        } else {
-            // Fresh mode: -p with system prompt
-            cmd.arg("-p");
-            cmd.arg("--system-prompt").arg(&config.system_prompt);
+                if is_resume {
+                    // Resume mode: --resume <id>, no -p flag
+                    cmd.arg("--resume")
+                        .arg(config.resume_session_id.as_ref().unwrap());
+                } else {
+                    // Fresh mode: -p with system prompt
+                    cmd.arg("-p");
+                    cmd.arg("--system-prompt").arg(&config.system_prompt);
 
-            if let Some(ref schema) = config.json_schema {
-                let schema_str = serde_json::to_string(schema)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-                cmd.arg("--json-schema").arg(schema_str);
+                    if let Some(ref schema) = config.json_schema {
+                        let schema_str = serde_json::to_string(schema).map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+                        })?;
+                        cmd.arg("--json-schema").arg(schema_str);
+                    }
+                }
+
+                cmd.arg("--verbose")
+                    .arg("--output-format")
+                    .arg("stream-json")
+                    .arg("--input-format")
+                    .arg("stream-json")
+                    .arg("--model")
+                    .arg(&config.model);
+
+                // Session persistence: only add --no-session-persistence when explicitly disabled
+                if !config.persist_session {
+                    cmd.arg("--no-session-persistence");
+                }
+
+                if let Some(budget) = config.max_budget_usd {
+                    cmd.arg("--max-budget-usd").arg(budget.to_string());
+                }
+
+                if !config.allow_tools {
+                    cmd.arg("--tools").arg("");
+                }
+
+                // Skip permissions since the daemon manages trust
+                cmd.arg("--dangerously-skip-permissions");
+
+                // Agent teams flags
+                if let Some(ref team) = config.team_name {
+                    cmd.arg("--team-name").arg(team);
+                }
+                if let Some(ref agent_id) = config.agent_id {
+                    cmd.arg("--agent-id").arg(agent_id);
+                }
+                if let Some(ref agent_name) = config.agent_name {
+                    cmd.arg("--agent-name").arg(agent_name);
+                }
+
+                // Settings file
+                if let Some(ref settings) = config.settings_path {
+                    cmd.arg("--settings").arg(settings);
+                }
+
+                // Setting sources
+                if let Some(ref sources) = config.setting_sources {
+                    cmd.arg("--setting-sources").arg(sources);
+                }
+
+                // Settings file — skip on resume to avoid duplicate tool registrations.
+                // Resumed sessions already have their plugins loaded from saved state;
+                // passing --settings again causes "Tool names must be unique" API errors.
+                if !is_resume && let Some(ref settings) = config.settings_path {
+                    cmd.arg("--settings").arg(settings);
+                }
+
+                // Setting sources
+                if let Some(ref sources) = config.setting_sources {
+                    cmd.arg("--setting-sources").arg(sources);
+                }
+
+                cmd
             }
-        }
-
-        cmd.arg("--verbose")
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--input-format")
-            .arg("stream-json")
-            .arg("--model")
-            .arg(&config.model);
-
-        // Session persistence: only add --no-session-persistence when explicitly disabled
-        if !config.persist_session {
-            cmd.arg("--no-session-persistence");
-        }
-
-        if let Some(budget) = config.max_budget_usd {
-            cmd.arg("--max-budget-usd").arg(budget.to_string());
-        }
-
-        if !config.allow_tools {
-            cmd.arg("--tools").arg("");
-        }
-
-        // Skip permissions since the daemon manages trust
-        cmd.arg("--dangerously-skip-permissions");
-
-        // Agent teams flags
-        if let Some(ref team) = config.team_name {
-            cmd.arg("--team-name").arg(team);
-        }
-        if let Some(ref agent_id) = config.agent_id {
-            cmd.arg("--agent-id").arg(agent_id);
-        }
-        if let Some(ref agent_name) = config.agent_name {
-            cmd.arg("--agent-name").arg(agent_name);
-        }
-
-        // Settings file — skip on resume to avoid duplicate tool registrations.
-        // Resumed sessions already have their plugins loaded from saved state;
-        // passing --settings again causes "Tool names must be unique" API errors.
-        if !is_resume && let Some(ref settings) = config.settings_path {
-            cmd.arg("--settings").arg(settings);
-        }
-
-        // Setting sources
-        if let Some(ref sources) = config.setting_sources {
-            cmd.arg("--setting-sources").arg(sources);
-        }
+            crate::auth::AuthProvider::Codex => {
+                // Codex app-server runs a persistent JSON-RPC stdio server.
+                // We initialize and start/resume threads via requests in `ensure_ready()`.
+                let mut cmd = Command::new("codex");
+                cmd.arg("app-server");
+                cmd
+            }
+        };
 
         if let Some(ref cwd) = config.cwd {
             cmd.current_dir(cwd);
@@ -254,7 +479,7 @@ impl HeadlessSession {
         cmd.env("DISABLE_AUTOUPDATER", "1");
 
         // Agent teams requires this env var
-        if config.team_name.is_some() {
+        if config.team_name.is_some() && config.auth_provider == crate::auth::AuthProvider::Claude {
             cmd.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
         }
 
@@ -281,9 +506,29 @@ impl HeadlessSession {
         let stdout_reader = BufReader::new(stdout);
         let stderr_reader = BufReader::new(stderr);
 
+        let protocol = match config.auth_provider {
+            crate::auth::AuthProvider::Claude => SessionProtocol::Claude,
+            crate::auth::AuthProvider::Codex => {
+                SessionProtocol::Codex(Box::new(CodexProtocolState {
+                    initialized: false,
+                    start_request_id: None,
+                    thread_id: None,
+                    turn_in_progress: false,
+                    next_request_id: 1,
+                    pending_messages: VecDeque::new(),
+                    latest_agent_message: None,
+                    resume_thread_id: config.resume_session_id.clone(),
+                    model: config.model.clone(),
+                    cwd: config.cwd.clone(),
+                    system_prompt: config.system_prompt.clone(),
+                    output_schema: config.json_schema.clone(),
+                }))
+            }
+        };
+
         info!(
-            "Spawned headless Claude session (model={}, resume={})",
-            config.model, is_resume
+            "Spawned headless {:?} session (model={}, resume={})",
+            config.auth_provider, config.model, is_resume
         );
 
         Ok(Self {
@@ -292,6 +537,7 @@ impl HeadlessSession {
             stderr_reader,
             stdin,
             session_id: None,
+            protocol,
             detach_on_drop: false,
         })
     }
@@ -311,12 +557,160 @@ impl HeadlessSession {
         Self::spawn(&config)
     }
 
+    fn codex_state_mut(&mut self) -> Option<&mut CodexProtocolState> {
+        match &mut self.protocol {
+            SessionProtocol::Codex(state) => Some(state.as_mut()),
+            SessionProtocol::Claude => None,
+        }
+    }
+
+    async fn write_json_line(&mut self, value: &serde_json::Value) -> std::io::Result<()> {
+        let stdin = self.stdin.as_mut().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdin not available")
+        })?;
+        let mut payload = serde_json::to_string(value)?;
+        payload.push('\n');
+        stdin.write_all(payload.as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    async fn codex_send_request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> std::io::Result<u64> {
+        let request_id = {
+            let state = self.codex_state_mut().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a codex session")
+            })?;
+            let id = state.next_request_id;
+            state.next_request_id += 1;
+            id
+        };
+        self.write_json_line(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params
+        }))
+        .await?;
+        Ok(request_id)
+    }
+
+    async fn codex_dispatch_pending_turns(&mut self) -> std::io::Result<()> {
+        loop {
+            let (thread_id, prompt, model, output_schema) = {
+                let state = self.codex_state_mut().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a codex session")
+                })?;
+                let Some(thread_id) = state.thread_id.clone() else {
+                    return Ok(());
+                };
+                if state.turn_in_progress {
+                    return Ok(());
+                }
+                let Some(prompt) = state.pending_messages.pop_front() else {
+                    return Ok(());
+                };
+                state.turn_in_progress = true;
+                state.latest_agent_message = None;
+                (
+                    thread_id,
+                    prompt,
+                    state.model.clone(),
+                    state.output_schema.clone(),
+                )
+            };
+
+            let mut params = serde_json::json!({
+                "threadId": thread_id,
+                "input": [{ "type": "text", "text": prompt }],
+            });
+            if !model.is_empty() {
+                params["model"] = serde_json::json!(model);
+            }
+            if let Some(schema) = output_schema {
+                params["outputSchema"] = schema;
+            }
+            self.codex_send_request("turn/start", params).await?;
+        }
+    }
+
+    /// Ensure provider-specific session initialization has started.
+    ///
+    /// For Claude, this is a no-op. For Codex app-server, this sends
+    /// `initialize` and `thread/start` or `thread/resume`.
+    pub async fn ensure_ready(&mut self) -> std::io::Result<()> {
+        let Some(state) = self.codex_state_mut() else {
+            return Ok(());
+        };
+        if state.initialized {
+            return Ok(());
+        }
+
+        let model = state.model.clone();
+        let cwd = state.cwd.clone();
+        let system_prompt = state.system_prompt.clone();
+        let resume_thread_id = state.resume_thread_id.clone();
+
+        self.codex_send_request(
+            "initialize",
+            serde_json::json!({
+                "clientInfo": {
+                    "name": "midtown",
+                    "version": env!("CARGO_PKG_VERSION"),
+                }
+            }),
+        )
+        .await?;
+
+        let (start_method, start_params) = match resume_thread_id {
+            Some(thread_id) => (
+                "thread/resume",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "cwd": cwd,
+                    "model": model,
+                    "approvalPolicy": "on-request",
+                    "sandbox": "workspace-write",
+                    "developerInstructions": if system_prompt.is_empty() { serde_json::Value::Null } else { serde_json::json!(system_prompt) },
+                }),
+            ),
+            None => (
+                "thread/start",
+                serde_json::json!({
+                    "cwd": cwd,
+                    "model": model,
+                    "approvalPolicy": "on-request",
+                    "sandbox": "workspace-write",
+                    "developerInstructions": if system_prompt.is_empty() { serde_json::Value::Null } else { serde_json::json!(system_prompt) },
+                }),
+            ),
+        };
+
+        let start_id = self.codex_send_request(start_method, start_params).await?;
+        if let Some(state) = self.codex_state_mut() {
+            state.initialized = true;
+            state.start_request_id = Some(start_id);
+        }
+
+        Ok(())
+    }
+
     /// Read the next streaming event from the session.
     ///
     /// Returns `None` when the process exits (stdout closes).
     /// Skips blank lines and unparseable lines in a loop (zero-cost,
     /// no heap allocation per skipped line).
     pub async fn next_event(&mut self) -> Option<StreamEvent> {
+        match &self.protocol {
+            SessionProtocol::Claude => self.next_claude_event().await,
+            SessionProtocol::Codex(_) => self.next_codex_event().await,
+        }
+    }
+
+    async fn next_claude_event(&mut self) -> Option<StreamEvent> {
         loop {
             let mut line = String::new();
             match self.stdout_reader.read_line(&mut line).await {
@@ -357,29 +751,90 @@ impl HeadlessSession {
         }
     }
 
+    async fn next_codex_event(&mut self) -> Option<StreamEvent> {
+        loop {
+            let mut line = String::new();
+            match self.stdout_reader.read_line(&mut line).await {
+                Ok(0) => {
+                    debug!("Headless codex session stdout closed");
+                    return None;
+                }
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+                        Ok(value) => value,
+                        Err(e) => {
+                            // codex may emit non-JSON log lines on stderr in some environments.
+                            warn!(
+                                "Failed to parse codex app-server event: {} (line: {})",
+                                e, trimmed
+                            );
+                            continue;
+                        }
+                    };
+                    let (event, post_action) = match (&mut self.protocol, &mut self.session_id) {
+                        (SessionProtocol::Codex(state), session_id) => {
+                            codex_translate_event(&parsed, state.as_mut(), session_id)
+                        }
+                        (SessionProtocol::Claude, _) => (None, CodexPostAction::None),
+                    };
+
+                    if post_action == CodexPostAction::DispatchPendingTurns
+                        && let Err(e) = self.codex_dispatch_pending_turns().await
+                    {
+                        warn!("Failed to dispatch queued codex turn: {}", e);
+                    }
+
+                    if let Some(event) = event {
+                        return Some(event);
+                    }
+                }
+                Err(e) => {
+                    warn!("Error reading codex app-server stdout: {}", e);
+                    return None;
+                }
+            }
+        }
+    }
+
     /// Send a user message to the session (for multi-turn conversations).
     ///
     /// Requires `--input-format stream-json` (which is set by default).
     pub async fn send_message(&mut self, content: &str) -> std::io::Result<()> {
-        let stdin = self.stdin.as_mut().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdin not available")
-        })?;
+        match &self.protocol {
+            SessionProtocol::Claude => {
+                let stdin = self.stdin.as_mut().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdin not available")
+                })?;
 
-        let msg = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": content
+                let msg = serde_json::json!({
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": content
+                    }
+                });
+
+                let mut payload = serde_json::to_string(&msg)?;
+                payload.push('\n');
+                stdin.write_all(payload.as_bytes()).await?;
+                stdin.flush().await?;
+                debug!("Sent user message to headless Claude session");
+                Ok(())
             }
-        });
-
-        let mut payload = serde_json::to_string(&msg)?;
-        payload.push('\n');
-        stdin.write_all(payload.as_bytes()).await?;
-        stdin.flush().await?;
-
-        debug!("Sent user message to headless session");
-        Ok(())
+            SessionProtocol::Codex(_) => {
+                self.ensure_ready().await?;
+                if let Some(state) = self.codex_state_mut() {
+                    state.pending_messages.push_back(content.to_string());
+                }
+                self.codex_dispatch_pending_turns().await?;
+                debug!("Queued user message for codex app-server turn");
+                Ok(())
+            }
+        }
     }
 
     /// Close stdin, signaling no more input will arrive.
@@ -492,14 +947,18 @@ pub async fn execute(
     // Send the initial prompt
     session.send_message(prompt).await?;
 
-    // Close stdin — one-shot mode doesn't need further input. Keeping stdin open
-    // can cause the process to wait for more messages instead of completing.
-    session.close_stdin();
+    // Claude stream-json one-shot flows should close stdin immediately.
+    // Codex app-server may still need stdin for follow-up JSON-RPC requests
+    // until the thread is initialized and the turn has been started.
+    if config.auth_provider == crate::auth::AuthProvider::Claude {
+        session.close_stdin();
+    }
 
     debug!(
-        "Headless: prompt sent, stdin closed, waiting for result (timeout={}s)",
+        "Headless: prompt sent, waiting for result (timeout={}s)",
         timeout.as_secs()
     );
+    let should_wait_for_exit = config.auth_provider == crate::auth::AuthProvider::Claude;
 
     // Wrap event collection in a timeout. On timeout, the future is dropped,
     // which drops `session`, which calls start_kill() on the child process.
@@ -540,8 +999,13 @@ pub async fn execute(
             }
         }
 
-        // Wait for the process to exit cleanly
-        let _ = session.wait().await;
+        if should_wait_for_exit {
+            // Claude one-shot sessions exit after stdin closes.
+            let _ = session.wait().await;
+        } else {
+            // Codex app-server is long-lived; terminate it after one-shot completion.
+            let _ = session.kill().await;
+        }
 
         HeadlessResult {
             result: result_text,
@@ -603,7 +1067,25 @@ mod tests {
             agent_name: None,
             settings_path: None,
             setting_sources: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
             env: std::collections::HashMap::new(),
+        }
+    }
+
+    fn test_codex_state() -> CodexProtocolState {
+        CodexProtocolState {
+            initialized: true,
+            start_request_id: Some(42),
+            thread_id: None,
+            turn_in_progress: true,
+            next_request_id: 100,
+            pending_messages: VecDeque::new(),
+            latest_agent_message: None,
+            resume_thread_id: None,
+            model: "gpt-5-codex".to_string(),
+            cwd: None,
+            system_prompt: String::new(),
+            output_schema: None,
         }
     }
 
@@ -635,6 +1117,13 @@ mod tests {
         let json = r#"{"model":"haiku","system_prompt":"test","allow_tools":false}"#;
         let config: HeadlessConfig = serde_json::from_str(json).unwrap();
         assert!(!config.persist_session);
+    }
+
+    #[test]
+    fn test_headless_config_auth_provider_default_claude() {
+        let json = r#"{"model":"haiku","system_prompt":"test","allow_tools":false}"#;
+        let config: HeadlessConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.auth_provider, crate::auth::AuthProvider::Claude);
     }
 
     #[test]
@@ -706,6 +1195,17 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.setting_sources, Some("project,local".to_string()));
+    }
+
+    #[test]
+    fn test_headless_config_auth_provider_roundtrip() {
+        let config = HeadlessConfig {
+            auth_provider: crate::auth::AuthProvider::Codex,
+            ..test_config()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: HeadlessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.auth_provider, crate::auth::AuthProvider::Codex);
     }
 
     #[test]
@@ -798,5 +1298,107 @@ mod tests {
         let parsed: HeadlessResult = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.result, Some("42".to_string()));
         assert!(!parsed.is_error);
+    }
+
+    #[test]
+    fn test_codex_translate_start_response_emits_init_and_dispatches() {
+        let mut state = test_codex_state();
+        let mut session_id = None;
+        let parsed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "result": { "thread": { "id": "thread_123" } }
+        });
+
+        let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+        assert_eq!(session_id, Some("thread_123".to_string()));
+        assert_eq!(state.thread_id, Some("thread_123".to_string()));
+        assert_eq!(post_action, CodexPostAction::DispatchPendingTurns);
+
+        match event {
+            Some(StreamEvent::System {
+                subtype,
+                session_id,
+                model,
+                ..
+            }) => {
+                assert_eq!(subtype, "init");
+                assert_eq!(session_id, Some("thread_123".to_string()));
+                assert_eq!(model, Some("gpt-5-codex".to_string()));
+            }
+            _ => panic!("Expected codex start response to emit init system event"),
+        }
+    }
+
+    #[test]
+    fn test_codex_translate_start_response_error_emits_result_error() {
+        let mut state = test_codex_state();
+        let mut session_id = Some("existing".to_string());
+        let parsed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "error": { "message": "start failed" }
+        });
+
+        let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+        assert_eq!(post_action, CodexPostAction::None);
+        match event {
+            Some(StreamEvent::Result {
+                subtype,
+                is_error,
+                result,
+                ..
+            }) => {
+                assert_eq!(subtype, "error");
+                assert!(is_error);
+                assert_eq!(result, Some("start failed".to_string()));
+            }
+            _ => panic!("Expected codex start error to emit result error event"),
+        }
+    }
+
+    #[test]
+    fn test_codex_translate_delta_then_turn_completed_uses_accumulated_text() {
+        let mut state = test_codex_state();
+        let mut session_id = Some("thread_123".to_string());
+        let delta = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "item/agentMessage/delta",
+            "params": { "delta": "Hello" }
+        });
+        let turn_completed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": { "turn": { "status": "completed" } }
+        });
+
+        let (delta_event, delta_action) =
+            codex_translate_event(&delta, &mut state, &mut session_id);
+        assert_eq!(delta_action, CodexPostAction::None);
+        match delta_event {
+            Some(StreamEvent::Assistant { .. }) => {}
+            _ => panic!("Expected assistant delta event"),
+        }
+        assert_eq!(state.latest_agent_message, Some("Hello".to_string()));
+
+        let (result_event, result_action) =
+            codex_translate_event(&turn_completed, &mut state, &mut session_id);
+        assert_eq!(result_action, CodexPostAction::DispatchPendingTurns);
+        assert!(!state.turn_in_progress);
+        match result_event {
+            Some(StreamEvent::Result {
+                subtype,
+                is_error,
+                result,
+                ..
+            }) => {
+                assert_eq!(subtype, "success");
+                assert!(!is_error);
+                assert_eq!(result, Some("Hello".to_string()));
+            }
+            _ => panic!("Expected result event after turn completion"),
+        }
     }
 }

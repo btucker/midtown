@@ -691,7 +691,10 @@ impl DaemonState {
         // Inject project-resolved auth profile if not already set
         let config = if config.auth_profile_dir.is_none() {
             let mut c = config.clone();
-            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project(&self.repo_name));
+            c.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
+                &self.repo_name,
+                c.auth_provider,
+            ));
             c
         } else {
             config.clone()
@@ -746,10 +749,14 @@ impl DaemonState {
 
         // Register in the CoworkerManager tracking map (keyed by slot_id)
         // session_id is None initially — it arrives later via the init StreamEvent
-        if let Err(e) =
-            self.coworkers
-                .register(&slot_id, &name, working_dir, None, config.model.clone())
-        {
+        if let Err(e) = self.coworkers.register(
+            &slot_id,
+            &name,
+            working_dir,
+            None,
+            config.model.clone(),
+            config.auth_provider,
+        ) {
             // Race condition: another spawn beat us to registration. Clean up the
             // headless session we just created to prevent orphaned processes.
             tracing::warn!(
@@ -1305,6 +1312,7 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
     for coworker in coworkers {
         if let Some(info) = session_info.get_mut(&coworker.name) {
             info.working_dir = Some(coworker.working_dir.clone());
+            info.provider = Some(coworker.provider);
 
             // Determine coworker type and assignment based on current_task and PR assignment
             // Check if this coworker is assigned as a reviewer

@@ -109,6 +109,22 @@ fn send_keys(session: &str, keys: &str) {
         .status();
 }
 
+fn release_binary_path() -> Option<PathBuf> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("release")
+        .join("midtown");
+    if path.exists() {
+        Some(path)
+    } else {
+        eprintln!(
+            "Skipping test: release binary not found at {:?} (run cargo build --release first)",
+            path
+        );
+        None
+    }
+}
+
 /// RAII cleanup guard for test sessions.
 struct SessionCleanup<'a>(&'a str);
 
@@ -508,22 +524,11 @@ fn test_full_tui_rendering() {
         return;
     }
 
-    // Build the binary first
-    let build_result = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status();
-
-    if build_result.map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("Skipping test: could not build binary");
-        return;
-    }
-
     let session = test_session_name();
-    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("release")
-        .join("midtown");
+    let binary_path = match release_binary_path() {
+        Some(path) => path,
+        None => return,
+    };
 
     // Create session with reasonable size
     assert!(
@@ -694,22 +699,11 @@ fn test_message_appears_in_tui_promptly() {
         return;
     }
 
-    // Build the binary first
-    let build_result = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status();
-
-    if build_result.map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("Skipping test: could not build binary");
-        return;
-    }
-
     let session = test_session_name();
-    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("release")
-        .join("midtown");
+    let binary_path = match release_binary_path() {
+        Some(path) => path,
+        None => return,
+    };
 
     // Create test directory structure
     // Use the projects/ path that midtown chat expects (auto_migrate moves old-style
@@ -829,22 +823,11 @@ fn test_message_update_in_existing_channel() {
         return;
     }
 
-    // Build the binary first
-    let build_result = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status();
-
-    if build_result.map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("Skipping test: could not build binary");
-        return;
-    }
-
     let session = test_session_name();
-    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("release")
-        .join("midtown");
+    let binary_path = match release_binary_path() {
+        Some(path) => path,
+        None => return,
+    };
 
     // Create test directory structure
     // Use the projects/ path that midtown chat expects (auto_migrate moves old-style
@@ -1041,22 +1024,11 @@ fn test_selection_mode_toggle() {
         return;
     }
 
-    // Build the binary first
-    let build_result = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status();
-
-    if build_result.map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("Skipping test: could not build binary");
-        return;
-    }
-
     let session = test_session_name();
-    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("release")
-        .join("midtown");
+    let binary_path = match release_binary_path() {
+        Some(path) => path,
+        None => return,
+    };
 
     // Create test directory structure
     let test_dir = std::env::temp_dir().join(format!("midtown-select-test-{}", std::process::id()));
@@ -1161,22 +1133,11 @@ fn test_scrollwheel_scrolling() {
         return;
     }
 
-    // Build the binary first
-    let build_result = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status();
-
-    if build_result.map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("Skipping test: could not build binary");
-        return;
-    }
-
     let session = test_session_name();
-    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("release")
-        .join("midtown");
+    let binary_path = match release_binary_path() {
+        Some(path) => path,
+        None => return,
+    };
 
     // Create test directory structure
     let test_dir = std::env::temp_dir().join(format!("midtown-scroll-test-{}", std::process::id()));
