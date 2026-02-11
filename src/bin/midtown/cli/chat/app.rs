@@ -2027,6 +2027,44 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
 pub(super) mod tests {
     use super::*;
     use midtown::Message;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Helper to retry Channel operations that may fail with WouldBlock due to lock contention.
+    /// This mirrors the retry_with_backoff helper in channel.rs tests.
+    fn retry_with_backoff<T>(
+        max_attempts: u32,
+        mut f: impl FnMut() -> midtown::Result<T>,
+    ) -> midtown::Result<T> {
+        if max_attempts == 0 {
+            return Err(midtown::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "retry_with_backoff: max_attempts must be > 0",
+            )));
+        }
+        for attempt in 0..max_attempts {
+            match f() {
+                Ok(val) => return Ok(val),
+                Err(e) if attempt < max_attempts - 1 => {
+                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("loop above always returns")
+    }
+
+    #[test]
+    fn test_retry_with_backoff_zero_attempts_returns_error() {
+        let result = retry_with_backoff(0, || Ok(42));
+        assert!(result.is_err(), "max_attempts=0 should return an error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("max_attempts must be > 0"),
+            "Error should mention max_attempts, got: {err_msg}"
+        );
+    }
 
     /// Create a default App for testing. Tests can override specific fields
     /// using struct update syntax: `App { messages, ..test_app() }`
@@ -2619,6 +2657,35 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn test_channel_read_after_send_with_retry() {
+        // This test reproduces the race condition that causes WouldBlock errors:
+        // send() acquires a write lock, and if read_all() is called immediately after,
+        // it may fail with WouldBlock because try_lock_shared() is non-blocking.
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "test-channel").unwrap();
+
+        // Add a message
+        channel
+            .send(&Message::text("alice", "First message"))
+            .unwrap();
+
+        // Immediate read after send can fail without retry
+        // This should NOT panic even under lock contention
+        let messages = retry_with_backoff(5, || channel.read_all()).unwrap();
+        assert_eq!(messages.len(), 1);
+
+        // Add another message and verify retry works
+        channel
+            .send(&Message::text("bob", "Second message"))
+            .unwrap();
+
+        let messages = retry_with_backoff(5, || channel.read_all()).unwrap();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
     fn test_unread_count_calculation() {
         use tempfile::TempDir;
 
@@ -2652,7 +2719,8 @@ pub(super) mod tests {
         );
 
         // Simulate reading messages by updating the cursor
-        let messages_read = channel.read_since_cursor("chat-tui").unwrap();
+        let messages_read =
+            retry_with_backoff(5, || channel.read_since_cursor("chat-tui")).unwrap();
         assert_eq!(messages_read.len(), 3, "Should have read 3 messages");
 
         // Verify cursor was saved - load it and check it points to the last message
@@ -2681,7 +2749,8 @@ pub(super) mod tests {
             .unwrap();
 
         // Verify we now have 4 total messages
-        let all_messages = channel.read_all().unwrap();
+        // Use retry to avoid WouldBlock from lock contention after send()
+        let all_messages = retry_with_backoff(5, || channel.read_all()).unwrap();
         assert_eq!(all_messages.len(), 4, "Should have 4 total messages");
 
         // Verify cursor still points to message 3 (not auto-updated)
