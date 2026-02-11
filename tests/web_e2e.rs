@@ -208,23 +208,18 @@ impl WebTestFixture {
 
     /// Start the daemon process with webhook server enabled.
     fn start_daemon(&mut self) -> bool {
-        // Build the daemon binary
-        let build_result = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        if build_result.map(|s| !s.success()).unwrap_or(true) {
-            eprintln!("Failed to build daemon binary");
-            return false;
-        }
-
         let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("release")
             .join("midtown");
+
+        if !binary_path.exists() {
+            eprintln!(
+                "Release binary not found at {:?}. Run `cargo build --release` first.",
+                binary_path
+            );
+            return false;
+        }
 
         // Remove stale files
         let _ = fs::remove_file(&self.socket_path);

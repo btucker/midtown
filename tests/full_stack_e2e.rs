@@ -197,26 +197,18 @@ impl FullStackFixture {
     }
 
     fn start_daemon(&mut self) -> bool {
-        let build_start = std::time::Instant::now();
-        let build_result = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        let build_duration = build_start.elapsed();
-        eprintln!("[TIMING] cargo build --release took {:?}", build_duration);
-
-        if build_result.map(|s| !s.success()).unwrap_or(true) {
-            eprintln!("Failed to build daemon binary");
-            return false;
-        }
-
         let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("release")
             .join("midtown");
+
+        if !binary_path.exists() {
+            eprintln!(
+                "Release binary not found at {:?}. Run `cargo build --release` first.",
+                binary_path
+            );
+            return false;
+        }
 
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.pid_path);
@@ -432,9 +424,8 @@ fn window_exists(session: &str, window: &str) -> bool {
 /// stub commands don't produce TUI output.
 ///
 /// ## Performance characteristics:
-/// - Local (cold build): ~76s (cargo build ~56s + test ~20s)
-/// - Local (warm build): ~20s
-/// - CI: ~180-210s (cargo build ~60-120s + test ~60-90s)
+/// - Local: ~20s (binary must be pre-built)
+/// - CI: ~60-90s
 ///
 /// CI is 2.5-3x slower due to: shared CPU resources, partial Rust cache,
 /// and Claude CLI startup overhead in container environment. The 300s
@@ -641,22 +632,18 @@ fn test_web_ui_connects() {
     };
 
     // Start daemon WITHOUT disabling the webhook port so we get an HTTP server
-    let build_result = Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-
-    if build_result.map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("Failed to build daemon binary");
-        return;
-    }
-
     let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("release")
         .join("midtown");
+
+    if !binary_path.exists() {
+        eprintln!(
+            "Release binary not found at {:?}. Run `cargo build --release` first.",
+            binary_path
+        );
+        return;
+    }
 
     let _ = fs::remove_file(&fixture.socket_path);
     let _ = fs::remove_file(&fixture.pid_path);
