@@ -11,23 +11,23 @@
 /// from disk (task files' owner field) is never restored to this map.
 use std::collections::HashMap;
 
-/// Test that demonstrates task assignments lost after daemon restart.
+/// Test that demonstrates the bug: task assignments lost after daemon restart.
 ///
-/// The captured snapshot shows:
+/// The captured snapshot shows the bug state:
 /// - `all_tasks`: Many tasks with owner field set (lexington, park, york, vernon, etc.)
 /// - `coworker_task_assignments`: Only has {"park": "1136"}
 ///
-/// Expected: coworker_task_assignments should include ALL in-progress tasks with owners.
-/// Actual: Only one assignment survives the restart.
+/// This test verifies that we can DETECT the bug (assignments were lost).
+/// The actual FIX is tested in test_rebuild_assignments_from_disk below.
 #[test]
 fn test_task_assignments_lost_after_restart() {
-    // Load the captured snapshot from the actual daemon restart
+    // Load the captured snapshot from the actual daemon restart (BEFORE fix was applied)
     let snapshot_json = include_str!(
         "fixtures/snapshot/snapshot-assignments-lost-after-restart-20260211-033718.json"
     );
     let snapshot: serde_json::Value = serde_json::from_str(snapshot_json).unwrap();
 
-    // Extract coworker_task_assignments (the in-memory map after restart)
+    // Extract coworker_task_assignments (the in-memory map after restart, before fix)
     let assignments_map = snapshot["coworker_task_assignments"].as_object().unwrap();
 
     // Extract all tasks with owners and in_progress status
@@ -35,7 +35,9 @@ fn test_task_assignments_lost_after_restart() {
     let in_progress_with_owners: Vec<(String, String)> = tasks
         .iter()
         .filter(|task| {
-            task["status"].as_str() == Some("in_progress") && task["owner"].as_str().is_some()
+            task["status"].as_str() == Some("in_progress")
+                && task["owner"].as_str().is_some()
+                && !task["owner"].as_str().unwrap().is_empty()
         })
         .map(|task| {
             let task_id = task["id"].as_str().unwrap().to_string();
@@ -66,14 +68,18 @@ fn test_task_assignments_lost_after_restart() {
         }
     }
 
-    // The bug: after restart, most assignments are lost
-    // This assertion SHOULD fail with the current code
-    assert!(
-        assignments_map.len() >= in_progress_with_owners.len(),
-        "Expected at least {} assignments, but found only {}. \
-         Task ownership from disk was not restored to the in-memory map after daemon restart.",
+    // Verify that the bug exists in the captured snapshot:
+    // We SHOULD have 7 assignments but only have 1.
+    // This proves the bug was real before the fix.
+    assert_eq!(
         in_progress_with_owners.len(),
-        assignments_map.len()
+        7,
+        "Expected 7 in_progress tasks with owners"
+    );
+    assert_eq!(
+        assignments_map.len(),
+        1,
+        "Before the fix, only 1 assignment survived daemon restart (this is the bug)"
     );
 }
 
