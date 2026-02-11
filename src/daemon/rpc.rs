@@ -913,6 +913,7 @@ async fn handle_auth_switch(
                 RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
             );
         }
+        // Clear all per-project overrides so they don't shadow the new global profile
         crate::config::clear_all_project_auth_profiles();
     } else {
         // Per-project switch: update this project's config

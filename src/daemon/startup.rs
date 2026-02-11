@@ -255,6 +255,11 @@ pub async fn recover_headless_sessions(
             config.working_dir = Some(std::path::PathBuf::from(working_dir));
         }
 
+        // Restore provider if persisted (defaults to Claude for old state files)
+        if let Some(provider) = session_info.provider {
+            config.auth_provider = provider;
+        }
+
         // Create resume effect
         effects.push(Effect::ResumeCoworker {
             name: name.clone(),

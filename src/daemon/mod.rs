@@ -1312,6 +1312,7 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
     for coworker in coworkers {
         if let Some(info) = session_info.get_mut(&coworker.name) {
             info.working_dir = Some(coworker.working_dir.clone());
+            info.provider = Some(coworker.provider);
 
             // Determine coworker type and assignment based on current_task and PR assignment
             // Check if this coworker is assigned as a reviewer

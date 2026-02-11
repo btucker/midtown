@@ -46,6 +46,9 @@ pub struct HeadlessSessionInfo {
     /// Working directory (worktree path) for this session.
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// Provider (Claude or Codex) for this session.
+    #[serde(default)]
+    pub provider: Option<crate::auth::AuthProvider>,
 }
 
 /// All persistent daemon state in one struct.
@@ -300,6 +303,7 @@ mod tests {
             task_id: Some(5),
             pr_number: None,
             working_dir: Some("/path/to/worktree".to_string()),
+            provider: Some(crate::auth::AuthProvider::Codex),
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: HeadlessSessionInfo = serde_json::from_str(&json).unwrap();
@@ -310,6 +314,7 @@ mod tests {
         assert_eq!(parsed.task_id, Some(5));
         assert_eq!(parsed.pr_number, None);
         assert_eq!(parsed.working_dir, Some("/path/to/worktree".to_string()));
+        assert_eq!(parsed.provider, Some(crate::auth::AuthProvider::Codex));
     }
 
     #[test]
@@ -326,6 +331,7 @@ mod tests {
                 task_id: Some(3),
                 pr_number: None,
                 working_dir: Some("/path/to/park-worktree".to_string()),
+                provider: Some(crate::auth::AuthProvider::Claude),
             },
         );
 
@@ -363,6 +369,45 @@ mod tests {
         assert_eq!(info.task_id, None);
         assert_eq!(info.pr_number, None);
         assert_eq!(info.working_dir, None);
+        assert_eq!(info.provider, None); // Should default to None for old files
+    }
+
+    #[test]
+    fn test_headless_session_provider_persistence() {
+        // Test that provider field is persisted and restored correctly
+        // Reproduces the bug: when a Codex coworker is running and the daemon
+        // restarts, the provider defaults to Claude if not persisted.
+        let mut state = DaemonPersistentState::default();
+
+        // Add a Codex session
+        state.headless_sessions.insert(
+            "madison".to_string(),
+            HeadlessSessionInfo {
+                session_id: "codex-session-123".to_string(),
+                last_active: Utc::now(),
+                purpose: "task !42: Add feature".to_string(),
+                pid: Some(5555),
+                coworker_type: Some("dev".to_string()),
+                task_id: Some(42),
+                pr_number: None,
+                working_dir: Some("/path/to/madison-worktree".to_string()),
+                provider: Some(crate::auth::AuthProvider::Codex),
+            },
+        );
+
+        // Serialize to JSON (simulating daemon shutdown)
+        let json = serde_json::to_string(&state).unwrap();
+
+        // Deserialize back (simulating daemon restart)
+        let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+        // Verify the provider was restored correctly
+        let madison = loaded.headless_sessions.get("madison").unwrap();
+        assert_eq!(
+            madison.provider,
+            Some(crate::auth::AuthProvider::Codex),
+            "Provider should be restored as Codex after daemon restart"
+        );
     }
 
     #[test]

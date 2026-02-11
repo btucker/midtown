@@ -635,6 +635,7 @@ impl SessionManager {
                     task_id: None,       // To be filled by caller
                     pr_number: None,     // To be filled by caller
                     working_dir: None,   // To be filled by caller
+                    provider: None,      // To be filled by caller
                 };
                 info_map.insert(cs.name.clone(), info);
             }

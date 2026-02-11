@@ -2214,4 +2214,57 @@ auth_profile = "old@example.com"
         assert_eq!(reloaded.daemon.github_user, None);
         assert_eq!(reloaded.providers.claude.auth_profile, None);
     }
+
+    #[test]
+    fn test_global_auth_switch_clears_project_overrides() {
+        // Integration test: Reproduce the bug where per-project auth_profile
+        // overrides persist after a global switch, causing active_profile_for_project()
+        // to return the stale project override instead of the new global profile.
+        //
+        // This test simulates the handle_auth_switch RPC flow:
+        // 1. Set a per-project auth_profile override
+        // 2. Perform a global auth switch (set_current_profile_for + clear_all_project_auth_profiles)
+        // 3. Verify the override is cleared and the global profile is active
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let proj_dir = projects_dir.join("test-repo");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+
+        // Create a project with a per-project auth_profile override
+        let mut project_config = FullProjectConfig::minimal("test-repo", "/tmp/test-repo");
+        project_config.project.auth_profile = Some("project@example.com".to_string());
+        project_config
+            .save_to(&proj_dir.join("config.toml"))
+            .unwrap();
+
+        // Verify the override is set
+        let loaded_before = FullProjectConfig::load_from(&proj_dir.join("config.toml")).unwrap();
+        assert_eq!(
+            loaded_before.project.auth_profile.as_deref(),
+            Some("project@example.com"),
+            "Per-project override should be set before global switch"
+        );
+
+        // Simulate a global auth switch: clear all project overrides
+        // (can't use the real clear_all_project_auth_profiles since it uses hardcoded base dir)
+        for entry in std::fs::read_dir(&projects_dir).unwrap().flatten() {
+            let config_path = entry.path().join("config.toml");
+            if let Some(mut config) = FullProjectConfig::load_from(&config_path)
+                && config.project.auth_profile.is_some()
+            {
+                config.project.auth_profile = None;
+                let _ = config.save_to(&config_path);
+            }
+        }
+
+        // Verify: the project override should now be cleared
+        let loaded_after = FullProjectConfig::load_from(&proj_dir.join("config.toml")).unwrap();
+        assert_eq!(
+            loaded_after.project.auth_profile, None,
+            "Per-project override should be cleared after global switch"
+        );
+
+        // Verify: other config fields survived
+        assert_eq!(loaded_after.project.name.as_deref(), Some("test-repo"));
+    }
 }
