@@ -23,7 +23,7 @@ mod tests {
     fn test_orphan_filter_suppresses_worktree_without_task() {
         // Simulate the filter logic from dispatch.rs lines 809-826
         let unmerged = vec!["amsterdam".to_string(), "columbus".to_string()];
-        let in_progress_task_owners = vec!["columbus".to_string()]; // only columbus has a task
+        let in_progress_task_owners = ["columbus".to_string()]; // only columbus has a task
 
         let mut tracker = OrphanTracker::new();
 
@@ -95,7 +95,7 @@ mod tests {
 
         // Tick 2: A task is now assigned to amsterdam
         let unmerged = vec!["amsterdam".to_string()];
-        let in_progress_task_owners = vec!["amsterdam".to_string()];
+        let in_progress_task_owners = ["amsterdam".to_string()];
 
         // Now the filter passes and tracker.track() is called for the FIRST time
         let _due_for_warning: Vec<String> = unmerged
