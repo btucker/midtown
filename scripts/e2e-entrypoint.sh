@@ -90,7 +90,9 @@ run_coordination_tests() {
     # overlap with other suites safely.
 
     run_bg "daemon_e2e" \
-        cargo test --release --test daemon_e2e -- --ignored --test-threads=1 "${test_args[@]}"
+        cargo test --release --test daemon_e2e -- --ignored --test-threads=1 \
+            --skip test_daemon_installs_required_plugins \
+            "${test_args[@]}"
 
     run_bg "tmux_e2e" \
         cargo test --release --test tmux_e2e -- --ignored --test-threads=1 \
@@ -124,6 +126,12 @@ run_coordination_tests() {
         echo "=== Coordination tests FAILED ==="
         exit 1
     fi
+
+    # Plugin test runs alone — it modifies global plugin state that races
+    # with any concurrent `midtown start`.
+    echo "--- daemon_e2e (plugin install, sequential) ---"
+    cargo test --release --test daemon_e2e -- --ignored --test-threads=1 \
+        test_daemon_installs_required_plugins "${test_args[@]}"
 
     echo ""
     echo "=== Coordination tests complete ==="
