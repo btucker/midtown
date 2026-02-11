@@ -4297,8 +4297,9 @@ mod tests {
         };
 
         let merged_prs: HashSet<u64> = [904].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
         assert!(
-            !should_recover_task(&task, &merged_prs),
+            !should_recover_task(&task, &merged_prs, repo_path),
             "Should NOT recover a task whose PR (#904) is already merged, even with bare # format"
         );
     }
@@ -4323,8 +4324,9 @@ mod tests {
 
         // Only #901 is merged; #902 and #903 are still open
         let merged_prs: HashSet<u64> = [901].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
         assert!(
-            should_recover_task(&task, &merged_prs),
+            should_recover_task(&task, &merged_prs, repo_path),
             "Should recover task with multi-PR reference where only SOME PRs are merged"
         );
     }
@@ -4349,8 +4351,9 @@ mod tests {
 
         // All PRs are merged
         let merged_prs: HashSet<u64> = [901, 902, 903].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
         assert!(
-            !should_recover_task(&task, &merged_prs),
+            !should_recover_task(&task, &merged_prs, repo_path),
             "Should NOT recover task when ALL referenced PRs are merged"
         );
     }
@@ -4374,8 +4377,9 @@ mod tests {
         };
 
         let merged_prs: HashSet<u64> = [905].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
         assert!(
-            !should_recover_task(&task, &merged_prs),
+            !should_recover_task(&task, &merged_prs, repo_path),
             "Should NOT recover task with PR in subject only when that PR is merged (auto-completion will handle it)"
         );
     }
