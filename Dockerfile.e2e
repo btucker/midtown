@@ -69,6 +69,29 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # would mask permission bugs that real users would hit
 RUN useradd -m -s /bin/bash testuser
 
+# Install CLI tools as testuser BEFORE copying build artifacts so these
+# layers are cached even when source code changes.
+USER testuser
+
+# Claude Code CLI
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc \
+    || echo "Claude CLI install failed (may not be available in all environments)"
+
+ENV PATH="/home/testuser/.local/bin:${PATH}"
+
+# Bun + Codex CLI
+RUN curl -fsSL https://bun.sh/install | bash \
+    || echo "Bun install failed (may not be available in all environments)"
+
+ENV PATH="/home/testuser/.bun/bin:${PATH}"
+
+RUN bun install -g @openai/codex \
+    || echo "Codex CLI install failed (may not be available in all environments)"
+
+# Switch back to root for COPY/mkdir, then back to testuser
+USER root
+
 # Copy built artifacts from builder stage
 RUN mkdir -p /home/testuser/midtown && chown testuser:testuser /home/testuser/midtown
 WORKDIR /home/testuser/midtown
@@ -80,14 +103,6 @@ COPY --from=builder --chown=testuser:testuser /app/tests ./tests
 COPY --from=builder --chown=testuser:testuser /app/scripts ./scripts
 
 USER testuser
-
-# Claude Code CLI — install as testuser so it goes to ~/.local/bin/claude
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc \
-    || echo "Claude CLI install failed (may not be available in all environments)"
-
-# Ensure claude is in PATH for subsequent RUN commands
-ENV PATH="/home/testuser/.local/bin:${PATH}"
 
 # Default environment: disable webhook server and chat monitor for tests
 ENV MIDTOWN_WEBHOOK_PORT=0 \
