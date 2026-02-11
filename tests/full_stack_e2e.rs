@@ -411,7 +411,7 @@ fn window_exists(session: &str, window: &str) -> bool {
 /// stub commands don't produce TUI output.
 #[test]
 #[ignore]
-#[timeout(300_000)]
+#[timeout(300_000)] // 5 minutes: daemon startup (30s) + Claude CLI launch (60s) + TUI render (30s) + CI overhead (~3x local)
 fn test_daemon_spawns_lead_with_real_claude() {
     // Skip when using a stub command - this test requires real Claude TUI output
     if std::env::var("MIDTOWN_LEAD_COMMAND").is_ok() {
