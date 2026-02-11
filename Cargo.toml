@@ -47,6 +47,7 @@ hex = "0.4"
 # CLI utilities
 dirs = "6.0"
 toml = "0.9.11"
+toml_edit = "0.23"
 
 # Random number generation (for coworker name selection)
 fastrand = "2"
