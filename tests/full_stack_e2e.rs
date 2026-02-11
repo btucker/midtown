@@ -223,6 +223,7 @@ impl FullStackFixture {
 
         // Use `midtown start` which creates both daemon AND tmux session with lead.
         // Note: `midtown daemon` only starts the daemon process without the tmux session.
+        let spawn_start = std::time::Instant::now();
         let child = Command::new(&binary_path)
             .arg("start")
             .current_dir(&self.temp_dir)
@@ -234,24 +235,40 @@ impl FullStackFixture {
 
         match child {
             Ok(mut c) => {
+                eprintln!("[TIMING] spawn() took {:?}", spawn_start.elapsed());
+
                 // Wait for `midtown start` to complete. This command:
                 // 1. Spawns daemon process in background
                 // 2. Waits for daemon socket (up to 15s)
                 // 3. Creates tmux session with lead window
                 // We need to wait for ALL of these steps, not just the socket.
+                let wait_start = std::time::Instant::now();
                 let exit_status = c.wait();
+                eprintln!(
+                    "[TIMING] midtown start command wait() took {:?}",
+                    wait_start.elapsed()
+                );
 
                 match exit_status {
                     Ok(status) if status.success() => {
                         // Verify socket is available (should be, since start succeeded)
+                        let socket_check_start = std::time::Instant::now();
                         for _ in 0..50 {
                             if self.socket_path.exists()
                                 && UnixStream::connect(&self.socket_path).is_ok()
                             {
+                                eprintln!(
+                                    "[TIMING] Socket verification took {:?}",
+                                    socket_check_start.elapsed()
+                                );
                                 return true;
                             }
                             thread::sleep(Duration::from_millis(100));
                         }
+                        eprintln!(
+                            "[TIMING] Socket verification timed out after {:?}",
+                            socket_check_start.elapsed()
+                        );
                         eprintln!("Socket not available after successful midtown start");
                         false
                     }
