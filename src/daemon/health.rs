@@ -374,8 +374,24 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             message: String::new(),
             session_id: None,
         });
-        // Clean the coworker's target/ directory to reclaim disk space
-        effects.push(Effect::CleanWorktreeTarget { name: name.clone() });
+        // Clean the coworker's target/ directory to reclaim disk space.
+        // Resolve working_dir from the snapshot so we target the actual
+        // directory (task-based worktree), not the legacy coworker-named path.
+        if let Some(cw) = snap
+            .active_coworkers
+            .iter()
+            .find(|cw| cw.name.eq_ignore_ascii_case(name))
+        {
+            effects.push(Effect::CleanWorktreeTarget {
+                name: name.clone(),
+                working_dir: PathBuf::from(&cw.working_dir),
+            });
+        } else {
+            debug!(
+                "Coworker {} not found in snapshot, skipping target/ cleanup",
+                name
+            );
+        }
     }
 
     effects
