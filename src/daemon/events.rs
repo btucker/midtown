@@ -108,7 +108,9 @@ pub async fn evaluate_tick(
 
             // Auto-complete tasks whose descriptions reference only merged PRs
             // (handles meta-tasks, sub-tasks, and fix-PR tasks)
-            effects.extend(super::dispatch::build_description_based_completion_effects(snap));
+            effects.extend(super::dispatch::build_description_based_completion_effects(
+                snap,
+            ));
 
             dedup_spawn_effects(effects)
         }
