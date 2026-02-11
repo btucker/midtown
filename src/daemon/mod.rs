@@ -1372,16 +1372,6 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
     effects::execute_effects(tick_effects, state).await;
 }
 
-/// Run snapshot→evaluate without executing. Returns effects for the caller
-/// to inspect or extend before calling `execute_effects`.
-async fn collect_and_evaluate(
-    event: &events::DaemonEvent,
-    state: &DaemonState,
-) -> Vec<effects::Effect> {
-    let snap = snapshot::collect_world_snapshot(state).await;
-    events::evaluate_tick(event, &snap, state).await
-}
-
 /// Run the daemon server with the given configuration.
 ///
 /// This function will block until the daemon receives a shutdown signal
@@ -2132,15 +2122,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 
             // Periodic task dispatch: orphan recovery, duplicate detection, spawning, cleanup
             _ = orphan_check_interval.tick() => {
-                let tick_effects =
-                    collect_and_evaluate(&events::DaemonEvent::TaskDispatchTick, &state).await;
+                let snap = snapshot::collect_world_snapshot(&state).await;
+                let tick_effects = events::evaluate_tick(&events::DaemonEvent::TaskDispatchTick, &snap, &state).await;
                 // Mark in-flight tasks BEFORE executing effects to prevent race conditions.
                 // If the next tick fires while effects are executing, it will skip these tasks.
                 state.mark_in_flight_spawns_from_effects(&tick_effects);
                 effects::execute_effects(tick_effects, &state).await;
                 // Orphan worktree cleanup: gather data (blocking git ops + cache reads),
                 // then build effects via pure decision function.
-                if let Some(orphan_data) = dispatch::gather_orphan_cleanup_data(&state).await {
+                // Pass task owners to suppress warnings for idle worktrees with no active work.
+                let task_owners: Vec<String> = snap.in_progress_tasks.iter()
+                    .map(|(_, _, owner)| owner.clone())
+                    .collect();
+                if let Some(orphan_data) = dispatch::gather_orphan_cleanup_data(&state, &task_owners).await {
                     let orphan_effects = dispatch::decide_orphan_cleanup(&orphan_data);
                     effects::execute_effects(orphan_effects, &state).await;
                 }
