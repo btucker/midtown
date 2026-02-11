@@ -290,7 +290,8 @@ fn check_daemon_health() -> bool {
             }
 
             // Trigger restart — this stops the dead daemon and starts a fresh one.
-            match super::handle_restart() {
+            // Use force=true since the daemon is dead anyway
+            match super::handle_restart(true) {
                 Ok(_) => {
                     if let Some(ref repo) = repo {
                         hook_log(repo, "lead-stop: daemon restarted successfully");

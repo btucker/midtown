@@ -441,6 +441,10 @@ impl DaemonClient {
         self.send("daemon.check-pending", None)
     }
 
+    pub fn enter_drain(&self) -> Result<Response, String> {
+        self.send("daemon.enter-drain", None)
+    }
+
     // Auth commands
 
     pub fn auth_switch(

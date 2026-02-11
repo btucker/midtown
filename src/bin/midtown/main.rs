@@ -110,7 +110,11 @@ enum Commands {
         keep_session: bool,
     },
     /// Restart midtown (stop + start)
-    Restart,
+    Restart {
+        /// Skip graceful drain and force immediate restart
+        #[arg(long)]
+        force: bool,
+    },
     /// Attach to the project's tmux session
     Attach {
         /// Project name to attach to (default: inferred from cwd)
@@ -477,8 +481,8 @@ fn main() {
     }
 
     // Restart command (stop + start)
-    if let Commands::Restart = &command {
-        let result = cli::handle_restart();
+    if let Commands::Restart { force } = &command {
+        let result = cli::handle_restart(*force);
         handle_result(format, result);
         return;
     }
@@ -829,7 +833,7 @@ fn main() {
         Commands::Daemon { .. }
         | Commands::Start { .. }
         | Commands::Stop { .. }
-        | Commands::Restart
+        | Commands::Restart { .. }
         | Commands::Attach { .. }
         | Commands::Lead { .. }
         | Commands::Project { .. }

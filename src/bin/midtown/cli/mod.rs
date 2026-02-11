@@ -79,8 +79,8 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
 }
 
 /// Handle restart command (stop + start)
-pub fn handle_restart() -> Result<Response, String> {
-    daemon::handle_restart()
+pub fn handle_restart(force: bool) -> Result<Response, String> {
+    daemon::handle_restart(force)
 }
 
 /// Handle attach command (no daemon required - just attaches to tmux)

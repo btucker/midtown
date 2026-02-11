@@ -955,6 +955,12 @@ pub(super) fn spawn_for_pending_tasks(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<effects::Effect> {
+    // Skip task assignment if daemon is draining (graceful shutdown in progress)
+    if state.draining.load(std::sync::atomic::Ordering::SeqCst) {
+        debug!("Daemon is draining, skipping task assignment");
+        return Vec::new();
+    }
+
     debug!(
         "Task assignment state: active={}",
         snap.running_coworkers.len()
