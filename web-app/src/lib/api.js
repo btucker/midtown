@@ -313,12 +313,19 @@ export function connectWebSocket() {
   ws.onopen = () => {
     console.log('WebSocket connected')
     connected.set(true)
+
+    // Always fetch history on connect/reconnect to ensure we have all messages.
+    // This covers: initial page load, reconnection after network loss,
+    // and page becoming active again after being backgrounded.
+    const wasReconnect = reconnectTimeout !== null
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout)
       reconnectTimeout = null
-      // Fetch recent history to get messages sent during disconnection
-      fetchHistory()
     }
+
+    // Fetch history for all active channels to catch up on any missed messages
+    fetchHistory()
+    console.log(wasReconnect ? 'Reconnected - fetching message history' : 'Connected - loading initial history')
   }
 
   ws.onclose = () => {
