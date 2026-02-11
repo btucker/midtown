@@ -43,6 +43,10 @@ pub struct ProcessHealth {
     /// When true, the session is waiting for a tool to complete (e.g., long-running Bash command)
     /// and shouldn't be considered stuck even if no events are emitted during execution.
     pub has_pending_tool: bool,
+    /// Whether the coworker has a tool name conflict (e.g., duplicate MCP tool names).
+    /// When true, the session may fail tool calls and needs a restart.
+    #[serde(default)]
+    pub has_tool_name_conflict: bool,
     /// Process exit code, if the process has terminated.
     pub exit_code: Option<i32>,
 }
@@ -56,6 +60,7 @@ impl Default for ProcessHealth {
             has_api_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_tool_name_conflict: false,
             exit_code: None,
         }
     }
@@ -203,6 +208,10 @@ pub struct WorldSnapshot {
     /// Like usage limits, these should be excluded from stuck detection, but
     /// unlike usage limits, they should receive periodic nudges to retry.
     pub api_error_coworkers: HashSet<String>,
+    /// Coworkers currently experiencing tool name conflicts (duplicate MCP tool names).
+    /// These coworkers need a restart to resolve the conflict.
+    #[serde(default)]
+    pub tool_name_conflict_coworkers: HashSet<String>,
 
     // ── Channel messages ─────────────────────────────────────────────────
     /// Recent channel messages for debugging context.
@@ -509,6 +518,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
+    let tool_name_conflict_coworkers: HashSet<String> = headless_process_health
+        .iter()
+        .filter(|(_, health)| health.has_tool_name_conflict)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
     // ── Channel messages & daemon logs ─────────────────────────────────
     // These debug fields are NOT populated during tick collection (hot path).
     // They are only populated on-demand via `with_debug_context()` when
@@ -597,6 +612,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         usage_limit_nudge_at,
         usage_limited_coworkers,
         api_error_coworkers,
+        tool_name_conflict_coworkers,
         channel_messages,
         daemon_logs,
         tasks_with_worktrees,
@@ -661,6 +677,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         usage_limit_nudge_at: None,
         usage_limited_coworkers: HashSet::new(),
         api_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
         channel_messages: vec![],
         daemon_logs: vec![],
         tasks_with_worktrees: HashSet::new(),
@@ -762,6 +779,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -853,6 +871,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -893,6 +912,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -905,6 +925,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -917,6 +938,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: Some(0),
             },
         );
@@ -1009,6 +1031,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -1084,6 +1107,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),

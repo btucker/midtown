@@ -232,8 +232,10 @@ impl HeadlessSession {
             cmd.arg("--agent-name").arg(agent_name);
         }
 
-        // Settings file
-        if let Some(ref settings) = config.settings_path {
+        // Settings file — skip on resume to avoid duplicate tool registrations.
+        // Resumed sessions already have their plugins loaded from saved state;
+        // passing --settings again causes "Tool names must be unique" API errors.
+        if !is_resume && let Some(ref settings) = config.settings_path {
             cmd.arg("--settings").arg(settings);
         }
 

@@ -365,6 +365,12 @@ impl SpecializedCoworker {
     ///
     /// Currently detects the "Tool names must be unique" error that occurs
     /// when resuming a session with conflicting MCP tool definitions.
+    ///
+    /// Note: For coworker sessions, the primary fix is in `headless.rs`
+    /// (skip `--settings` on resume). Specialized sessions don't use
+    /// `--settings`, so their variant of this error is intrinsic to
+    /// Claude Code session resume — this retry-with-fresh-session
+    /// workaround is still needed here.
     fn is_corruption_error(error: &std::io::Error) -> bool {
         let msg = error.to_string();
         msg.contains("Tool names must be unique")

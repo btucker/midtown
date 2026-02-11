@@ -3555,6 +3555,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -3594,6 +3595,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -3635,6 +3637,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -3675,6 +3678,7 @@ mod tests {
                 has_api_error: true,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -3718,6 +3722,7 @@ mod tests {
                 // But has a running subagent, so parent stream is expected to be quiet
                 has_running_subagent: true,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -3755,6 +3760,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: Some(1),
             },
         );
@@ -3796,6 +3802,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -3838,6 +3845,7 @@ mod tests {
                 has_running_subagent: false,
                 // But has a pending tool (saw tool_use, waiting for tool_result)
                 has_pending_tool: true,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -4467,6 +4475,7 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -4507,6 +4516,7 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -4550,6 +4560,7 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
                 has_api_error: false,
                 has_running_subagent: true,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -4590,6 +4601,7 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -4634,6 +4646,7 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
