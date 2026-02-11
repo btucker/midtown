@@ -705,6 +705,54 @@ pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
     None
 }
 
+/// Extract PR numbers from text (e.g., task description).
+///
+/// Matches patterns like:
+/// - `#123` (standalone)
+/// - `PR #123`
+/// - `#123, #456`
+///
+/// Returns a deduplicated, sorted vector of PR numbers.
+pub fn extract_pr_numbers_from_text(text: &str) -> Vec<u64> {
+    use std::collections::HashSet;
+
+    let mut pr_numbers = HashSet::new();
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '#' {
+            // Check if this is not part of a markdown heading or code fence
+            // by ensuring it's not at the start of a line preceded by nothing
+            let mut num_str = String::new();
+
+            // Collect all digits after #
+            while let Some(&next_ch) = chars.peek() {
+                if next_ch.is_ascii_digit() {
+                    num_str.push(next_ch);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            // Parse the number if we found any digits
+            if !num_str.is_empty()
+                && let Ok(num) = num_str.parse::<u64>()
+            {
+                // Only include numbers that look like PR numbers (1-9999)
+                // to avoid matching random numbers like #20250101
+                if num < 10000 {
+                    pr_numbers.insert(num);
+                }
+            }
+        }
+    }
+
+    let mut sorted: Vec<u64> = pr_numbers.into_iter().collect();
+    sorted.sort_unstable();
+    sorted
+}
+
 /// Mark a task as completed in a specific tasks directory.
 ///
 /// This is the path-injectable version used by tests.
@@ -1830,6 +1878,57 @@ mod tests {
         assert_eq!(
             extract_task_id_from_pr_title("prefix [Midtown #123] suffix"),
             Some(123)
+        );
+    }
+
+    #[test]
+    fn test_extract_pr_numbers_from_text() {
+        // Single PR reference
+        assert_eq!(extract_pr_numbers_from_text("Fix PR #123"), vec![123]);
+
+        // Multiple PR references
+        assert_eq!(
+            extract_pr_numbers_from_text("Merge PRs #901, #902, #903"),
+            vec![901, 902, 903]
+        );
+
+        // Mixed formats
+        assert_eq!(
+            extract_pr_numbers_from_text("Address feedback from PR #904 and #905"),
+            vec![904, 905]
+        );
+
+        // Deduplicated
+        assert_eq!(
+            extract_pr_numbers_from_text("PR #100 and #100 again"),
+            vec![100]
+        );
+
+        // No matches
+        assert_eq!(
+            extract_pr_numbers_from_text("No PR references here"),
+            Vec::<u64>::new()
+        );
+
+        // Empty string
+        assert_eq!(extract_pr_numbers_from_text(""), Vec::<u64>::new());
+
+        // Exclude very large numbers (likely dates, not PR numbers)
+        assert_eq!(
+            extract_pr_numbers_from_text("Created on #20250101"),
+            Vec::<u64>::new()
+        );
+
+        // Include valid PR numbers
+        assert_eq!(
+            extract_pr_numbers_from_text("PRs #1, #99, #999, #9999"),
+            vec![1, 99, 999, 9999]
+        );
+
+        // Range notation (each number extracted separately)
+        assert_eq!(
+            extract_pr_numbers_from_text("PRs #100-#105"),
+            vec![100, 105]
         );
     }
 
