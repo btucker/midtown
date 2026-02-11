@@ -728,6 +728,15 @@ impl CoworkerManager {
         self.worktree_manager.is_branch_pr_merged(name)
     }
 
+    /// Check if a worktree's HEAD is reachable from the default branch (main).
+    ///
+    /// Returns `true` if all commits in the worktree are already on main,
+    /// indicating the worktree can be safely cleaned up.
+    pub fn is_worktree_head_on_main(&self, name: &str) -> bool {
+        self.worktree_manager
+            .is_head_reachable_from_default_branch(name)
+    }
+
     /// Clean up stale local branches that match coworker naming patterns
     /// and are already fully merged into the default branch.
     ///

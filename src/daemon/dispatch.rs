@@ -738,7 +738,13 @@ pub(super) struct OrphanCleanupData {
 /// warnings (the tracker is in-memory state management, not I/O).
 ///
 /// Returns `None` if the PR poll hasn't initialized yet (too early to decide).
-pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<OrphanCleanupData> {
+///
+/// `in_progress_task_owners`: Names of coworkers with assigned in_progress tasks.
+/// Used to suppress warnings for worktrees with no corresponding active work.
+pub(super) async fn gather_orphan_cleanup_data(
+    state: &DaemonState,
+    in_progress_task_owners: &[String],
+) -> Option<OrphanCleanupData> {
     // Clone the coworker manager for use in the blocking task.
     // CoworkerManager is Clone and contains Arc<> internally.
     let coworkers = state.coworkers.clone();
@@ -801,6 +807,19 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
         unmerged
             .into_iter()
             .filter(|name| {
+                // Suppress warnings for worktrees with no corresponding in_progress task.
+                // When a coworker is idle with no assigned work, their orphaned worktree
+                // represents abandoned/completed work, not an interrupted task needing recovery.
+                if !in_progress_task_owners.contains(name) {
+                    debug!(
+                        "Suppressing orphan warning for {} (no in_progress task)",
+                        name
+                    );
+                    return false;
+                }
+                // Only track worktrees that pass the filter (have an in_progress task).
+                // This ensures first_detected is set when the task is actually assigned,
+                // preserving the 60s grace period.
                 tracker.track(name.clone());
                 tracker.should_warn(name)
             })
@@ -825,19 +844,24 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
                     remaining.push(name);
                     continue;
                 }
-                if coworkers.is_branch_pr_merged(&name) {
+                let should_cleanup = coworkers.is_branch_pr_merged(&name)
+                    || coworkers.is_worktree_head_on_main(&name);
+
+                if should_cleanup {
+                    let reason = if coworkers.is_branch_pr_merged(&name) {
+                        "PR merged"
+                    } else {
+                        "HEAD on main"
+                    };
                     match coworkers.force_cleanup_worktree(&name) {
                         Ok(()) => {
-                            info!(
-                                "Auto-cleaned orphaned worktree for {} (gh confirmed PR merged)",
-                                name
-                            );
+                            info!("Auto-cleaned orphaned worktree for {} ({})", name, reason);
                             cleaned.push(name);
                         }
                         Err(e) => {
                             warn!(
-                                "Failed to cleanup gh-confirmed merged worktree for {}: {}",
-                                name, e
+                                "Failed to cleanup worktree for {} ({}): {}",
+                                name, reason, e
                             );
                             remaining.push(name);
                         }
@@ -855,7 +879,7 @@ pub(super) async fn gather_orphan_cleanup_data(state: &DaemonState) -> Option<Or
         });
 
         // Prune using the FULL orphan list to preserve warned_at timestamps for
-        // orphans not in the `remaining` subset (same rationale as line 611).
+        // orphans not in the `remaining` subset (same rationale as line 802).
         if !cleaned.is_empty() {
             let mut tracker = state.orphan_tracker.write().unwrap();
             tracker.prune(&all_orphaned);
