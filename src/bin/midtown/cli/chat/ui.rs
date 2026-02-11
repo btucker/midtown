@@ -220,6 +220,79 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
 }
 
 /// Draw the board panel (left side) with channel swimlanes
+/// Compute indentation level for each task based on dependency structure.
+/// Returns a HashMap mapping task ID to indentation level (0 = no indent, 1 = indent one level, etc.)
+fn compute_task_indentation(tasks: &[&super::app::KanbanTask]) -> HashMap<String, usize> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut indentation: HashMap<String, usize> = HashMap::new();
+    let mut processed: HashSet<String> = HashSet::new();
+
+    // Build a map of task IDs for quick lookup
+    let task_map: HashMap<String, &super::app::KanbanTask> =
+        tasks.iter().map(|t| (t.id.clone(), *t)).collect();
+
+    // Process tasks in order (sorted by ID), computing indentation recursively
+    for task in tasks {
+        compute_indentation_recursive(&task.id, &task_map, &mut indentation, &mut processed);
+    }
+
+    indentation
+}
+
+/// Recursive helper to compute indentation level for a task
+fn compute_indentation_recursive(
+    task_id: &str,
+    task_map: &HashMap<String, &super::app::KanbanTask>,
+    indentation: &mut HashMap<String, usize>,
+    processed: &mut std::collections::HashSet<String>,
+) -> usize {
+    // If already computed, return cached value
+    if let Some(&level) = indentation.get(task_id) {
+        return level;
+    }
+
+    // Guard against cycles
+    if processed.contains(task_id) {
+        return 0;
+    }
+    processed.insert(task_id.to_string());
+
+    let task = match task_map.get(task_id) {
+        Some(t) => t,
+        None => {
+            indentation.insert(task_id.to_string(), 0);
+            return 0;
+        }
+    };
+
+    // If no dependencies, no indentation
+    if task.blocked_by.is_empty() {
+        indentation.insert(task_id.to_string(), 0);
+        return 0;
+    }
+
+    // Find the first unresolved dependency in the current task list
+    // (Dependencies are "unresolved" if they exist in this task list)
+    let first_blocker = task
+        .blocked_by
+        .iter()
+        .find(|blocker_id| task_map.contains_key(blocker_id.as_str()));
+
+    let level = if let Some(blocker_id) = first_blocker {
+        // Indent one level more than the blocker
+        let blocker_level =
+            compute_indentation_recursive(blocker_id, task_map, indentation, processed);
+        blocker_level + 1
+    } else {
+        // All blockers are resolved or not in this list - no indentation
+        0
+    };
+
+    indentation.insert(task_id.to_string(), level);
+    level
+}
+
 fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
     use ratatui::layout::{Constraint, Direction, Layout};
     use std::collections::{BTreeMap, HashMap};
@@ -348,25 +421,25 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         lines.push(Line::from(vec![Span::styled(channel_header, style)]));
         lines.push(Line::from("")); // Blank line after header
 
+        // Compute indentation levels for tasks based on dependencies
+        let task_indentation = compute_task_indentation(tasks);
+
         // Render tasks for this channel
         for task in tasks {
+            // Get indentation level for this task (each level = 2 spaces)
+            let indent_level = task_indentation.get(&task.id).copied().unwrap_or(0);
+            let task_indent = "  ".repeat(indent_level);
             let status_marker = if task.status == super::app::TaskStatus::InProgress {
                 "● "
             } else {
                 "○ "
             };
 
-            let owner_text = if let Some(ref owner) = task.owner {
-                format!(" [{}]", owner)
-            } else {
-                String::new()
-            };
-
             // Build prefix so continuation lines can align with subject text
-            let prefix = format!("{} !{} ", status_marker, task.id);
+            let prefix = format!("{}{} !{} ", task_indent, status_marker, task.id);
             let prefix_width = prefix.len();
 
-            let task_line = format!("{}{}{}", prefix, task.subject, owner_text);
+            let task_line = format!("{}{}", prefix, task.subject);
 
             // Check if this task is selected
             let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -380,12 +453,13 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                 let text = if i == 0 {
                     wrapped.to_string()
                 } else {
-                    // Continuation lines: indent to align with subject text
+                    // Continuation lines: indent to align with subject text (reduced by 2 spaces)
+                    let indent_width = prefix_width.saturating_sub(2);
                     format!(
                         "{:width$}{}",
                         "",
                         wrapped.trim_start(),
-                        width = prefix_width
+                        width = indent_width
                     )
                 };
 
