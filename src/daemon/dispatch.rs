@@ -30,8 +30,9 @@ use super::{DaemonState, snapshot};
 /// 5. Coworker gets recovered and creates duplicate PR
 ///
 /// Returns `true` if the PR is merged, `false` if open/closed, `None` if the check fails.
-fn is_pr_merged(pr_number: u64) -> Option<bool> {
+fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
     let output = std::process::Command::new("gh")
+        .current_dir(repo_path)
         .args([
             "pr",
             "view",
@@ -75,7 +76,11 @@ fn is_pr_merged(pr_number: u64) -> Option<bool> {
 /// violates the pure decision function pattern. The target architecture would move
 /// this to snapshot collection, but orphan recovery is already impure (reads tasks
 /// from disk) so we handle it here for now.
-fn should_recover_task(task: &crate::tasks::Task, merged_pr_numbers: &HashSet<u64>) -> bool {
+fn should_recover_task(
+    task: &crate::tasks::Task,
+    merged_pr_numbers: &HashSet<u64>,
+    repo_path: &std::path::Path,
+) -> bool {
     // Check if task is already completed
     // Race condition: coworker reports completion via RPC, task is marked completed,
     // but snapshot was collected before in_progress_tasks refreshed.
@@ -106,7 +111,7 @@ fn should_recover_task(task: &crate::tasks::Task, merged_pr_numbers: &HashSet<u6
         // 1. A PR merges but auto-completion fails
         // 2. Coworker shuts down before next cache refresh
         // 3. Orphan recovery would otherwise spawn duplicate work
-        match is_pr_merged(pr_num) {
+        match is_pr_merged(pr_num, repo_path) {
             Some(true) => {
                 info!(
                     "Skipping orphan recovery for task !{}: PR #{} is merged (direct check)",
@@ -159,6 +164,12 @@ pub(super) fn check_and_recover_orphans(
         return vec![];
     }
 
+    // Get primary repo path for GitHub API calls
+    let repo_path = state
+        .all_repo_paths
+        .first()
+        .expect("daemon state must have at least one repo path");
+
     // Filter out in_progress tasks whose PRs have already been merged or that
     // are already completed. These tasks are stale and will be auto-completed
     // by the PR merge cleanup path. Attempting orphan recovery on them creates
@@ -174,7 +185,7 @@ pub(super) fn check_and_recover_orphans(
                 None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
             };
 
-            should_recover_task(&task, &snap.merged_pr_numbers)
+            should_recover_task(&task, &snap.merged_pr_numbers, repo_path)
         })
         .cloned()
         .collect();
@@ -4109,7 +4120,7 @@ mod tests {
             "/tmp/test.sock".into(),
             cm,
             "test-repo".to_string(),
-            vec![],
+            vec![base_dir.clone()],
             channel_router,
             None,
             10,
@@ -4140,7 +4151,7 @@ mod tests {
 
         let merged_prs = HashSet::new();
         assert!(
-            !should_recover_task(&completed_task, &merged_prs),
+            !should_recover_task(&completed_task, &merged_prs, std::path::Path::new(".")),
             "Should NOT recover a completed task"
         );
     }
@@ -4162,7 +4173,7 @@ mod tests {
 
         let merged_prs: HashSet<u64> = [923].into_iter().collect();
         assert!(
-            !should_recover_task(&task, &merged_prs),
+            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
             "Should NOT recover a task whose PR is already merged (subject)"
         );
     }
@@ -4184,7 +4195,7 @@ mod tests {
 
         let merged_prs: HashSet<u64> = [925].into_iter().collect();
         assert!(
-            !should_recover_task(&task, &merged_prs),
+            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
             "Should NOT recover a task whose PR is already merged (description)"
         );
     }
@@ -4206,7 +4217,7 @@ mod tests {
 
         let merged_prs = HashSet::new();
         assert!(
-            should_recover_task(&task, &merged_prs),
+            should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
             "Should recover an active in-progress task with no merged PR"
         );
     }
@@ -4231,7 +4242,7 @@ mod tests {
         // should be conservative and allow recovery.
         let merged_prs: HashSet<u64> = [900, 910].into_iter().collect();
         assert!(
-            should_recover_task(&task, &merged_prs),
+            should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
             "Should recover a task whose PR is NOT yet merged (cache miss, API fails)"
         );
     }
@@ -4261,7 +4272,7 @@ mod tests {
         // Despite cache miss, should_recover_task should detect PR #935 is merged
         // via direct GitHub API check and skip recovery.
         assert!(
-            !should_recover_task(&task, &merged_prs),
+            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
             "Should NOT recover task when PR is merged but not in cache (tests direct GitHub check)"
         );
     }
