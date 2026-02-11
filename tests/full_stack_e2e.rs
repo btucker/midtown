@@ -430,9 +430,18 @@ fn window_exists(session: &str, window: &str) -> bool {
 /// Requires real Claude Code to be installed and authenticated. When
 /// MIDTOWN_LEAD_COMMAND is set (stub mode), this test is skipped since
 /// stub commands don't produce TUI output.
+///
+/// ## Performance characteristics:
+/// - Local (cold build): ~76s (cargo build ~56s + test ~20s)
+/// - Local (warm build): ~20s
+/// - CI: ~180-210s (cargo build ~60-120s + test ~60-90s)
+///
+/// CI is 2.5-3x slower due to: shared CPU resources, partial Rust cache,
+/// and Claude CLI startup overhead in container environment. The 300s
+/// timeout provides ~1.5x safety margin over typical CI runtime.
 #[test]
 #[ignore]
-#[timeout(300_000)] // 5 minutes: daemon startup (30s) + Claude CLI launch (60s) + TUI render (30s) + CI overhead (~3x local)
+#[timeout(300_000)] // 5 minutes: provides 1.5x safety margin over typical CI runtime (180-210s)
 fn test_daemon_spawns_lead_with_real_claude() {
     let test_start = std::time::Instant::now();
 
