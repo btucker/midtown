@@ -445,6 +445,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         model,
                         state,
                     )
+                    .await
                 }
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
@@ -1886,7 +1887,7 @@ fn apply_task_channel_mapping(
 
 /// Handle task.update RPC — update specific fields on a task directly.
 #[allow(clippy::too_many_arguments)]
-fn handle_task_update(
+async fn handle_task_update(
     id: RequestId,
     task_id: &str,
     owner: Option<&str>,
@@ -1936,7 +1937,7 @@ fn handle_task_update(
 
     // Update daemon-side task-to-channel and task-to-model mappings
     {
-        let mut ps = state.persistent_state.blocking_lock();
+        let mut ps = state.persistent_state.lock().await;
         let mut needs_save = false;
 
         // Apply channel mapping
