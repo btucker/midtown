@@ -187,17 +187,17 @@ fn handle_view(id: &str) -> Result<Response, String> {
     }
 
     // Query daemon for metadata (channel and model)
-    if let Ok(client) = crate::client::DaemonClient::connect() {
-        if let Ok(result) = client.task_metadata(id) {
-            if let Some(channel) = result.get("channel").and_then(|v| v.as_str()) {
-                output.push_str(&format!("Channel:  {}\n", channel));
-            }
-            if let Some(model) = result.get("model").and_then(|v| v.as_str()) {
-                output.push_str(&format!("Model:    {}\n", model));
-            }
+    if let Ok(client) = crate::client::DaemonClient::connect()
+        && let Ok(result) = client.task_metadata(id)
+    {
+        if let Some(channel) = result.get("channel").and_then(|v| v.as_str()) {
+            output.push_str(&format!("Channel:  {}\n", channel));
         }
-        // Silently ignore errors - daemon might not be running or metadata might not exist
+        if let Some(model) = result.get("model").and_then(|v| v.as_str()) {
+            output.push_str(&format!("Model:    {}\n", model));
+        }
     }
+    // Silently ignore errors - daemon might not be running or metadata might not exist
 
     if !task.blocked_by.is_empty() {
         output.push_str(&format!("Blocked:  {}\n", task.blocked_by.join(", ")));

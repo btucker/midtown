@@ -568,7 +568,10 @@ mod tests {
         let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(loaded.task_model.len(), 2);
-        assert_eq!(loaded.task_model.get("42"), Some(&"claude/opus".to_string()));
+        assert_eq!(
+            loaded.task_model.get("42"),
+            Some(&"claude/opus".to_string())
+        );
         assert_eq!(
             loaded.task_model.get("43"),
             Some(&"claude/sonnet".to_string())
@@ -591,10 +594,7 @@ mod tests {
         state
             .task_model
             .insert("50".to_string(), "claude/opus".to_string());
-        assert_eq!(
-            state.task_model.get("50"),
-            Some(&"claude/opus".to_string())
-        );
+        assert_eq!(state.task_model.get("50"), Some(&"claude/opus".to_string()));
 
         // Overwrite with a different model
         state

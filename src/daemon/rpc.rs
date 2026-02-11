@@ -361,9 +361,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let channel = params
                 .and_then(|p| p.get("channel"))
                 .and_then(|v| v.as_str());
-            let model = params
-                .and_then(|p| p.get("model"))
-                .and_then(|v| v.as_str());
+            let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
 
             match subject {
                 Some(subject) => {
@@ -406,9 +404,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                     let channel = params
                         .and_then(|p| p.get("channel"))
                         .and_then(|v| v.as_str());
-                    let model = params
-                        .and_then(|p| p.get("model"))
-                        .and_then(|v| v.as_str());
+                    let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
 
                     handle_task_update(
                         request.id,
@@ -1572,10 +1568,8 @@ async fn handle_task_create(
                 }
 
                 // Save if any mapping changed
-                if needs_save {
-                    if let Err(e) = ps.save_for_repo(&repo_name) {
-                        warn!("Failed to save task mappings: {}", e);
-                    }
+                if needs_save && let Err(e) = ps.save_for_repo(&repo_name) {
+                    warn!("Failed to save task mappings: {}", e);
                 }
             }
 
@@ -1809,10 +1803,8 @@ fn handle_task_update(
         }
 
         // Save if any mapping changed
-        if needs_save {
-            if let Err(e) = ps.save_for_repo(&repo_name) {
-                warn!("Failed to save task mappings: {}", e);
-            }
+        if needs_save && let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!("Failed to save task mappings: {}", e);
         }
     }
 

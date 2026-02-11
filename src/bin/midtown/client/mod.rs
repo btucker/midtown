@@ -322,6 +322,7 @@ impl DaemonClient {
         self.send("task.create", Some(params))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn task_update(
         &self,
         id: &str,
