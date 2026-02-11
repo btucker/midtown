@@ -342,19 +342,19 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
             }
             match key.code {
                 KeyCode::Esc => {
-                    // Esc exits when in Board or Chat, clears input when in InputBar
-                    if app.focused_pane == FocusedPane::InputBar {
+                    // Esc dismisses autocomplete if showing
+                    if app.autocomplete.show {
+                        app.dismiss_autocomplete();
+                        EventResult::Continue
+                    } else if app.focused_pane == FocusedPane::InputBar {
+                        // Esc clears input when in InputBar
                         app.input_text.clear();
                         app.input_cursor = 0;
                         EventResult::Continue
                     } else {
+                        // Esc exits when in Board or Chat
                         EventResult::Exit
                     }
-                }
-                // Tab cycles focus: Board → Chat → InputBar → Board
-                KeyCode::Tab => {
-                    app.cycle_focus();
-                    EventResult::Continue
                 }
                 // Number keys 1-9 open diagrams - only when diagrams exist
                 // This is checked BEFORE auto-focus to input to preserve diagram shortcuts
@@ -370,26 +370,41 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     }
                 }
                 // Arrow keys for scrolling - don't auto-focus input
-                KeyCode::Up => match app.focused_pane {
-                    FocusedPane::Board => {
-                        app.board_selection_up();
+                // BUT if autocomplete is showing, navigate the dropdown instead
+                KeyCode::Up => {
+                    if app.autocomplete.show {
+                        app.autocomplete_select_prev();
                         EventResult::Continue
+                    } else {
+                        match app.focused_pane {
+                            FocusedPane::Board => {
+                                app.board_selection_up();
+                                EventResult::Continue
+                            }
+                            FocusedPane::Chat | FocusedPane::InputBar => {
+                                app.scroll_up();
+                                EventResult::Continue
+                            }
+                        }
                     }
-                    FocusedPane::Chat | FocusedPane::InputBar => {
-                        app.scroll_up();
+                }
+                KeyCode::Down => {
+                    if app.autocomplete.show {
+                        app.autocomplete_select_next();
                         EventResult::Continue
+                    } else {
+                        match app.focused_pane {
+                            FocusedPane::Board => {
+                                app.board_selection_down();
+                                EventResult::Continue
+                            }
+                            FocusedPane::Chat | FocusedPane::InputBar => {
+                                app.scroll_down();
+                                EventResult::Continue
+                            }
+                        }
                     }
-                },
-                KeyCode::Down => match app.focused_pane {
-                    FocusedPane::Board => {
-                        app.board_selection_down();
-                        EventResult::Continue
-                    }
-                    FocusedPane::Chat | FocusedPane::InputBar => {
-                        app.scroll_down();
-                        EventResult::Continue
-                    }
-                },
+                }
                 KeyCode::PageUp => {
                     app.page_up();
                     EventResult::Continue
@@ -406,10 +421,14 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     app.scroll_to_bottom();
                     EventResult::Continue
                 }
-                // Enter: auto-focus InputBar, send message if there's text
+                // Enter: select autocomplete item if showing, otherwise auto-focus InputBar or send message
                 KeyCode::Enter => {
-                    if app.focused_pane != FocusedPane::InputBar {
+                    if app.autocomplete.show {
+                        app.insert_autocomplete_item();
+                        EventResult::Continue
+                    } else if app.focused_pane != FocusedPane::InputBar {
                         app.focused_pane = FocusedPane::InputBar;
+                        EventResult::Continue
                     } else if !app.input_text.is_empty() {
                         // Post message to the main midtown channel
                         // TODO: Once PR #901 (channel selection) is merged, use app.selected_channel instead
@@ -425,8 +444,21 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             app.input_cursor = 0;
                         }
                         // TODO: When error display is implemented, show error here if !posted
+                        EventResult::Continue
+                    } else {
+                        EventResult::Continue
                     }
-                    EventResult::Continue
+                }
+                // Tab: select autocomplete item if showing
+                KeyCode::Tab => {
+                    if app.autocomplete.show {
+                        app.insert_autocomplete_item();
+                        EventResult::Continue
+                    } else {
+                        // Tab cycles focus: Board → Chat → InputBar → Board
+                        app.cycle_focus();
+                        EventResult::Continue
+                    }
                 }
                 // Backspace: auto-focus if input has text, then delete
                 KeyCode::Backspace => {
@@ -443,6 +475,8 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             let byte_idx =
                                 char_index_to_byte_index(&app.input_text, app.input_cursor);
                             app.input_text.remove(byte_idx);
+                            // Detect autocomplete trigger after deletion
+                            app.detect_autocomplete_trigger();
                         }
                     }
                     EventResult::Continue
@@ -455,6 +489,8 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             let byte_idx =
                                 char_index_to_byte_index(&app.input_text, app.input_cursor);
                             app.input_text.remove(byte_idx);
+                            // Detect autocomplete trigger after deletion
+                            app.detect_autocomplete_trigger();
                         }
                     }
                     EventResult::Continue
@@ -522,6 +558,9 @@ fn auto_focus_and_insert_char(app: &mut App, c: char) {
     let byte_idx = char_index_to_byte_index(&app.input_text, app.input_cursor);
     app.input_text.insert(byte_idx, c);
     app.input_cursor += 1;
+
+    // Detect autocomplete trigger
+    app.detect_autocomplete_trigger();
 }
 
 #[cfg(test)]
@@ -763,9 +802,9 @@ mod tests {
         app.input_text = "test message".to_string();
 
         handle_event(&mut app, key_press(KeyCode::Enter));
-        // If daemon or channel is available, message sent and input cleared
-        // (may not clear if both are unavailable, but that's environment-dependent)
-        // This test primarily ensures no panic occurs
+        // In test mode, posting fails because test_app() has no channel
+        // Input should be preserved when posting fails
+        assert_eq!(app.input_text, "test message");
         assert!(app.input_cursor <= app.input_text.len());
     }
 
@@ -792,14 +831,13 @@ mod tests {
         app.input_text = "test message".to_string();
         app.input_cursor = 12;
 
-        // If daemon is also unavailable, input should be preserved
-        // Note: This test may pass or fail depending on whether the daemon is running
-        // The key behavior is: input is only cleared on successful post
+        // In test mode, daemon communication is skipped and posting fails
+        // because test_app() has no channel. Input should be preserved.
         handle_event(&mut app, key_press(KeyCode::Enter));
 
-        // The input might be cleared if daemon is available, or preserved if not.
-        // We just verify the cursor position is valid.
-        assert!(app.input_cursor <= app.input_text.len());
+        // Input should be preserved when posting fails
+        assert_eq!(app.input_text, "test message");
+        assert_eq!(app.input_cursor, 12);
     }
 
     #[test]
@@ -892,5 +930,154 @@ mod tests {
         handle_event(&mut app, key_press(KeyCode::Char(' ')));
         assert_eq!(app.focused_pane, FocusedPane::InputBar);
         assert_eq!(app.input_text, " ");
+    }
+
+    #[test]
+    fn test_autocomplete_trigger_detection_at_start() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Type @ at start of input
+        auto_focus_and_insert_char(&mut app, '@');
+        assert!(
+            app.autocomplete.show || app.autocomplete.trigger_type == Some('@'),
+            "Autocomplete should detect @ trigger"
+        );
+        assert_eq!(app.autocomplete.query, "");
+    }
+
+    #[test]
+    fn test_autocomplete_trigger_detection_after_space() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Type "hello @"
+        for ch in "hello @".chars() {
+            auto_focus_and_insert_char(&mut app, ch);
+        }
+        assert_eq!(app.autocomplete.trigger_type, Some('@'));
+        assert_eq!(app.autocomplete.query, "");
+    }
+
+    #[test]
+    fn test_autocomplete_with_query() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Type "@par" (partial coworker name)
+        for ch in "@par".chars() {
+            auto_focus_and_insert_char(&mut app, ch);
+        }
+        assert_eq!(app.autocomplete.trigger_type, Some('@'));
+        assert_eq!(app.autocomplete.query, "par");
+    }
+
+    #[test]
+    fn test_autocomplete_navigation() {
+        use app::{AutocompleteItem, FocusedPane};
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Manually set up autocomplete state with multiple items
+        app.autocomplete.show = true;
+        app.autocomplete.items = vec![
+            AutocompleteItem {
+                value: "@lead".to_string(),
+                description: None,
+            },
+            AutocompleteItem {
+                value: "@park".to_string(),
+                description: Some("Working on task 5".to_string()),
+            },
+            AutocompleteItem {
+                value: "@madison".to_string(),
+                description: None,
+            },
+        ];
+        app.autocomplete.selected_index = 0;
+
+        // Arrow down should move to next item
+        app.autocomplete_select_next();
+        assert_eq!(app.autocomplete.selected_index, 1);
+
+        // Arrow down again
+        app.autocomplete_select_next();
+        assert_eq!(app.autocomplete.selected_index, 2);
+
+        // Arrow down should wrap to first item
+        app.autocomplete_select_next();
+        assert_eq!(app.autocomplete.selected_index, 0);
+
+        // Arrow up should wrap to last item
+        app.autocomplete_select_prev();
+        assert_eq!(app.autocomplete.selected_index, 2);
+    }
+
+    #[test]
+    fn test_autocomplete_dismiss_on_escape() {
+        use app::{AutocompleteItem, FocusedPane};
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Set up autocomplete
+        app.autocomplete.show = true;
+        app.autocomplete.items = vec![AutocompleteItem {
+            value: "@lead".to_string(),
+            description: None,
+        }];
+
+        // Press Escape
+        handle_event(&mut app, key_press(KeyCode::Esc));
+        assert!(!app.autocomplete.show, "Escape should dismiss autocomplete");
+    }
+
+    #[test]
+    fn test_autocomplete_insert() {
+        use app::{AutocompleteItem, FocusedPane};
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Set up input and autocomplete
+        app.input_text = "@pa".to_string();
+        app.input_cursor = 3;
+        app.autocomplete.show = true;
+        app.autocomplete.trigger_start_pos = 0;
+        app.autocomplete.trigger_type = Some('@');
+        app.autocomplete.query = "pa".to_string();
+        app.autocomplete.selected_index = 0;
+        app.autocomplete.items = vec![AutocompleteItem {
+            value: "@park".to_string(),
+            description: Some("Working on task 5".to_string()),
+        }];
+
+        // Insert autocomplete item
+        app.insert_autocomplete_item();
+
+        // Check that text was replaced and cursor moved
+        assert_eq!(app.input_text, "@park ");
+        assert_eq!(app.input_cursor, 6); // "@park " is 6 characters
+        assert!(
+            !app.autocomplete.show,
+            "Autocomplete should be hidden after insert"
+        );
+    }
+
+    #[test]
+    fn test_autocomplete_no_trigger_in_middle_of_word() {
+        use app::FocusedPane;
+        let mut app = test_app();
+        app.focused_pane = FocusedPane::InputBar;
+
+        // Type "email@example" - @ in middle of word should not trigger
+        for ch in "email@".chars() {
+            auto_focus_and_insert_char(&mut app, ch);
+        }
+        assert!(
+            !app.autocomplete.show,
+            "Autocomplete should not trigger for @ in middle of word"
+        );
     }
 }

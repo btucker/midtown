@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
 use midtown::{Message, MessageType};
@@ -221,7 +221,31 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
 
 /// Draw the board panel (left side) with channel swimlanes
 fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
+    use ratatui::layout::{Constraint, Direction, Layout};
     use std::collections::{BTreeMap, HashMap};
+
+    // Split board area vertically: tasks at top, coworkers at bottom
+    let active_coworker_count = app.coworkers.len();
+    let coworker_section_height = if active_coworker_count > 0 {
+        // 1 header line + N coworker rows + 2 for table borders
+        active_coworker_count as u16 + 3
+    } else {
+        0 // No coworkers, don't show the section
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if coworker_section_height > 0 {
+            vec![
+                Constraint::Min(10),                         // Task swimlanes
+                Constraint::Length(coworker_section_height), // Coworker status
+            ]
+        } else {
+            vec![Constraint::Min(10)] // No coworkers, use full area for tasks
+        })
+        .split(area);
+
+    let tasks_area = chunks[0];
 
     let mut lines = Vec::new();
     let hyperlinks = Vec::new();
@@ -338,10 +362,11 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                 String::new()
             };
 
-            let task_line = format!(
-                "    {} #{} {}{}",
-                status_marker, task.id, task.subject, owner_text
-            );
+            // Build prefix so continuation lines can align with subject text
+            let prefix = format!("{} !{} ", status_marker, task.id);
+            let prefix_width = prefix.len();
+
+            let task_line = format!("{}{}{}", prefix, task.subject, owner_text);
 
             // Check if this task is selected
             let is_task_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
@@ -356,7 +381,12 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
                     wrapped.to_string()
                 } else {
                     // Continuation lines: indent to align with subject text
-                    format!("        {}", wrapped.trim_start())
+                    format!(
+                        "{:width$}{}",
+                        "",
+                        wrapped.trim_start(),
+                        width = prefix_width
+                    )
                 };
 
                 let color = if task.status == super::app::TaskStatus::InProgress {
@@ -375,16 +405,105 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         }
     }
 
-    // Render the panel
+    // Render the tasks panel
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Board")
         .style(Style::default().fg(Color::White));
 
     let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, tasks_area);
+
+    // Render the coworker status section if there are active coworkers
+    if coworker_section_height > 0 {
+        draw_coworker_status(f, app, chunks[1]);
+    }
 
     hyperlinks
+}
+
+/// Draw the coworker status section (bottom of board sidebar)
+fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
+    // Split area: header at top, table below
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header line
+            Constraint::Min(0),    // Table rows
+        ])
+        .split(area);
+
+    // Header: "Coworkers (N/10)" in cyan, bold
+    let active_count = app.coworkers.len();
+    let max_coworkers = 10; // Hardcoded constant matching daemon's default
+    let header = format!("  Coworkers ({}/{})", active_count, max_coworkers);
+    let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
+        header,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    f.render_widget(header_paragraph, chunks[0]);
+
+    // Build table rows for coworkers
+    let rows: Vec<Row> = app
+        .coworkers
+        .iter()
+        .map(|cw| {
+            // Health dot
+            let health_dot = "●"; // U+25CF BLACK CIRCLE
+            let health_color = match cw.health.as_str() {
+                "green" => Color::Green,
+                "yellow" => Color::Yellow,
+                "red" => Color::Red,
+                _ => Color::Green,
+            };
+
+            // Build cells: [health_dot, name, task_id, phase, pr_number]
+            let mut cells = vec![
+                Cell::from(health_dot).style(Style::default().fg(health_color)),
+                Cell::from(cw.name.clone()),
+            ];
+
+            // Task ID (!1108)
+            cells.push(Cell::from(
+                cw.task_id.map(|id| format!("!{}", id)).unwrap_or_default(),
+            ));
+
+            // Phase abbreviation (dev/test/PR/etc)
+            cells.push(Cell::from(cw.phase.clone().unwrap_or_default()));
+
+            // PR number (#123)
+            cells.push(Cell::from(
+                cw.pr_number
+                    .map(|pr| format!("#{}", pr))
+                    .unwrap_or_default(),
+            ));
+
+            Row::new(cells)
+        })
+        .collect();
+
+    // Define column widths
+    // [dot, name, task, phase, PR]
+    let widths = [
+        Constraint::Length(2), // Health dot + space
+        Constraint::Min(10),   // Name (flexible)
+        Constraint::Length(6), // Task ID (!1234)
+        Constraint::Length(6), // Phase (dev/test/PR/etc)
+        Constraint::Length(5), // PR number (#123)
+    ];
+
+    // Create table (no borders, no header)
+    let table = Table::new(rows, widths)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)),
+        )
+        .column_spacing(1); // Space between columns
+
+    f.render_widget(table, chunks[1]);
 }
 
 /// Draw stacked repo status lines (one per repo, or single line for single-repo)
@@ -941,6 +1060,11 @@ fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
     draw_chat_messages(f, app, chunks[0]);
     draw_input_bar(f, app, chunks[1]);
+
+    // Draw autocomplete dropdown overlay if showing
+    if app.autocomplete.show {
+        draw_autocomplete_dropdown(f, app, chunks[1]);
+    }
 }
 
 /// Draw the chat messages area (top of chat panel)
@@ -1147,6 +1271,80 @@ fn draw_input_bar(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
+}
+
+/// Draw autocomplete dropdown above the input bar
+fn draw_autocomplete_dropdown(f: &mut Frame, app: &App, input_area: Rect) {
+    let items = &app.autocomplete.items;
+    if items.is_empty() {
+        return;
+    }
+
+    // Calculate dropdown dimensions
+    let item_count = items.len().min(8); // Show max 8 items
+    let dropdown_height = (item_count * 2) as u16; // 2 lines per item (value + description or blank)
+    let dropdown_width = 40u16.min(input_area.width.saturating_sub(4));
+
+    // Position dropdown above input bar (with 1-line gap)
+    let dropdown_y = input_area
+        .y
+        .saturating_sub(dropdown_height)
+        .saturating_sub(1);
+    let dropdown_x = input_area.x + 2; // Indent slightly from input bar
+
+    let dropdown_area = Rect {
+        x: dropdown_x,
+        y: dropdown_y,
+        width: dropdown_width,
+        height: dropdown_height,
+    };
+
+    // Build dropdown lines
+    let mut lines = Vec::new();
+    for (i, item) in items.iter().enumerate().take(item_count) {
+        let is_selected = i == app.autocomplete.selected_index;
+
+        // Item value line (highlighted if selected)
+        let value_style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {} ", item.value),
+            value_style,
+        )]));
+
+        // Description line (if present)
+        if let Some(ref desc) = item.description {
+            let desc_text = if desc.len() > dropdown_width as usize - 4 {
+                format!(" {}...", &desc[..dropdown_width as usize - 7])
+            } else {
+                format!(" {}", desc)
+            };
+            let desc_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            lines.push(Line::from(vec![Span::styled(desc_text, desc_style)]));
+        } else {
+            // Blank line for spacing
+            lines.push(Line::from(""));
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::Black));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, dropdown_area);
 }
 
 /// Render a single message into one or more Lines

@@ -723,9 +723,21 @@ impl DaemonState {
         }
 
         // Spawn the headless session (keyed by slot_id)
+        // For resumed sessions, the session_id should be extracted from config.session_mode
+        // and passed to spawn(). For fresh sessions, pass None.
+        let session_id = match &config.session_mode {
+            crate::launch::SessionMode::ResumeSession(sid) => Some(sid.clone()),
+            _ => None,
+        };
         let initial_prompt = launch_config.initial_prompt.as_deref();
         self.session_manager
-            .spawn(&name, &slot_id, &headless_config, initial_prompt)
+            .spawn(
+                &name,
+                &slot_id,
+                &headless_config,
+                initial_prompt,
+                session_id,
+            )
             .await?;
 
         // Register in the CoworkerManager tracking map (keyed by slot_id)
@@ -826,6 +838,40 @@ impl DaemonState {
         assignments.remove(&coworker.to_lowercase());
     }
 
+    /// Restore task assignments from disk after daemon restart.
+    ///
+    /// Rebuilds the in-memory `coworker_task_assignments` map by reading
+    /// in_progress tasks with owners from Claude Code's task storage.
+    /// This ensures task assignments survive daemon restarts.
+    ///
+    /// Called during daemon startup, after DaemonState is constructed but
+    /// before the event loop starts.
+    pub(crate) fn restore_task_assignments_from_disk(&self) {
+        let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+
+        let mut assignments = self.coworker_task_assignments.lock().unwrap();
+        let mut restored_count = 0;
+
+        for (task_id, _subject, owner) in in_progress_tasks {
+            if !owner.is_empty() {
+                assignments.insert(
+                    owner.to_lowercase(),
+                    TaskAssignment {
+                        task_id: task_id.clone(),
+                    },
+                );
+                restored_count += 1;
+            }
+        }
+
+        if restored_count > 0 {
+            info!(
+                "Restored {} task assignment(s) from disk during daemon startup",
+                restored_count
+            );
+        }
+    }
+
     /// Get the set of coworker names that have active task assignments.
     pub(crate) fn get_busy_coworker_names(&self) -> HashSet<String> {
         let assignments = self.coworker_task_assignments.lock().unwrap();
@@ -844,6 +890,22 @@ impl DaemonState {
             .collect();
         busy.extend(self.get_busy_coworker_names());
         busy.into_iter().collect()
+    }
+
+    /// Check if a coworker is already assigned to a specific task.
+    ///
+    /// Used to prevent duplicate task assignment in Case 2 grouped task logic.
+    /// Returns true if the coworker's current assignment matches the given task_id.
+    ///
+    /// NOTE: This method is retained for potential debugging use but should NOT be
+    /// called from decision functions (evaluate_tick path). Decision logic should use
+    /// `snap.coworker_task_assignments` instead to maintain the pure decision pattern.
+    #[allow(dead_code)]
+    pub(crate) fn is_coworker_assigned_to_task(&self, coworker: &str, task_id: &str) -> bool {
+        let assignments = self.coworker_task_assignments.lock().unwrap();
+        assignments
+            .get(&coworker.to_lowercase())
+            .is_some_and(|a| a.task_id == task_id)
     }
 
     /// Record a pending nudge sent to a coworker.
@@ -1533,6 +1595,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             Some(coworker_manager.clone()),
             all_repo_paths.clone(),
             default_branch.clone(),
+            config.max_coworkers,
         )
         .await
         {
@@ -1597,6 +1660,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
         );
         effects::execute_effects(recovery_effects, &state).await;
     }
+
+    // Restore task assignments from disk (rebuild the in-memory map).
+    // This ensures coworker task assignments survive daemon restarts.
+    state.restore_task_assignments_from_disk();
 
     // Set up shutdown signal handler
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -2027,7 +2094,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                 // stale entries in the CoworkerManager tracking map.
                 let headless_names: std::collections::HashSet<String> =
                     state.session_manager.list_alive_names().await.into_iter().collect();
-                if let Err(e) = state.coworkers.sync_with_tmux(&headless_names) {
+                let persistent_sessions = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.headless_sessions.clone()
+                };
+                if let Err(e) = state.coworkers.sync_with_tmux(&headless_names, &persistent_sessions) {
                     warn!("Failed to sync coworker state with tmux: {}", e);
                 }
                 run_tick(&events::DaemonEvent::SessionMonitorTick, &state).await;
@@ -2221,6 +2292,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
 // Per-coworker decision helpers for unit tests. The batch `decide_*` functions
 // in `rules.rs` handle the full coworker set; these single-coworker variants
 // make individual test cases easier to write.
+
 #[cfg(test)]
 mod tests {
     use super::helpers::*;

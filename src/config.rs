@@ -54,6 +54,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use toml_edit::{Item, Table};
 
 /// Chat layout mode for the Lead session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -221,12 +222,39 @@ impl FullProjectConfig {
 
     /// Write this config to the given path.
     ///
+    /// Loads the existing file first (to preserve comments/structure from manual edits),
+    /// then overlays the current struct values and writes back.
     /// Creates parent directories if they don't exist.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let contents = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+
+        // If file exists, load and update it to preserve comments
+        let contents = if path.exists() {
+            let existing = std::fs::read_to_string(path)?;
+            let mut doc = existing
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?;
+
+            // Serialize current struct to get new values
+            let new_values = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+            let new_table: toml_edit::Table = new_values
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?
+                .as_table()
+                .clone();
+
+            // Update document with new values while preserving comments/formatting
+            // merge_tables() now handles generic None-removal for all Option<T> fields
+            merge_tables(doc.as_table_mut(), &new_table);
+
+            doc.to_string()
+        } else {
+            // No existing file, just serialize normally
+            toml::to_string_pretty(self).map_err(std::io::Error::other)?
+        };
+
         std::fs::write(path, contents)
     }
 
@@ -402,6 +430,65 @@ pub struct ProvidersConfig {
     pub claude: ClaudeProviderConfig,
 }
 
+/// Recursively merge new_table values into target, preserving comments and formatting.
+///
+/// This function performs two passes:
+/// 1. **Overlay**: Add or update keys from new_table into target
+/// 2. **Removal**: Remove keys from target that don't exist in new_table
+///
+/// The removal pass is critical for Option<T> fields. When an Option is set to None,
+/// serde omits it from serialization. Without removal, the old value persists in the file.
+///
+/// Comment-only sections (tables with no key-value pairs) are preserved during removal.
+///
+/// **Note**: This function assumes all struct fields are serialized (no `skip_serializing_if`).
+/// If a field is omitted from serialization, Phase 2 will remove it from the file.
+fn merge_tables(target: &mut Table, new_table: &Table) {
+    // Phase 1: Overlay new values onto target (add or update)
+    for (key, new_value) in new_table.iter() {
+        match (target.get_mut(key), new_value) {
+            // Both are tables - recurse
+            (Some(Item::Table(target_table)), Item::Table(new_table)) => {
+                merge_tables(target_table, new_table);
+            }
+            // Target exists but isn't a table, or new value isn't a table - replace
+            (Some(existing), new_item) => {
+                *existing = new_item.clone();
+            }
+            // Key doesn't exist in target - add it
+            (None, new_item) => {
+                target.insert(key, new_item.clone());
+            }
+        }
+    }
+
+    // Phase 2: Remove keys from target that don't exist in new_table
+    // This handles Option<T> fields set to None (serde omits them, so we must remove the old value)
+    let keys_to_remove: Vec<String> = target
+        .iter()
+        .filter_map(|(key, item)| {
+            // Keep the key if it exists in new_table
+            if new_table.contains_key(key) {
+                return None;
+            }
+
+            // Keep comment-only tables (tables with no key-value pairs, just comments)
+            if let Item::Table(table) = item
+                && table.is_empty()
+            {
+                return None;
+            }
+
+            // Remove this key
+            Some(key.to_string())
+        })
+        .collect();
+
+    for key in keys_to_remove {
+        target.remove(&key);
+    }
+}
+
 /// Global configuration from `~/.midtown/config.toml`.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct GlobalConfig {
@@ -452,12 +539,44 @@ impl GlobalConfig {
     /// then overlays the current struct values and writes back.
     /// Creates parent directories if needed.
     pub fn save(&self) -> std::io::Result<()> {
-        let path = global_config_path();
+        self.save_to(&global_config_path())
+    }
+
+    /// Save this global config to a specific path (used for testing).
+    ///
+    /// Loads the existing file first (to preserve comments/structure from manual edits),
+    /// then overlays the current struct values and writes back.
+    /// Creates parent directories if needed.
+    pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let contents = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(&path, contents)
+
+        // If file exists, load and update it to preserve comments
+        let contents = if path.exists() {
+            let existing = std::fs::read_to_string(path)?;
+            let mut doc = existing
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?;
+
+            // Serialize current struct to get new values
+            let new_values = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+            let new_table: toml_edit::Table = new_values
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?
+                .as_table()
+                .clone();
+
+            // Update document with new values while preserving comments/formatting
+            merge_tables(doc.as_table_mut(), &new_table);
+
+            doc.to_string()
+        } else {
+            // No existing file, just serialize normally
+            toml::to_string_pretty(self).map_err(std::io::Error::other)?
+        };
+
+        std::fs::write(path, contents)
     }
 
     /// Generate a commented-out template with all available global config options.
@@ -1773,6 +1892,69 @@ bin_command = "midtown"
     }
 
     #[test]
+    fn test_full_project_config_save_preserves_comments() {
+        // Bug: FullProjectConfig::save_to() uses toml::to_string_pretty() which destroys comments.
+        // This is the same bug fixed for GlobalConfig in PR #933.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Write initial config with user comments
+        let initial_toml = r#"# Project configuration for my awesome project
+# This comment explains the max_coworkers setting
+[project]
+name = "testproj"
+repos = ["/tmp/testproj"]
+primary_repo = "/tmp/testproj"
+
+[default]
+# Set to 4 for my machine's capacity
+max_coworkers = 4
+
+[daemon]
+# Custom webhook port
+webhook_port = 47024
+"#;
+        std::fs::write(&path, initial_toml).unwrap();
+
+        // Load, modify, and save
+        let mut config = FullProjectConfig::load_from(&path).unwrap();
+        config.default.personality = Some(Personality::Fun); // Add a new field
+        config.save_to(&path).unwrap();
+
+        // Verify comments are preserved
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved_contents.contains("# Project configuration for my awesome project"),
+            "Top-level comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("# This comment explains the max_coworkers setting"),
+            "Section comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("# Set to 4 for my machine's capacity"),
+            "Inline comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("# Custom webhook port"),
+            "Daemon section comment should be preserved"
+        );
+
+        // Verify the new field was added
+        assert!(
+            saved_contents.contains("personality"),
+            "New field should be added"
+        );
+
+        // Verify existing values are preserved
+        let reloaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(reloaded.project.name(), Some("testproj"));
+        assert_eq!(reloaded.default.max_coworkers(), Some(4));
+        assert_eq!(reloaded.default.personality(), Personality::Fun);
+        assert_eq!(reloaded.daemon.webhook_port, Some(47024));
+    }
+
+    #[test]
     fn test_global_config_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -1798,5 +1980,227 @@ bin_command = "midtown"
         let template = GlobalConfig::default_template();
         assert!(template.contains("[providers.claude]"));
         assert!(template.contains("auth_profile"));
+    }
+
+    #[test]
+    fn test_global_config_save_preserves_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Create initial config with comments
+        let initial_contents = r#"# User's custom comment about their setup
+# This should be preserved
+
+[default]
+# Comment about bin_command
+bin_command = "old-midtown"
+
+[providers.claude]
+# User's note about their auth profile
+auth_profile = "user@example.com"
+"#;
+        std::fs::write(&path, initial_contents).unwrap();
+
+        // Load, modify, and save using save_to
+        let loaded_contents = std::fs::read_to_string(&path).unwrap();
+        let mut config: GlobalConfig = toml::from_str(&loaded_contents).unwrap();
+        config.default.bin_command = Some("new-midtown".to_string());
+        config.save_to(&path).unwrap();
+
+        // Read back and verify comments are preserved
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved_contents.contains("User's custom comment"),
+            "Top-level comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("Comment about bin_command"),
+            "Field-level comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("User's note about their auth profile"),
+            "Provider section comment should be preserved"
+        );
+
+        // Verify the new value is saved
+        assert!(saved_contents.contains("new-midtown"));
+    }
+
+    #[test]
+    fn test_merge_tables_removes_none_fields_full_project_config() {
+        // Bug: merge_tables() only handles auth_profile explicitly, but all Option<T> fields
+        // have the same latent defect. When a field is set to None, the serializer omits it,
+        // but merge_tables() doesn't remove the old value from the file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Write initial config with all Option fields set
+        let initial_toml = r#"[project]
+name = "testproj"
+repos = ["/tmp/testproj"]
+primary_repo = "/tmp/testproj"
+auth_profile = "old@example.com"
+
+[default]
+bin_command = "cargo run --"
+chat_layout = "split"
+max_coworkers = 8
+personality = "fun"
+user_display_name = "OldUser"
+
+[daemon]
+webhook_port = 9000
+webhook_secret = "old-secret"
+"#;
+        std::fs::write(&path, initial_toml).unwrap();
+
+        // Load, set all Option fields to None, and save
+        let mut config = FullProjectConfig::load_from(&path).unwrap();
+        config.project.auth_profile = None;
+        config.default.bin_command = None;
+        config.default.chat_layout = None;
+        config.default.max_coworkers = None;
+        config.default.personality = None;
+        config.default.user_display_name = None;
+        config.daemon.webhook_port = None;
+        config.daemon.webhook_secret = None;
+        config.save_to(&path).unwrap();
+
+        // Verify: stale values should be removed from the file
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !saved_contents.contains("auth_profile"),
+            "auth_profile should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("bin_command"),
+            "bin_command should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("chat_layout"),
+            "chat_layout should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("max_coworkers"),
+            "max_coworkers should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("personality"),
+            "personality should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("user_display_name"),
+            "user_display_name should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_port"),
+            "webhook_port should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_secret"),
+            "webhook_secret should be removed when set to None"
+        );
+
+        // Verify: reloading the config confirms None values (not stale values)
+        let reloaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(reloaded.project.auth_profile, None);
+        assert_eq!(reloaded.default.bin_command, None);
+        assert_eq!(reloaded.default.chat_layout, None);
+        assert_eq!(reloaded.default.max_coworkers, None);
+        assert_eq!(reloaded.default.personality, None);
+        assert_eq!(reloaded.default.user_display_name, None);
+        assert_eq!(reloaded.daemon.webhook_port, None);
+        assert_eq!(reloaded.daemon.webhook_secret, None);
+    }
+
+    #[test]
+    fn test_merge_tables_removes_none_fields_global_config() {
+        // Same bug applies to GlobalConfig::save()
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Write initial config with all Option fields set
+        let initial_toml = r#"[default]
+bin_command = "midtown"
+chat_layout = "split"
+max_coworkers = 8
+personality = "wild"
+user_display_name = "OldUser"
+
+[daemon]
+webhook_port = 9000
+webhook_secret = "old-secret"
+github_user = "old-user"
+
+[providers.claude]
+auth_profile = "old@example.com"
+"#;
+        std::fs::write(&path, initial_toml).unwrap();
+
+        // Load, set all Option fields to None, and save
+        let mut config: GlobalConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        config.default.bin_command = None;
+        config.default.chat_layout = None;
+        config.default.max_coworkers = None;
+        config.default.personality = None;
+        config.default.user_display_name = None;
+        config.daemon.webhook_port = None;
+        config.daemon.webhook_secret = None;
+        config.daemon.github_user = None;
+        config.providers.claude.auth_profile = None;
+        config.save_to(&path).unwrap();
+
+        // Verify: stale values should be removed from the file
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !saved_contents.contains("bin_command"),
+            "bin_command should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("chat_layout"),
+            "chat_layout should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("max_coworkers"),
+            "max_coworkers should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("personality"),
+            "personality should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("user_display_name"),
+            "user_display_name should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_port"),
+            "webhook_port should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_secret"),
+            "webhook_secret should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("github_user"),
+            "github_user should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("auth_profile"),
+            "auth_profile should be removed when set to None"
+        );
+
+        // Verify: reloading the config confirms None values (not stale values)
+        let reloaded: GlobalConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.default.bin_command, None);
+        assert_eq!(reloaded.default.chat_layout, None);
+        assert_eq!(reloaded.default.max_coworkers, None);
+        assert_eq!(reloaded.default.personality, None);
+        assert_eq!(reloaded.default.user_display_name, None);
+        assert_eq!(reloaded.daemon.webhook_port, None);
+        assert_eq!(reloaded.daemon.webhook_secret, None);
+        assert_eq!(reloaded.daemon.github_user, None);
+        assert_eq!(reloaded.providers.claude.auth_profile, None);
     }
 }

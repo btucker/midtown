@@ -8,6 +8,7 @@
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
+  import CoworkerStatus from './lib/CoworkerStatus.svelte'
   import UsageBars from './lib/UsageBars.svelte'
   import AuthSwitcher from './lib/AuthSwitcher.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, isWideScreen } from './lib/store.js'
@@ -73,9 +74,20 @@
     // Add resize listener
     window.addEventListener('resize', updateViewportWidth)
 
+    // Reload history when page becomes visible again (handles PWA resume from background)
+    function handleVisibilityChange() {
+      if (!document.hidden && $activeProject) {
+        // Page became visible and we have an active project - refresh history
+        fetchHistory()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     return () => {
       clearInterval(projectInterval)
       window.removeEventListener('resize', updateViewportWidth)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   })
 
@@ -215,7 +227,10 @@
               <Kanban />
               <ChannelList />
             </div>
-            <UsageBars />
+            <div class="sidebar-bottom">
+              <CoworkerStatus />
+              <UsageBars />
+            </div>
           </aside>
 
           {#if sidebarOpen}
@@ -641,6 +656,17 @@
   .sidebar-scroll {
     flex: 1;
     overflow-y: auto;
+  }
+
+  .sidebar-bottom {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    border-top: 2px solid #2a2a2a;
+    background: #0a0a0a;
   }
 
   .channel-main {

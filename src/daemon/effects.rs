@@ -317,6 +317,15 @@ pub enum Effect {
         pr_number: u64,
         repo_name: String,
     },
+    /// Create a new task.
+    ///
+    /// Used by reconciliation logic to generate tasks for orphaned PRs or other
+    /// conditions discovered during polling ticks.
+    CreateTask {
+        repo_name: String,
+        subject: String,
+        description: String,
+    },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -632,6 +641,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 on_success,
                 on_failure,
             } => {
+                // Extract task IDs from on_success RecordTaskAssignment effects
+                // to clear their in-flight markers after the spawn completes.
+                let task_ids: Vec<String> = on_success
+                    .iter()
+                    .filter_map(|e| {
+                        if let Effect::RecordTaskAssignment { task_id, .. } = e {
+                            Some(task_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
@@ -644,6 +666,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // Recursively execute failure follow-ups
                         Box::pin(execute_effects(on_failure, state)).await;
                     }
+                }
+                // Clear in-flight markers regardless of success/failure,
+                // so these tasks can be retried on the next tick if needed.
+                for task_id in &task_ids {
+                    state.clear_task_spawn_in_flight(task_id);
                 }
             }
             Effect::NudgeCoworkerWithCallbacks {
@@ -1240,6 +1267,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     ));
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post abandoned task message: {}", e);
+                    }
+                }
+            }
+            Effect::CreateTask {
+                repo_name,
+                subject,
+                description,
+            } => {
+                // Derive active_form from subject (simple present progressive form)
+                let active_form = if subject.starts_with("Merge") {
+                    subject.replace("Merge", "Merging")
+                } else {
+                    format!("Working on: {}", subject)
+                };
+
+                match crate::tasks::create_task_for_repo(
+                    &subject,
+                    &description,
+                    &active_form,
+                    "", // owner (empty = unassigned)
+                    &repo_name,
+                    None, // blocked_by
+                    None, // channel
+                ) {
+                    Ok(task_id) => {
+                        info!("Created task !{}: {}", task_id, subject);
+                        // Post channel notification
+                        let msg =
+                            crate::message::Message::system(format!("created task: {}", subject));
+                        if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                            warn!("Failed to post task creation message: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to create task '{}': {}", subject, e);
                     }
                 }
             }

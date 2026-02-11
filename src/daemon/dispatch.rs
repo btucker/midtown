@@ -20,6 +20,142 @@ use super::{DaemonState, snapshot};
 // Orphan task recovery
 // ============================================================================
 
+/// Check if a specific PR is merged by querying GitHub directly.
+///
+/// This bypasses the cached merged PR list to avoid race conditions where:
+/// 1. A PR merges
+/// 2. Auto-completion fails (or hasn't run yet)
+/// 3. Coworker shuts down
+/// 4. Orphan recovery runs before the next merged PR cache refresh (5 min interval)
+/// 5. Coworker gets recovered and creates duplicate PR
+///
+/// Returns `true` if the PR is merged, `false` if open/closed, `None` if the check fails.
+fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
+    let output = std::process::Command::new("gh")
+        .current_dir(repo_path)
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "state",
+            "--jq",
+            ".state",
+        ])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Some(state == "MERGED")
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            debug!(
+                "Failed to check PR #{} state via gh CLI: {}",
+                pr_number,
+                stderr.trim()
+            );
+            None
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr view for PR #{}: {}", pr_number, e);
+            None
+        }
+    }
+}
+
+/// Determine whether an orphaned task should be recovered.
+///
+/// Decision function: returns `true` if the task should be recovered,
+/// `false` if it should be skipped. A task should NOT be recovered if:
+/// - It is already completed (race condition: RPC marked it done after snapshot)
+/// - It references a PR that has already been merged (checked via cache AND direct API)
+///
+/// Note: This function performs I/O (reads task from disk, queries GitHub API) which
+/// violates the pure decision function pattern. The target architecture would move
+/// this to snapshot collection, but orphan recovery is already impure (reads tasks
+/// from disk) so we handle it here for now.
+fn should_recover_task(
+    task: &crate::tasks::Task,
+    merged_pr_numbers: &HashSet<u64>,
+    repo_path: &std::path::Path,
+) -> bool {
+    // Check if task is already completed
+    // Race condition: coworker reports completion via RPC, task is marked completed,
+    // but snapshot was collected before in_progress_tasks refreshed.
+    if task.status == crate::tasks::TaskStatus::Completed {
+        debug!(
+            "Skipping orphan recovery for task !{}: already completed",
+            task.id
+        );
+        return false;
+    }
+
+    // Check if this task references a PR that's already merged
+    // Extract PRs from both subject and description using the same logic as auto-completion
+    let mut all_text = task.subject.clone();
+    if let Some(desc) = &task.description {
+        all_text.push('\n');
+        all_text.push_str(desc);
+    }
+
+    let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&all_text);
+
+    // If we found any PR references, check if they're all merged
+    if !pr_numbers.is_empty() {
+        // First check the cache (fast path)
+        let all_in_cache_merged = pr_numbers
+            .iter()
+            .all(|pr_num| merged_pr_numbers.contains(pr_num));
+
+        if all_in_cache_merged {
+            debug!(
+                "Skipping orphan recovery for task !{}: all referenced PRs are in merged cache",
+                task.id
+            );
+            return false;
+        }
+
+        // For the primary PR, do a direct GitHub check as safety net against stale cache
+        if let Some(&primary_pr) = pr_numbers.first()
+            && !merged_pr_numbers.contains(&primary_pr)
+        {
+            // Cache miss — check GitHub directly (safety net against stale cache)
+            // The merged PR cache only includes last 10 PRs and refreshes every 5 minutes.
+            // This direct check prevents duplicate PRs when:
+            // 1. A PR merges but auto-completion fails
+            // 2. Coworker shuts down before next cache refresh
+            // 3. Orphan recovery would otherwise spawn duplicate work
+            match is_pr_merged(primary_pr, repo_path) {
+                Some(true) => {
+                    info!(
+                        "Skipping orphan recovery for task !{}: PR #{} is merged (direct check)",
+                        task.id, primary_pr
+                    );
+                    return false;
+                }
+                Some(false) => {
+                    debug!(
+                        "PR #{} is open/closed (not merged), allowing orphan recovery for task !{}",
+                        primary_pr, task.id
+                    );
+                }
+                None => {
+                    // GitHub API check failed — be conservative and allow recovery.
+                    // If the PR was actually merged, auto-completion will clean it up.
+                    warn!(
+                        "Failed to check PR #{} merge status for task !{}, allowing recovery",
+                        primary_pr, task.id
+                    );
+                }
+            }
+        }
+    }
+
+    true
+}
+
 /// Check for orphaned tasks and auto-recover coworkers.
 ///
 /// An orphaned task is one that is `in_progress` but the owning coworker
@@ -45,6 +181,36 @@ pub(super) fn check_and_recover_orphans(
         return vec![];
     }
 
+    // Get primary repo path for GitHub API calls
+    let repo_path = state
+        .all_repo_paths
+        .first()
+        .expect("daemon state must have at least one repo path");
+
+    // Filter out in_progress tasks whose PRs have already been merged or that
+    // are already completed. These tasks are stale and will be auto-completed
+    // by the PR merge cleanup path. Attempting orphan recovery on them creates
+    // a loop: spawn → coworker sees task done → goes idle → grace period
+    // expires → spawn again.
+    let in_progress_tasks_active: Vec<(String, String, String)> = snap
+        .in_progress_tasks
+        .iter()
+        .filter(|(task_id, _task_subject, _owner)| {
+            // Read full task from disk to check both subject and description for PR number
+            let task = match crate::tasks::read_task(task_id) {
+                Some(t) => t,
+                None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
+            };
+
+            should_recover_task(&task, &snap.merged_pr_numbers, repo_path)
+        })
+        .cloned()
+        .collect();
+
+    if in_progress_tasks_active.is_empty() {
+        return vec![];
+    }
+
     // Compute recently-stopped coworkers (within grace period).
     // When a coworker completes work and goes idle → shutdown, the task may
     // not yet be marked done. This grace period prevents false orphan recovery
@@ -59,7 +225,7 @@ pub(super) fn check_and_recover_orphans(
 
     // Decide which orphan (if any) to recover using pure decision function
     let recovery = crate::rules::decide_orphan_recovery(
-        &snap.in_progress_tasks,
+        &in_progress_tasks_active,
         &snap.active_names,
         snap.is_at_dev_limit,
         &snap.coworkers_with_open_prs,
@@ -859,6 +1025,22 @@ pub(super) fn spawn_for_pending_tasks(
             continue;
         }
 
+        // Skip if this owner is already assigned to THIS SPECIFIC TASK.
+        // Prevents nudge loops where the same pending-with-owner task gets
+        // re-nudged every time the 300s cooldown expires. Once a task is assigned,
+        // it stays assigned until the coworker completes it or shuts down.
+        if snap
+            .coworker_task_assignments
+            .get(&owner.to_lowercase())
+            .is_some_and(|assigned_task_id| assigned_task_id == task_id)
+        {
+            debug!(
+                "Task !{}: skipping {} (already assigned to this task)",
+                task_id, owner
+            );
+            continue;
+        }
+
         // Check nudge cooldown for this task
         let task_key = format!("pending-{}", task_id);
         let on_nudge_cooldown = {
@@ -908,10 +1090,16 @@ pub(super) fn spawn_for_pending_tasks(
                     name: o.clone(),
                     message: nudge_msg,
                     session_id: None,
-                    on_success: vec![Effect::RecordCooldown {
-                        category: "task_nudge".to_string(),
-                        key: task_key.clone(),
-                    }],
+                    on_success: vec![
+                        Effect::RecordCooldown {
+                            category: "task_nudge".to_string(),
+                            key: task_key.clone(),
+                        },
+                        Effect::RecordTaskAssignment {
+                            coworker: o.clone(),
+                            task_id: tid.clone(),
+                        },
+                    ],
                 });
             }
             crate::rules::PendingTaskAction::SpawnOwner {
@@ -1194,6 +1382,22 @@ pub(super) fn spawn_for_pending_tasks(
             continue;
         }
 
+        // Skip if this coworker is already assigned to THIS SPECIFIC TASK.
+        // Prevents nudge/spawn loops where grouped tasks get re-assigned every tick
+        // because the busy check is bypassed for grouped tasks. The coworker may be
+        // busy with this exact task from a previous tick's assignment.
+        if snap
+            .coworker_task_assignments
+            .get(&coworker_name.to_lowercase())
+            .is_some_and(|assigned_task_id| assigned_task_id == &task.id)
+        {
+            debug!(
+                "Task !{}: skipping {} (already assigned to this task)",
+                task.id, coworker_name
+            );
+            continue;
+        }
+
         // Skip running coworkers that are busy or reviewing.
         // Grouped tasks (same PR, blockedBy) are allowed to go to coworkers
         // that are busy from *previous ticks* (cross-tick grouping).
@@ -1410,6 +1614,76 @@ pub(super) fn build_task_completion_effects(
             channel: None,
         },
     ]
+}
+
+/// Build effects to auto-complete tasks when all PRs referenced in their description are merged.
+///
+/// This handles cases where the task is NOT linked to a PR via `[Midtown #XX]` in the PR title:
+/// - Meta-tasks: "Merge reviewed PRs: #901-#910"
+/// - Sub-tasks: "Address PR #904 review feedback"
+/// - Fix-PR tasks: "Fix PR #908"
+///
+/// Tasks linked via `[Midtown #XX]` are handled by `build_task_completion_effects` (webhook path).
+/// This function skips those tasks to avoid double-completion.
+///
+/// Returns effects to complete tasks whose description references only merged PRs.
+pub(super) fn build_description_based_completion_effects(
+    snap: &snapshot::WorldSnapshot,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for task in &snap.all_tasks {
+        // Only consider in_progress tasks (completed tasks are already filtered out by this check)
+        if task.status != crate::tasks::TaskStatus::InProgress {
+            continue;
+        }
+
+        // Extract PR numbers from both subject and description (matching orphan recovery logic)
+        let mut all_text = task.subject.clone();
+        if let Some(desc) = &task.description {
+            all_text.push('\n');
+            all_text.push_str(desc);
+        }
+
+        let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&all_text);
+
+        // Skip if no PR references found
+        if pr_numbers.is_empty() {
+            continue;
+        }
+
+        // Check if ALL referenced PRs are merged
+        let all_merged = pr_numbers
+            .iter()
+            .all(|pr_num| snap.merged_pr_numbers.contains(pr_num));
+
+        if all_merged {
+            let task_id_str = task.id.clone();
+            effects.push(Effect::CompleteTask {
+                task_id: task_id_str.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            effects.push(Effect::ClearBlockedBy {
+                completed_task_id: task_id_str.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "✅ Auto-completed task !{} (all referenced PRs merged: {})",
+                    task.id,
+                    pr_numbers
+                        .iter()
+                        .map(|n| format!("#{}", n))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                channel: None,
+            });
+        }
+    }
+
+    effects
 }
 
 // ============================================================================
@@ -1784,6 +2058,248 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_description_based_completion_all_prs_merged() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        // Task with description referencing multiple PRs
+        let task = Task {
+            id: "1100".to_string(),
+            subject: "Meta task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("Merge reviewed PRs: #901, #902, #903".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // All referenced PRs are merged
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(901);
+        merged_pr_numbers.insert(902);
+        merged_pr_numbers.insert(903);
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert_eq!(effects.len(), 3, "Should return 3 effects");
+
+        // Verify CompleteTask effect
+        match &effects[0] {
+            Effect::CompleteTask { task_id, repo_name } => {
+                assert_eq!(task_id, "1100");
+                assert_eq!(repo_name, "test-repo");
+            }
+            _ => panic!("First effect should be CompleteTask"),
+        }
+
+        // Verify channel message mentions all PRs
+        match &effects[2] {
+            Effect::PostToChannel { message, .. } => {
+                assert!(message.contains("#901"));
+                assert!(message.contains("#902"));
+                assert!(message.contains("#903"));
+            }
+            _ => panic!("Third effect should be PostToChannel"),
+        }
+    }
+
+    #[test]
+    fn test_description_based_completion_some_prs_not_merged() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        let task = Task {
+            id: "1101".to_string(),
+            subject: "Meta task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("Merge PRs: #901, #902, #903".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // Only some PRs are merged
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(901);
+        merged_pr_numbers.insert(902);
+        // PR #903 is NOT merged
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete task when not all PRs are merged"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_no_pr_references() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1102".to_string(),
+            subject: "Some task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("No PR references in this description".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete task with no PR references"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_skips_pending_tasks() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        let task = Task {
+            id: "1103".to_string(),
+            subject: "Pending task".to_string(),
+            status: TaskStatus::Pending, // Not InProgress
+            owner: None,
+            description: Some("Fix PR #904".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(904);
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete non-InProgress tasks"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_no_description() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1104".to_string(),
+            subject: "Task without description".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: None, // No description
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete task with no description"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_skips_already_completed_tasks() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        // Simulate a task that was already completed by the webhook/title-based path.
+        // The description-based path should skip it to avoid double-completion.
+        let completed_task = Task {
+            id: "42".to_string(),
+            subject: "Add auth endpoint".to_string(),
+            status: TaskStatus::Completed, // Already completed by title-based path
+            owner: Some("york".to_string()),
+            description: Some("Fix PR #904 review feedback".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // Also add an in_progress task with PR references
+        let in_progress_task = Task {
+            id: "43".to_string(),
+            subject: "Meta task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("Merge PRs: #904, #905".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(904);
+        merged_pr_numbers.insert(905);
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![completed_task, in_progress_task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        // Should only produce effects for task 43, not task 42
+        let complete_task_ids: Vec<&String> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::CompleteTask { task_id, .. } => Some(task_id),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(complete_task_ids, vec!["43"]);
+        assert!(
+            !complete_task_ids.contains(&&"42".to_string()),
+            "Should not double-complete already-completed task 42"
+        );
+    }
+
     // ======================================================================
     // decide_orphan_cleanup tests
     // ======================================================================
@@ -2119,6 +2635,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             task_channel: HashMap::new(),
@@ -2127,6 +2644,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -2141,6 +2659,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -2250,6 +2769,7 @@ mod tests {
             active_session_ids: HashSet::new(),
             active_reviewers: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             merged_pr_numbers: HashSet::new(),
             running_coworkers: vec![],
             active_coworkers: vec![],
@@ -2267,6 +2787,7 @@ mod tests {
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -2280,6 +2801,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -2358,6 +2880,7 @@ mod tests {
             active_session_ids: HashSet::new(),
             // broadway has NO in_progress tasks (both are still pending)
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
@@ -2378,6 +2901,7 @@ mod tests {
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -2393,6 +2917,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -2442,6 +2967,7 @@ mod tests {
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
@@ -2462,6 +2988,7 @@ mod tests {
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -2477,6 +3004,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -2530,6 +3058,7 @@ mod tests {
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![],
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
@@ -2550,6 +3079,7 @@ mod tests {
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -2565,6 +3095,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -2630,6 +3161,7 @@ mod tests {
             active_names: HashSet::new(),
             active_session_ids: HashSet::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             in_progress_tasks: vec![
                 // Existing in-progress task for broadway on PR #100 (so Case 2 groups to broadway)
                 (
@@ -2665,6 +3197,7 @@ mod tests {
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -2680,6 +3213,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -2717,6 +3251,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
+        // Test the pure decision pattern: verify that spawn_for_pending_tasks
+        // correctly skips a task when coworker_task_assignments (in WorldSnapshot)
+        // shows the owner is already assigned to that specific task.
+        // This test verifies the refactored code uses the snapshot data
+        // (pure decision) rather than calling state.is_coworker_assigned_to_task()
+        // (impure decision with .lock()).
+
+        let mut assignments = HashMap::new();
+        assignments.insert("broadway".to_string(), "42".to_string());
+
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_with_owners: vec![(
+                "42".to_string(),
+                "Add auth endpoint".to_string(),
+                "broadway".to_string(),
+            )],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            // KEY: broadway is already assigned to task !42 in the snapshot
+            coworker_task_assignments: assignments,
+            in_progress_tasks: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            merged_pr_numbers: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            all_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            attached_coworkers: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        // Should generate NO effects because broadway is already assigned to task !42
+        assert_eq!(
+            effects.len(),
+            0,
+            "Should generate no effects when owner is already assigned to the task \
+             (verified via coworker_task_assignments in snapshot)"
+        );
+    }
+
     // ======================================================================
     // Worktree reuse on reassignment tests
     // ======================================================================
@@ -2736,6 +3352,7 @@ mod tests {
             active_session_ids: HashSet::new(),
             coworkers_with_open_prs: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             coworker_stop_times: HashMap::new(),
             attached_coworkers: HashSet::new(),
             tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
@@ -2751,6 +3368,7 @@ mod tests {
             coworker_start_times: HashMap::new(),
             headless_process_health: HashMap::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -2772,6 +3390,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -2863,6 +3482,7 @@ mod tests {
             active_session_ids: HashSet::new(),
             coworkers_with_open_prs: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             coworker_stop_times: HashMap::new(),
             attached_coworkers: HashSet::new(),
             tasks_with_worktrees: HashSet::new(), // No worktree registered
@@ -2876,6 +3496,7 @@ mod tests {
             coworker_start_times: HashMap::new(),
             headless_process_health: HashMap::new(),
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -2897,6 +3518,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -3023,6 +3645,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             task_channel: HashMap::new(),
@@ -3031,6 +3654,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -3045,6 +3669,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             is_at_coworker_limit: false,
@@ -3156,6 +3781,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks,
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -3165,6 +3791,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs,
             pr_task_associations: HashMap::new(),
@@ -3179,6 +3806,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -3275,6 +3903,199 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_grouped_task_skips_if_already_assigned() {
+        // Regression test for nudge/spawn loop bug, using captured production snapshot.
+        // Scenario: Task !1107 (pending, no owner) references PR #912 in its subject.
+        // Task !1106 (in_progress, owned by york) mentions "PR #912" in its description.
+        // The grouping logic finds york as the PR owner → groups !1107 to york.
+        // York is already running and busy, but grouped tasks bypass the busy check.
+        // Without the is_coworker_assigned_to_task guard, this nudge fires every tick.
+        let fixture = include_str!(
+            "../../tests/fixtures/snapshot/snapshot-spawn-loop-york-1107-20260210-205810.json"
+        );
+        let snap: snapshot::WorldSnapshot =
+            serde_json::from_str(fixture).expect("deserialize captured snapshot");
+
+        // Verify fixture prerequisites: york is active and busy, task !1107 is pending
+        assert!(snap.active_names.contains("york"), "york should be active");
+        assert!(snap.busy_coworkers.contains("york"), "york should be busy");
+        assert!(
+            snap.pending_tasks_without_owners
+                .iter()
+                .any(|t| t.id == "1107"),
+            "task !1107 should be pending without owner"
+        );
+
+        let state = make_test_state();
+
+        // Tick 1: Task !1107 groups to york (PR #912), generates nudge
+        let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_count_tick1 = effects_tick1
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick1, 1,
+            "Tick 1 should nudge york with task !1107"
+        );
+
+        // Simulate the nudge executing and recording the assignment
+        state.record_task_assignment("york", "1107");
+
+        // Tick 2: Task !1107 is still pending, york is busy with !1107 now.
+        // Create a new snapshot that includes the assignment.
+        let snap_tick2 = snapshot::WorldSnapshot {
+            coworker_task_assignments: {
+                let mut assignments = HashMap::new();
+                assignments.insert("york".to_string(), "1107".to_string());
+                assignments
+            },
+            ..snap
+        };
+        let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
+        let nudge_count_tick2 = effects_tick2
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick2, 0,
+            "Tick 2 should NOT re-nudge york — task !1107 is already assigned to york"
+        );
+    }
+
+    #[test]
+    fn test_spawn_coworker_with_callbacks_records_task_assignment() {
+        // Regression test for spawn loop bug (Case 1: pending task with owner).
+        // When a coworker isn't running but has a pending task, SpawnCoworkerWithCallbacks
+        // must include RecordTaskAssignment in on_success to prevent re-spawning every tick.
+        //
+        // Note: The captured fixture snapshot-spawn-loop-york-1110 doesn't contain
+        // pending-with-owner tasks (tasks were already in_progress when captured), so
+        // this test uses a minimal constructed snapshot to isolate Case 1 behavior.
+        let fixture = include_str!(
+            "../../tests/fixtures/snapshot/snapshot-spawn-loop-york-1107-20260210-205810.json"
+        );
+        let mut snap: snapshot::WorldSnapshot =
+            serde_json::from_str(fixture).expect("deserialize captured snapshot");
+
+        // Override to test Case 1: pending task WITH owner, coworker NOT running.
+        // Clear Case 2 tasks and set up a Case 1 scenario.
+        snap.pending_tasks_without_owners.clear();
+        snap.pending_tasks_with_owners = vec![(
+            "1107".to_string(),
+            "Investigate PR #912 — no CI checks running".to_string(),
+            "york".to_string(),
+        )];
+        snap.active_names.clear(); // york is NOT running
+        snap.busy_coworkers.clear();
+        snap.in_progress_tasks.clear();
+
+        let state = make_test_state();
+
+        // Tick 1: generates SpawnCoworkerWithCallbacks with RecordTaskAssignment
+        let effects = spawn_for_pending_tasks(&snap, &state);
+        let spawn_count = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(spawn_count, 1, "Tick 1 should spawn york");
+
+        // Verify the effect has RecordTaskAssignment in on_success
+        let has_record_assignment = effects.iter().any(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                on_success
+                    .iter()
+                    .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_record_assignment,
+            "SpawnCoworkerWithCallbacks should have RecordTaskAssignment in on_success"
+        );
+
+        // Mark in-flight (daemon does this between evaluate_tick and execute_effects)
+        state.mark_in_flight_spawns_from_effects(&effects);
+        assert!(
+            state.is_task_spawn_in_flight("1107"),
+            "Task !1107 should be marked in-flight before execution"
+        );
+    }
+
+    #[test]
+    fn test_case1_nudge_records_assignment_and_prevents_loop() {
+        // Regression test: Case 1 (pending task with owner) NudgeOwner must include
+        // RecordTaskAssignment in on_success, so that after the nudge cooldown
+        // expires, the task isn't re-nudged indefinitely.
+        let fixture = include_str!(
+            "../../tests/fixtures/snapshot/snapshot-spawn-loop-york-1107-20260210-205810.json"
+        );
+        let mut snap: snapshot::WorldSnapshot =
+            serde_json::from_str(fixture).expect("deserialize captured snapshot");
+
+        // Set up Case 1 scenario: task with owner, coworker IS running but NOT busy
+        // (triggers NudgeOwner rather than Skip due to has_in_progress_task)
+        snap.pending_tasks_without_owners.clear();
+        snap.pending_tasks_with_owners = vec![(
+            "1107".to_string(),
+            "Investigate PR #912 — no CI checks running".to_string(),
+            "york".to_string(),
+        )];
+        // york is active (already in fixture), but clear busy state so NudgeOwner fires
+        snap.busy_coworkers.clear();
+        snap.in_progress_tasks.clear();
+
+        let state = make_test_state();
+
+        // Tick 1: NudgeOwner fires with RecordTaskAssignment in on_success
+        let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
+        let nudge_effects: Vec<_> = effects_tick1
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .collect();
+        assert_eq!(nudge_effects.len(), 1, "Tick 1 should nudge york");
+
+        // Verify RecordTaskAssignment is in on_success
+        let has_assignment = nudge_effects.iter().any(|e| {
+            if let Effect::NudgeCoworkerWithCallbacks { on_success, .. } = e {
+                on_success
+                    .iter()
+                    .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_assignment,
+            "NudgeOwner on_success should include RecordTaskAssignment"
+        );
+
+        // Simulate the nudge executing and recording the assignment
+        state.record_task_assignment("york", "1107");
+
+        // Tick 2: Create a new snapshot that includes the assignment in coworker_task_assignments.
+        // The guard should use snap.coworker_task_assignments to prevent re-nudge (pure decision pattern).
+        let snap_tick2 = snapshot::WorldSnapshot {
+            coworker_task_assignments: {
+                let mut assignments = HashMap::new();
+                assignments.insert("york".to_string(), "1107".to_string());
+                assignments
+            },
+            ..snap
+        };
+        let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
+        let nudge_count_tick2 = effects_tick2
+            .iter()
+            .filter(|e| matches!(e, Effect::NudgeCoworkerWithCallbacks { .. }))
+            .count();
+        assert_eq!(
+            nudge_count_tick2, 0,
+            "Tick 2 should NOT re-nudge york — already assigned to task !1107"
+        );
+    }
+
     /// Helper to create minimal DaemonState for testing
     fn make_test_state() -> DaemonState {
         use std::process::Command;
@@ -3316,7 +4137,7 @@ mod tests {
             "/tmp/test.sock".into(),
             cm,
             "test-repo".to_string(),
-            vec![],
+            vec![base_dir.clone()],
             channel_router,
             None,
             10,
@@ -3324,5 +4145,259 @@ mod tests {
             "main".to_string(),
         )
         .expect("daemon state")
+    }
+
+    // ======================================================================
+    // should_recover_task (pure decision function) tests
+    // ======================================================================
+
+    #[test]
+    fn test_should_recover_task_skips_completed_tasks() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let completed_task = Task {
+            id: "1120".to_string(),
+            subject: "Fix orphan recovery loop".to_string(),
+            description: None,
+            status: TaskStatus::Completed,
+            owner: Some("vernon".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs = HashSet::new();
+        assert!(
+            !should_recover_task(&completed_task, &merged_prs, std::path::Path::new(".")),
+            "Should NOT recover a completed task"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_skips_merged_pr_in_subject() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1120".to_string(),
+            subject: "Merge PR #923 [Midtown !1120]".to_string(),
+            description: None,
+            status: TaskStatus::InProgress,
+            owner: Some("vernon".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs: HashSet<u64> = [923].into_iter().collect();
+        assert!(
+            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            "Should NOT recover a task whose PR is already merged (subject)"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_skips_merged_pr_in_description() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1121".to_string(),
+            subject: "Address review feedback".to_string(),
+            description: Some("Fixes from PR #925 review".to_string()),
+            status: TaskStatus::InProgress,
+            owner: Some("park".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs: HashSet<u64> = [925].into_iter().collect();
+        assert!(
+            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            "Should NOT recover a task whose PR is already merged (description)"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_allows_active_in_progress_task() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "42".to_string(),
+            subject: "Add auth endpoint".to_string(),
+            description: None,
+            status: TaskStatus::InProgress,
+            owner: Some("lexington".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs = HashSet::new();
+        assert!(
+            should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            "Should recover an active in-progress task with no merged PR"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_allows_task_with_unmerged_pr() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1120".to_string(),
+            subject: "Merge PR #999999 [Midtown !1120]".to_string(), // Use non-existent PR number
+            description: None,
+            status: TaskStatus::InProgress,
+            owner: Some("vernon".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // PR #999999 is NOT in the merged set (and doesn't exist in repo)
+        // The GitHub API check will fail (PR not found) but the function
+        // should be conservative and allow recovery.
+        let merged_prs: HashSet<u64> = [900, 910].into_iter().collect();
+        assert!(
+            should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            "Should recover a task whose PR is NOT yet merged (cache miss, API fails)"
+        );
+    }
+
+    #[test]
+    #[ignore] // Requires live GitHub API access - fails in CI
+    fn test_should_recover_task_checks_github_when_cache_stale() {
+        use crate::tasks::{Task, TaskStatus};
+
+        // This test uses PR #935 which is known to be merged in the repo.
+        // It verifies that even when the cache doesn't contain the PR,
+        // we still detect it's merged via direct GitHub API check.
+        let task = Task {
+            id: "1129".to_string(),
+            subject: "Fix task !1129 [Midtown !1129]".to_string(),
+            description: Some("PR #935".to_string()),
+            status: TaskStatus::InProgress,
+            owner: Some("riverside".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // PR #935 is NOT in the cache (simulating stale cache)
+        let merged_prs: HashSet<u64> = HashSet::new();
+
+        // Despite cache miss, should_recover_task should detect PR #935 is merged
+        // via direct GitHub API check and skip recovery.
+        assert!(
+            !should_recover_task(&task, &merged_prs, std::path::Path::new(".")),
+            "Should NOT recover task when PR is merged but not in cache (tests direct GitHub check)"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_skips_bare_hash_pr_reference() {
+        use crate::tasks::{Task, TaskStatus};
+
+        // Task with bare "#904" format (no "PR #" prefix)
+        // This format is recognized by extract_pr_numbers_from_text() in auto-completion
+        // but NOT by extract_pr_number_from_task() in orphan recovery,
+        // creating an inconsistency.
+        let task = Task {
+            id: "1122".to_string(),
+            subject: "Fix #904 review feedback".to_string(),
+            description: None,
+            status: TaskStatus::InProgress,
+            owner: Some("columbus".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs: HashSet<u64> = [904].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
+        assert!(
+            !should_recover_task(&task, &merged_prs, repo_path),
+            "Should NOT recover a task whose PR (#904) is already merged, even with bare # format"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_recovers_multi_pr_with_only_some_merged() {
+        use crate::tasks::{Task, TaskStatus};
+
+        // Task referencing PRs #901, #902, #903, but only #901 is merged
+        // should_recover_task() should return true (task needs recovery)
+        // because auto-completion won't fire until ALL PRs are merged
+        let task = Task {
+            id: "1123".to_string(),
+            subject: "Merge PRs #901, #902, #903".to_string(),
+            description: Some("Consolidate multiple related PRs".to_string()),
+            status: TaskStatus::InProgress,
+            owner: Some("madison".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // Only #901 is merged; #902 and #903 are still open
+        let merged_prs: HashSet<u64> = [901].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
+        assert!(
+            should_recover_task(&task, &merged_prs, repo_path),
+            "Should recover task with multi-PR reference where only SOME PRs are merged"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_skips_multi_pr_when_all_merged() {
+        use crate::tasks::{Task, TaskStatus};
+
+        // Task referencing PRs #901, #902, #903, and ALL are merged
+        // should_recover_task() should return false (skip recovery)
+        // because auto-completion will handle it
+        let task = Task {
+            id: "1124".to_string(),
+            subject: "Merge PRs #901, #902, #903".to_string(),
+            description: Some("Consolidate multiple related PRs".to_string()),
+            status: TaskStatus::InProgress,
+            owner: Some("madison".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // All PRs are merged
+        let merged_prs: HashSet<u64> = [901, 902, 903].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
+        assert!(
+            !should_recover_task(&task, &merged_prs, repo_path),
+            "Should NOT recover task when ALL referenced PRs are merged"
+        );
+    }
+
+    #[test]
+    fn test_should_recover_task_recovers_pr_in_subject_only() {
+        use crate::tasks::{Task, TaskStatus};
+
+        // Task with PR reference only in subject (not description)
+        // If the PR is merged, should_recover_task() should return false
+        // only if auto-completion will handle it (which it now does after fix)
+        let task = Task {
+            id: "1125".to_string(),
+            subject: "Close PR #905".to_string(),
+            description: Some("Final cleanup tasks".to_string()), // No PR reference here
+            status: TaskStatus::InProgress,
+            owner: Some("broadway".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let merged_prs: HashSet<u64> = [905].into_iter().collect();
+        let repo_path = std::path::Path::new("/tmp/test-repo");
+        assert!(
+            !should_recover_task(&task, &merged_prs, repo_path),
+            "Should NOT recover task with PR in subject only when that PR is merged (auto-completion will handle it)"
+        );
     }
 }

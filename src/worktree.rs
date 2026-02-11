@@ -546,12 +546,35 @@ impl WorktreeManager {
         }
     }
 
+    /// Parse gh pr list JSON output to check if a branch has a merged PR.
+    ///
+    /// Returns true if any PR in the JSON array has a `headRefName` matching `branch_name`.
+    /// This is used for the fallback path when GitHub deleted the branch after merge.
+    fn check_merged_pr_in_json(json_output: &str, branch_name: &str) -> bool {
+        if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(json_output) {
+            for pr in prs {
+                if let Some(head_ref) = pr.get("headRefName").and_then(|v| v.as_str()) {
+                    // Only match the exact branch name — NOT any branch from
+                    // the same coworker (that would suppress orphan warnings
+                    // for genuinely orphaned worktrees).
+                    if head_ref == branch_name {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Check if a coworker's branch has a merged PR on GitHub.
     ///
     /// Uses `gh pr list` to check if the branch's PR was merged (e.g. via
     /// squash-merge). This catches cases where `has_commits_beyond_base`
     /// returns a false positive because squash-merged commits have different
     /// SHAs than the branch commits.
+    ///
+    /// First tries to find PRs by exact branch name. If that fails (branch was deleted),
+    /// falls back to searching recent merged PRs for an exact match.
     pub fn is_branch_pr_merged(&self, coworker_name: &str) -> bool {
         let worktree_path = self.worktree_path(coworker_name);
         if !worktree_path.exists() {
@@ -575,7 +598,7 @@ impl WorktreeManager {
             _ => return false,
         };
 
-        // Check if there's a merged PR for this branch
+        // First, try exact branch match (works if branch still exists on GitHub)
         let output = Command::new("gh")
             .current_dir(&self.repo_root)
             .args([
@@ -584,11 +607,37 @@ impl WorktreeManager {
             ])
             .output();
 
+        if let Ok(output) = output
+            && output.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // gh returns "[]" when no merged PRs found, non-empty array otherwise
+            if stdout != "[]" && !stdout.is_empty() {
+                return true; // Found merged PR by exact branch name
+            }
+        }
+
+        // Fallback: branch was likely deleted after merge. Search recent merged PRs
+        // for an exact match of the branch name. Look at the last 50 merged PRs
+        // (covers ~1 week of active development).
+        let output = Command::new("gh")
+            .current_dir(&self.repo_root)
+            .args([
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--json",
+                "headRefName",
+                "--limit",
+                "50",
+            ])
+            .output();
+
         match output {
             Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                // gh returns "[]" when no merged PRs found, non-empty array otherwise
-                stdout != "[]" && !stdout.is_empty()
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                Self::check_merged_pr_in_json(&stdout, &branch)
             }
             _ => false, // If gh fails, assume not merged (safe default)
         }
@@ -1960,5 +2009,85 @@ branch refs/heads/bob/work
         let cleaned = manager.safe_cleanup("testworker").expect("safe cleanup");
         assert!(!cleaned, "Should not auto-clean detached HEAD not on main");
         assert!(wt_path.exists(), "Worktree should still exist");
+    }
+
+    #[test]
+    fn test_check_merged_pr_in_json_exact_match() {
+        // Test case 1: Exact branch match should return true
+        let json = r#"[
+            {"headRefName": "amsterdam/feature-1"},
+            {"headRefName": "amsterdam/feature-2"},
+            {"headRefName": "broadway/task-123"}
+        ]"#;
+
+        assert!(
+            WorktreeManager::check_merged_pr_in_json(json, "amsterdam/feature-1"),
+            "Should find exact match for amsterdam/feature-1"
+        );
+        assert!(
+            WorktreeManager::check_merged_pr_in_json(json, "broadway/task-123"),
+            "Should find exact match for broadway/task-123"
+        );
+    }
+
+    #[test]
+    fn test_check_merged_pr_in_json_no_prefix_match() {
+        // Test case 2: Should NOT match other branches from the same coworker
+        // This is the bug that park identified — matching any amsterdam/* branch
+        // would cause false positives for orphan detection.
+        let json = r#"[
+            {"headRefName": "amsterdam/merged-work"},
+            {"headRefName": "broadway/task-123"}
+        ]"#;
+
+        assert!(
+            !WorktreeManager::check_merged_pr_in_json(json, "amsterdam/active-work"),
+            "Should NOT match amsterdam/active-work when only amsterdam/merged-work exists"
+        );
+        assert!(
+            !WorktreeManager::check_merged_pr_in_json(json, "amsterdam/different-branch"),
+            "Should NOT match any amsterdam/* branch that isn't an exact match"
+        );
+    }
+
+    #[test]
+    fn test_check_merged_pr_in_json_empty() {
+        // Test case 3: Empty JSON array should return false
+        let json = "[]";
+
+        assert!(
+            !WorktreeManager::check_merged_pr_in_json(json, "amsterdam/feature-1"),
+            "Should return false for empty PR list"
+        );
+    }
+
+    #[test]
+    fn test_check_merged_pr_in_json_malformed() {
+        // Test case 4: Malformed JSON should return false (safe default)
+        let json = "not valid json";
+
+        assert!(
+            !WorktreeManager::check_merged_pr_in_json(json, "amsterdam/feature-1"),
+            "Should return false for malformed JSON"
+        );
+    }
+
+    #[test]
+    fn test_check_merged_pr_in_json_missing_field() {
+        // Test case 5: PR entries without headRefName should be skipped
+        let json = r#"[
+            {"number": 123},
+            {"headRefName": "amsterdam/feature-1"},
+            {"title": "Some PR"}
+        ]"#;
+
+        assert!(
+            WorktreeManager::check_merged_pr_in_json(json, "amsterdam/feature-1"),
+            "Should find match even when some entries lack headRefName"
+        );
+        assert!(
+            !WorktreeManager::check_merged_pr_in_json(json, "amsterdam/feature-2"),
+            "Should return false when no matching headRefName exists"
+        );
     }
 }

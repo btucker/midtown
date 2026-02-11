@@ -638,8 +638,8 @@ pub(super) fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) 
 ///
 /// Usage limits are account-wide, so when one coworker hits it, all of them
 /// will be stuck. We detect it from any coworker's ProcessHealth flag and
-/// schedule a default nudge time (15 minutes, since we can't parse the exact
-/// duration from structured events yet).
+/// schedule a nudge based on the parsed reset time (if available) or a default
+/// of 15 minutes.
 pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap.usage_limit_nudge_scheduled {
         return vec![];
@@ -649,35 +649,57 @@ pub(super) fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effe
         return vec![];
     }
 
-    // Find the first coworker with a usage limit flag
-    let detected_coworker = snap
+    // Find the first coworker with a usage limit flag and extract reset time
+    let (detected_coworker, reset_time_utc) = match snap
         .headless_process_health
         .iter()
         .find(|(_, health)| health.has_usage_limit)
-        .map(|(name, _)| name.clone());
-
-    let detected_coworker = match detected_coworker {
-        Some(name) => name,
+    {
+        Some((name, health)) => (name.clone(), health.usage_limit_reset_at),
         None => return vec![],
     };
 
-    // Default wait: 15 minutes (structured events don't carry exact duration yet)
-    let wait_duration = Duration::from_secs(15 * 60);
-    let nudge_time = tokio::time::Instant::now() + wait_duration + USAGE_LIMIT_NUDGE_BUFFER;
+    // Calculate nudge time based on reset time or default to 15 minutes
+    let nudge_time = if let Some(reset_utc) = reset_time_utc {
+        // Convert reset_time_utc (DateTime<Utc>) to tokio::time::Instant
+        let now = chrono::Utc::now();
+        let duration_until_reset = reset_utc.signed_duration_since(now);
+
+        if duration_until_reset.num_seconds() > 0 {
+            tokio::time::Instant::now()
+                + Duration::from_secs(duration_until_reset.num_seconds() as u64)
+                + USAGE_LIMIT_NUDGE_BUFFER
+        } else {
+            // Reset time is in the past or now — nudge immediately (with small buffer)
+            tokio::time::Instant::now() + USAGE_LIMIT_NUDGE_BUFFER
+        }
+    } else {
+        // Fallback: default wait of 15 minutes
+        tokio::time::Instant::now() + Duration::from_secs(15 * 60) + USAGE_LIMIT_NUDGE_BUFFER
+    };
+
+    let message = if reset_time_utc.is_some() {
+        format!(
+            "⏳ Usage limit detected (via {}). All coworkers will be nudged when it resets.",
+            detected_coworker
+        )
+    } else {
+        format!(
+            "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~15m when it resets.",
+            detected_coworker
+        )
+    };
 
     info!(
-        "Usage limit detected via coworker {} — scheduling nudge in 15m + 30s buffer",
-        detected_coworker
+        "Usage limit detected via coworker {} — scheduling nudge at {:?}",
+        detected_coworker, nudge_time
     );
 
     vec![
         Effect::SetUsageLimitNudge { at: nudge_time },
         Effect::PostToChannel {
             sender: "system".to_string(),
-            message: format!(
-                "⏳ Usage limit detected (via {}). All coworkers will be nudged in ~15m when it resets.",
-                detected_coworker
-            ),
+            message,
             channel: None,
         },
     ]
@@ -813,6 +835,46 @@ pub(super) fn check_and_nudge_api_errors(
                 channel: None,
             },
         );
+    }
+
+    effects
+}
+
+/// Detect coworkers with tool name conflicts and shut them down for fresh restart.
+///
+/// "Tool names must be unique" is an unrecoverable API error caused by duplicate
+/// tool registrations (e.g., from session resume loading saved tools + plugin
+/// re-registration). The affected session loops on 400 errors indefinitely.
+///
+/// The primary fix is in `headless.rs` (skip `--settings` on resume), but this
+/// serves as defense in depth: detect the error via stderr, shut down the session,
+/// and let normal task dispatch respawn it.
+pub(super) fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    if snap.tool_name_conflict_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+
+    for name in &snap.tool_name_conflict_coworkers {
+        warn!(
+            "Coworker {} has tool name conflict — shutting down for fresh restart",
+            name
+        );
+
+        effects.push(Effect::ShutdownCoworker {
+            name: name.clone(),
+            message: String::new(),
+            session_id: None,
+        });
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🔧 Coworker {} hit 'Tool names must be unique' error — restarting with fresh session",
+                name
+            ),
+            channel: None,
+        });
     }
 
     effects
@@ -1069,6 +1131,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -1078,6 +1141,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -1093,6 +1157,7 @@ mod tests {
             usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -1169,5 +1234,175 @@ mod tests {
             effects.is_empty(),
             "No fired reminders should produce no effects"
         );
+    }
+
+    #[test]
+    fn test_check_for_usage_limits_with_reset_time() {
+        use crate::coworker::{Coworker, CoworkerStatus};
+        use std::collections::{HashMap, HashSet};
+
+        // Create a ProcessHealth with usage limit and a specific reset time
+        let reset_time = chrono::Utc::now() + chrono::Duration::hours(2);
+        let mut health = HashMap::new();
+        health.insert(
+            "amsterdam".to_string(),
+            snapshot::ProcessHealth {
+                is_alive: true,
+                last_event_at: Some(chrono::Utc::now()),
+                has_usage_limit: true,
+                usage_limit_reset_at: Some(reset_time),
+                has_api_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_tool_name_conflict: false,
+                exit_code: None,
+            },
+        );
+
+        let coworker = Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: "amsterdam".to_string(),
+            status: CoworkerStatus::Running,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "sonnet".to_string(),
+        };
+
+        // Create a minimal snapshot
+        let snap = snapshot::WorldSnapshot {
+            active_coworkers: vec![coworker],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::from(["amsterdam".to_string()]),
+            active_session_ids: HashSet::new(),
+            session_name: "test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: health,
+            attached_coworkers: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            pending_tasks_with_owners: vec![],
+            all_tasks: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::from(["amsterdam".to_string()]),
+            api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let effects = check_for_usage_limits(&snap);
+
+        // Should have SetUsageLimitNudge and PostToChannel effects
+        assert!(!effects.is_empty(), "Should produce effects");
+
+        // Check that a nudge is scheduled
+        let has_set_nudge = effects
+            .iter()
+            .any(|e| matches!(e, Effect::SetUsageLimitNudge { .. }));
+        assert!(has_set_nudge, "Should schedule a usage limit nudge");
+
+        // Check that a message is posted
+        let has_post = effects
+            .iter()
+            .any(|e| matches!(e, Effect::PostToChannel { .. }));
+        assert!(has_post, "Should post a channel message");
+    }
+
+    #[test]
+    fn test_check_for_usage_limits_already_scheduled() {
+        use std::collections::{HashMap, HashSet};
+
+        // Create a snapshot with usage_limit_nudge_scheduled = true
+        let snap = snapshot::WorldSnapshot {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            busy_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            pending_tasks_without_owners: vec![],
+            pending_tasks_with_owners: vec![],
+            all_tasks: vec![],
+            task_channel: HashMap::new(),
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: true, // Already scheduled
+            usage_limit_nudge_at: Some(tokio::time::Instant::now()),
+            usage_limited_coworkers: HashSet::from(["amsterdam".to_string()]),
+            api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_coworker_limit: false,
+            is_at_dev_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let effects = check_for_usage_limits(&snap);
+
+        // Should not schedule another nudge
+        assert!(effects.is_empty(), "Should not schedule duplicate nudge");
     }
 }

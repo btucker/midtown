@@ -32,6 +32,8 @@ pub struct ProcessHealth {
     /// Whether the coworker hit a usage/rate limit (detected from
     /// `StreamEvent::Result { is_error: true }` with usage limit content).
     pub has_usage_limit: bool,
+    /// When the usage limit will reset (if known).
+    pub usage_limit_reset_at: Option<DateTime<Utc>>,
     /// Whether the coworker is experiencing API errors (transient failures
     /// that may resolve on retry).
     pub has_api_error: bool,
@@ -43,6 +45,10 @@ pub struct ProcessHealth {
     /// When true, the session is waiting for a tool to complete (e.g., long-running Bash command)
     /// and shouldn't be considered stuck even if no events are emitted during execution.
     pub has_pending_tool: bool,
+    /// Whether the coworker has a tool name conflict (e.g., duplicate MCP tool names).
+    /// When true, the session may fail tool calls and needs a restart.
+    #[serde(default)]
+    pub has_tool_name_conflict: bool,
     /// Process exit code, if the process has terminated.
     pub exit_code: Option<i32>,
 }
@@ -53,9 +59,11 @@ impl Default for ProcessHealth {
             is_alive: true,
             last_event_at: None,
             has_usage_limit: false,
+            usage_limit_reset_at: None,
             has_api_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_tool_name_conflict: false,
             exit_code: None,
         }
     }
@@ -74,7 +82,7 @@ const SNAPSHOT_DAEMON_LOG_LINES: usize = 100;
 /// side effects on the underlying state.
 ///
 /// The struct is serializable (for debugging and test fixtures).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
     /// All coworkers (any status).
@@ -113,6 +121,11 @@ pub struct WorldSnapshot {
     pub in_progress_tasks: Vec<(String, String, String)>,
     /// Names of coworkers who are busy (have in-progress tasks), lowercase.
     pub busy_coworkers: HashSet<String>,
+    /// Coworker → task assignment mapping (from daemon in-memory tracking).
+    /// Maps coworker name (lowercase) → task_id. Used by task dispatch to prevent
+    /// re-assigning the same task to the same coworker (nudge/spawn loop prevention).
+    #[serde(default)]
+    pub coworker_task_assignments: HashMap<String, String>,
     /// All tasks from disk (for relationship lookups).
     pub all_tasks: Vec<Task>,
     /// Pending tasks that have an owner: `(task_id, subject, owner)`.
@@ -137,6 +150,10 @@ pub struct WorldSnapshot {
     /// Coworkers whose open PR has CI passed AND has review feedback to address.
     /// These coworkers are protected from idle shutdown (prevents spawn→idle→break loop).
     pub review_feedback_pr_coworkers: HashSet<String>,
+    /// Open PR data (from last GitHub poll). Used by orphan PR reconciliation.
+    /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
+    #[serde(default)]
+    pub open_prs_data: Vec<serde_json::Value>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
     /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
     /// (in-memory assignment tracking). Both paths are checked to prevent the
@@ -173,7 +190,7 @@ pub struct WorldSnapshot {
     pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
     /// Freshly fetched rate limit data (only populated during RateLimitCheckTick).
     /// This carries the new rate limit state from the API fetch to the decision phase.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub freshly_fetched_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
 
     // ── Dependency state ──────────────────────────────────────────────────
@@ -194,6 +211,10 @@ pub struct WorldSnapshot {
     /// Like usage limits, these should be excluded from stuck detection, but
     /// unlike usage limits, they should receive periodic nudges to retry.
     pub api_error_coworkers: HashSet<String>,
+    /// Coworkers currently experiencing tool name conflicts (duplicate MCP tool names).
+    /// These coworkers need a restart to resolve the conflict.
+    #[serde(default)]
+    pub tool_name_conflict_coworkers: HashSet<String>,
 
     // ── Channel messages ─────────────────────────────────────────────────
     /// Recent channel messages for debugging context.
@@ -358,6 +379,16 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Task state ──────────────────────────────────────────────────────
     let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
     let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
+
+    // Coworker → task assignments (for nudge/spawn loop prevention in dispatch)
+    let coworker_task_assignments: HashMap<String, String> = {
+        let assignments = state.coworker_task_assignments.lock().unwrap();
+        assignments
+            .iter()
+            .map(|(coworker, assignment)| (coworker.clone(), assignment.task_id.clone()))
+            .collect()
+    };
+
     let all_tasks = crate::tasks::read_tasks();
     let pending_tasks_with_owners = crate::tasks::get_pending_tasks_with_owners();
     let pending_tasks_without_owners = crate::tasks::get_pending_tasks_without_owners();
@@ -376,12 +407,13 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         super::pr::get_coworkers_with_merged_prs(state);
     // Merged PR numbers are populated as a side effect of the above call.
     let merged_pr_numbers = super::pr::get_merged_pr_numbers(state);
-    let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review) = {
+    let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review, open_prs_data) = {
         let cache = state.pr_coworker_cache.read().unwrap();
         (
             cache.ci_passed_pr_owners.clone(),
             cache.review_feedback_pr_owners.clone(),
             cache.prs_needing_review,
+            cache.open_prs_data.clone(),
         )
     };
 
@@ -450,16 +482,11 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         posted.clone()
     };
 
-    // Pre-check review status for all assigned PRs so decision logic doesn't need API calls
+    // Get all reviewed PRs from persistent state (not just assigned ones)
+    // This ensures orphaned PRs (those without active reviewers/tasks) are included
     let reviewed_prs = {
-        let pr_numbers: Vec<u64> = reviewer_pr_assignments.values().copied().collect();
-        let mut reviewed = HashSet::new();
-        for pr in pr_numbers {
-            if state.is_pr_reviewed(pr).await {
-                reviewed.insert(pr);
-            }
-        }
-        reviewed
+        let ps = state.persistent_state.lock().await;
+        ps.github.reviewed_prs.clone()
     };
 
     // ── GitHub rate limit ────────────────────────────────────────────────
@@ -491,6 +518,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
             // Only flag API error if not already at usage limit (usage limit takes precedence)
             health.has_api_error && !usage_limited_coworkers.contains(&name.to_lowercase())
         })
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    let tool_name_conflict_coworkers: HashSet<String> = headless_process_health
+        .iter()
+        .filter(|(_, health)| health.has_tool_name_conflict)
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
@@ -555,6 +588,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         attached_coworkers,
         in_progress_tasks,
         busy_coworkers,
+        coworker_task_assignments,
         all_tasks,
         pending_tasks_with_owners,
         pending_tasks_without_owners,
@@ -564,6 +598,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         merged_pr_numbers,
         ci_passed_pr_coworkers,
         review_feedback_pr_coworkers,
+        open_prs_data,
         pending_task_owners,
         tasks_with_open_prs,
         pr_task_associations,
@@ -580,6 +615,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         usage_limit_nudge_at,
         usage_limited_coworkers,
         api_error_coworkers,
+        tool_name_conflict_coworkers,
         channel_messages,
         daemon_logs,
         tasks_with_worktrees,
@@ -600,6 +636,64 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     }
 
     snapshot
+}
+
+/// Test helper: Creates a minimal WorldSnapshot for unit tests with all fields
+/// set to empty/default values. Tests can override specific fields as needed.
+#[cfg(test)]
+pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
+    WorldSnapshot {
+        active_coworkers: vec![],
+        running_coworkers: vec![],
+        coworker_snapshots: vec![],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        channel_messages: vec![],
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: Utc::now(),
+        repo_name: "test-repo".to_string(),
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+    }
 }
 
 #[cfg(test)]
@@ -663,6 +757,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -672,6 +767,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -686,6 +782,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -752,6 +849,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -761,6 +859,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -775,6 +874,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -812,9 +912,11 @@ mod tests {
                 is_alive: true,
                 last_event_at: Some(Utc::now()),
                 has_usage_limit: false,
+                usage_limit_reset_at: None,
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -824,9 +926,11 @@ mod tests {
                 is_alive: true,
                 last_event_at: Some(Utc::now()),
                 has_usage_limit: false,
+                usage_limit_reset_at: None,
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: None,
             },
         );
@@ -836,9 +940,11 @@ mod tests {
                 is_alive: false, // stopped
                 last_event_at: Some(Utc::now()),
                 has_usage_limit: false,
+                usage_limit_reset_at: None,
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 exit_code: Some(0),
             },
         );
@@ -906,6 +1012,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -915,6 +1022,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -929,6 +1037,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),
@@ -979,6 +1088,7 @@ mod tests {
             attached_coworkers: HashSet::new(),
             in_progress_tasks: vec![],
             busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
@@ -988,6 +1098,7 @@ mod tests {
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
             pending_task_owners: HashSet::new(),
             tasks_with_open_prs: HashMap::new(),
             pr_task_associations: HashMap::new(),
@@ -1002,6 +1113,7 @@ mod tests {
             usage_limit_nudge_at: None,
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),

@@ -378,6 +378,53 @@ mod tests {
     }
 
     #[test]
+    fn test_task_update_response_with_type_field() {
+        // All task RPC handlers return {"type": "message", "message": "..."} but
+        // Response::Message expects just {"message": "..."}. Serde's untagged enum
+        // deserialization silently skips unknown fields like "type".
+        let json = r#"{"type": "message", "message": "Task !1116 updated"}"#;
+        let response: Response =
+            serde_json::from_str(json).expect("Should parse task.update response with type field");
+
+        match response {
+            Response::Message { message } => {
+                assert_eq!(message, "Task !1116 updated");
+            }
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_task_create_response_with_type_field() {
+        // task.create returns the same {"type": "message", "message": "..."} format
+        let json = r#"{"type": "message", "message": "Task !42 created: Add auth endpoint"}"#;
+        let response: Response =
+            serde_json::from_str(json).expect("Should parse task.create response with type field");
+
+        match response {
+            Response::Message { message } => {
+                assert_eq!(message, "Task !42 created: Add auth endpoint");
+            }
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_task_done_response_with_type_field() {
+        // task.done returns the same {"type": "message", "message": "..."} format
+        let json = r#"{"type": "message", "message": "Task !99 completed"}"#;
+        let response: Response =
+            serde_json::from_str(json).expect("Should parse task.done response with type field");
+
+        match response {
+            Response::Message { message } => {
+                assert_eq!(message, "Task !99 completed");
+            }
+            other => panic!("Expected Message, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_status_pretty_format() {
         let status = StatusResponse {
             daemon_running: true,
