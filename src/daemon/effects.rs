@@ -326,6 +326,11 @@ pub enum Effect {
         subject: String,
         description: String,
     },
+    /// Clean up a coworker's build directory (target/) to reclaim disk space.
+    ///
+    /// Called when a coworker goes on break (shutdown). The target/ directory
+    /// will be rebuilt when the coworker is called back in.
+    CleanWorktreeTarget { working_dir: String },
 }
 
 /// Deduplicate nudge effects targeting the same coworker within a single batch.
@@ -1303,6 +1308,32 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     Err(e) => {
                         warn!("Failed to create task '{}': {}", subject, e);
                     }
+                }
+            }
+            Effect::CleanWorktreeTarget { working_dir } => {
+                let target_dir = std::path::Path::new(&working_dir).join("target");
+                if target_dir.exists() {
+                    info!("Cleaning build directory: {}", target_dir.display());
+                    match tokio::fs::remove_dir_all(&target_dir).await {
+                        Ok(_) => {
+                            info!(
+                                "Successfully removed build directory: {}",
+                                target_dir.display()
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to remove build directory {}: {}",
+                                target_dir.display(),
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    debug!(
+                        "Build directory does not exist, skipping cleanup: {}",
+                        target_dir.display()
+                    );
                 }
             }
         }

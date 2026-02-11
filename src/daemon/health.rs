@@ -358,6 +358,13 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             continue;
         }
 
+        // Look up working_dir for cleanup
+        let working_dir = snap
+            .active_coworkers
+            .iter()
+            .find(|cw| cw.name.eq_ignore_ascii_case(name))
+            .map(|cw| cw.working_dir.clone());
+
         // Post system message, broadcast status, and shut down
         effects.push(Effect::PostToChannel {
             sender: "system".to_string(),
@@ -374,6 +381,11 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             message: String::new(),
             session_id: None,
         });
+
+        // Clean up the build directory to reclaim disk space
+        if let Some(dir) = working_dir {
+            effects.push(Effect::CleanWorktreeTarget { working_dir: dir });
+        }
     }
 
     effects
