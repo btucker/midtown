@@ -61,9 +61,16 @@ pub fn handle_start(
     daemon_only: bool,
     dangerously_run_without_sandbox: bool,
     project: Option<String>,
+    container: Option<String>,
     repos: Vec<std::path::PathBuf>,
 ) -> Result<Response, String> {
-    daemon::handle_start(daemon_only, dangerously_run_without_sandbox, project, repos)
+    daemon::handle_start(
+        daemon_only,
+        dangerously_run_without_sandbox,
+        project,
+        container,
+        repos,
+    )
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)

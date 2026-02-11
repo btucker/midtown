@@ -95,6 +95,47 @@ const OFFICIAL_MARKETPLACE_NAME: &str = "claude-plugins-official";
 const SANDBOX_ENTRY_ENV: &str = "MIDTOWN_IN_SANDBOX_CONTAINER";
 const SANDBOX_IMAGE_ENV: &str = "MIDTOWN_SANDBOX_IMAGE";
 const DEFAULT_SANDBOX_IMAGE: &str = "ghcr.io/btucker/midtown:latest";
+const COMMAND_TIMEOUT_POLL_INTERVAL_MS: u64 = 100;
+const APPLE_CONTAINER_PROBE_TIMEOUT_SECS: u64 = 5;
+const APPLE_CONTAINER_START_TIMEOUT_SECS: u64 = 45;
+const DOCKER_INFO_TIMEOUT_SECS: u64 = 5;
+const SANDBOX_CONTAINER_OP_TIMEOUT_SECS: u64 = 20;
+
+fn emit_startup_progress(percent: u16, message: &str) {
+    use crossterm::terminal;
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        style::{Color, Style},
+        widgets::{Gauge, Widget},
+    };
+    use std::io::IsTerminal;
+    use std::io::Write;
+
+    if std::io::stderr().is_terminal() {
+        let percent = percent.min(100);
+        let width = terminal::size()
+            .map(|(w, _)| w.saturating_sub(1).clamp(24, 100))
+            .unwrap_or(80);
+        let area = Rect::new(0, 0, width, 1);
+        let mut buffer = Buffer::empty(area);
+        let label = format!("{:>3}% {}", percent, message);
+
+        Gauge::default()
+            .ratio(f64::from(percent) / 100.0)
+            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+            .label(label)
+            .render(area, &mut buffer);
+
+        let mut line = String::with_capacity(width as usize * 2);
+        for x in 0..width {
+            line.push_str(buffer[(x, 0)].symbol());
+        }
+
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr, "{}", line);
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +164,59 @@ impl SandboxEngine {
 struct SandboxRuntimeState {
     engine: SandboxEngine,
     container_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    docker_context: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContainerOverride {
+    Apple,
+    Docker { context: Option<String> },
+}
+
+fn parse_container_override(value: Option<&str>) -> Result<Option<ContainerOverride>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "Invalid --container value: expected 'apple', 'docker', or 'docker:<context>'"
+                .to_string(),
+        );
+    }
+
+    if trimmed.eq_ignore_ascii_case("apple") {
+        return Ok(Some(ContainerOverride::Apple));
+    }
+    if trimmed.eq_ignore_ascii_case("docker") {
+        return Ok(Some(ContainerOverride::Docker { context: None }));
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some((prefix, _rest)) = lower.split_once(':') {
+        if prefix == "docker" {
+            let context = trimmed
+                .split_once(':')
+                .map(|(_, right)| right.trim())
+                .unwrap_or_default();
+            if context.is_empty() {
+                return Err("Invalid --container value: docker context cannot be empty".to_string());
+            }
+            return Ok(Some(ContainerOverride::Docker {
+                context: Some(context.to_string()),
+            }));
+        }
+        return Err(format!(
+            "Invalid --container value '{}': expected 'apple', 'docker', or 'docker:<context>'",
+            trimmed
+        ));
+    }
+
+    // Treat any other value as an explicit Docker context name.
+    Ok(Some(ContainerOverride::Docker {
+        context: Some(trimmed.to_string()),
+    }))
 }
 
 fn running_inside_sandbox() -> bool {
@@ -165,22 +259,75 @@ fn command_in_path(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn wait_for_command_with_timeout(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let poll_interval = std::time::Duration::from_millis(COMMAND_TIMEOUT_POLL_INTERVAL_MS);
+    let start = std::time::Instant::now();
+
+    loop {
+        let maybe_status = child
+            .try_wait()
+            .map_err(|e| format!("Failed while waiting for process: {}", e))?;
+        if let Some(status) = maybe_status {
+            return Ok(status);
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Timed out after {}s", timeout.as_secs()));
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
+fn command_status_with_timeout(
+    mut cmd: Command,
+    timeout: std::time::Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn command: {}", e))?;
+    wait_for_command_with_timeout(&mut child, timeout)
+}
+
+fn command_output_with_timeout(
+    mut cmd: Command,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn command: {}", e))?;
+    wait_for_command_with_timeout(&mut child, timeout)?;
+    child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to collect command output: {}", e))
+}
+
 fn apple_container_is_running() -> bool {
     // Check if Apple container system is already running without starting it
-    Command::new("container")
-        .args(["list"])
+    let mut cmd = Command::new("container");
+    cmd.args(["list"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(Stdio::null());
+    command_status_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(APPLE_CONTAINER_PROBE_TIMEOUT_SECS),
+    )
+    .map(|s| s.success())
+    .unwrap_or(false)
 }
 
 fn ensure_apple_container_system_started() -> Result<(), String> {
-    let status = Command::new("container")
-        .args(["system", "start"])
-        .status()
-        .map_err(|e| format!("Failed to run 'container system start': {}", e))?;
+    let mut cmd = Command::new("container");
+    cmd.args(["system", "start"]);
+    let status = command_status_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(APPLE_CONTAINER_START_TIMEOUT_SECS),
+    )
+    .map_err(|e| format!("Failed to run 'container system start': {}", e))?;
     if status.success() {
         Ok(())
     } else {
@@ -191,33 +338,116 @@ fn ensure_apple_container_system_started() -> Result<(), String> {
     }
 }
 
-fn docker_is_running() -> bool {
-    // Check if Docker is already running
-    command_in_path("docker")
-        && Command::new("docker")
-            .arg("info")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+fn docker_command_with_context(docker_context: Option<&str>) -> Command {
+    let mut cmd = Command::new("docker");
+    if let Some(context) = docker_context
+        && !context.trim().is_empty()
+    {
+        cmd.args(["--context", context]);
+    }
+    cmd
 }
 
-fn docker_is_usable() -> Result<(), String> {
+fn docker_contexts_by_preference() -> Vec<String> {
+    let mut contexts = Vec::new();
+
+    if let Ok(output) = Command::new("docker").args(["context", "show"]).output()
+        && output.status.success()
+    {
+        let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !current.is_empty() {
+            contexts.push(current);
+        }
+    }
+
+    if let Ok(output) = Command::new("docker")
+        .args(["context", "ls", "--format", "{{.Name}}"])
+        .output()
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let context = line.trim();
+            if !context.is_empty() && !contexts.iter().any(|c| c == context) {
+                contexts.push(context.to_string());
+            }
+        }
+    }
+
+    contexts
+}
+
+fn summarize_docker_context_error(context: &str, stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        return format!("'{}': no error details from docker", context);
+    }
+    if trimmed.contains("permission denied while trying to connect to the docker API") {
+        return format!("'{}': permission denied on Docker socket", context);
+    }
+    let mut first_line = trimmed.lines().next().unwrap_or(trimmed).trim().to_string();
+    if first_line.len() > 120 {
+        first_line.truncate(120);
+        first_line.push_str("...");
+    }
+    format!("'{}': {}", context, first_line)
+}
+
+fn docker_context_is_usable(context: &str) -> Result<(), String> {
     if !command_in_path("docker") {
         return Err("docker command not found".to_string());
     }
-    let status = Command::new("docker")
-        .arg("info")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| format!("Failed to run 'docker info': {}", e))?;
-    if status.success() {
+    let mut cmd = docker_command_with_context(Some(context));
+    cmd.arg("info");
+    let output = command_output_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(DOCKER_INFO_TIMEOUT_SECS),
+    )
+    .map_err(|e| format!("'{}': {}", context, e))?;
+    if output.status.success() {
         Ok(())
     } else {
-        Err("Docker is installed but not running. Start Docker Desktop and retry.".to_string())
+        Err(summarize_docker_context_error(
+            context,
+            &String::from_utf8_lossy(&output.stderr),
+        ))
     }
+}
+
+fn detect_usable_docker_context() -> Result<String, String> {
+    if !command_in_path("docker") {
+        return Err("docker command not found".to_string());
+    }
+
+    let contexts = docker_contexts_by_preference();
+    if contexts.is_empty() {
+        return Err(
+            "No Docker contexts were found. Configure Docker or run `docker context ls`."
+                .to_string(),
+        );
+    }
+
+    let mut errors = Vec::new();
+    for context in contexts {
+        match docker_context_is_usable(&context) {
+            Ok(()) => return Ok(context),
+            Err(e) => {
+                errors.push(e);
+            }
+        }
+    }
+
+    Err(format!(
+        "No usable Docker context found. Tried: {}",
+        errors.join("; ")
+    ))
+}
+
+fn docker_is_running() -> bool {
+    detect_usable_docker_context().is_ok()
+}
+
+fn docker_is_usable() -> Result<String, String> {
+    detect_usable_docker_context()
 }
 
 fn sanitize_container_name(name: &str) -> String {
@@ -277,28 +507,55 @@ fn collect_mounts(home: &Path, primary_repo: &Path, repos: &[PathBuf]) -> Vec<St
     mounts
 }
 
-fn engine_exec_success(engine: SandboxEngine, container_name: &str, command: &str) -> bool {
-    Command::new(engine.binary())
-        .args(["exec", container_name, "sh", "-lc", command])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+fn engine_command(engine: SandboxEngine, docker_context: Option<&str>) -> Command {
+    if matches!(engine, SandboxEngine::Docker) {
+        docker_command_with_context(docker_context)
+    } else {
+        Command::new(engine.binary())
+    }
 }
 
-fn engine_start_container(engine: SandboxEngine, container_name: &str) -> bool {
-    Command::new(engine.binary())
-        .args(["start", container_name])
+fn engine_exec_success(
+    engine: SandboxEngine,
+    docker_context: Option<&str>,
+    container_name: &str,
+    command: &str,
+) -> bool {
+    let mut cmd = engine_command(engine, docker_context);
+    cmd.args(["exec", container_name, "sh", "-lc", command])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(Stdio::null());
+    command_status_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(SANDBOX_CONTAINER_OP_TIMEOUT_SECS),
+    )
+    .map(|s| s.success())
+    .unwrap_or(false)
 }
 
-fn engine_remove_container(engine: SandboxEngine, container_name: &str) {
-    let _ = Command::new(engine.binary())
+fn engine_start_container(
+    engine: SandboxEngine,
+    docker_context: Option<&str>,
+    container_name: &str,
+) -> bool {
+    let mut cmd = engine_command(engine, docker_context);
+    cmd.args(["start", container_name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command_status_with_timeout(
+        cmd,
+        std::time::Duration::from_secs(SANDBOX_CONTAINER_OP_TIMEOUT_SECS),
+    )
+    .map(|s| s.success())
+    .unwrap_or(false)
+}
+
+fn engine_remove_container(
+    engine: SandboxEngine,
+    docker_context: Option<&str>,
+    container_name: &str,
+) {
+    let _ = engine_command(engine, docker_context)
         .args(["rm", "-f", container_name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -307,6 +564,7 @@ fn engine_remove_container(engine: SandboxEngine, container_name: &str) {
 
 fn engine_run_sandbox_container(
     engine: SandboxEngine,
+    docker_context: Option<&str>,
     container_name: &str,
     image: &str,
     working_dir: &Path,
@@ -344,7 +602,8 @@ fn engine_run_sandbox_container(
     args.push("sleep".to_string());
     args.push("infinity".to_string());
 
-    let output = Command::new(engine.binary())
+    let mut cmd = engine_command(engine, docker_context);
+    let output = cmd
         .args(args)
         .output()
         .map_err(|e| format!("Failed to run {} container: {}", engine.display_name(), e))?;
@@ -365,28 +624,45 @@ fn engine_run_sandbox_container(
 
 fn ensure_sandbox_container_running(
     engine: SandboxEngine,
+    docker_context: Option<&str>,
     container_name: &str,
     image: &str,
     working_dir: &Path,
     mounts: &[String],
     home: &Path,
 ) -> Result<(), String> {
-    if engine_exec_success(engine, container_name, "true") {
+    if engine_exec_success(engine, docker_context, container_name, "true") {
         return Ok(());
     }
 
-    if engine_start_container(engine, container_name)
-        && engine_exec_success(engine, container_name, "true")
+    if engine_start_container(engine, docker_context, container_name)
+        && engine_exec_success(engine, docker_context, container_name, "true")
     {
         return Ok(());
     }
 
-    match engine_run_sandbox_container(engine, container_name, image, working_dir, mounts, home) {
+    match engine_run_sandbox_container(
+        engine,
+        docker_context,
+        container_name,
+        image,
+        working_dir,
+        mounts,
+        home,
+    ) {
         Ok(()) => Ok(()),
         Err(first_err) => {
-            engine_remove_container(engine, container_name);
-            engine_run_sandbox_container(engine, container_name, image, working_dir, mounts, home)
-                .map_err(|second_err| format!("{}; {}", first_err, second_err))
+            engine_remove_container(engine, docker_context, container_name);
+            engine_run_sandbox_container(
+                engine,
+                docker_context,
+                container_name,
+                image,
+                working_dir,
+                mounts,
+                home,
+            )
+            .map_err(|second_err| format!("{}; {}", first_err, second_err))
         }
     }
 }
@@ -407,16 +683,14 @@ fn run_midtown_command_in_sandbox(
     ];
     cmd_args.extend(args.to_vec());
 
-    let output = Command::new(runtime.engine.binary())
-        .args(&cmd_args)
-        .output()
-        .map_err(|e| {
-            format!(
-                "Failed to execute midtown inside {} sandbox: {}",
-                runtime.engine.display_name(),
-                e
-            )
-        })?;
+    let mut cmd = engine_command(runtime.engine, runtime.docker_context.as_deref());
+    let output = cmd.args(&cmd_args).output().map_err(|e| {
+        format!(
+            "Failed to execute midtown inside {} sandbox: {}",
+            runtime.engine.display_name(),
+            e
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -443,7 +717,7 @@ fn exec_midtown_command_in_sandbox(
     working_dir: &Path,
     args: &[String],
 ) -> Result<Response, String> {
-    let mut cmd = Command::new(runtime.engine.binary());
+    let mut cmd = engine_command(runtime.engine, runtime.docker_context.as_deref());
     cmd.arg("exec")
         .arg("-it")
         .arg("-e")
@@ -805,12 +1079,14 @@ pub fn handle_start(
     daemon_only: bool,
     dangerously_run_without_sandbox: bool,
     project: Option<String>,
+    container: Option<String>,
     repos: Vec<PathBuf>,
 ) -> Result<Response, String> {
     // Validate explicit project name if provided
     if let Some(ref name) = project {
         validate_project_name(name)?;
     }
+    let container_override = parse_container_override(container.as_deref())?;
 
     // Verify we're in a git repo first
     let primary_repo = repo_root()?;
@@ -826,10 +1102,19 @@ pub fn handle_start(
         .unwrap_or_else(|| "default".to_string());
     let additional_repos = resolve_repos(&repos, &project_name);
     let session = session_name_for(&Some(project_name.clone()))?;
+    emit_startup_progress(
+        5,
+        &format!(
+            "starting project '{}'{}",
+            project_name,
+            if daemon_only { " (daemon-only)" } else { "" }
+        ),
+    );
 
     // On macOS, require sandboxed start by default unless we're already inside
     // the sandbox container or the user explicitly opts out.
     if cfg!(target_os = "macos") && !running_inside_sandbox() {
+        emit_startup_progress(12, "checking container runtimes");
         let home = dirs::home_dir().ok_or("Failed to determine home directory")?;
         let image = sandbox_image_name();
         let container_name = sandbox_container_name(&project_name);
@@ -844,6 +1129,10 @@ pub fn handle_start(
                 start_args.push("--project".to_string());
                 start_args.push(p.clone());
             }
+            if let Some(ref c) = container {
+                start_args.push("--container".to_string());
+                start_args.push(c.clone());
+            }
             for repo in &repos {
                 start_args.push("--add-repo".to_string());
                 start_args.push(repo.to_string_lossy().to_string());
@@ -853,35 +1142,62 @@ pub fn handle_start(
 
         // Determine which container runtimes to try and in what order.
         // Prefer whichever is already running to avoid unnecessary starts.
-        let docker_running = docker_is_running();
-        let apple_running = command_in_path("container") && apple_container_is_running();
-
-        let engines_to_try: Vec<SandboxEngine> = if docker_running && !apple_running {
-            // Docker is running, try it first
-            vec![SandboxEngine::Docker, SandboxEngine::AppleContainer]
-        } else if apple_running && !docker_running {
-            // Apple container is running, try it first
-            vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
+        let forced_docker_context = match &container_override {
+            Some(ContainerOverride::Docker { context }) => context.clone(),
+            _ => None,
+        };
+        let engines_to_try: Vec<SandboxEngine> = if let Some(ref override_value) =
+            container_override
+        {
+            let desc = match override_value {
+                ContainerOverride::Apple => "apple".to_string(),
+                ContainerOverride::Docker { context: Some(ctx) } => {
+                    format!("docker context '{}'", ctx)
+                }
+                ContainerOverride::Docker { context: None } => "docker (auto context)".to_string(),
+            };
+            emit_startup_progress(16, &format!("container override: {}", desc));
+            match override_value {
+                ContainerOverride::Apple => vec![SandboxEngine::AppleContainer],
+                ContainerOverride::Docker { .. } => vec![SandboxEngine::Docker],
+            }
         } else {
-            // Either both are running or neither is running - use default preference order
-            vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
+            let docker_running = docker_is_running();
+            let apple_running = command_in_path("container") && apple_container_is_running();
+            if docker_running && !apple_running {
+                // Docker is running, try it first
+                vec![SandboxEngine::Docker, SandboxEngine::AppleContainer]
+            } else if apple_running && !docker_running {
+                // Apple container is running, try it first
+                vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
+            } else {
+                // Either both are running or neither is running - use default preference order
+                vec![SandboxEngine::AppleContainer, SandboxEngine::Docker]
+            }
         };
 
         let mut errors = Vec::new();
         for engine in engines_to_try {
-            let runtime = SandboxRuntimeState {
+            let mut runtime = SandboxRuntimeState {
                 engine,
                 container_name: container_name.clone(),
+                docker_context: None,
             };
+            emit_startup_progress(
+                20,
+                &format!("trying {} runtime", runtime.engine.display_name()),
+            );
 
             let result = match engine {
                 SandboxEngine::AppleContainer => {
                     if !command_in_path("container") {
                         Err("container command not found".to_string())
                     } else {
+                        emit_startup_progress(28, "starting Apple container system");
                         ensure_apple_container_system_started().and_then(|_| {
                             ensure_sandbox_container_running(
                                 runtime.engine,
+                                runtime.docker_context.as_deref(),
                                 &runtime.container_name,
                                 &image,
                                 &primary_repo,
@@ -895,9 +1211,21 @@ pub fn handle_start(
                     if !command_in_path("docker") {
                         Err("docker command not found".to_string())
                     } else {
-                        docker_is_usable().and_then(|_| {
+                        emit_startup_progress(28, "checking Docker daemon");
+                        let context_result = if let Some(context) = forced_docker_context.clone() {
+                            docker_context_is_usable(&context).map(|_| context)
+                        } else {
+                            docker_is_usable()
+                        };
+                        context_result.and_then(|context| {
+                            runtime.docker_context = Some(context.clone());
+                            emit_startup_progress(
+                                31,
+                                &format!("using Docker context '{}'", context),
+                            );
                             ensure_sandbox_container_running(
                                 runtime.engine,
+                                runtime.docker_context.as_deref(),
                                 &runtime.container_name,
                                 &image,
                                 &primary_repo,
@@ -911,18 +1239,34 @@ pub fn handle_start(
 
             match result {
                 Ok(()) => {
+                    emit_startup_progress(
+                        35,
+                        &format!(
+                            "launching in {} sandbox '{}'",
+                            runtime.engine.display_name(),
+                            runtime.container_name
+                        ),
+                    );
                     let start_args = build_start_args();
                     let inner =
                         run_midtown_command_in_sandbox(&runtime, &primary_repo, &start_args)?;
                     write_sandbox_runtime_state(&repo_name, &runtime);
+                    let sandbox_details = match runtime.docker_context.as_deref() {
+                        Some(context) if runtime.engine == SandboxEngine::Docker => format!(
+                            "{} ({}, context={})",
+                            runtime.engine.display_name(),
+                            runtime.container_name,
+                            context
+                        ),
+                        _ => format!(
+                            "{} ({})",
+                            runtime.engine.display_name(),
+                            runtime.container_name
+                        ),
+                    };
                     return Ok(match inner {
                         Response::Message { message } => Response::Message {
-                            message: format!(
-                                "{}. Sandbox: {} ({})",
-                                message,
-                                runtime.engine.display_name(),
-                                runtime.container_name
-                            ),
+                            message: format!("{}. Sandbox: {}", message, sandbox_details),
                         },
                         other => other,
                     });
@@ -972,7 +1316,8 @@ pub fn handle_start(
     }
 
     // Ensure required plugins are installed (unless using a stub command)
-    if std::env::var("MIDTOWN_LEAD_COMMAND").is_err() {
+    if !daemon_only && std::env::var("MIDTOWN_LEAD_COMMAND").is_err() {
+        emit_startup_progress(55, "checking required Claude plugins");
         ensure_plugins_installed()?;
     }
 
@@ -984,8 +1329,10 @@ pub fn handle_start(
     // Step 1: Start daemon if not running
     if daemon_is_running() {
         messages.push("Daemon already running".to_string());
+        emit_startup_progress(65, "daemon already running");
     } else {
         // Clean up any stale PID file or orphaned daemon before starting
+        emit_startup_progress(65, "starting daemon");
         cleanup_stale_daemon();
 
         // Start the daemon in the background using `midtown daemon`
@@ -1012,10 +1359,12 @@ pub fn handle_start(
         // The daemon startup includes plugin checking and gh CLI auth which
         // can take several seconds, so we use a generous timeout (15s total).
         // In containerized environments, startup can be even slower.
+        emit_startup_progress(75, "waiting for daemon socket");
         let started = wait_for_daemon_socket(75, 200);
 
         if started {
             messages.push("Started daemon".to_string());
+            emit_startup_progress(82, "daemon is ready");
         } else {
             return Err("Daemon failed to start".to_string());
         }
@@ -1024,11 +1373,14 @@ pub fn handle_start(
     // Step 2: Launch tmux session (unless --daemon-only)
     if daemon_only {
         messages.push("Skipping tmux session (--daemon-only)".to_string());
+        emit_startup_progress(88, "skipping tmux session (--daemon-only)");
     } else if session_exists(&session) {
         messages.push(format!("Session '{}' already exists", session));
+        emit_startup_progress(88, &format!("tmux session '{}' already exists", session));
     } else {
         // Get project name for status bar (uppercase)
         let display_name = project_name.to_uppercase();
+        emit_startup_progress(88, "creating tmux session");
 
         // Create empty tmux session (no command — spawn_lead creates the window)
         let status = Command::new("tmux")
@@ -1114,10 +1466,12 @@ pub fn handle_start(
         let _ = std::fs::write(&marker_path, env!("CARGO_PKG_VERSION"));
 
         messages.push(format!("Started Lead session in '{}'", session));
+        emit_startup_progress(93, "lead session started");
     }
 
     // Step 3: Auto-launch shared webserver if not running
     if !webserver_is_running() {
+        emit_startup_progress(96, "starting shared webserver");
         match launch_webserver() {
             Ok(()) => messages.push(format!(
                 "Started webserver on http://localhost:{}",
@@ -1130,11 +1484,13 @@ pub fn handle_start(
             "Webserver running at http://localhost:{}",
             midtown::webserver::DEFAULT_WEBSERVER_PORT
         ));
+        emit_startup_progress(96, "shared webserver already running");
     }
 
     // Build response message
     let attach_hint = "Attach with: midtown attach".to_string();
     messages.push(attach_hint);
+    emit_startup_progress(100, "startup complete");
 
     Ok(Response::Message {
         message: messages.join(". "),
@@ -1490,7 +1846,7 @@ pub fn handle_restart() -> Result<Response, String> {
     // already exist (we kept them above). Passing daemon_only=true prevents
     // handle_start from entering the session-creation path, which could
     // race with check_and_respawn_lead to create duplicate lead windows.
-    let result = handle_start(true, false, None, vec![])?;
+    let result = handle_start(true, false, None, None, vec![])?;
 
     // Restart the chat pane to pick up code changes.
     // Use respawn-pane -k to atomically kill the old process and start a new
@@ -1580,7 +1936,7 @@ pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
         }
 
         // Start midtown (daemon + tmux session)
-        handle_start(false, false, None, vec![])?;
+        handle_start(false, false, None, None, vec![])?;
 
         // Wait briefly for the session to be ready
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -2078,13 +2434,59 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_container_override_valid() {
+        assert_eq!(
+            parse_container_override(Some("apple")).unwrap(),
+            Some(ContainerOverride::Apple)
+        );
+        assert_eq!(
+            parse_container_override(Some("docker")).unwrap(),
+            Some(ContainerOverride::Docker { context: None })
+        );
+        assert_eq!(
+            parse_container_override(Some("docker:default")).unwrap(),
+            Some(ContainerOverride::Docker {
+                context: Some("default".to_string()),
+            })
+        );
+        assert_eq!(
+            parse_container_override(Some("orbstack")).unwrap(),
+            Some(ContainerOverride::Docker {
+                context: Some("orbstack".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_container_override_invalid() {
+        assert!(parse_container_override(Some("")).is_err());
+        assert!(parse_container_override(Some("docker:")).is_err());
+        assert!(parse_container_override(Some("podman:machine")).is_err());
+    }
+
+    #[test]
     fn test_sandbox_runtime_state_roundtrip() {
         let state = SandboxRuntimeState {
             engine: SandboxEngine::Docker,
             container_name: "midtown-sandbox-test".to_string(),
+            docker_context: Some("default".to_string()),
         };
         let json = serde_json::to_string(&state).unwrap();
         let loaded: SandboxRuntimeState = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn test_sandbox_runtime_state_legacy_json_without_context() {
+        let legacy = r#"{"engine":"docker","container_name":"midtown-sandbox-test"}"#;
+        let loaded: SandboxRuntimeState = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            loaded,
+            SandboxRuntimeState {
+                engine: SandboxEngine::Docker,
+                container_name: "midtown-sandbox-test".to_string(),
+                docker_context: None,
+            }
+        );
     }
 }

@@ -32,8 +32,12 @@ pub enum AuthCommand {
         /// Profile name to switch to
         profile: String,
 
-        /// Switch all projects (not just the current one)
-        #[arg(long)]
+        /// Switch only the current project (global is the default)
+        #[arg(long, default_value_t = false, conflicts_with = "all")]
+        project: bool,
+
+        /// Deprecated alias for global scope (global is already the default)
+        #[arg(long, hide = true, default_value_t = false, conflicts_with = "project")]
         all: bool,
     },
     /// Remove a profile
@@ -50,16 +54,33 @@ pub fn handle(
     match cmd {
         AuthCommand::Login { email } => handle_login(email, provider),
         AuthCommand::List => handle_list(provider),
-        AuthCommand::Switch { profile, all } => handle_switch(profile, *all, provider),
+        AuthCommand::Switch {
+            profile,
+            project,
+            all,
+        } => handle_switch(profile, use_global_scope(*project, *all), provider),
         AuthCommand::Remove { profile } => handle_remove(profile, provider),
     }
+}
+
+fn use_global_scope(project: bool, all: bool) -> bool {
+    !project || all
+}
+
+fn should_apply_global_already_on_fallback(global: bool, response: &Response) -> bool {
+    global
+        && matches!(
+            response,
+            Response::Message { message } if message.starts_with("Already on ")
+        )
 }
 
 pub fn handle_list_all_providers() -> Result<Response, String> {
     let mut sections = Vec::new();
 
     for provider in midtown::auth::AuthProvider::all() {
-        let rows = fetch_sorted_profiles(*provider)?;
+        let (rows, context) = fetch_sorted_profiles(*provider)?;
+        let note = context.header_line(*provider);
         if rows.is_empty() {
             sections.push(format!(
                 "{}\n  No profiles found. Create one with: midtown auth --provider {} login <email>",
@@ -67,7 +88,12 @@ pub fn handle_list_all_providers() -> Result<Response, String> {
             ));
             continue;
         }
-        sections.push(format!("{}\n{}", provider, format_table(&rows)));
+        let table = format_table(&rows);
+        let body = match note {
+            Some(line) => format!("{}\n{}", line, table),
+            None => table,
+        };
+        sections.push(format!("{}\n{}", provider, body));
     }
 
     Ok(Response::Message {
@@ -148,6 +174,7 @@ fn handle_login(email: &str, provider: midtown::auth::AuthProvider) -> Result<Re
 struct ProfileRow {
     name: String,
     is_current: bool,
+    is_global_current: bool,
     has_credentials: bool,
     usage: Option<midtown::UsageData>,
     /// Remaining capacity = min(100 - session_util, 100 - week_util).
@@ -157,12 +184,40 @@ struct ProfileRow {
     bottleneck_reset: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+struct ProfileListContext {
+    project_name: Option<String>,
+    active_profile: String,
+    global_profile: String,
+}
+
+impl ProfileListContext {
+    fn header_line(&self, provider: midtown::auth::AuthProvider) -> Option<String> {
+        if let Some(project) = &self.project_name
+            && self.active_profile != self.global_profile
+        {
+            return Some(format!(
+                "Active {} profile for project '{}': {} (global default: {})",
+                provider, project, self.active_profile, self.global_profile
+            ));
+        }
+        None
+    }
+}
+
 /// Fetch profiles with usage data, sorted by available capacity (best first).
-fn fetch_sorted_profiles(provider: midtown::auth::AuthProvider) -> Result<Vec<ProfileRow>, String> {
+fn fetch_sorted_profiles(
+    provider: midtown::auth::AuthProvider,
+) -> Result<(Vec<ProfileRow>, ProfileListContext), String> {
     let profiles = midtown::auth::list_profiles_for(provider)
         .map_err(|e| format!("Failed to list profiles for {}: {}", provider, e))?;
 
-    let current = midtown::auth::current_profile_for(provider);
+    let global_current = midtown::auth::current_profile_for(provider);
+    let project_name = midtown::paths::detect_repo_name();
+    let active_current = if let Some(project) = &project_name {
+        midtown::auth::active_profile_for_project_with_provider(project, provider)
+    } else {
+        global_current.clone()
+    };
 
     // Fetch usage data for all authenticated profiles in parallel
     let usage_results: Vec<(String, Option<midtown::UsageData>)> =
@@ -214,7 +269,8 @@ fn fetch_sorted_profiles(provider: midtown::auth::AuthProvider) -> Result<Vec<Pr
 
             ProfileRow {
                 name: name.clone(),
-                is_current: *name == current,
+                is_current: *name == active_current,
+                is_global_current: *name == global_current,
                 has_credentials,
                 usage,
                 remaining_capacity,
@@ -246,7 +302,14 @@ fn fetch_sorted_profiles(provider: midtown::auth::AuthProvider) -> Result<Vec<Pr
         }
     });
 
-    Ok(rows)
+    Ok((
+        rows,
+        ProfileListContext {
+            project_name,
+            active_profile: active_current,
+            global_profile: global_current,
+        },
+    ))
 }
 
 /// Format a reset time: relative ("2h 15m") if under 24h, absolute ("Feb 11 @ 10:59am") otherwise.
@@ -304,7 +367,8 @@ enum SelectorAction {
 }
 
 fn handle_list(provider: midtown::auth::AuthProvider) -> Result<Response, String> {
-    let rows = fetch_sorted_profiles(provider)?;
+    let (rows, context) = fetch_sorted_profiles(provider)?;
+    let note = context.header_line(provider);
 
     // Non-TTY: static table only
     if !std::io::stdout().is_terminal() {
@@ -316,15 +380,21 @@ fn handle_list(provider: midtown::auth::AuthProvider) -> Result<Response, String
                 ),
             });
         }
-        return Ok(Response::Message {
-            message: format_table(&rows),
-        });
+        let table = format_table(&rows);
+        let message = match note {
+            Some(line) => format!("{}\n{}", line, table),
+            None => table,
+        };
+        return Ok(Response::Message { message });
     }
 
     // Print the table first so usage details are visible above the selector
     if rows.is_empty() {
         println!("No profiles found.\n");
     } else {
+        if let Some(line) = note {
+            println!("{}", line);
+        }
         println!("{}", format_table(&rows));
         println!();
     }
@@ -334,9 +404,9 @@ fn handle_list(provider: midtown::auth::AuthProvider) -> Result<Response, String
 
     match action {
         SelectorAction::Switch(profile) => {
-            let all = run_scope_selector()?;
-            match all {
-                Some(scope_all) => handle_switch(&profile, scope_all, provider),
+            let scope = run_scope_selector()?;
+            match scope {
+                Some(scope_global) => handle_switch(&profile, scope_global, provider),
                 None => Ok(Response::Message {
                     message: String::new(),
                 }), // cancelled
@@ -388,12 +458,19 @@ fn prompt_add_account(provider: midtown::auth::AuthProvider) -> Result<Response,
 /// Format profiles as a static table string.
 fn format_table(rows: &[ProfileRow]) -> String {
     let mut lines = Vec::new();
+    let has_distinct_global_marker = rows.iter().any(|r| r.is_global_current && !r.is_current);
 
     // Build display rows: (profile, session_usage, session_resets, week_usage, week_resets)
     let display_rows: Vec<(String, String, String, String, String)> = rows
         .iter()
         .map(|row| {
-            let marker = if row.is_current { " *" } else { "" };
+            let marker = if row.is_current {
+                " *"
+            } else if row.is_global_current {
+                " ^"
+            } else {
+                ""
+            };
             let profile = format!("{}{}", row.name, marker);
             if !row.has_credentials {
                 return (
@@ -458,6 +535,11 @@ fn format_table(rows: &[ProfileRow]) -> String {
         ));
     }
 
+    if has_distinct_global_marker {
+        lines.push(String::new());
+        lines.push("* active for this context, ^ global default".to_string());
+    }
+
     lines.join("\n")
 }
 
@@ -512,10 +594,10 @@ fn run_interactive_selector(rows: &[ProfileRow]) -> Result<SelectorAction, Strin
     result
 }
 
-/// Inline selector for switch scope: this project (default) or all projects.
-/// Returns Some(true) for all, Some(false) for this project, None for cancel.
+/// Inline selector for switch scope: all projects (default) or this project only.
+/// Returns Some(true) for global, Some(false) for project scope, None for cancel.
 fn run_scope_selector() -> Result<Option<bool>, String> {
-    let options = ["This project (default)", "All projects"];
+    let options = ["All projects (default)", "This project only"];
     let mut state = ListState::default();
     state.select(Some(0));
 
@@ -578,8 +660,8 @@ fn run_scope_selector() -> Result<Option<bool>, String> {
                     state.select(Some((i + 1) % options.len()));
                 }
                 KeyCode::Enter => {
-                    let all = state.selected() == Some(1);
-                    break Ok(Some(all));
+                    let global = state.selected() == Some(0);
+                    break Ok(Some(global));
                 }
                 _ => {}
             }
@@ -736,19 +818,37 @@ fn draw_selector(f: &mut ratatui::Frame, rows: &[ProfileRow], state: &mut ListSt
 
 fn handle_switch(
     profile: &str,
-    all: bool,
+    global: bool,
     provider: midtown::auth::AuthProvider,
 ) -> Result<Response, String> {
     // If the daemon is running, use RPC to switch profile and re-launch all claudes.
     // This ensures running coworkers and the lead pick up the new credentials.
     if let Ok(client) = crate::client::DaemonClient::connect() {
-        return client.auth_switch(profile, all, provider);
+        let response = client.auth_switch(profile, global, provider)?;
+        if should_apply_global_already_on_fallback(global, &response) {
+            // Compatibility fallback for older daemons that short-circuit before
+            // clearing project overrides on global switches.
+            let cleared = midtown::config::clear_all_project_auth_profiles_for(provider);
+            if cleared > 0 {
+                let msg = match &response {
+                    Response::Message { message } => message.as_str(),
+                    _ => "Already on selected profile.",
+                };
+                return Ok(Response::Message {
+                    message: format!(
+                        "{} Cleared {} project override(s) for {} so global profile '{}' now applies.",
+                        msg, cleared, provider, profile
+                    ),
+                });
+            }
+        }
+        return Ok(response);
     }
 
-    if all {
+    if global {
         // Global switch: update the global current profile and clear per-project overrides
         midtown::auth::set_current_profile_for(provider, profile).map_err(|e| e.to_string())?;
-        midtown::config::clear_all_project_auth_profiles();
+        midtown::config::clear_all_project_auth_profiles_for(provider);
 
         Ok(Response::Message {
             message: format!(
@@ -758,8 +858,9 @@ fn handle_switch(
         })
     } else {
         // Per-project switch: update current project's config
-        let project_name = midtown::paths::detect_repo_name()
-            .ok_or_else(|| "Not in a git repository. Use --all to switch globally.".to_string())?;
+        let project_name = midtown::paths::detect_repo_name().ok_or_else(|| {
+            "Not in a git repository. Omit --project to switch globally.".to_string()
+        })?;
 
         set_project_auth_profile(&project_name, profile, provider)?;
 
@@ -792,4 +893,81 @@ fn handle_remove(profile: &str, provider: midtown::auth::AuthProvider) -> Result
     Ok(Response::Message {
         message: format!("Removed {} profile '{}'.", provider, profile),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_table_marks_active_and_global_profiles() {
+        let rows = vec![
+            ProfileRow {
+                name: "active@example.com".to_string(),
+                is_current: true,
+                is_global_current: false,
+                has_credentials: true,
+                usage: None,
+                remaining_capacity: None,
+                bottleneck_reset: None,
+            },
+            ProfileRow {
+                name: "global@example.com".to_string(),
+                is_current: false,
+                is_global_current: true,
+                has_credentials: true,
+                usage: None,
+                remaining_capacity: None,
+                bottleneck_reset: None,
+            },
+        ];
+
+        let table = format_table(&rows);
+        assert!(table.contains("active@example.com *"));
+        assert!(table.contains("global@example.com ^"));
+        assert!(table.contains("* active for this context, ^ global default"));
+    }
+
+    #[test]
+    fn context_header_only_when_project_override_differs() {
+        let provider = midtown::auth::AuthProvider::Claude;
+        let ctx = ProfileListContext {
+            project_name: Some("midtown".to_string()),
+            active_profile: "claude@quotably.com".to_string(),
+            global_profile: "ben@quotably.com".to_string(),
+        };
+        assert!(
+            ctx.header_line(provider)
+                .unwrap()
+                .contains("Active claude profile for project 'midtown'")
+        );
+
+        let same_ctx = ProfileListContext {
+            project_name: Some("midtown".to_string()),
+            active_profile: "ben@quotably.com".to_string(),
+            global_profile: "ben@quotably.com".to_string(),
+        };
+        assert!(same_ctx.header_line(provider).is_none());
+    }
+
+    #[test]
+    fn use_global_scope_defaults_to_global() {
+        assert!(use_global_scope(false, false));
+        assert!(use_global_scope(false, true));
+        assert!(!use_global_scope(true, false));
+    }
+
+    #[test]
+    fn fallback_applies_only_for_global_already_on_message() {
+        let already_on = Response::Message {
+            message: "Already on claude profile 'ben@quotably.com'".to_string(),
+        };
+        assert!(should_apply_global_already_on_fallback(true, &already_on));
+        assert!(!should_apply_global_already_on_fallback(false, &already_on));
+
+        let other = Response::Message {
+            message: "Switched profile".to_string(),
+        };
+        assert!(!should_apply_global_already_on_fallback(true, &other));
+    }
 }

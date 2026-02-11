@@ -35,7 +35,7 @@ auth_profile = "work@example.com"
 |---------|-------------|
 | `midtown auth login <email>` | Create a new profile or re-authenticate an existing one. Launches a Claude session where you run `/login` to complete OAuth. |
 | `midtown auth list` | List all available profiles with usage data, and interactively switch between them. |
-| `midtown auth switch <profile> [--all]` | Switch to a different profile. Without `--all`, switches for the current project only. With `--all`, switches globally and clears per-project overrides. |
+| `midtown auth switch <profile> [--project]` | Switch to a different profile. By default, switches globally and clears per-project overrides. With `--project`, switches only for the current project. |
 | `midtown auth remove <profile>` | Remove a profile and its stored credentials. |
 
 ## Example Workflow
@@ -54,11 +54,11 @@ midtown auth list
 # Shows profiles sorted by available capacity with usage data
 # Use arrow keys to switch, Del to remove, Enter to confirm
 
-# Switch to work account (current project only)
+# Switch to work account (global default)
 midtown auth switch work@example.com
 
-# Switch to work account (all projects)
-midtown auth switch work@example.com --all
+# Switch to work account (current project only)
+midtown auth switch work@example.com --project
 ```
 
 ## Running Claude with Auth
