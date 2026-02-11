@@ -411,11 +411,9 @@ fn merge_tables(target: &mut Table, new_table: &Table) {
             (Some(Item::Table(target_table)), Item::Table(new_table)) => {
                 merge_tables(target_table, new_table);
             }
-            // Target exists but isn't a table, or new value isn't a table - replace value
+            // Target exists but isn't a table, or new value isn't a table - replace
             (Some(existing), new_item) => {
-                if let Some(new_val) = new_item.as_value() {
-                    *existing = Item::Value(new_val.clone());
-                }
+                *existing = new_item.clone();
             }
             // Key doesn't exist in target - add it
             (None, new_item) => {
