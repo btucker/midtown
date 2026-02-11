@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tmux \
         git \
         curl \
+        unzip \
         procps \
         jq \
         ca-certificates \
