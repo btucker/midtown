@@ -140,6 +140,7 @@ pub struct WorldSnapshot {
     /// Maps task ID → model specification (e.g., "claude/opus", "claude/sonnet").
     /// Used by dispatch.rs to launch coworkers with the requested model when spawning
     /// for a task. Stored in DaemonPersistentState and loaded here for decision functions.
+    #[serde(default)]
     pub task_model_map: HashMap<String, String>,
 
     // ── PR / GitHub state ───────────────────────────────────────────────
