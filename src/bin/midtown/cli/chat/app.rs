@@ -1975,6 +1975,12 @@ pub(super) mod tests {
         max_attempts: u32,
         mut f: impl FnMut() -> midtown::Result<T>,
     ) -> midtown::Result<T> {
+        if max_attempts == 0 {
+            return Err(midtown::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "retry_with_backoff: max_attempts must be > 0",
+            )));
+        }
         for attempt in 0..max_attempts {
             match f() {
                 Ok(val) => return Ok(val),
@@ -1985,7 +1991,18 @@ pub(super) mod tests {
                 Err(e) => return Err(e),
             }
         }
-        unreachable!()
+        unreachable!("loop above always returns")
+    }
+
+    #[test]
+    fn test_retry_with_backoff_zero_attempts_returns_error() {
+        let result = retry_with_backoff(0, || Ok(42));
+        assert!(result.is_err(), "max_attempts=0 should return an error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("max_attempts must be > 0"),
+            "Error should mention max_attempts, got: {err_msg}"
+        );
     }
 
     /// Create a default App for testing. Tests can override specific fields
@@ -2640,7 +2657,8 @@ pub(super) mod tests {
         );
 
         // Simulate reading messages by updating the cursor
-        let messages_read = channel.read_since_cursor("chat-tui").unwrap();
+        let messages_read =
+            retry_with_backoff(5, || channel.read_since_cursor("chat-tui")).unwrap();
         assert_eq!(messages_read.len(), 3, "Should have read 3 messages");
 
         // Verify cursor was saved - load it and check it points to the last message
