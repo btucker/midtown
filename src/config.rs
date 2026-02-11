@@ -440,6 +440,9 @@ pub struct ProvidersConfig {
 /// serde omits it from serialization. Without removal, the old value persists in the file.
 ///
 /// Comment-only sections (tables with no key-value pairs) are preserved during removal.
+///
+/// **Note**: This function assumes all struct fields are serialized (no `skip_serializing_if`).
+/// If a field is omitted from serialization, Phase 2 will remove it from the file.
 fn merge_tables(target: &mut Table, new_table: &Table) {
     // Phase 1: Overlay new values onto target (add or update)
     for (key, new_value) in new_table.iter() {
