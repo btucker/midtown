@@ -944,6 +944,7 @@ mod tests {
                     has_api_error: false,
                     has_running_subagent: false,
                     has_pending_tool: false,
+                    has_tool_name_conflict: false,
                     output_log: None,
                     output_log_path: PathBuf::new(),
                 },
