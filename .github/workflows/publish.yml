@@ -61,6 +61,9 @@ jobs:
           echo "Version verified: $CARGO_VERSION"
           echo "version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
 
+      - name: Set up QEMU (for cross-platform builds)
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -76,6 +79,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
             ${{ env.IMAGE_NAME }}:latest
