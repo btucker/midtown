@@ -92,7 +92,7 @@ fn should_recover_task(
         return false;
     }
 
-    // Check if this task references a PR that's already merged
+    // Check if this task references any PR that's already merged
     // Extract PRs from both subject and description using the same logic as auto-completion
     let mut all_text = task.subject.clone();
     if let Some(desc) = &task.description {
