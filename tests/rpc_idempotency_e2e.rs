@@ -127,20 +127,16 @@ impl RpcFixture {
 
     /// Start the daemon process.
     fn start_daemon(&mut self) {
-        // Build the daemon binary
-        let status = Command::new("cargo")
-            .args(["build", "--bin", "midtown"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("Failed to build midtown");
-        assert!(status.success(), "Failed to build midtown");
-
         let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("debug")
             .join("midtown");
+
+        assert!(
+            binary_path.exists(),
+            "Debug binary not found at {:?}. Run `cargo build` first.",
+            binary_path
+        );
 
         // Remove stale socket if present
         let _ = fs::remove_file(&self.socket_path);
