@@ -1507,6 +1507,89 @@ pub(super) fn build_task_completion_effects(
     ]
 }
 
+/// Build effects to auto-complete tasks when all PRs referenced in their description are merged.
+///
+/// This handles cases where the task is NOT linked to a PR via `[Midtown #XX]` in the PR title:
+/// - Meta-tasks: "Merge reviewed PRs: #901-#910"
+/// - Sub-tasks: "Address PR #904 review feedback"
+/// - Fix-PR tasks: "Fix PR #908"
+///
+/// Tasks linked via `[Midtown #XX]` are handled by `build_task_completion_effects` (webhook path).
+/// This function skips those tasks to avoid double-completion.
+///
+/// Returns effects to complete tasks whose description references only merged PRs.
+pub(super) fn build_description_based_completion_effects(
+    snap: &snapshot::WorldSnapshot,
+) -> Vec<Effect> {
+    // Pre-compute task IDs that are already handled by the title-based completion path.
+    // These tasks have a merged PR whose title contains `[Midtown #XX]` matching their ID.
+    let title_completed_task_ids: std::collections::HashSet<String> = snap
+        .all_tasks
+        .iter()
+        .filter(|t| t.status == crate::tasks::TaskStatus::Completed)
+        .map(|t| t.id.clone())
+        .collect();
+
+    let mut effects = Vec::new();
+
+    for task in &snap.all_tasks {
+        // Only consider in_progress tasks
+        if task.status != crate::tasks::TaskStatus::InProgress {
+            continue;
+        }
+
+        // Skip tasks already completed (defensive guard against race with webhook path)
+        if title_completed_task_ids.contains(&task.id) {
+            continue;
+        }
+
+        // Skip if task has no description
+        let Some(description) = &task.description else {
+            continue;
+        };
+
+        // Extract PR numbers from the description
+        let pr_numbers = crate::tasks::extract_pr_numbers_from_text(description);
+
+        // Skip if no PR references found
+        if pr_numbers.is_empty() {
+            continue;
+        }
+
+        // Check if ALL referenced PRs are merged
+        let all_merged = pr_numbers
+            .iter()
+            .all(|pr_num| snap.merged_pr_numbers.contains(pr_num));
+
+        if all_merged {
+            let task_id_str = task.id.clone();
+            effects.push(Effect::CompleteTask {
+                task_id: task_id_str.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            effects.push(Effect::ClearBlockedBy {
+                completed_task_id: task_id_str.clone(),
+                repo_name: snap.repo_name.clone(),
+            });
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: format!(
+                    "✅ Auto-completed task !{} (all referenced PRs merged: {})",
+                    task.id,
+                    pr_numbers
+                        .iter()
+                        .map(|n| format!("#{}", n))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                channel: None,
+            });
+        }
+    }
+
+    effects
+}
+
 // ============================================================================
 // Task unassignment for PRs in review
 // ============================================================================
@@ -1877,6 +1960,248 @@ mod tests {
             }
             _ => panic!("Third effect should be PostToChannel"),
         }
+    }
+
+    #[test]
+    fn test_description_based_completion_all_prs_merged() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        // Task with description referencing multiple PRs
+        let task = Task {
+            id: "1100".to_string(),
+            subject: "Meta task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("Merge reviewed PRs: #901, #902, #903".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // All referenced PRs are merged
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(901);
+        merged_pr_numbers.insert(902);
+        merged_pr_numbers.insert(903);
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert_eq!(effects.len(), 3, "Should return 3 effects");
+
+        // Verify CompleteTask effect
+        match &effects[0] {
+            Effect::CompleteTask { task_id, repo_name } => {
+                assert_eq!(task_id, "1100");
+                assert_eq!(repo_name, "test-repo");
+            }
+            _ => panic!("First effect should be CompleteTask"),
+        }
+
+        // Verify channel message mentions all PRs
+        match &effects[2] {
+            Effect::PostToChannel { message, .. } => {
+                assert!(message.contains("#901"));
+                assert!(message.contains("#902"));
+                assert!(message.contains("#903"));
+            }
+            _ => panic!("Third effect should be PostToChannel"),
+        }
+    }
+
+    #[test]
+    fn test_description_based_completion_some_prs_not_merged() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        let task = Task {
+            id: "1101".to_string(),
+            subject: "Meta task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("Merge PRs: #901, #902, #903".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // Only some PRs are merged
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(901);
+        merged_pr_numbers.insert(902);
+        // PR #903 is NOT merged
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete task when not all PRs are merged"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_no_pr_references() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1102".to_string(),
+            subject: "Some task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("No PR references in this description".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete task with no PR references"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_skips_pending_tasks() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        let task = Task {
+            id: "1103".to_string(),
+            subject: "Pending task".to_string(),
+            status: TaskStatus::Pending, // Not InProgress
+            owner: None,
+            description: Some("Fix PR #904".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(904);
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete non-InProgress tasks"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_no_description() {
+        use crate::tasks::{Task, TaskStatus};
+
+        let task = Task {
+            id: "1104".to_string(),
+            subject: "Task without description".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: None, // No description
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![task],
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not complete task with no description"
+        );
+    }
+
+    #[test]
+    fn test_description_based_completion_skips_already_completed_tasks() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::collections::HashSet;
+
+        // Simulate a task that was already completed by the webhook/title-based path.
+        // The description-based path should skip it to avoid double-completion.
+        let completed_task = Task {
+            id: "42".to_string(),
+            subject: "Add auth endpoint".to_string(),
+            status: TaskStatus::Completed, // Already completed by title-based path
+            owner: Some("york".to_string()),
+            description: Some("Fix PR #904 review feedback".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        // Also add an in_progress task with PR references
+        let in_progress_task = Task {
+            id: "43".to_string(),
+            subject: "Meta task".to_string(),
+            status: TaskStatus::InProgress,
+            owner: Some("york".to_string()),
+            description: Some("Merge PRs: #904, #905".to_string()),
+            blocked_by: vec![],
+            channel: None,
+            created_at: None,
+        };
+
+        let mut merged_pr_numbers = HashSet::new();
+        merged_pr_numbers.insert(904);
+        merged_pr_numbers.insert(905);
+
+        let snap = snapshot::WorldSnapshot {
+            all_tasks: vec![completed_task, in_progress_task],
+            merged_pr_numbers,
+            repo_name: "test-repo".to_string(),
+            ..snapshot::minimal_snapshot_for_test()
+        };
+
+        let effects = build_description_based_completion_effects(&snap);
+
+        // Should only produce effects for task 43, not task 42
+        let complete_task_ids: Vec<&String> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::CompleteTask { task_id, .. } => Some(task_id),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(complete_task_ids, vec!["43"]);
+        assert!(
+            !complete_task_ids.contains(&&"42".to_string()),
+            "Should not double-complete already-completed task 42"
+        );
     }
 
     // ======================================================================

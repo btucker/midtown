@@ -705,6 +705,78 @@ pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
     None
 }
 
+/// Extract PR numbers from text (e.g., task description).
+///
+/// Extract PR numbers from text, matching `#NNN` patterns in PR-related contexts.
+///
+/// Matches patterns like:
+/// - `PR #123`, `pr #123`
+/// - `#123, #456` (comma-separated lists)
+/// - `#123` preceded by whitespace or punctuation
+///
+/// Filters out:
+/// - Markdown headings (`## heading`, `### heading`)
+/// - `#NNN` preceded by alphanumeric chars (e.g., part of a word or identifier)
+///
+/// Returns a deduplicated, sorted vector of PR numbers.
+pub fn extract_pr_numbers_from_text(text: &str) -> Vec<u64> {
+    use std::collections::HashSet;
+
+    let mut pr_numbers = HashSet::new();
+
+    for line in text.lines() {
+        // Skip markdown headings (lines starting with one or more #)
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') && !trimmed.starts_with("#[") {
+            // Check if this is a markdown heading: starts with # followed by space or more #
+            let after_hashes = trimmed.trim_start_matches('#');
+            if after_hashes.is_empty() || after_hashes.starts_with(' ') {
+                continue;
+            }
+        }
+
+        let chars: Vec<char> = line.chars().collect();
+        let len = chars.len();
+        let mut i = 0;
+
+        while i < len {
+            if chars[i] == '#' {
+                // Skip if preceded by an alphanumeric character (likely not a PR reference)
+                if i > 0 && chars[i - 1].is_alphanumeric() {
+                    i += 1;
+                    continue;
+                }
+
+                // Collect digits after #
+                let mut num_str = String::new();
+                let mut j = i + 1;
+                while j < len && chars[j].is_ascii_digit() {
+                    num_str.push(chars[j]);
+                    j += 1;
+                }
+
+                if !num_str.is_empty()
+                    && let Ok(num) = num_str.parse::<u64>()
+                {
+                    // Only include numbers that look like PR numbers (1-9999)
+                    // to avoid matching random numbers like #20250101
+                    if num < 10000 {
+                        pr_numbers.insert(num);
+                    }
+                }
+
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    let mut sorted: Vec<u64> = pr_numbers.into_iter().collect();
+    sorted.sort_unstable();
+    sorted
+}
+
 /// Mark a task as completed in a specific tasks directory.
 ///
 /// This is the path-injectable version used by tests.
@@ -1830,6 +1902,95 @@ mod tests {
         assert_eq!(
             extract_task_id_from_pr_title("prefix [Midtown #123] suffix"),
             Some(123)
+        );
+    }
+
+    #[test]
+    fn test_extract_pr_numbers_from_text() {
+        // Single PR reference
+        assert_eq!(extract_pr_numbers_from_text("Fix PR #123"), vec![123]);
+
+        // Multiple PR references
+        assert_eq!(
+            extract_pr_numbers_from_text("Merge PRs #901, #902, #903"),
+            vec![901, 902, 903]
+        );
+
+        // Mixed formats
+        assert_eq!(
+            extract_pr_numbers_from_text("Address feedback from PR #904 and #905"),
+            vec![904, 905]
+        );
+
+        // Deduplicated
+        assert_eq!(
+            extract_pr_numbers_from_text("PR #100 and #100 again"),
+            vec![100]
+        );
+
+        // No matches
+        assert_eq!(
+            extract_pr_numbers_from_text("No PR references here"),
+            Vec::<u64>::new()
+        );
+
+        // Empty string
+        assert_eq!(extract_pr_numbers_from_text(""), Vec::<u64>::new());
+
+        // Exclude very large numbers (likely dates, not PR numbers)
+        assert_eq!(
+            extract_pr_numbers_from_text("Created on #20250101"),
+            Vec::<u64>::new()
+        );
+
+        // Include valid PR numbers
+        assert_eq!(
+            extract_pr_numbers_from_text("PRs #1, #99, #999, #9999"),
+            vec![1, 99, 999, 9999]
+        );
+
+        // Range notation (each number extracted separately)
+        assert_eq!(
+            extract_pr_numbers_from_text("PRs #100-#105"),
+            vec![100, 105]
+        );
+
+        // Markdown headings should be skipped (not treated as PR references)
+        assert_eq!(
+            extract_pr_numbers_from_text("## Heading\nSome text with #123"),
+            vec![123]
+        );
+        assert_eq!(
+            extract_pr_numbers_from_text("### Another heading"),
+            Vec::<u64>::new()
+        );
+
+        // # preceded by alphanumeric chars should be skipped (not a PR ref)
+        assert_eq!(
+            extract_pr_numbers_from_text("See issue#200 for details"),
+            Vec::<u64>::new()
+        );
+        assert_eq!(
+            extract_pr_numbers_from_text("color code F#123 test"),
+            Vec::<u64>::new()
+        );
+
+        // Multi-line with mixed heading and PR references
+        assert_eq!(
+            extract_pr_numbers_from_text("# Title\nFix PR #456\n## Section\nAnd #789"),
+            vec![456, 789]
+        );
+
+        // Non-PR hash references shouldn't match when preceded by alphanumeric
+        assert_eq!(
+            extract_pr_numbers_from_text("See issue#200 and fix bug#300"),
+            Vec::<u64>::new()
+        );
+
+        // But standalone hash references should still match
+        assert_eq!(
+            extract_pr_numbers_from_text("See issue #200 and fix bug #300"),
+            vec![200, 300]
         );
     }
 
