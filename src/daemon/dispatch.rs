@@ -1726,6 +1726,82 @@ pub fn should_recover_task_test_helper(
     )
 }
 
+// ============================================================================
+// Task reset for orphaned tasks (owner on break, no PR)
+// ============================================================================
+
+/// Reset tasks that are orphaned because their owner went on break.
+///
+/// A task is orphaned when:
+/// 1. It's in_progress with an owner
+/// 2. It does NOT have an open PR (no entry in `tasks_with_open_prs`)
+/// 3. The owner is NOT active (not in active_names)
+/// 4. Grace period has expired since owner stopped (respects `coworker_stop_times`)
+///
+/// This handles the case where a coworker goes on break before opening a PR.
+/// Tasks with open PRs are handled by `reconcile_tasks_in_review`.
+///
+/// Grace period check prevents conflict with `check_and_recover_orphans()`:
+/// - Within grace period → orphan recovery can attempt respawn (e.g., with existing worktree)
+/// - After grace period → reset to pending (orphan recovery already had a chance)
+///
+/// Returns `ResetTaskToPending` effects for each orphaned task. This is a pure
+/// decision function — reads snapshot data and returns effects without performing I/O.
+pub(super) fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let mut effects = vec![];
+
+    // Compute recently-stopped coworkers (within grace period).
+    // This matches the logic in check_and_recover_orphans() to prevent
+    // conflicting effects for the same task in the same tick.
+    let grace_period = chrono::Duration::seconds(ORPHAN_RECOVERY_GRACE_PERIOD.as_secs() as i64);
+    let recently_stopped: HashSet<String> = snap
+        .coworker_stop_times
+        .iter()
+        .filter(|(_, stop_time)| snap.now_utc.signed_duration_since(**stop_time) < grace_period)
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    for (task_id, _subject, owner) in &snap.in_progress_tasks {
+        let owner_clean = owner.trim().trim_matches('"').to_lowercase();
+        if owner_clean.is_empty() {
+            continue;
+        }
+
+        // Only consider tasks WITHOUT an associated open PR
+        // (tasks with PRs are handled by reconcile_tasks_in_review)
+        if snap.tasks_with_open_prs.contains_key(task_id) {
+            continue;
+        }
+
+        // Only reset if the owner is NOT active (already shut down / on break)
+        if snap.active_names.contains(&owner_clean) {
+            continue;
+        }
+
+        // Skip if owner stopped recently (within grace period).
+        // Orphan recovery should have priority during grace period.
+        if recently_stopped.contains(&owner_clean) {
+            debug!(
+                "Task !{} owner {} stopped recently (grace period) — deferring to orphan recovery",
+                task_id, owner_clean
+            );
+            continue;
+        }
+
+        debug!(
+            "Task !{} has no PR and owner {} is inactive (past grace period) — resetting to pending",
+            task_id, owner_clean
+        );
+
+        effects.push(Effect::ResetTaskToPending {
+            task_id: task_id.clone(),
+            repo_name: snap.repo_name.clone(),
+        });
+    }
+
+    effects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3890,6 +3966,76 @@ mod tests {
         assert!(
             effects.is_empty(),
             "Should not unassign already-unowned task"
+        );
+    }
+
+    // ======================================================================
+    // reset_orphaned_tasks tests
+    // ======================================================================
+
+    #[test]
+    fn test_reset_orphaned_tasks_inactive_owner_no_pr() {
+        // Bug !1157: Task !1146 is in_progress, owned by columbus, NO open PR,
+        // columbus is NOT active (went on break) → should reset to pending
+        let in_progress = vec![(
+            "1146".to_string(),
+            "Address review feedback and merge PR #912".to_string(),
+            "columbus".to_string(),
+        )];
+        let tasks_with_open_prs = HashMap::new(); // No PR yet
+        let active_names = HashSet::new(); // columbus is NOT active
+
+        let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        let effects = reset_orphaned_tasks(&snap);
+
+        assert_eq!(effects.len(), 1, "Should reset orphaned task");
+        match &effects[0] {
+            Effect::ResetTaskToPending { task_id, repo_name } => {
+                assert_eq!(task_id, "1146");
+                assert_eq!(repo_name, "test-repo");
+            }
+            other => panic!("Expected ResetTaskToPending, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_reset_orphaned_tasks_active_owner_no_effect() {
+        // Task !42 is in_progress, owned by york, NO open PR, york IS active
+        // Should NOT reset (coworker is still working on it)
+        let in_progress = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "york".to_string(),
+        )];
+        let tasks_with_open_prs = HashMap::new();
+        let mut active_names = HashSet::new();
+        active_names.insert("york".to_string());
+
+        let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        let effects = reset_orphaned_tasks(&snap);
+
+        assert!(effects.is_empty(), "Should not reset task for active owner");
+    }
+
+    #[test]
+    fn test_reset_orphaned_tasks_with_pr_no_effect() {
+        // Task !42 is in_progress, owned by york, HAS open PR, york is NOT active
+        // Should NOT reset (reconcile_tasks_in_review handles PR cases)
+        let in_progress = vec![(
+            "42".to_string(),
+            "Fix auth bug".to_string(),
+            "york".to_string(),
+        )];
+        let mut tasks_with_open_prs = HashMap::new();
+        tasks_with_open_prs.insert("42".to_string(), 100u64);
+        let active_names = HashSet::new();
+
+        let snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+        let effects = reset_orphaned_tasks(&snap);
+
+        assert!(
+            effects.is_empty(),
+            "Should not reset task with open PR (handled by reconcile_tasks_in_review)"
         );
     }
 
