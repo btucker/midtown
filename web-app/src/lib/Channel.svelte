@@ -117,7 +117,9 @@
 
   function detectAutocompleteTrigger() {
     const cursorPos = textareaElement?.selectionStart || 0
-    const text = inputText
+    // Use textarea.value directly instead of inputText binding
+    // because oninput fires before the binding updates
+    const text = textareaElement?.value || inputText
 
     // Look backward from cursor to find trigger character
     let triggerPos = -1
