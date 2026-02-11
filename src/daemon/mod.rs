@@ -36,6 +36,10 @@ pub use trackers::{
     StuckConditionType,
 };
 
+// Test helper for orphan recovery tests
+#[doc(hidden)]
+pub use dispatch::should_recover_task_test_helper;
+
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
