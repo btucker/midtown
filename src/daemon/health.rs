@@ -374,6 +374,8 @@ pub(super) async fn check_and_shutdown_idle_coworkers(
             message: String::new(),
             session_id: None,
         });
+        // Clean the coworker's target/ directory to reclaim disk space
+        effects.push(Effect::CleanWorktreeTarget { name: name.clone() });
     }
 
     effects

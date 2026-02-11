@@ -232,6 +232,12 @@ pub enum Effect {
     ///
     /// Catches branches left behind after worktree removal.
     CleanStaleBranches,
+    /// Clean a coworker's target/ directory to reclaim disk space.
+    ///
+    /// Called when a coworker goes on break. Deletes the build artifacts
+    /// (target/ dir) to free up 4-7GB per coworker. They'll rebuild when
+    /// recalled. This prevents disk exhaustion from idle coworker builds.
+    CleanWorktreeTarget { name: String },
     /// Clean up a task-based worktree after its PR is merged.
     ///
     /// Looks up the worktree in the registry by PR number or branch name,
@@ -984,6 +990,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         cleaned.join(", ")
                     );
                 }
+            }
+            Effect::CleanWorktreeTarget { name } => {
+                let coworker_path = state.coworkers.worktree_manager().worktree_path(&name);
+                let target_path = coworker_path.join("target");
+
+                if !target_path.exists() {
+                    debug!(
+                        "Target directory for {} doesn't exist, skipping cleanup",
+                        name
+                    );
+                    continue;
+                }
+
+                let name_clone = name.clone();
+                tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&target_path) {
+                    Ok(()) => {
+                        info!(
+                            "Cleaned target/ directory for {} to reclaim disk space",
+                            name_clone
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to clean target/ directory for {}: {}",
+                            name_clone, e
+                        );
+                    }
+                })
+                .await
+                .ok();
             }
             Effect::CleanupMergedWorktree { pr_number, branch } => {
                 // Remove from registry
