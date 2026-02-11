@@ -166,6 +166,14 @@ struct SandboxRuntimeState {
     container_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     docker_context: Option<String>,
+    /// Container-side working directory (e.g. "/repos/myproject").
+    /// Defaults to "/" for backwards compat with old runtime state files.
+    #[serde(default = "default_workdir")]
+    workdir: String,
+}
+
+fn default_workdir() -> String {
+    "/".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -492,19 +500,173 @@ fn host_uid_gid() -> Option<(String, String)> {
     ))
 }
 
-fn collect_mounts(home: &Path, primary_repo: &Path, repos: &[PathBuf]) -> Vec<String> {
-    let mut mounts = vec![home.to_string_lossy().to_string()];
-    let mut add_mount = |path: &Path| {
-        let s = path.to_string_lossy().to_string();
-        if !mounts.contains(&s) {
-            mounts.push(s);
+/// Compute the container-side path for a repo: `/repos/<dir-name>`.
+fn container_repo_path(repo: &Path) -> String {
+    let name = repo
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "repo".to_string());
+    format!("/repos/{}", name)
+}
+
+/// Collect bind-mount pairs `(host_path, container_path)`.
+///
+/// Only mounts what's needed — no more `$HOME`:
+/// - `~/.midtown`  → `/home/midtown/.midtown`
+/// - primary repo  → `/repos/<name>`
+/// - each add-repo → `/repos/<name>`
+fn collect_mounts(primary_repo: &Path, repos: &[PathBuf]) -> Vec<(String, String)> {
+    let midtown_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/root"))
+        .join(".midtown");
+
+    let mut mounts: Vec<(String, String)> = vec![(
+        midtown_dir.to_string_lossy().to_string(),
+        "/home/midtown/.midtown".to_string(),
+    )];
+
+    let add_repo_mount = |mounts: &mut Vec<(String, String)>, repo: &Path| {
+        let host = repo.to_string_lossy().to_string();
+        if !mounts.iter().any(|(h, _)| *h == host) {
+            mounts.push((host, container_repo_path(repo)));
         }
     };
-    add_mount(primary_repo);
+
+    add_repo_mount(&mut mounts, primary_repo);
     for repo in repos {
-        add_mount(repo);
+        add_repo_mount(&mut mounts, repo);
     }
     mounts
+}
+
+/// Check if the given repo root is the midtown project itself.
+///
+/// Looks for a `Dockerfile` and `name = "midtown"` in `Cargo.toml`.
+fn is_midtown_project(repo_root: &Path) -> bool {
+    if !repo_root.join("Dockerfile").exists() {
+        return false;
+    }
+    repo_root.join("Cargo.toml").exists()
+        && std::fs::read_to_string(repo_root.join("Cargo.toml"))
+            .map(|content| content.contains("name = \"midtown\""))
+            .unwrap_or(false)
+}
+
+/// Build a local container image from the midtown repo.
+///
+/// Returns the image tag on success (e.g. `"midtown:dev"`).
+/// Build output is inherited on stderr so the user sees progress.
+fn engine_build_local_image(
+    engine: SandboxEngine,
+    docker_context: Option<&str>,
+    repo_root: &Path,
+) -> Result<String, String> {
+    let tag = "midtown:dev";
+    let mut cmd = engine_command(engine, docker_context);
+    cmd.args(["build", "--tag", tag, "-f", "Dockerfile", "."])
+        .current_dir(repo_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("Failed to run {} build: {}", engine.display_name(), e))?;
+
+    if !status.success() {
+        return Err(format!(
+            "{} build failed (exit {})",
+            engine.display_name(),
+            status
+        ));
+    }
+    Ok(tag.to_string())
+}
+
+/// Copy the midtown binary from a freshly built image into a running container.
+///
+/// Creates a throwaway container from `image`, copies the binary out, then
+/// copies it into `target_container`. The throwaway container is removed
+/// afterwards regardless of outcome.
+fn engine_hot_swap_binary(
+    engine: SandboxEngine,
+    docker_context: Option<&str>,
+    image: &str,
+    target_container: &str,
+) -> Result<(), String> {
+    let tmp_name = format!("{}-tmp-swap", target_container);
+
+    // Create throwaway container from the new image (don't start it).
+    let mut cmd = engine_command(engine, docker_context);
+    let output = cmd
+        .args(["create", "--name", &tmp_name, image])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to create temp container: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to create temp container: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    // Copy binary: tmp container → host tmpdir → running container.
+    let cleanup = || {
+        let _ = engine_command(engine, docker_context)
+            .args(["rm", "-f", &tmp_name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    };
+
+    let tmp_dir = std::env::temp_dir();
+    let tmp_binary = tmp_dir.join("midtown-swap");
+
+    // Step 1: copy out of temp container
+    let mut cmd = engine_command(engine, docker_context);
+    let status = cmd
+        .args([
+            "cp",
+            &format!("{}:/usr/local/bin/midtown", tmp_name),
+            &tmp_binary.to_string_lossy(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map_err(|e| {
+            cleanup();
+            format!("Failed to copy binary from image: {}", e)
+        })?;
+    if !status.success() {
+        cleanup();
+        return Err("Failed to copy binary from temp container".to_string());
+    }
+
+    // Step 2: copy into running container
+    let mut cmd = engine_command(engine, docker_context);
+    let status = cmd
+        .args([
+            "cp",
+            &tmp_binary.to_string_lossy(),
+            &format!("{}:/usr/local/bin/midtown", target_container),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map_err(|e| {
+            cleanup();
+            let _ = std::fs::remove_file(&tmp_binary);
+            format!("Failed to copy binary into container: {}", e)
+        })?;
+
+    let _ = std::fs::remove_file(&tmp_binary);
+    cleanup();
+
+    if !status.success() {
+        return Err("Failed to copy binary into running container".to_string());
+    }
+    Ok(())
 }
 
 fn engine_command(engine: SandboxEngine, docker_context: Option<&str>) -> Command {
@@ -567,9 +729,8 @@ fn engine_run_sandbox_container(
     docker_context: Option<&str>,
     container_name: &str,
     image: &str,
-    working_dir: &Path,
-    mounts: &[String],
-    home: &Path,
+    working_dir: &str,
+    mounts: &[(String, String)],
 ) -> Result<(), String> {
     let mut args: Vec<String> = vec![
         "run".to_string(),
@@ -577,11 +738,11 @@ fn engine_run_sandbox_container(
         "--name".to_string(),
         container_name.to_string(),
         "-w".to_string(),
-        working_dir.to_string_lossy().to_string(),
+        working_dir.to_string(),
         "-e".to_string(),
-        format!("HOME={}", home.display()),
+        "HOME=/home/midtown".to_string(),
         "-e".to_string(),
-        format!("XDG_STATE_HOME={}", home.join(".local/state").display()),
+        "XDG_STATE_HOME=/home/midtown/.local/state".to_string(),
         "-e".to_string(),
         "MIDTOWN_SANDBOX_CONTAINER=1".to_string(),
     ];
@@ -593,13 +754,17 @@ fn engine_run_sandbox_container(
         args.push(format!("{}:{}", uid, gid));
     }
 
-    for mount in mounts {
+    for (host, container) in mounts {
         args.push("-v".to_string());
-        args.push(format!("{}:{}", mount, mount));
+        args.push(format!("{}:{}", host, container));
     }
 
-    args.push(image.to_string());
+    // Override ENTRYPOINT from the image (the Dockerfile sets `ENTRYPOINT ["midtown"]`
+    // which would swallow our sleep command).
+    args.push("--entrypoint".to_string());
     args.push("sleep".to_string());
+
+    args.push(image.to_string());
     args.push("infinity".to_string());
 
     let mut cmd = engine_command(engine, docker_context);
@@ -627,9 +792,8 @@ fn ensure_sandbox_container_running(
     docker_context: Option<&str>,
     container_name: &str,
     image: &str,
-    working_dir: &Path,
-    mounts: &[String],
-    home: &Path,
+    working_dir: &str,
+    mounts: &[(String, String)],
 ) -> Result<(), String> {
     if engine_exec_success(engine, docker_context, container_name, "true") {
         return Ok(());
@@ -648,7 +812,6 @@ fn ensure_sandbox_container_running(
         image,
         working_dir,
         mounts,
-        home,
     ) {
         Ok(()) => Ok(()),
         Err(first_err) => {
@@ -660,7 +823,6 @@ fn ensure_sandbox_container_running(
                 image,
                 working_dir,
                 mounts,
-                home,
             )
             .map_err(|second_err| format!("{}; {}", first_err, second_err))
         }
@@ -669,7 +831,6 @@ fn ensure_sandbox_container_running(
 
 fn run_midtown_command_in_sandbox(
     runtime: &SandboxRuntimeState,
-    working_dir: &Path,
     args: &[String],
 ) -> Result<Response, String> {
     let mut cmd_args: Vec<String> = vec![
@@ -677,7 +838,7 @@ fn run_midtown_command_in_sandbox(
         "-e".to_string(),
         format!("{}=1", SANDBOX_ENTRY_ENV),
         "-w".to_string(),
-        working_dir.to_string_lossy().to_string(),
+        runtime.workdir.clone(),
         runtime.container_name.clone(),
         "midtown".to_string(),
     ];
@@ -714,7 +875,6 @@ fn run_midtown_command_in_sandbox(
 
 fn exec_midtown_command_in_sandbox(
     runtime: &SandboxRuntimeState,
-    working_dir: &Path,
     args: &[String],
 ) -> Result<Response, String> {
     let mut cmd = engine_command(runtime.engine, runtime.docker_context.as_deref());
@@ -723,7 +883,7 @@ fn exec_midtown_command_in_sandbox(
         .arg("-e")
         .arg(format!("{}=1", SANDBOX_ENTRY_ENV))
         .arg("-w")
-        .arg(working_dir.to_string_lossy().to_string())
+        .arg(&runtime.workdir)
         .arg(&runtime.container_name)
         .arg("midtown");
     for arg in args {
@@ -1115,10 +1275,15 @@ pub fn handle_start(
     // the sandbox container or the user explicitly opts out.
     if cfg!(target_os = "macos") && !running_inside_sandbox() {
         emit_startup_progress(12, "checking container runtimes");
-        let home = dirs::home_dir().ok_or("Failed to determine home directory")?;
-        let image = sandbox_image_name();
         let container_name = sandbox_container_name(&project_name);
-        let mounts = collect_mounts(&home, &primary_repo, &repos);
+        let container_workdir = container_repo_path(&primary_repo);
+        let mounts = collect_mounts(&primary_repo, &repos);
+
+        // Detect midtown-in-midtown: build a local image instead of pulling from GHCR.
+        let is_self_hosted =
+            is_midtown_project(&primary_repo) && std::env::var(SANDBOX_IMAGE_ENV).is_err();
+        let default_image = sandbox_image_name();
+
         let build_start_args = || {
             let mut start_args = vec!["--format".to_string(), "json".to_string()];
             start_args.push("start".to_string());
@@ -1133,9 +1298,10 @@ pub fn handle_start(
                 start_args.push("--container".to_string());
                 start_args.push(c.clone());
             }
+            // Map host repo paths to their container-side equivalents.
             for repo in &repos {
                 start_args.push("--add-repo".to_string());
-                start_args.push(repo.to_string_lossy().to_string());
+                start_args.push(container_repo_path(repo));
             }
             start_args
         };
@@ -1182,6 +1348,7 @@ pub fn handle_start(
                 engine,
                 container_name: container_name.clone(),
                 docker_context: None,
+                workdir: container_workdir.clone(),
             };
             emit_startup_progress(
                 20,
@@ -1194,17 +1361,26 @@ pub fn handle_start(
                         Err("container command not found".to_string())
                     } else {
                         emit_startup_progress(28, "starting Apple container system");
-                        ensure_apple_container_system_started().and_then(|_| {
-                            ensure_sandbox_container_running(
-                                runtime.engine,
-                                runtime.docker_context.as_deref(),
-                                &runtime.container_name,
-                                &image,
-                                &primary_repo,
-                                &mounts,
-                                &home,
-                            )
-                        })
+                        ensure_apple_container_system_started()?;
+
+                        // Build local image when developing midtown itself.
+                        let image = if is_self_hosted {
+                            emit_startup_progress(30, "building local midtown image");
+                            let tag = engine_build_local_image(engine, None, &primary_repo)?;
+                            engine_remove_container(engine, None, &container_name);
+                            tag
+                        } else {
+                            default_image.clone()
+                        };
+
+                        ensure_sandbox_container_running(
+                            runtime.engine,
+                            runtime.docker_context.as_deref(),
+                            &runtime.container_name,
+                            &image,
+                            &container_workdir,
+                            &mounts,
+                        )
                     }
                 }
                 SandboxEngine::Docker => {
@@ -1212,27 +1388,33 @@ pub fn handle_start(
                         Err("docker command not found".to_string())
                     } else {
                         emit_startup_progress(28, "checking Docker daemon");
-                        let context_result = if let Some(context) = forced_docker_context.clone() {
-                            docker_context_is_usable(&context).map(|_| context)
+                        let context = if let Some(context) = forced_docker_context.clone() {
+                            docker_context_is_usable(&context).map(|_| context)?
                         } else {
-                            docker_is_usable()
+                            docker_is_usable()?
                         };
-                        context_result.and_then(|context| {
-                            runtime.docker_context = Some(context.clone());
-                            emit_startup_progress(
-                                31,
-                                &format!("using Docker context '{}'", context),
-                            );
-                            ensure_sandbox_container_running(
-                                runtime.engine,
-                                runtime.docker_context.as_deref(),
-                                &runtime.container_name,
-                                &image,
-                                &primary_repo,
-                                &mounts,
-                                &home,
-                            )
-                        })
+                        runtime.docker_context = Some(context.clone());
+                        emit_startup_progress(31, &format!("using Docker context '{}'", context));
+
+                        // Build local image when developing midtown itself.
+                        let image = if is_self_hosted {
+                            emit_startup_progress(32, "building local midtown image");
+                            let tag =
+                                engine_build_local_image(engine, Some(&context), &primary_repo)?;
+                            engine_remove_container(engine, Some(&context), &container_name);
+                            tag
+                        } else {
+                            default_image.clone()
+                        };
+
+                        ensure_sandbox_container_running(
+                            runtime.engine,
+                            runtime.docker_context.as_deref(),
+                            &runtime.container_name,
+                            &image,
+                            &container_workdir,
+                            &mounts,
+                        )
                     }
                 }
             };
@@ -1248,8 +1430,7 @@ pub fn handle_start(
                         ),
                     );
                     let start_args = build_start_args();
-                    let inner =
-                        run_midtown_command_in_sandbox(&runtime, &primary_repo, &start_args)?;
+                    let inner = run_midtown_command_in_sandbox(&runtime, &start_args)?;
                     write_sandbox_runtime_state(&repo_name, &runtime);
                     let sandbox_details = match runtime.docker_context.as_deref() {
                         Some(context) if runtime.engine == SandboxEngine::Docker => format!(
@@ -1300,7 +1481,7 @@ pub fn handle_start(
                 "No usable container runtime found on macOS.\n\
                  Apple container: {}\n\
                  Docker: {}\n\
-                 Install Apple container (https://github.com/apple/container) or Docker, \
+                 Install Apple container (`brew install container`) or Docker, \
                  or rerun with --dangerously-run-without-sandbox.",
                 apple_error, docker_error
             ));
@@ -1622,8 +1803,6 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
     if !running_inside_sandbox()
         && let Some(runtime) = load_sandbox_runtime_state_for_current_repo()
     {
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?;
         let mut args = vec![
             "--format".to_string(),
             "json".to_string(),
@@ -1632,7 +1811,7 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
         if keep_session {
             args.push("--keep-session".to_string());
         }
-        return run_midtown_command_in_sandbox(&runtime, &cwd, &args);
+        return run_midtown_command_in_sandbox(&runtime, &args);
     }
 
     let mut messages = Vec::new();
@@ -1929,8 +2108,25 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     if !running_inside_sandbox()
         && let Some(runtime) = load_sandbox_runtime_state_for_current_repo()
     {
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?;
+        // For midtown-in-midtown: rebuild the image and hot-swap the binary
+        // into the running container before restarting the daemon.
+        let is_self_hosted = repo_root().map(|r| is_midtown_project(&r)).unwrap_or(false)
+            && std::env::var(SANDBOX_IMAGE_ENV).is_err();
+
+        if is_self_hosted {
+            let repo = repo_root()?;
+            eprintln!("Building local midtown image...");
+            let image =
+                engine_build_local_image(runtime.engine, runtime.docker_context.as_deref(), &repo)?;
+            eprintln!("Hot-swapping binary into running container...");
+            engine_hot_swap_binary(
+                runtime.engine,
+                runtime.docker_context.as_deref(),
+                &image,
+                &runtime.container_name,
+            )?;
+        }
+
         let mut args = vec![
             "--format".to_string(),
             "json".to_string(),
@@ -1939,7 +2135,7 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
         if force {
             args.push("--force".to_string());
         }
-        return run_midtown_command_in_sandbox(&runtime, &cwd, &args);
+        return run_midtown_command_in_sandbox(&runtime, &args);
     }
 
     // If not forcing, wait for coworkers to drain gracefully
@@ -2025,13 +2221,11 @@ pub fn handle_attach(project: Option<&str>) -> Result<Response, String> {
     if !running_inside_sandbox()
         && let Some(runtime) = load_sandbox_runtime_state_for_current_repo()
     {
-        let cwd = std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?;
         let mut args = vec!["attach".to_string()];
         if let Some(name) = project {
             args.push(name.to_string());
         }
-        return exec_midtown_command_in_sandbox(&runtime, &cwd, &args);
+        return exec_midtown_command_in_sandbox(&runtime, &args);
     }
 
     let session = match project {
@@ -2600,6 +2794,7 @@ mod tests {
             engine: SandboxEngine::Docker,
             container_name: "midtown-sandbox-test".to_string(),
             docker_context: Some("default".to_string()),
+            workdir: "/repos/myproject".to_string(),
         };
         let json = serde_json::to_string(&state).unwrap();
         let loaded: SandboxRuntimeState = serde_json::from_str(&json).unwrap();
@@ -2608,6 +2803,7 @@ mod tests {
 
     #[test]
     fn test_sandbox_runtime_state_legacy_json_without_context() {
+        // Legacy JSON missing both docker_context and workdir fields
         let legacy = r#"{"engine":"docker","container_name":"midtown-sandbox-test"}"#;
         let loaded: SandboxRuntimeState = serde_json::from_str(legacy).unwrap();
         assert_eq!(
@@ -2616,7 +2812,86 @@ mod tests {
                 engine: SandboxEngine::Docker,
                 container_name: "midtown-sandbox-test".to_string(),
                 docker_context: None,
+                workdir: "/".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn test_container_repo_path() {
+        assert_eq!(
+            container_repo_path(Path::new("/home/user/projects/myapp")),
+            "/repos/myapp"
+        );
+        assert_eq!(
+            container_repo_path(Path::new("/some/path/cool-project")),
+            "/repos/cool-project"
+        );
+    }
+
+    #[test]
+    fn test_collect_mounts_restricted() {
+        let primary = PathBuf::from("/Users/alice/projects/myapp");
+        let extra = vec![PathBuf::from("/Users/alice/projects/lib")];
+        let mounts = collect_mounts(&primary, &extra);
+
+        // Should have 3 mounts: ~/.midtown, primary repo, extra repo
+        assert_eq!(mounts.len(), 3);
+
+        // First mount is ~/.midtown → /home/midtown/.midtown
+        assert_eq!(mounts[0].1, "/home/midtown/.midtown");
+        assert!(mounts[0].0.ends_with(".midtown"));
+
+        // Second mount is primary repo → /repos/myapp
+        assert_eq!(mounts[1].0, "/Users/alice/projects/myapp");
+        assert_eq!(mounts[1].1, "/repos/myapp");
+
+        // Third mount is extra repo → /repos/lib
+        assert_eq!(mounts[2].0, "/Users/alice/projects/lib");
+        assert_eq!(mounts[2].1, "/repos/lib");
+    }
+
+    #[test]
+    fn test_collect_mounts_deduplicates() {
+        let primary = PathBuf::from("/Users/alice/projects/myapp");
+        // Same path as primary — should not be added twice
+        let extra = vec![PathBuf::from("/Users/alice/projects/myapp")];
+        let mounts = collect_mounts(&primary, &extra);
+        assert_eq!(mounts.len(), 2); // ~/.midtown + one repo
+    }
+
+    #[test]
+    fn test_is_midtown_project_positive() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Dockerfile"), "FROM rust").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"midtown\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert!(is_midtown_project(dir.path()));
+    }
+
+    #[test]
+    fn test_is_midtown_project_negative_no_dockerfile() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"midtown\"\n",
+        )
+        .unwrap();
+        assert!(!is_midtown_project(dir.path()));
+    }
+
+    #[test]
+    fn test_is_midtown_project_negative_different_name() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Dockerfile"), "FROM rust").unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"other-project\"\n",
+        )
+        .unwrap();
+        assert!(!is_midtown_project(dir.path()));
     }
 }
