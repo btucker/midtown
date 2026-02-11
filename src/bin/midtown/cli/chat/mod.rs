@@ -802,9 +802,9 @@ mod tests {
         app.input_text = "test message".to_string();
 
         handle_event(&mut app, key_press(KeyCode::Enter));
-        // If daemon or channel is available, message sent and input cleared
-        // (may not clear if both are unavailable, but that's environment-dependent)
-        // This test primarily ensures no panic occurs
+        // In test mode, posting fails because test_app() has no channel
+        // Input should be preserved when posting fails
+        assert_eq!(app.input_text, "test message");
         assert!(app.input_cursor <= app.input_text.len());
     }
 
@@ -831,14 +831,13 @@ mod tests {
         app.input_text = "test message".to_string();
         app.input_cursor = 12;
 
-        // If daemon is also unavailable, input should be preserved
-        // Note: This test may pass or fail depending on whether the daemon is running
-        // The key behavior is: input is only cleared on successful post
+        // In test mode, daemon communication is skipped and posting fails
+        // because test_app() has no channel. Input should be preserved.
         handle_event(&mut app, key_press(KeyCode::Enter));
 
-        // The input might be cleared if daemon is available, or preserved if not.
-        // We just verify the cursor position is valid.
-        assert!(app.input_cursor <= app.input_text.len());
+        // Input should be preserved when posting fails
+        assert_eq!(app.input_text, "test message");
+        assert_eq!(app.input_cursor, 12);
     }
 
     #[test]
