@@ -101,7 +101,28 @@ const APPLE_CONTAINER_START_TIMEOUT_SECS: u64 = 45;
 const DOCKER_INFO_TIMEOUT_SECS: u64 = 5;
 const SANDBOX_CONTAINER_OP_TIMEOUT_SECS: u64 = 20;
 
+/// Track whether a progress line is currently displayed (needs clearing before other output).
+static PROGRESS_LINE_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Clear the in-progress gauge line so subsequent output (errors, warnings) doesn't overlap it.
+fn clear_startup_progress() {
+    use std::io::IsTerminal;
+    use std::io::Write;
+
+    if PROGRESS_LINE_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst)
+        && std::io::stderr().is_terminal()
+    {
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "\r\x1b[K");
+        let _ = stderr.flush();
+    }
+}
+
 fn emit_startup_progress(percent: u16, message: &str) {
+    use crossterm::style::{
+        Attribute, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    };
     use crossterm::terminal;
     use ratatui::{
         buffer::Buffer,
@@ -127,13 +148,72 @@ fn emit_startup_progress(percent: u16, message: &str) {
             .label(label)
             .render(area, &mut buffer);
 
-        let mut line = String::with_capacity(width as usize * 2);
+        // Render buffer cells with ANSI colors so the gauge looks correct.
+        let mut line = String::with_capacity(width as usize * 4);
+        let mut prev_fg: Option<Color> = None;
+        let mut prev_bg: Option<Color> = None;
         for x in 0..width {
-            line.push_str(buffer[(x, 0)].symbol());
+            let cell = &buffer[(x, 0)];
+            let fg = cell.fg;
+            let bg = cell.bg;
+            if prev_fg != Some(fg) || prev_bg != Some(bg) {
+                if let Some(ct_fg) = ratatui_to_crossterm_color(fg) {
+                    line.push_str(&format!("{}", SetForegroundColor(ct_fg)));
+                }
+                if let Some(ct_bg) = ratatui_to_crossterm_color(bg) {
+                    line.push_str(&format!("{}", SetBackgroundColor(ct_bg)));
+                }
+                // Bold text on the filled portion for better readability
+                if fg == Color::DarkGray {
+                    line.push_str(&format!("{}", SetAttribute(Attribute::Bold)));
+                } else {
+                    line.push_str(&format!("{}", SetAttribute(Attribute::NormalIntensity)));
+                }
+                prev_fg = Some(fg);
+                prev_bg = Some(bg);
+            }
+            line.push_str(cell.symbol());
         }
+        line.push_str(&format!("{}", ResetColor));
 
         let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr, "{}", line);
+        // Overwrite the current line (\r) and clear to end of line (\x1b[K)
+        let _ = write!(stderr, "\r{}\x1b[K", line);
+        if percent >= 100 {
+            let _ = writeln!(stderr);
+            PROGRESS_LINE_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            PROGRESS_LINE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let _ = stderr.flush();
+    }
+}
+
+fn ratatui_to_crossterm_color(color: ratatui::style::Color) -> Option<crossterm::style::Color> {
+    use crossterm::style::Color as CtColor;
+    use ratatui::style::Color as RaColor;
+    #[allow(unreachable_patterns)]
+    match color {
+        RaColor::Reset => Some(CtColor::Reset),
+        RaColor::Black => Some(CtColor::Black),
+        RaColor::Red => Some(CtColor::DarkRed),
+        RaColor::Green => Some(CtColor::DarkGreen),
+        RaColor::Yellow => Some(CtColor::DarkYellow),
+        RaColor::Blue => Some(CtColor::DarkBlue),
+        RaColor::Magenta => Some(CtColor::DarkMagenta),
+        RaColor::Cyan => Some(CtColor::DarkCyan),
+        RaColor::Gray => Some(CtColor::Grey),
+        RaColor::DarkGray => Some(CtColor::DarkGrey),
+        RaColor::LightRed => Some(CtColor::Red),
+        RaColor::LightGreen => Some(CtColor::Green),
+        RaColor::LightYellow => Some(CtColor::Yellow),
+        RaColor::LightBlue => Some(CtColor::Blue),
+        RaColor::LightMagenta => Some(CtColor::Magenta),
+        RaColor::LightCyan => Some(CtColor::Cyan),
+        RaColor::White => Some(CtColor::White),
+        RaColor::Rgb(r, g, b) => Some(CtColor::Rgb { r, g, b }),
+        RaColor::Indexed(i) => Some(CtColor::AnsiValue(i)),
+        _ => None,
     }
 }
 
@@ -1287,6 +1367,7 @@ pub fn handle_start(
             .map(|(_, err)| err.clone())
             .unwrap_or_else(|| "not attempted".to_string());
 
+        clear_startup_progress();
         if dangerously_run_without_sandbox {
             clear_sandbox_runtime_state(&repo_name);
             eprintln!(
@@ -1309,6 +1390,7 @@ pub fn handle_start(
 
     // Verify Claude CLI is installed (unless using a stub command or daemon-only mode)
     if !daemon_only && std::env::var("MIDTOWN_LEAD_COMMAND").is_err() && !claude_cli_available() {
+        clear_startup_progress();
         return Err(
             "Claude CLI is not installed. Install it with: curl -fsSL https://claude.ai/install.sh | bash"
                 .to_string(),
@@ -1366,6 +1448,7 @@ pub fn handle_start(
             messages.push("Started daemon".to_string());
             emit_startup_progress(82, "daemon is ready");
         } else {
+            clear_startup_progress();
             return Err("Daemon failed to start".to_string());
         }
     }
@@ -1396,6 +1479,7 @@ pub fn handle_start(
             .map_err(|e| format!("Failed to create session: {}", e))?;
 
         if !status.success() {
+            clear_startup_progress();
             return Err(format!("Failed to create session '{}'", session));
         }
 
