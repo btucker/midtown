@@ -563,12 +563,18 @@ pub struct RepoStatus {
     pub release_time: Option<String>,
 }
 
-/// Fetch kanban data (PRs + merged PRs) from the daemon via RPC.
+/// Fetch kanban data (PRs + merged PRs + coworkers) from the daemon via RPC.
 ///
 /// Connects to the daemon's Unix socket and calls `kanban.data`, which uses
 /// a single batched GraphQL query internally. Returns `None` if the daemon
 /// is unreachable or the response is unexpected.
-fn fetch_kanban_via_rpc(repo: &str) -> Option<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
+fn fetch_kanban_via_rpc(
+    repo: &str,
+) -> Option<(
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+)> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
@@ -594,7 +600,12 @@ fn fetch_kanban_via_rpc(repo: &str) -> Option<(Vec<serde_json::Value>, Vec<serde
 
     let prs = result.get("prs")?.as_array()?.clone();
     let merged = result.get("merged_prs")?.as_array()?.clone();
-    Some((prs, merged))
+    let coworkers = result
+        .get("coworkers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Some((prs, merged, coworkers))
 }
 
 /// Fetch repository status via gh CLI
@@ -720,12 +731,12 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
             .unwrap_or_default();
 
-    // --- PR data: prefer daemon RPC, fall back to cached gh CLI calls ---
+    // --- PR data + coworker data: prefer daemon RPC, fall back to cached gh CLI calls ---
     let repo_name = state.config.repo.clone();
-    let (pull_requests, merged_prs) = tokio::task::spawn_blocking(move || {
+    let (pull_requests, merged_prs, rpc_coworkers) = tokio::task::spawn_blocking(move || {
         // Try daemon RPC first (single GraphQL call inside the daemon)
-        if let Some((rpc_prs, rpc_merged)) = fetch_kanban_via_rpc(&repo_name) {
-            return (rpc_prs, rpc_merged);
+        if let Some((rpc_prs, rpc_merged, rpc_coworkers)) = fetch_kanban_via_rpc(&repo_name) {
+            return (rpc_prs, rpc_merged, Some(rpc_coworkers));
         }
         // Fall back to cached gh CLI calls
         let open = OPEN_PRS_CACHE.get(CACHE_TTL).unwrap_or_else(|| {
@@ -738,7 +749,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             MERGED_PRS_CACHE.set(prs.clone());
             prs
         });
-        (open, merged)
+        (open, merged, None)
     })
     .await
     .unwrap_or_default();
@@ -825,58 +836,65 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         })
         .collect();
 
-    // Build a map of coworker name -> current task subject from in_progress tasks
-    let coworker_tasks: std::collections::HashMap<String, String> = tasks
-        .iter()
-        .filter_map(|t| {
-            let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("");
-            let owner = t.get("owner").and_then(|o| o.as_str()).unwrap_or("");
-            let subject = t.get("subject").and_then(|s| s.as_str()).unwrap_or("");
-            if status == "in_progress" && !owner.is_empty() {
-                Some((owner.to_lowercase(), subject.to_string()))
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Use coworker data from RPC if available (includes task_id, phase, pr_number, health),
+    // otherwise fall back to basic coworker data from CoworkerManager
+    let coworkers_data: Vec<serde_json::Value> = if let Some(rpc_coworkers) = rpc_coworkers {
+        // RPC data already has all the fields we need
+        rpc_coworkers
+    } else {
+        // Fall back to basic coworker data from CoworkerManager
+        let coworker_tasks: std::collections::HashMap<String, String> = tasks
+            .iter()
+            .filter_map(|t| {
+                let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                let owner = t.get("owner").and_then(|o| o.as_str()).unwrap_or("");
+                let subject = t.get("subject").and_then(|s| s.as_str()).unwrap_or("");
+                if status == "in_progress" && !owner.is_empty() {
+                    Some((owner.to_lowercase(), subject.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-    let coworkers_data: Vec<serde_json::Value> = state
-        .coworkers
-        .as_ref()
-        .map(|mgr| {
-            mgr.list()
-                .into_iter()
-                .map(|cw| {
-                    // Look up current task from task storage (case-insensitive)
-                    let mut current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
+        state
+            .coworkers
+            .as_ref()
+            .map(|mgr| {
+                mgr.list()
+                    .into_iter()
+                    .map(|cw| {
+                        // Look up current task from task storage (case-insensitive)
+                        let mut current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
 
-                    // If no task in storage, check if this coworker is working on a PR
-                    // via the worktree registry (reviewers and PR handoffs have no task_id)
-                    if current_task.is_none()
-                        && let Some(assignment) =
-                            persistent_state.worktree_registry.get_by_coworker(&cw.name)
-                        && let Some(pr_num) = assignment.pr_number
-                    {
-                        // Format the task description based on whether this is a reviewer
-                        // (task_id is None for reviewers) or a PR handoff (has a task_id)
-                        current_task = if assignment.task_id.is_none() {
-                            Some(format!("reviewing PR #{}", pr_num))
-                        } else {
-                            Some(format!("working on PR #{}", pr_num))
-                        };
-                    }
+                        // If no task in storage, check if this coworker is working on a PR
+                        // via the worktree registry (reviewers and PR handoffs have no task_id)
+                        if current_task.is_none()
+                            && let Some(assignment) =
+                                persistent_state.worktree_registry.get_by_coworker(&cw.name)
+                            && let Some(pr_num) = assignment.pr_number
+                        {
+                            // Format the task description based on whether this is a reviewer
+                            // (task_id is None for reviewers) or a PR handoff (has a task_id)
+                            current_task = if assignment.task_id.is_none() {
+                                Some(format!("reviewing PR #{}", pr_num))
+                            } else {
+                                Some(format!("working on PR #{}", pr_num))
+                            };
+                        }
 
-                    serde_json::json!({
-                        "name": cw.name,
-                        "status": cw.status.to_string(),
-                        "current_task": current_task,
-                        "started_at": cw.started_at.to_rfc3339(),
-                        "model": cw.model,
+                        serde_json::json!({
+                            "name": cw.name,
+                            "status": cw.status.to_string(),
+                            "current_task": current_task,
+                            "started_at": cw.started_at.to_rfc3339(),
+                            "model": cw.model,
+                        })
                     })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
     // Fetch repo status with TTL cache (blocking I/O)
     let default_branch = state.default_branch.clone();
