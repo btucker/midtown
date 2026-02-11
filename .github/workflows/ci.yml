@@ -99,6 +99,9 @@ jobs:
           git config --global user.name "Midtown E2E"
           git config --global init.defaultBranch main
 
+      - name: Build release binary
+        run: cargo build --release
+
       - name: Start tmux server
         run: tmux start-server
 
