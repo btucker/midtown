@@ -116,6 +116,9 @@ pub mod headless;
 // Unified launch configuration for Claude Code sessions (tmux + headless)
 pub mod launch;
 
+// Lightweight filesystem sandbox (sandbox-exec on macOS, bwrap on Linux)
+pub mod sandbox;
+
 // Agent teams mailbox writer (filesystem-based message delivery)
 pub mod mailbox;
 

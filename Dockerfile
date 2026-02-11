@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tmux \
         git \
         curl \
+        unzip \
         procps \
         jq \
         ca-certificates \
@@ -70,25 +71,41 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the binary from builder (must happen before USER switch)
-COPY --from=builder /app/target/release/midtown /usr/local/bin/midtown
-
 # Non-root user for security and proper $HOME handling
 RUN useradd -m -s /bin/bash midtown
+
+# Install CLI tools as midtown user BEFORE copying the binary so these
+# layers are cached even when source code changes.
 USER midtown
 WORKDIR /home/midtown
 
-# Install Claude CLI
+# Bun (JavaScript runtime, also used for npm packages)
+RUN curl -fsSL https://bun.sh/install | bash \
+    || echo "Bun install failed (may not be available in all environments)"
+
+ENV PATH="/home/midtown/.bun/bin:${PATH}"
+
+# Claude Code CLI
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc \
     || echo "Claude CLI install failed (may not be available in all environments)"
 
 ENV PATH="/home/midtown/.local/bin:${PATH}"
 
+# OpenAI Codex CLI
+RUN bun install -g @openai/codex \
+    || echo "Codex CLI install failed (may not be available in all environments)"
+
 # Default git config (can be overridden via environment)
 RUN git config --global user.email "midtown@docker.local" \
     && git config --global user.name "Midtown Docker" \
     && git config --global init.defaultBranch main
+
+# Copy the binary from builder LAST so code changes don't invalidate
+# the CLI install layers above.
+USER root
+COPY --from=builder /app/target/release/midtown /usr/local/bin/midtown
+USER midtown
 
 ENTRYPOINT ["midtown"]
 CMD ["--help"]

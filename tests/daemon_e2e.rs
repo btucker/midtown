@@ -1681,7 +1681,7 @@ fn test_daemon_installs_required_plugins() {
 
     let test_plugin = REQUIRED_PLUGINS[0];
 
-    // Check if Claude CLI is available
+    // Check if Claude CLI is available and authenticated (plugin install needs auth)
     let list_output = Command::new("claude")
         .args(["plugin", "list", "--json"])
         .output();
@@ -1693,6 +1693,20 @@ fn test_daemon_installs_required_plugins() {
             return;
         }
     };
+
+    // Verify plugin installation actually works (requires auth).
+    // In CI/container coordination mode, claude is installed but not
+    // authenticated, so `plugin list` works but `plugin install` fails.
+    let marketplace_check = Command::new("claude")
+        .args(["plugin", "marketplace", "list"])
+        .output();
+    match marketplace_check {
+        Ok(output) if output.status.success() && !output.stdout.is_empty() => {}
+        _ => {
+            eprintln!("Skipping: claude plugin marketplace not available (auth required)");
+            return;
+        }
+    }
 
     // Check if plugin is installed and uninstall it for testing
     let stdout = String::from_utf8_lossy(&list_output.stdout);

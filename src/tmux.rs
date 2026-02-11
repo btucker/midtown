@@ -1647,8 +1647,12 @@ pub fn spawn_claude(
         .map(|p| write_coworker_initial_prompt_file(&config.name, p))
         .transpose()?;
 
-    let launch =
-        config.to_shell_command(&settings_file, &prompt_file, initial_prompt_file.as_deref());
+    let launch = config.to_shell_command(
+        &settings_file,
+        &prompt_file,
+        initial_prompt_file.as_deref(),
+        std::path::Path::new(working_dir),
+    );
     let coworker_session_id = launch.session_id.unwrap_or_default();
 
     // Kill any existing windows with this name to prevent duplicates.
@@ -1780,6 +1784,7 @@ pub fn spawn_claude(
             &settings_file,
             &prompt_file,
             initial_prompt_file.as_deref(),
+            std::path::Path::new(working_dir),
         );
         let fresh_session_id = retry_launch.session_id.unwrap_or_default();
 
@@ -1905,7 +1910,12 @@ pub fn spawn_lead(
     } else {
         let task_list_id = crate::paths::task_list_id_for_repo(project_name);
         let claude_cmd = config
-            .to_shell_command(&settings_file, &prompt_file, None)
+            .to_shell_command(
+                &settings_file,
+                &prompt_file,
+                None,
+                std::path::Path::new(working_dir),
+            )
             .shell_command;
         // Prepend CLAUDE_CODE_TASK_LIST_ID export so leads share task storage with coworkers
         format!(
@@ -2692,14 +2702,15 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             !result.shell_command.contains("--setting-sources"),
             "lead must not restrict setting sources"
         );
         assert!(
-            result.shell_command.contains("exec claude"),
-            "lead must use exec"
+            result.shell_command.contains("exec ") && result.shell_command.contains("claude"),
+            "lead must use exec and run claude"
         );
         assert!(
             !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID="),
@@ -2728,6 +2739,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             result.shell_command.contains("--session-id "),
@@ -2768,6 +2780,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             result.shell_command.contains(" --continue"),
@@ -2804,6 +2817,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             result.shell_command.contains("--resume abc-123"),
@@ -2836,6 +2850,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             !result.shell_command.contains("CLAUDE_CODE_TASK_LIST_ID"),
@@ -2868,6 +2883,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         // CLAUDE_CONFIG_DIR must be set from auth profile for account isolation
         assert!(
@@ -2902,6 +2918,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             Some(std::path::Path::new("/tmp/initial-prompt.md")),
+            std::path::Path::new("/tmp/test-repo"),
         );
         // PR #447 regression: must NEVER use -p or --print
         assert!(
@@ -2942,6 +2959,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         // Count occurrences of $(cat — should be exactly 1 (the system prompt)
         let cat_count = result.shell_command.matches("$(cat ").count();
@@ -2972,6 +2990,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             result.shell_command.contains("--add-dir /extra/repo1"),
@@ -3004,10 +3023,11 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
-            result.shell_command.contains("exec claude"),
-            "must use exec to replace shell process"
+            result.shell_command.contains("exec ") && result.shell_command.contains("claude"),
+            "must use exec to replace shell process and run claude"
         );
     }
 
@@ -3032,6 +3052,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             result
@@ -3112,6 +3133,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             result
@@ -3156,6 +3178,7 @@ Claude is now processing the request
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             !result.shell_command.contains("--agent-id"),

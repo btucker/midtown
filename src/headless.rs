@@ -382,7 +382,44 @@ impl HeadlessSession {
         let is_resume = config.resume_session_id.is_some();
         let mut cmd = match config.auth_provider {
             crate::auth::AuthProvider::Claude => {
-                let mut cmd = Command::new("claude");
+                // Compute sandbox writable dirs from cwd (project working directory).
+                let primary_repo = config
+                    .cwd
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .unwrap_or(std::path::Path::new("/tmp"));
+                let writable = crate::sandbox::writable_dirs(primary_repo, &[]);
+
+                // On macOS, wrap with sandbox-exec to restrict filesystem writes.
+                // On Linux, wrap with bwrap if available.
+                // Falls back to running claude directly if sandbox setup fails.
+                let mut cmd = if cfg!(target_os = "macos") {
+                    match crate::sandbox::sandbox_exec_prefix(&writable) {
+                        Ok((_profile_path, prefix)) => {
+                            let mut c = Command::new("sandbox-exec");
+                            for arg in &prefix {
+                                c.arg(arg);
+                            }
+                            c.arg("claude");
+                            c
+                        }
+                        Err(e) => {
+                            warn!("Sandbox setup failed, running without sandbox: {}", e);
+                            Command::new("claude")
+                        }
+                    }
+                } else if cfg!(target_os = "linux") && crate::sandbox::bwrap_available() {
+                    let mut c = Command::new("bwrap");
+                    // Build bwrap args without the program args (we'll add claude args below)
+                    c.args(["--ro-bind", "/", "/"]);
+                    for dir in &writable {
+                        c.args(["--bind", dir, dir]);
+                    }
+                    c.args(["--dev", "/dev", "--proc", "/proc", "--", "claude"]);
+                    c
+                } else {
+                    Command::new("claude")
+                };
 
                 if is_resume {
                     // Resume mode: --resume <id>, no -p flag
@@ -463,7 +500,42 @@ impl HeadlessSession {
             crate::auth::AuthProvider::Codex => {
                 // Codex app-server runs a persistent JSON-RPC stdio server.
                 // We initialize and start/resume threads via requests in `ensure_ready()`.
-                let mut cmd = Command::new("codex");
+                let primary_repo = config
+                    .cwd
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .unwrap_or(std::path::Path::new("/tmp"));
+                let writable = crate::sandbox::writable_dirs(primary_repo, &[]);
+
+                let mut cmd = if cfg!(target_os = "macos") {
+                    match crate::sandbox::sandbox_exec_prefix(&writable) {
+                        Ok((_profile_path, prefix)) => {
+                            let mut c = Command::new("sandbox-exec");
+                            for arg in &prefix {
+                                c.arg(arg);
+                            }
+                            c.arg("codex");
+                            c
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Sandbox setup failed for codex, running without sandbox: {}",
+                                e
+                            );
+                            Command::new("codex")
+                        }
+                    }
+                } else if cfg!(target_os = "linux") && crate::sandbox::bwrap_available() {
+                    let mut c = Command::new("bwrap");
+                    c.args(["--ro-bind", "/", "/"]);
+                    for dir in &writable {
+                        c.args(["--bind", dir, dir]);
+                    }
+                    c.args(["--dev", "/dev", "--proc", "/proc", "--", "codex"]);
+                    c
+                } else {
+                    Command::new("codex")
+                };
                 cmd.arg("app-server");
                 cmd
             }
