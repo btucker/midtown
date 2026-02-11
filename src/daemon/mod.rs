@@ -61,8 +61,50 @@ use crate::worktree::WorktreeManager;
 ///
 /// Tracks in-memory task assignment for busy coworker tracking.
 #[derive(Debug, Clone)]
-pub(crate) struct TaskAssignment {
+pub struct TaskAssignment {
     pub task_id: String,
+}
+
+/// Build task assignments from a list of tasks.
+///
+/// Pure function that extracts in_progress tasks with owners and builds the
+/// coworker→task assignment map. When a coworker has multiple in_progress tasks,
+/// only the first task encountered is kept (by task ID sort order); subsequent
+/// tasks for the same coworker are logged as warnings and skipped.
+///
+/// This is the core logic used by `DaemonState::restore_task_assignments_from_disk()`.
+pub fn build_task_assignments_from_tasks(
+    tasks: &[crate::tasks::Task],
+) -> HashMap<String, TaskAssignment> {
+    let mut assignments = HashMap::new();
+
+    let in_progress_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+        .filter(|t| t.owner.as_ref().is_some_and(|o| !o.is_empty()))
+        .collect();
+
+    for task in in_progress_tasks {
+        let owner = task.owner.as_ref().unwrap();
+        let owner_lower = owner.to_lowercase();
+        match assignments.entry(owner_lower) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(TaskAssignment {
+                    task_id: task.id.clone(),
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(e) => {
+                warn!(
+                    "Skipping task {} for coworker {} - already has task {} assigned (multiple in_progress tasks detected)",
+                    task.id,
+                    owner,
+                    e.get().task_id
+                );
+            }
+        }
+    }
+
+    assignments
 }
 
 /// Configuration for the daemon server.
@@ -857,36 +899,12 @@ impl DaemonState {
     /// tasks for the same coworker are logged but skipped. This is acceptable
     /// because the map's purpose is busy detection, not comprehensive task tracking.
     pub(crate) fn restore_task_assignments_from_disk(&self) {
-        let in_progress_tasks = crate::tasks::read_tasks_for_repo(Some(&self.repo_name))
-            .into_iter()
-            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
-            .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
-            .collect::<Vec<_>>();
+        let tasks = crate::tasks::read_tasks_for_repo(Some(&self.repo_name));
+        let restored = build_task_assignments_from_tasks(&tasks);
 
         let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        let mut restored_count = 0;
-
-        for (task_id, _subject, owner) in in_progress_tasks {
-            if !owner.is_empty() {
-                let owner_lower = owner.to_lowercase();
-                match assignments.entry(owner_lower) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(TaskAssignment {
-                            task_id: task_id.clone(),
-                        });
-                        restored_count += 1;
-                    }
-                    std::collections::hash_map::Entry::Occupied(e) => {
-                        warn!(
-                            "Skipping task {} for coworker {} - already has task {} assigned (multiple in_progress tasks detected)",
-                            task_id,
-                            owner,
-                            e.get().task_id
-                        );
-                    }
-                }
-            }
-        }
+        let restored_count = restored.len();
+        *assignments = restored;
 
         if restored_count > 0 {
             info!(
