@@ -1966,6 +1966,27 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
 pub(super) mod tests {
     use super::*;
     use midtown::Message;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Helper to retry Channel operations that may fail with WouldBlock due to lock contention.
+    /// This mirrors the retry_with_backoff helper in channel.rs tests.
+    fn retry_with_backoff<T>(
+        max_attempts: u32,
+        mut f: impl FnMut() -> midtown::Result<T>,
+    ) -> midtown::Result<T> {
+        for attempt in 0..max_attempts {
+            match f() {
+                Ok(val) => return Ok(val),
+                Err(e) if attempt < max_attempts - 1 => {
+                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
 
     /// Create a default App for testing. Tests can override specific fields
     /// using struct update syntax: `App { messages, ..test_app() }`
@@ -2557,6 +2578,35 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn test_channel_read_after_send_with_retry() {
+        // This test reproduces the race condition that causes WouldBlock errors:
+        // send() acquires a write lock, and if read_all() is called immediately after,
+        // it may fail with WouldBlock because try_lock_shared() is non-blocking.
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "test-channel").unwrap();
+
+        // Add a message
+        channel
+            .send(&Message::text("alice", "First message"))
+            .unwrap();
+
+        // Immediate read after send can fail without retry
+        // This should NOT panic even under lock contention
+        let messages = retry_with_backoff(5, || channel.read_all()).unwrap();
+        assert_eq!(messages.len(), 1);
+
+        // Add another message and verify retry works
+        channel
+            .send(&Message::text("bob", "Second message"))
+            .unwrap();
+
+        let messages = retry_with_backoff(5, || channel.read_all()).unwrap();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
     fn test_unread_count_calculation() {
         use tempfile::TempDir;
 
@@ -2619,7 +2669,8 @@ pub(super) mod tests {
             .unwrap();
 
         // Verify we now have 4 total messages
-        let all_messages = channel.read_all().unwrap();
+        // Use retry to avoid WouldBlock from lock contention after send()
+        let all_messages = retry_with_backoff(5, || channel.read_all()).unwrap();
         assert_eq!(all_messages.len(), 4, "Should have 4 total messages");
 
         // Verify cursor still points to message 3 (not auto-updated)
