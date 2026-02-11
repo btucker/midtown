@@ -685,8 +685,9 @@ fn handle_switch(profile: &str, all: bool) -> Result<Response, String> {
     }
 
     if all {
-        // Global switch: update the global current profile
+        // Global switch: update the global current profile and clear per-project overrides
         midtown::auth::set_current_profile(profile).map_err(|e| e.to_string())?;
+        midtown::config::clear_all_project_auth_profiles();
 
         Ok(Response::Message {
             message: format!(

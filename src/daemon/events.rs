@@ -66,6 +66,7 @@ pub async fn evaluate_tick(
             effects.extend(super::health::check_for_usage_limits(snap));
             effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
             effects.extend(super::health::check_and_nudge_api_errors(snap, state));
+            effects.extend(super::health::check_and_restart_tool_name_conflicts(snap));
             effects
         }
         DaemonEvent::TaskDispatchTick => {
@@ -104,6 +105,12 @@ pub async fn evaluate_tick(
 
             // Reconcile orphaned PRs: create tasks for reviewed + CI green PRs with no active task
             effects.extend(super::pr::reconcile_orphaned_prs(snap));
+
+            // Auto-complete tasks whose descriptions reference only merged PRs
+            // (handles meta-tasks, sub-tasks, and fix-PR tasks)
+            effects.extend(super::dispatch::build_description_based_completion_effects(
+                snap,
+            ));
 
             dedup_spawn_effects(effects)
         }

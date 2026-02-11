@@ -54,6 +54,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use toml_edit::{Item, Table};
 
 /// Chat layout mode for the Lead session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -402,6 +403,26 @@ pub struct ProvidersConfig {
     pub claude: ClaudeProviderConfig,
 }
 
+/// Recursively merge new_table values into target, preserving comments and formatting.
+fn merge_tables(target: &mut Table, new_table: &Table) {
+    for (key, new_value) in new_table.iter() {
+        match (target.get_mut(key), new_value) {
+            // Both are tables - recurse
+            (Some(Item::Table(target_table)), Item::Table(new_table)) => {
+                merge_tables(target_table, new_table);
+            }
+            // Target exists but isn't a table, or new value isn't a table - replace
+            (Some(existing), new_item) => {
+                *existing = new_item.clone();
+            }
+            // Key doesn't exist in target - add it
+            (None, new_item) => {
+                target.insert(key, new_item.clone());
+            }
+        }
+    }
+}
+
 /// Global configuration from `~/.midtown/config.toml`.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct GlobalConfig {
@@ -452,12 +473,44 @@ impl GlobalConfig {
     /// then overlays the current struct values and writes back.
     /// Creates parent directories if needed.
     pub fn save(&self) -> std::io::Result<()> {
-        let path = global_config_path();
+        self.save_to(&global_config_path())
+    }
+
+    /// Save this global config to a specific path (used for testing).
+    ///
+    /// Loads the existing file first (to preserve comments/structure from manual edits),
+    /// then overlays the current struct values and writes back.
+    /// Creates parent directories if needed.
+    pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let contents = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(&path, contents)
+
+        // If file exists, load and update it to preserve comments
+        let contents = if path.exists() {
+            let existing = std::fs::read_to_string(path)?;
+            let mut doc = existing
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?;
+
+            // Serialize current struct to get new values
+            let new_values = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+            let new_table: toml_edit::Table = new_values
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(std::io::Error::other)?
+                .as_table()
+                .clone();
+
+            // Update document with new values while preserving comments/formatting
+            merge_tables(doc.as_table_mut(), &new_table);
+
+            doc.to_string()
+        } else {
+            // No existing file, just serialize normally
+            toml::to_string_pretty(self).map_err(std::io::Error::other)?
+        };
+
+        std::fs::write(path, contents)
     }
 
     /// Generate a commented-out template with all available global config options.
@@ -1798,5 +1851,49 @@ bin_command = "midtown"
         let template = GlobalConfig::default_template();
         assert!(template.contains("[providers.claude]"));
         assert!(template.contains("auth_profile"));
+    }
+
+    #[test]
+    fn test_global_config_save_preserves_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Create initial config with comments
+        let initial_contents = r#"# User's custom comment about their setup
+# This should be preserved
+
+[default]
+# Comment about bin_command
+bin_command = "old-midtown"
+
+[providers.claude]
+# User's note about their auth profile
+auth_profile = "user@example.com"
+"#;
+        std::fs::write(&path, initial_contents).unwrap();
+
+        // Load, modify, and save using save_to
+        let loaded_contents = std::fs::read_to_string(&path).unwrap();
+        let mut config: GlobalConfig = toml::from_str(&loaded_contents).unwrap();
+        config.default.bin_command = Some("new-midtown".to_string());
+        config.save_to(&path).unwrap();
+
+        // Read back and verify comments are preserved
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved_contents.contains("User's custom comment"),
+            "Top-level comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("Comment about bin_command"),
+            "Field-level comment should be preserved"
+        );
+        assert!(
+            saved_contents.contains("User's note about their auth profile"),
+            "Provider section comment should be preserved"
+        );
+
+        // Verify the new value is saved
+        assert!(saved_contents.contains("new-midtown"));
     }
 }

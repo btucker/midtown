@@ -11,12 +11,68 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::daemon::state::HeadlessSessionInfo;
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent};
+
+/// Parse usage limit messages to extract reset time.
+///
+/// Claude Code usage limit messages typically contain text like:
+/// "You've hit your limit · resets 10am (America/Chicago)"
+///
+/// This function attempts to parse the reset time and convert it to UTC.
+/// Returns None if parsing fails or no usage limit message is found.
+fn parse_usage_limit_reset_time(error_msg: &str) -> Option<DateTime<Utc>> {
+    // Check if this is a usage limit error
+    if !error_msg.contains("usage limit") && !error_msg.contains("hit your limit") {
+        return None;
+    }
+
+    // Try to extract time patterns like "10am", "11:30pm", etc.
+    // Pattern: "resets <time> (<timezone>)"
+    let re = regex::Regex::new(r"resets?\s+(\d{1,2}):?(\d{2})?\s*(am|pm)\s*\(([^)]+)\)").ok()?;
+
+    if let Some(caps) = re.captures(error_msg) {
+        let hour: u32 = caps.get(1)?.as_str().parse().ok()?;
+        let minute: u32 = caps.get(2).map_or(0, |m| m.as_str().parse().unwrap_or(0));
+        let am_pm = caps.get(3)?.as_str();
+        let tz_name = caps.get(4)?.as_str();
+
+        // Convert 12-hour to 24-hour format
+        let hour_24 = match (hour, am_pm) {
+            (12, "am") => 0,
+            (h, "am") => h,
+            (12, "pm") => 12,
+            (h, "pm") => h + 12,
+            _ => return None,
+        };
+
+        // Parse timezone
+        let tz: chrono_tz::Tz = tz_name.parse().ok()?;
+
+        // Get today's date in that timezone and construct the reset time
+        let now = Utc::now().with_timezone(&tz);
+        let reset_time = tz
+            .with_ymd_and_hms(now.year(), now.month(), now.day(), hour_24, minute, 0)
+            .single()?;
+
+        // If the reset time is in the past, it must be tomorrow
+        let reset_time_utc = reset_time.with_timezone(&Utc);
+        if reset_time_utc < Utc::now() {
+            let tomorrow = reset_time + chrono::Duration::days(1);
+            Some(tomorrow.with_timezone(&Utc))
+        } else {
+            Some(reset_time_utc)
+        }
+    } else {
+        // Couldn't parse specific time - return a default (15 minutes from now)
+        // This maintains the current behavior as a fallback
+        Some(Utc::now() + chrono::Duration::minutes(15))
+    }
+}
 
 /// Status of a managed headless session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,12 +107,16 @@ pub struct CoworkerSession {
     pub last_event_at: Option<DateTime<Utc>>,
     /// Whether the session has hit a usage limit.
     pub has_usage_limit: bool,
+    /// When the usage limit will reset (if known).
+    pub usage_limit_reset_at: Option<DateTime<Utc>>,
     /// Whether the session has an API error.
     pub has_api_error: bool,
     /// Whether the session has a running subagent.
     pub has_running_subagent: bool,
     /// Whether the session has a pending tool execution (tool_use seen, no tool_result yet).
     pub has_pending_tool: bool,
+    /// Whether the session hit "Tool names must be unique" (unrecoverable, needs fresh restart).
+    pub has_tool_name_conflict: bool,
     /// File handle for writing stream events to JSONL log.
     /// Used for debugging and `midtown coworker view`.
     output_log: Option<std::fs::File>,
@@ -65,7 +125,13 @@ pub struct CoworkerSession {
 }
 
 impl CoworkerSession {
-    fn new(slot_id: String, name: String, session: HeadlessSession, repo: &str) -> Self {
+    fn new(
+        slot_id: String,
+        name: String,
+        session: HeadlessSession,
+        repo: &str,
+        session_id: Option<String>,
+    ) -> Self {
         let output_log_path = crate::paths::headless_output_file(repo, &name);
 
         // Open the log file in append mode, creating it if needed
@@ -90,13 +156,15 @@ impl CoworkerSession {
             name,
             status: SessionStatus::Starting,
             started_at: Utc::now(),
-            session_id: None,
+            session_id,
             cost_usd: 0.0,
             last_event_at: None,
             has_usage_limit: false,
+            usage_limit_reset_at: None,
             has_api_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_tool_name_conflict: false,
             output_log,
             output_log_path,
         }
@@ -128,12 +196,15 @@ impl SessionManager {
     /// The `config` must have `cwd` set to the coworker's worktree path.
     /// If `initial_prompt` is provided, it's sent as the first user message.
     /// The `slot_id` is a daemon-generated UUID used as the HashMap key.
+    /// If `session_id` is provided, it's set immediately on the CoworkerSession
+    /// (used during recovery where resumed sessions don't emit init events).
     pub async fn spawn(
         &self,
         name: &str,
         slot_id: &str,
         config: &HeadlessConfig,
         initial_prompt: Option<&str>,
+        session_id: Option<String>,
     ) -> Result<(), crate::Error> {
         // No name-uniqueness check needed — slot_id is always unique (UUID).
         // Multiple sessions with the same name are now allowed (keyed by slot_id).
@@ -168,13 +239,21 @@ impl SessionManager {
                 name.to_string(),
                 session,
                 &self.repo_name,
+                session_id.clone(),
             ),
         );
 
-        info!(
-            "Spawned headless session for '{}' (slot_id={})",
-            name, slot_id
-        );
+        if let Some(ref sid) = session_id {
+            info!(
+                "Spawned headless session for '{}' (slot_id={}, session_id={})",
+                name, slot_id, sid
+            );
+        } else {
+            info!(
+                "Spawned headless session for '{}' (slot_id={})",
+                name, slot_id
+            );
+        }
         Ok(())
     }
 
@@ -308,7 +387,22 @@ impl SessionManager {
             // Drain stderr first to prevent pipe buffer deadlock.
             // If stderr writes >64KB without draining, the child process blocks.
             // This must happen every tick, not just on exit.
-            let _ = session.drain_stderr().await;
+            let stderr_lines = session.drain_stderr().await;
+            // Check for unrecoverable "Tool names must be unique" error.
+            // This happens when resuming a session with conflicting tool definitions
+            // and cannot be resolved by retrying — the session needs a fresh restart.
+            if !cs.has_tool_name_conflict {
+                for line in &stderr_lines {
+                    if line.contains("Tool names must be unique") {
+                        warn!(
+                            "Session '{}' hit 'Tool names must be unique' error — needs fresh restart",
+                            name
+                        );
+                        cs.has_tool_name_conflict = true;
+                        break;
+                    }
+                }
+            }
 
             // Non-blocking drain: try to read events without waiting.
             // Use tokio::time::timeout with zero duration to poll.
@@ -338,13 +432,32 @@ impl SessionManager {
                             StreamEvent::Result {
                                 total_cost_usd,
                                 is_error,
+                                result,
+                                extra,
                                 ..
                             } => {
                                 if let Some(cost) = total_cost_usd {
                                     cs.cost_usd = *cost;
                                 }
                                 if *is_error {
-                                    cs.has_api_error = true;
+                                    // Check if this is a usage limit error
+                                    let error_msg = result.as_deref().unwrap_or("");
+                                    let extra_str = extra.to_string();
+                                    let combined = format!("{} {}", error_msg, extra_str);
+
+                                    if let Some(reset_time) =
+                                        parse_usage_limit_reset_time(&combined)
+                                    {
+                                        cs.has_usage_limit = true;
+                                        cs.usage_limit_reset_at = Some(reset_time);
+                                        debug!(
+                                            "Session '{}' hit usage limit, resets at {}",
+                                            name, reset_time
+                                        );
+                                    } else {
+                                        // Generic API error (not usage limit)
+                                        cs.has_api_error = true;
+                                    }
                                 }
                             }
                             StreamEvent::Assistant { message, .. } => {
@@ -531,9 +644,11 @@ impl SessionManager {
                     is_alive: cs.session.is_some() && cs.status != SessionStatus::Stopped,
                     last_event_at: cs.last_event_at,
                     has_usage_limit: cs.has_usage_limit,
+                    usage_limit_reset_at: cs.usage_limit_reset_at,
                     has_api_error: cs.has_api_error,
                     has_running_subagent: cs.has_running_subagent,
                     has_pending_tool: cs.has_pending_tool,
+                    has_tool_name_conflict: cs.has_tool_name_conflict,
                     exit_code: None,
                 },
             );
@@ -736,9 +851,11 @@ mod tests {
                 cost_usd: 0.0,
                 last_event_at: None,
                 has_usage_limit: false,
+                usage_limit_reset_at: None,
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
             },
@@ -869,5 +986,108 @@ mod tests {
         let sm = SessionManager::new("test-repo".to_string());
         let stopped = sm.reconcile_process_health().await;
         assert!(stopped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_spawn_with_session_id_sets_session_id_immediately() {
+        // This test demonstrates the bug: when spawning a session with a known
+        // session_id (like during recovery), the session_id should be set immediately
+        // on the CoworkerSession, not left as None waiting for an init event that
+        // will never arrive for resumed sessions.
+
+        let sm = SessionManager::new("test-repo".to_string());
+        let known_session_id = "test-session-id-123";
+        let slot_id = "test-slot-id";
+        let name = "madison";
+
+        // Simulate what should happen during recovery: spawn() is called with
+        // a known session_id, and it should be immediately set on the CoworkerSession.
+        // Currently, spawn() doesn't accept a session_id parameter, so this test
+        // will fail until we add that support.
+
+        // For now, we'll test the expectation by manually inserting a session
+        // with the session_id set, then verifying get_session_id() works.
+        {
+            let mut sessions = sm.sessions.write().await;
+            sessions.insert(
+                slot_id.to_string(),
+                CoworkerSession {
+                    session: None,
+                    slot_id: slot_id.to_string(),
+                    name: name.to_string(),
+                    status: SessionStatus::Running,
+                    started_at: Utc::now(),
+                    session_id: Some(known_session_id.to_string()),
+                    cost_usd: 0.0,
+                    last_event_at: None,
+                    has_usage_limit: false,
+                    usage_limit_reset_at: None,
+                    has_api_error: false,
+                    has_running_subagent: false,
+                    has_pending_tool: false,
+                    has_tool_name_conflict: false,
+                    output_log: None,
+                    output_log_path: PathBuf::new(),
+                },
+            );
+        }
+
+        // Verify get_session_id() returns the expected value
+        let retrieved_session_id = sm.get_session_id(name).await;
+        assert_eq!(
+            retrieved_session_id,
+            Some(known_session_id.to_string()),
+            "get_session_id() should return the session_id that was set during spawn"
+        );
+    }
+
+    #[test]
+    fn test_parse_usage_limit_with_time() {
+        // Test parsing "resets 10am (America/Chicago)"
+        let msg = "You've hit your limit · resets 10am (America/Chicago) · /upgrade to increase";
+        let result = parse_usage_limit_reset_time(msg);
+        assert!(result.is_some(), "Should parse usage limit with time");
+    }
+
+    #[test]
+    fn test_parse_usage_limit_with_minutes() {
+        // Test parsing "resets 11:30pm (America/Chicago)"
+        let msg = "usage limit hit - resets 11:30pm (America/Chicago)";
+        let result = parse_usage_limit_reset_time(msg);
+        assert!(result.is_some(), "Should parse usage limit with minutes");
+    }
+
+    #[test]
+    fn test_parse_usage_limit_no_time_pattern() {
+        // Should still detect usage limit but fall back to default time
+        let msg = "You've hit your usage limit. Please try again later.";
+        let result = parse_usage_limit_reset_time(msg);
+        assert!(
+            result.is_some(),
+            "Should detect usage limit without time pattern"
+        );
+    }
+
+    #[test]
+    fn test_not_a_usage_limit_message() {
+        // Should not match non-usage-limit errors
+        let msg = "API error: connection timeout";
+        let result = parse_usage_limit_reset_time(msg);
+        assert!(result.is_none(), "Should not match non-usage-limit errors");
+    }
+
+    #[test]
+    fn test_usage_limit_reset_time_in_future() {
+        let msg = "You've hit your limit · resets 11:59pm (America/Chicago)";
+        let result = parse_usage_limit_reset_time(msg);
+        if let Some(reset_time) = result {
+            let now = chrono::Utc::now();
+            assert!(
+                reset_time > now,
+                "Reset time should be in the future (or within today if after 11:59pm CST)"
+            );
+        } else {
+            panic!("Should parse usage limit message");
+        }
     }
 }

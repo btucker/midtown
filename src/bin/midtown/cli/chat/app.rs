@@ -45,6 +45,23 @@ struct KanbanData {
     merged_prs: Vec<MergedPr>,
     /// Repo metadata from daemon RPC (label, full_name)
     repos: Vec<(String, String)>,
+    /// Coworker status data from daemon
+    coworkers: Vec<CoworkerInfo>,
+}
+
+/// Coworker status information for the TUI board sidebar
+#[derive(Debug, Clone)]
+pub struct CoworkerInfo {
+    /// Coworker name (e.g., "amsterdam")
+    pub name: String,
+    /// Current task ID being worked on
+    pub task_id: Option<u32>,
+    /// Workflow phase abbreviation (e.g., "dev", "PR", "test")
+    pub phase: Option<String>,
+    /// PR number if one is open for this task
+    pub pr_number: Option<u64>,
+    /// Health status: "green", "yellow", "red"
+    pub health: String,
 }
 
 /// Info about a repo in a multi-repo project
@@ -181,12 +198,16 @@ pub struct App {
     history_start_position: u64,
     /// Whether all history has been loaded
     history_fully_loaded: bool,
+    /// Test mode: when true, skip daemon communication to avoid side effects
+    test_mode: bool,
     /// Tasks for the kanban board
     pub tasks: Vec<KanbanTask>,
     /// Open PRs for the kanban board (Review column)
     pub prs: Vec<KanbanPr>,
     /// Merged PRs for the Done column
     pub merged_prs: Vec<MergedPr>,
+    /// Active coworkers with their current status
+    pub coworkers: Vec<CoworkerInfo>,
     /// Repository name with owner (e.g., "btucker/midtown")
     /// Used for constructing GitHub PR URLs in kanban hyperlinks
     pub repo_name: String,
@@ -311,9 +332,11 @@ impl App {
             initial_load_done: false,
             history_start_position: 0,
             history_fully_loaded: false,
+            test_mode: false,
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
+            coworkers: Vec::new(),
             repo_name,
             kanban_last_refresh: Instant::now() - KANBAN_REFRESH_INTERVAL, // Force initial refresh
             kanban_receiver: None,
@@ -399,6 +422,7 @@ impl App {
                 Ok(data) => {
                     self.prs = data.prs;
                     self.merged_prs = data.merged_prs;
+                    self.coworkers = data.coworkers;
                     // Update repo info from daemon if available
                     if !data.repos.is_empty() {
                         let new_repos: Vec<RepoInfo> = data
@@ -528,13 +552,14 @@ impl App {
         self.kanban_receiver = Some(rx);
 
         thread::spawn(move || {
-            let (prs, merged_prs, repos) = fetch_kanban_data_via_rpc()
-                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new()));
+            let (prs, merged_prs, repos, coworkers) = fetch_kanban_data_via_rpc()
+                .unwrap_or_else(|| (fetch_prs(), fetch_merged_prs(), Vec::new(), Vec::new()));
             // Ignore send error if receiver dropped (app closed)
             let _ = tx.send(KanbanData {
                 prs,
                 merged_prs,
                 repos,
+                coworkers,
             });
         });
     }
@@ -897,10 +922,23 @@ impl App {
     /// Tries daemon RPC first (preferred - allows daemon to nudge lead),
     /// then falls back to direct channel write if daemon is unavailable.
     ///
+    /// In test mode, skips daemon RPC to avoid side effects on the live system.
+    ///
     /// Returns `true` if the message was successfully posted via either path.
     pub fn post_message(&self, message: &str, sender: &str, channel_name: Option<&str>) -> bool {
         use crate::client::DaemonClient;
         use midtown::{Message, MessageType};
+
+        // In test mode, skip daemon communication to avoid side effects
+        if self.test_mode {
+            // Test mode: only try channel write if channel is available
+            if let Some(ref channel) = self.channel {
+                let mut msg = Message::new(sender, message, MessageType::Text);
+                msg.channel = channel_name.map(|s| s.to_string());
+                return channel.send(&msg).is_ok();
+            }
+            return false;
+        }
 
         // Try daemon RPC first (preferred path - allows daemon to nudge lead)
         // Note: DaemonClient::connect() is synchronous with a 15s timeout.
@@ -1668,7 +1706,12 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
 ///
 /// Returns None if the daemon is not available, allowing fallback to direct gh CLI.
 #[allow(clippy::type_complexity)]
-fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(String, String)>)> {
+fn fetch_kanban_data_via_rpc() -> Option<(
+    Vec<KanbanPr>,
+    Vec<MergedPr>,
+    Vec<(String, String)>,
+    Vec<CoworkerInfo>,
+)> {
     use crate::client::DaemonClient;
 
     let client = DaemonClient::connect().ok()?;
@@ -1676,6 +1719,7 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
 
     let prs_json = data.get("prs").and_then(|v| v.as_array())?;
     let merged_json = data.get("merged_prs").and_then(|v| v.as_array())?;
+    let coworkers_json = data.get("coworkers").and_then(|v| v.as_array());
 
     // Extract repo metadata if present
     let repos: Vec<(String, String)> = data
@@ -1796,7 +1840,40 @@ fn fetch_kanban_data_via_rpc() -> Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(Str
         })
         .collect();
 
-    Some((prs, merged_prs, repos))
+    // Parse coworker data from the daemon response
+    let coworkers: Vec<CoworkerInfo> = coworkers_json
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|cw| {
+                    let name = cw.get("name").and_then(|v| v.as_str())?.to_string();
+                    let task_id = cw
+                        .get("task_id")
+                        .and_then(|v| v.as_u64())
+                        .map(|id| id as u32);
+                    let phase = cw
+                        .get("phase")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let pr_number = cw.get("pr_number").and_then(|v| v.as_u64());
+                    let health = cw
+                        .get("health")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("green")
+                        .to_string();
+
+                    Some(CoworkerInfo {
+                        name,
+                        task_id,
+                        phase,
+                        pr_number,
+                        health,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some((prs, merged_prs, repos, coworkers))
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -1966,6 +2043,44 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
 pub(super) mod tests {
     use super::*;
     use midtown::Message;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Helper to retry Channel operations that may fail with WouldBlock due to lock contention.
+    /// This mirrors the retry_with_backoff helper in channel.rs tests.
+    fn retry_with_backoff<T>(
+        max_attempts: u32,
+        mut f: impl FnMut() -> midtown::Result<T>,
+    ) -> midtown::Result<T> {
+        if max_attempts == 0 {
+            return Err(midtown::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "retry_with_backoff: max_attempts must be > 0",
+            )));
+        }
+        for attempt in 0..max_attempts {
+            match f() {
+                Ok(val) => return Ok(val),
+                Err(e) if attempt < max_attempts - 1 => {
+                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("loop above always returns")
+    }
+
+    #[test]
+    fn test_retry_with_backoff_zero_attempts_returns_error() {
+        let result = retry_with_backoff(0, || Ok(42));
+        assert!(result.is_err(), "max_attempts=0 should return an error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("max_attempts must be > 0"),
+            "Error should mention max_attempts, got: {err_msg}"
+        );
+    }
 
     /// Create a default App for testing. Tests can override specific fields
     /// using struct update syntax: `App { messages, ..test_app() }`
@@ -1978,9 +2093,11 @@ pub(super) mod tests {
             initial_load_done: true,
             history_start_position: 0,
             history_fully_loaded: true,
+            test_mode: true, // Prevent daemon communication in tests
             tasks: Vec::new(),
             prs: Vec::new(),
             merged_prs: Vec::new(),
+            coworkers: Vec::new(),
             repo_name: "test".to_string(),
             kanban_last_refresh: Instant::now(),
             kanban_receiver: None,
@@ -2557,6 +2674,35 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn test_channel_read_after_send_with_retry() {
+        // This test reproduces the race condition that causes WouldBlock errors:
+        // send() acquires a write lock, and if read_all() is called immediately after,
+        // it may fail with WouldBlock because try_lock_shared() is non-blocking.
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let channel = Channel::new(temp_dir.path(), "test-channel").unwrap();
+
+        // Add a message
+        channel
+            .send(&Message::text("alice", "First message"))
+            .unwrap();
+
+        // Immediate read after send can fail without retry
+        // This should NOT panic even under lock contention
+        let messages = retry_with_backoff(5, || channel.read_all()).unwrap();
+        assert_eq!(messages.len(), 1);
+
+        // Add another message and verify retry works
+        channel
+            .send(&Message::text("bob", "Second message"))
+            .unwrap();
+
+        let messages = retry_with_backoff(5, || channel.read_all()).unwrap();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
     fn test_unread_count_calculation() {
         use tempfile::TempDir;
 
@@ -2590,7 +2736,8 @@ pub(super) mod tests {
         );
 
         // Simulate reading messages by updating the cursor
-        let messages_read = channel.read_since_cursor("chat-tui").unwrap();
+        let messages_read =
+            retry_with_backoff(5, || channel.read_since_cursor("chat-tui")).unwrap();
         assert_eq!(messages_read.len(), 3, "Should have read 3 messages");
 
         // Verify cursor was saved - load it and check it points to the last message
@@ -2619,7 +2766,8 @@ pub(super) mod tests {
             .unwrap();
 
         // Verify we now have 4 total messages
-        let all_messages = channel.read_all().unwrap();
+        // Use retry to avoid WouldBlock from lock contention after send()
+        let all_messages = retry_with_backoff(5, || channel.read_all()).unwrap();
         assert_eq!(all_messages.len(), 4, "Should have 4 total messages");
 
         // Verify cursor still points to message 3 (not auto-updated)

@@ -221,7 +221,31 @@ fn format_relative_time(time: DateTime<Utc>) -> String {
 
 /// Draw the board panel (left side) with channel swimlanes
 fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> {
+    use ratatui::layout::{Constraint, Direction, Layout};
     use std::collections::{BTreeMap, HashMap};
+
+    // Split board area vertically: tasks at top, coworkers at bottom
+    let active_coworker_count = app.coworkers.len();
+    let coworker_section_height = if active_coworker_count > 0 {
+        // 1 header line + 1 blank line + N coworker lines + 2 for borders
+        active_coworker_count as u16 + 4
+    } else {
+        0 // No coworkers, don't show the section
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if coworker_section_height > 0 {
+            vec![
+                Constraint::Min(10),                         // Task swimlanes
+                Constraint::Length(coworker_section_height), // Coworker status
+            ]
+        } else {
+            vec![Constraint::Min(10)] // No coworkers, use full area for tasks
+        })
+        .split(area);
+
+    let tasks_area = chunks[0];
 
     let mut lines = Vec::new();
     let hyperlinks = Vec::new();
@@ -381,16 +405,91 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
         }
     }
 
-    // Render the panel
+    // Render the tasks panel
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Board")
         .style(Style::default().fg(Color::White));
 
     let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, tasks_area);
+
+    // Render the coworker status section if there are active coworkers
+    if coworker_section_height > 0 {
+        draw_coworker_status(f, app, chunks[1]);
+    }
 
     hyperlinks
+}
+
+/// Draw the coworker status section (bottom of board sidebar)
+fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
+    let mut lines = Vec::new();
+
+    // Header: "Coworkers (N/10)" in cyan, bold
+    let active_count = app.coworkers.len();
+    let max_coworkers = 10; // Hardcoded constant matching daemon's default
+    let header = format!("  Coworkers ({}/{})", active_count, max_coworkers);
+    lines.push(Line::from(vec![Span::styled(
+        header,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+
+    // Blank line after header
+    lines.push(Line::from(""));
+
+    // One line per active coworker
+    for cw in &app.coworkers {
+        // Health dot
+        let health_dot = match cw.health.as_str() {
+            "green" => "●",  // U+25CF BLACK CIRCLE
+            "yellow" => "●", // Same symbol, styled differently
+            "red" => "●",
+            _ => "●",
+        };
+        let health_color = match cw.health.as_str() {
+            "green" => Color::Green,
+            "yellow" => Color::Yellow,
+            "red" => Color::Red,
+            _ => Color::Green,
+        };
+
+        // Format: "● amsterdam  !1108 dev #123"
+        let mut parts = vec![
+            Span::styled(
+                format!("{} ", health_dot),
+                Style::default().fg(health_color),
+            ),
+            Span::raw(format!("{}  ", cw.name)),
+        ];
+
+        // Task ID (!1108)
+        if let Some(task_id) = cw.task_id {
+            parts.push(Span::raw(format!("!{} ", task_id)));
+        }
+
+        // Phase abbreviation (dev/test/PR/etc)
+        if let Some(ref phase) = cw.phase {
+            parts.push(Span::raw(format!("{} ", phase)));
+        }
+
+        // PR number (#123)
+        if let Some(pr_number) = cw.pr_number {
+            parts.push(Span::raw(format!("#{}", pr_number)));
+        }
+
+        lines.push(Line::from(parts));
+    }
+
+    // Render the panel with borders
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, area);
 }
 
 /// Draw stacked repo status lines (one per repo, or single line for single-repo)

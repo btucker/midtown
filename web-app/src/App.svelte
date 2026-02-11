@@ -73,9 +73,20 @@
     // Add resize listener
     window.addEventListener('resize', updateViewportWidth)
 
+    // Reload history when page becomes visible again (handles PWA resume from background)
+    function handleVisibilityChange() {
+      if (!document.hidden && $activeProject) {
+        // Page became visible and we have an active project - refresh history
+        fetchHistory()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     return () => {
       clearInterval(projectInterval)
       window.removeEventListener('resize', updateViewportWidth)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   })
 
