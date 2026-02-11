@@ -22,6 +22,10 @@ pub struct Task {
     /// Optional channel to route coworker messages for this task.
     #[serde(default)]
     pub channel: Option<String>,
+    /// Explicit PR number associated with this task.
+    /// Set via --pr flag or auto-detected from [Midtown !XXX] in PR title.
+    #[serde(default)]
+    pub pr: Option<u64>,
     /// File creation time, populated from filesystem metadata (not serialized).
     #[serde(skip)]
     pub created_at: Option<std::time::SystemTime>,
@@ -220,6 +224,8 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let pr = value.get("pr").and_then(|v| v.as_u64());
+
     Ok(Task {
         id,
         subject,
@@ -228,6 +234,7 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
         description,
         blocked_by,
         channel,
+        pr,
         created_at: None,
     })
 }
@@ -539,7 +546,8 @@ fn update_task_owner_in_dir(
 /// Only fields that are `Some` are updated; `None` fields are left unchanged.
 /// This is the daemon's direct write path — no Lead proxy needed.
 ///
-/// Supports updating: owner, status, description, blocked_by, channel.
+/// Supports updating: owner, status, description, blocked_by, channel, pr.
+#[allow(clippy::too_many_arguments)]
 pub fn update_task_fields_for_repo(
     task_id: &str,
     repo_name: &str,
@@ -548,6 +556,7 @@ pub fn update_task_fields_for_repo(
     description: Option<&str>,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
+    pr: Option<u64>,
 ) -> Result<(), String> {
     use fs2::FileExt;
 
@@ -588,6 +597,9 @@ pub fn update_task_fields_for_repo(
     }
     if let Some(ch) = channel {
         task["channel"] = serde_json::json!(ch);
+    }
+    if let Some(pr_num) = pr {
+        task["pr"] = serde_json::json!(pr_num);
     }
 
     let updated_content = serde_json::to_string_pretty(&task)
@@ -1124,6 +1136,7 @@ pub fn shared_tasks_dir_for_repo(repo: &str) -> std::path::PathBuf {
 ///
 /// Assigns the next sequential ID by scanning existing task files.
 /// Returns the assigned task ID on success.
+#[allow(clippy::too_many_arguments)]
 pub fn create_task_for_repo(
     subject: &str,
     description: &str,
@@ -1132,6 +1145,7 @@ pub fn create_task_for_repo(
     repo_name: &str,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
+    pr: Option<u64>,
 ) -> Result<String, String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
@@ -1154,6 +1168,7 @@ pub fn create_task_for_repo(
         owner,
         blocked_by,
         channel,
+        pr,
     )
 }
 
@@ -1162,6 +1177,7 @@ pub fn create_task_for_repo(
 /// Reads existing tasks once to both determine the next ID and check for duplicates.
 /// A task with the same subject and owner (regardless of status) is considered a duplicate.
 /// Uses directory-level locking to prevent concurrent ID collisions.
+#[allow(clippy::too_many_arguments)]
 fn create_task_in_dir(
     tasks_dir: &std::path::Path,
     subject: &str,
@@ -1170,6 +1186,7 @@ fn create_task_in_dir(
     owner: &str,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
+    pr: Option<u64>,
 ) -> Result<String, String> {
     use fs2::FileExt;
 
@@ -1220,6 +1237,11 @@ fn create_task_in_dir(
     // Add optional channel field if provided
     if let Some(ch) = channel {
         task["channel"] = serde_json::json!(ch);
+    }
+
+    // Add optional pr field if provided
+    if let Some(pr_num) = pr {
+        task["pr"] = serde_json::json!(pr_num);
     }
 
     let path = tasks_dir.join(format!("{}.json", task_id));
@@ -1494,6 +1516,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1504,6 +1527,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1514,6 +1538,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
         ];
@@ -1542,6 +1567,7 @@ mod tests {
                 description: Some("Review PR #239 changes".to_string()),
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1552,6 +1578,7 @@ mod tests {
                 description: Some("Sub-task for PR #239 review".to_string()),
                 blocked_by: vec!["10".to_string()],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
         ];
@@ -1579,6 +1606,7 @@ mod tests {
             description: None,
             blocked_by: vec![],
             channel: None,
+            pr: None,
             created_at: None,
         };
         assert_eq!(extract_pr_number_from_task(&task), Some("42".to_string()));
@@ -1594,6 +1622,7 @@ mod tests {
             description: Some("Part of PR #239 review workflow".to_string()),
             blocked_by: vec![],
             channel: None,
+            pr: None,
             created_at: None,
         };
         assert_eq!(extract_pr_number_from_task(&task), Some("239".to_string()));
@@ -1609,6 +1638,7 @@ mod tests {
             description: Some("Generic scoring task".to_string()),
             blocked_by: vec![],
             channel: None,
+            pr: None,
             created_at: None,
         };
         assert_eq!(extract_pr_number_from_task(&task), None);
@@ -1625,6 +1655,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1635,6 +1666,7 @@ mod tests {
                 description: None,
                 blocked_by: vec!["100".to_string()],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1645,6 +1677,7 @@ mod tests {
                 description: None,
                 blocked_by: vec!["101".to_string()],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
         ];
@@ -1673,6 +1706,7 @@ mod tests {
             description: Some("Reviewing PR #88 changes".to_string()),
             blocked_by: vec![],
             channel: None,
+            pr: None,
             created_at: None,
         }];
 
@@ -1713,6 +1747,7 @@ mod tests {
             description: None,
             blocked_by: vec![],
             channel: None,
+            pr: None,
             created_at: Some(now - Duration::from_secs(10)),
         };
         assert!(is_within_grace_period(&recent_task, now, grace));
@@ -1726,6 +1761,7 @@ mod tests {
             description: None,
             blocked_by: vec![],
             channel: None,
+            pr: None,
             created_at: Some(now - Duration::from_secs(60)),
         };
         assert!(!is_within_grace_period(&old_task, now, grace));
@@ -1739,6 +1775,7 @@ mod tests {
             description: None,
             blocked_by: vec![],
             channel: None,
+            pr: None,
             created_at: None,
         };
         assert!(!is_within_grace_period(&no_time_task, now, grace));
@@ -1755,6 +1792,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1765,6 +1803,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1775,6 +1814,7 @@ mod tests {
                 description: None,
                 blocked_by: vec!["1".to_string()],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1785,6 +1825,7 @@ mod tests {
                 description: None,
                 blocked_by: vec!["2".to_string()],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1795,6 +1836,7 @@ mod tests {
                 description: None,
                 blocked_by: vec!["999".to_string()],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1805,6 +1847,7 @@ mod tests {
                 description: None,
                 blocked_by: vec!["1".to_string(), "2".to_string()],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
             Task {
@@ -1815,6 +1858,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: None,
             },
         ];
@@ -1856,6 +1900,7 @@ mod tests {
                 description: Some("Check if PR #246 is eligible".to_string()),
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: Some(now - Duration::from_secs(5)),
             },
             // Another sub-task just created (3 seconds ago)
@@ -1867,6 +1912,7 @@ mod tests {
                 description: Some("Review agents for PR #246".to_string()),
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: Some(now - Duration::from_secs(3)),
             },
             // An older task that legitimately has no owner (created 2 minutes ago)
@@ -1878,6 +1924,7 @@ mod tests {
                 description: None,
                 blocked_by: vec![],
                 channel: None,
+                pr: None,
                 created_at: Some(now - Duration::from_secs(120)),
             },
         ];
@@ -2168,6 +2215,7 @@ mod tests {
             "madison",
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
         let task_id = result.unwrap();
@@ -2192,6 +2240,7 @@ mod tests {
             "madison",
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2202,6 +2251,7 @@ mod tests {
             "desc",
             "Addressing review feedback on PR #42",
             "madison",
+            None,
             None,
             None,
         )
@@ -2235,6 +2285,7 @@ mod tests {
             "madison",
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2258,6 +2309,7 @@ mod tests {
             "madison",
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2268,6 +2320,7 @@ mod tests {
             "desc",
             "Addressing feedback",
             "lexington",
+            None,
             None,
             None,
         )
@@ -2291,6 +2344,7 @@ mod tests {
             "desc",
             "Working on new task",
             "carol",
+            None,
             None,
             None,
         )
@@ -2318,6 +2372,7 @@ mod tests {
             "bob",
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(id, "4");
@@ -2329,6 +2384,7 @@ mod tests {
             "desc",
             "Working",
             "bob",
+            None,
             None,
             None,
         )
@@ -2719,6 +2775,7 @@ mod tests {
                     &format!("worker-{}", i),
                     None,
                     None,
+                    None,
                 )
                 .unwrap()
             }));
@@ -2769,6 +2826,7 @@ mod tests {
             "madison",
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2788,7 +2846,7 @@ mod tests {
 
         // Create first task
         let id1 = create_task_in_dir(
-            tasks_dir, "Task one", "desc", "Working", "alice", None, None,
+            tasks_dir, "Task one", "desc", "Working", "alice", None, None, None,
         )
         .unwrap();
         assert_eq!(id1, "1");
@@ -2797,8 +2855,10 @@ mod tests {
         assert_eq!(read_highwatermark(tasks_dir), 1);
 
         // Create second task
-        let id2 = create_task_in_dir(tasks_dir, "Task two", "desc", "Working", "bob", None, None)
-            .unwrap();
+        let id2 = create_task_in_dir(
+            tasks_dir, "Task two", "desc", "Working", "bob", None, None, None,
+        )
+        .unwrap();
         assert_eq!(id2, "2");
         assert_eq!(read_highwatermark(tasks_dir), 2);
     }
@@ -2831,8 +2891,10 @@ mod tests {
         std::fs::write(tasks_dir.join(".highwatermark"), "50").unwrap();
         create_task_file(tasks_dir, "100", "pending", Some("alice"));
 
-        let id = create_task_in_dir(tasks_dir, "New task", "desc", "Working", "bob", None, None)
-            .unwrap();
+        let id = create_task_in_dir(
+            tasks_dir, "New task", "desc", "Working", "bob", None, None, None,
+        )
+        .unwrap();
         assert_eq!(id, "101", "should use max(files, watermark) + 1");
 
         // Watermark updated to new value
@@ -2852,6 +2914,7 @@ mod tests {
             "alice",
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2864,6 +2927,7 @@ mod tests {
             "Working",
             "bob",
             Some(&blocked_by),
+            None,
             None,
         )
         .unwrap();
@@ -2886,6 +2950,7 @@ mod tests {
             "alice",
             Some(&[]),
             None,
+            None,
         )
         .unwrap();
 
@@ -2904,6 +2969,7 @@ mod tests {
             "desc",
             "Working",
             "alice",
+            None,
             None,
             None,
         )
@@ -2926,6 +2992,7 @@ mod tests {
             "alice",
             None,
             Some("feature-auth"),
+            None,
         )
         .unwrap();
 
@@ -2944,6 +3011,7 @@ mod tests {
             "desc",
             "Working",
             "alice",
+            None,
             None,
             None,
         )
@@ -2966,6 +3034,7 @@ mod tests {
             "alice",
             None,
             Some("infra-deploy"),
+            None,
         )
         .unwrap();
 

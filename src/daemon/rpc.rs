@@ -390,6 +390,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                 .and_then(|p| p.get("channel"))
                 .and_then(|v| v.as_str());
             let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
+            let pr = params.and_then(|p| p.get("pr")).and_then(|v| v.as_u64());
 
             match subject {
                 Some(subject) => {
@@ -400,6 +401,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         blocked_by.as_deref(),
                         channel,
                         model,
+                        pr,
                         state,
                     )
                     .await
@@ -433,6 +435,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         .and_then(|p| p.get("channel"))
                         .and_then(|v| v.as_str());
                     let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
+                    let pr = params.and_then(|p| p.get("pr")).and_then(|v| v.as_u64());
 
                     handle_task_update(
                         request.id,
@@ -443,6 +446,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         blocked_by.as_deref(),
                         channel,
                         model,
+                        pr,
                         state,
                     )
                     .await
@@ -1650,6 +1654,7 @@ async fn handle_task_request(
 /// happens on the next `TaskDispatchTick` via the canonical event loop pipeline.
 ///
 /// If no channel is provided, invokes the clusterer to assign one automatically.
+#[allow(clippy::too_many_arguments)]
 async fn handle_task_create(
     id: RequestId,
     subject: &str,
@@ -1657,6 +1662,7 @@ async fn handle_task_create(
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
     model: Option<&str>,
+    pr: Option<u64>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -1688,6 +1694,7 @@ async fn handle_task_create(
         &repo_name,
         blocked_by,
         assigned_channel.as_deref(),
+        pr,
     ) {
         Ok(task_id) => {
             // Update daemon-side task-to-channel and task-to-model mappings if provided
@@ -1896,6 +1903,7 @@ async fn handle_task_update(
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
     model: Option<&str>,
+    pr: Option<u64>,
     state: &DaemonState,
 ) -> Response {
     // Validate status if provided
@@ -1915,6 +1923,7 @@ async fn handle_task_update(
         description,
         blocked_by,
         channel,
+        pr,
     ) {
         return Response::error(
             id,
@@ -2064,6 +2073,7 @@ fn handle_task_claim(id: RequestId, task_id: &str, from: &str, state: &DaemonSta
             &repo_name,
             Some(from),
             Some("in_progress"),
+            None,
             None,
             None,
             None,

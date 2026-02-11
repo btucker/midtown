@@ -216,6 +216,14 @@ pub enum Effect {
         completed_task_id: String,
         repo_name: String,
     },
+    /// Set the explicit PR association for a task.
+    ///
+    /// Called when a PR is opened with `[Midtown !XX]` in the title to link the task to the PR.
+    SetTaskPr {
+        task_id: String,
+        pr_number: u64,
+        repo_name: String,
+    },
     /// Force-delete orphaned worktrees whose PRs were merged (squash-merge).
     ///
     /// These worktrees appear to have "unmerged commits" because the squash-merge
@@ -930,6 +938,29 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
+            Effect::SetTaskPr {
+                task_id,
+                pr_number,
+                repo_name,
+            } => {
+                if let Err(e) = crate::tasks::update_task_fields_for_repo(
+                    &task_id,
+                    &repo_name,
+                    None, // owner
+                    None, // status
+                    None, // description
+                    None, // blocked_by
+                    None, // channel
+                    Some(pr_number),
+                ) {
+                    warn!("Failed to set PR association for task !{}: {}", task_id, e);
+                } else {
+                    info!(
+                        "Set PR association for task !{}: PR #{}",
+                        task_id, pr_number
+                    );
+                }
+            }
             Effect::ForceCleanupWorktrees { names } => {
                 if names.is_empty() {
                     continue;
@@ -1347,6 +1378,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     &repo_name,
                     None, // blocked_by
                     None, // channel
+                    None, // pr
                 ) {
                     Ok(task_id) => {
                         info!("Created task !{}: {}", task_id, subject);

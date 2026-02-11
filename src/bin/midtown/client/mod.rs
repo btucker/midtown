@@ -311,6 +311,7 @@ impl DaemonClient {
         blocked_by: Option<&[String]>,
         channel: Option<&str>,
         model: Option<&str>,
+        pr: Option<u64>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -325,6 +326,9 @@ impl DaemonClient {
         if let Some(m) = model {
             params["model"] = serde_json::json!(m);
         }
+        if let Some(pr_num) = pr {
+            params["pr"] = serde_json::json!(pr_num);
+        }
         self.send("task.create", Some(params))
     }
 
@@ -338,6 +342,7 @@ impl DaemonClient {
         blocked_by: Option<&[String]>,
         channel: Option<&str>,
         model: Option<&str>,
+        pr: Option<u64>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "id": id });
         if let Some(o) = owner {
@@ -357,6 +362,9 @@ impl DaemonClient {
         }
         if let Some(m) = model {
             params["model"] = serde_json::json!(m);
+        }
+        if let Some(pr_num) = pr {
+            params["pr"] = serde_json::json!(pr_num);
         }
         self.send("task.update", Some(params))
     }

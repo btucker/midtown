@@ -1886,7 +1886,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                     );
                 }
 
-                // Handle PR-opened events: store author session + auto-complete task
+                // Handle PR-opened events: store author session + auto-set task PR association
                 if let Some(ref pr_opened) = webhook_event.pr_opened {
                     let mut pr_effects = Vec::new();
 
@@ -1906,6 +1906,21 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
                                 pr_opened.pr_number, author
                             );
                         }
+                    }
+
+                    // Auto-set task PR association when PR title contains [Midtown !XX]
+                    if let Some(task_id) =
+                        crate::tasks::extract_task_id_from_pr_title(&pr_opened.title)
+                    {
+                        pr_effects.push(effects::Effect::SetTaskPr {
+                            task_id: task_id.to_string(),
+                            pr_number: pr_opened.pr_number,
+                            repo_name: state.repo_name.clone(),
+                        });
+                        info!(
+                            "Auto-setting PR #{} association for task !{}",
+                            pr_opened.pr_number, task_id
+                        );
                     }
 
                     // NOTE: Task auto-completion has been moved to the PR merged handler
