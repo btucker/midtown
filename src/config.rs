@@ -246,15 +246,8 @@ impl FullProjectConfig {
                 .clone();
 
             // Update document with new values while preserving comments/formatting
+            // merge_tables() now handles generic None-removal for all Option<T> fields
             merge_tables(doc.as_table_mut(), &new_table);
-
-            // Special case: Remove auth_profile if it's None (serde omits None fields,
-            // but we need to actually remove the key from existing files)
-            if self.project.auth_profile.is_none()
-                && let Some(Item::Table(project_table)) = doc.get_mut("project")
-            {
-                project_table.remove("auth_profile");
-            }
 
             doc.to_string()
         } else {
@@ -438,7 +431,20 @@ pub struct ProvidersConfig {
 }
 
 /// Recursively merge new_table values into target, preserving comments and formatting.
+///
+/// This function performs two passes:
+/// 1. **Overlay**: Add or update keys from new_table into target
+/// 2. **Removal**: Remove keys from target that don't exist in new_table
+///
+/// The removal pass is critical for Option<T> fields. When an Option is set to None,
+/// serde omits it from serialization. Without removal, the old value persists in the file.
+///
+/// Comment-only sections (tables with no key-value pairs) are preserved during removal.
+///
+/// **Note**: This function assumes all struct fields are serialized (no `skip_serializing_if`).
+/// If a field is omitted from serialization, Phase 2 will remove it from the file.
 fn merge_tables(target: &mut Table, new_table: &Table) {
+    // Phase 1: Overlay new values onto target (add or update)
     for (key, new_value) in new_table.iter() {
         match (target.get_mut(key), new_value) {
             // Both are tables - recurse
@@ -454,6 +460,32 @@ fn merge_tables(target: &mut Table, new_table: &Table) {
                 target.insert(key, new_item.clone());
             }
         }
+    }
+
+    // Phase 2: Remove keys from target that don't exist in new_table
+    // This handles Option<T> fields set to None (serde omits them, so we must remove the old value)
+    let keys_to_remove: Vec<String> = target
+        .iter()
+        .filter_map(|(key, item)| {
+            // Keep the key if it exists in new_table
+            if new_table.contains_key(key) {
+                return None;
+            }
+
+            // Keep comment-only tables (tables with no key-value pairs, just comments)
+            if let Item::Table(table) = item
+                && table.is_empty()
+            {
+                return None;
+            }
+
+            // Remove this key
+            Some(key.to_string())
+        })
+        .collect();
+
+    for key in keys_to_remove {
+        target.remove(&key);
     }
 }
 
@@ -1992,5 +2024,183 @@ auth_profile = "user@example.com"
 
         // Verify the new value is saved
         assert!(saved_contents.contains("new-midtown"));
+    }
+
+    #[test]
+    fn test_merge_tables_removes_none_fields_full_project_config() {
+        // Bug: merge_tables() only handles auth_profile explicitly, but all Option<T> fields
+        // have the same latent defect. When a field is set to None, the serializer omits it,
+        // but merge_tables() doesn't remove the old value from the file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Write initial config with all Option fields set
+        let initial_toml = r#"[project]
+name = "testproj"
+repos = ["/tmp/testproj"]
+primary_repo = "/tmp/testproj"
+auth_profile = "old@example.com"
+
+[default]
+bin_command = "cargo run --"
+chat_layout = "split"
+max_coworkers = 8
+personality = "fun"
+user_display_name = "OldUser"
+
+[daemon]
+webhook_port = 9000
+webhook_secret = "old-secret"
+"#;
+        std::fs::write(&path, initial_toml).unwrap();
+
+        // Load, set all Option fields to None, and save
+        let mut config = FullProjectConfig::load_from(&path).unwrap();
+        config.project.auth_profile = None;
+        config.default.bin_command = None;
+        config.default.chat_layout = None;
+        config.default.max_coworkers = None;
+        config.default.personality = None;
+        config.default.user_display_name = None;
+        config.daemon.webhook_port = None;
+        config.daemon.webhook_secret = None;
+        config.save_to(&path).unwrap();
+
+        // Verify: stale values should be removed from the file
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !saved_contents.contains("auth_profile"),
+            "auth_profile should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("bin_command"),
+            "bin_command should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("chat_layout"),
+            "chat_layout should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("max_coworkers"),
+            "max_coworkers should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("personality"),
+            "personality should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("user_display_name"),
+            "user_display_name should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_port"),
+            "webhook_port should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_secret"),
+            "webhook_secret should be removed when set to None"
+        );
+
+        // Verify: reloading the config confirms None values (not stale values)
+        let reloaded = FullProjectConfig::load_from(&path).unwrap();
+        assert_eq!(reloaded.project.auth_profile, None);
+        assert_eq!(reloaded.default.bin_command, None);
+        assert_eq!(reloaded.default.chat_layout, None);
+        assert_eq!(reloaded.default.max_coworkers, None);
+        assert_eq!(reloaded.default.personality, None);
+        assert_eq!(reloaded.default.user_display_name, None);
+        assert_eq!(reloaded.daemon.webhook_port, None);
+        assert_eq!(reloaded.daemon.webhook_secret, None);
+    }
+
+    #[test]
+    fn test_merge_tables_removes_none_fields_global_config() {
+        // Same bug applies to GlobalConfig::save()
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Write initial config with all Option fields set
+        let initial_toml = r#"[default]
+bin_command = "midtown"
+chat_layout = "split"
+max_coworkers = 8
+personality = "wild"
+user_display_name = "OldUser"
+
+[daemon]
+webhook_port = 9000
+webhook_secret = "old-secret"
+github_user = "old-user"
+
+[providers.claude]
+auth_profile = "old@example.com"
+"#;
+        std::fs::write(&path, initial_toml).unwrap();
+
+        // Load, set all Option fields to None, and save
+        let mut config: GlobalConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        config.default.bin_command = None;
+        config.default.chat_layout = None;
+        config.default.max_coworkers = None;
+        config.default.personality = None;
+        config.default.user_display_name = None;
+        config.daemon.webhook_port = None;
+        config.daemon.webhook_secret = None;
+        config.daemon.github_user = None;
+        config.providers.claude.auth_profile = None;
+        config.save_to(&path).unwrap();
+
+        // Verify: stale values should be removed from the file
+        let saved_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !saved_contents.contains("bin_command"),
+            "bin_command should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("chat_layout"),
+            "chat_layout should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("max_coworkers"),
+            "max_coworkers should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("personality"),
+            "personality should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("user_display_name"),
+            "user_display_name should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_port"),
+            "webhook_port should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("webhook_secret"),
+            "webhook_secret should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("github_user"),
+            "github_user should be removed when set to None"
+        );
+        assert!(
+            !saved_contents.contains("auth_profile"),
+            "auth_profile should be removed when set to None"
+        );
+
+        // Verify: reloading the config confirms None values (not stale values)
+        let reloaded: GlobalConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.default.bin_command, None);
+        assert_eq!(reloaded.default.chat_layout, None);
+        assert_eq!(reloaded.default.max_coworkers, None);
+        assert_eq!(reloaded.default.personality, None);
+        assert_eq!(reloaded.default.user_display_name, None);
+        assert_eq!(reloaded.daemon.webhook_port, None);
+        assert_eq!(reloaded.daemon.webhook_secret, None);
+        assert_eq!(reloaded.daemon.github_user, None);
+        assert_eq!(reloaded.providers.claude.auth_profile, None);
     }
 }
