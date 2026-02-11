@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
 use midtown::{Message, MessageType};
@@ -227,8 +227,8 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
     // Split board area vertically: tasks at top, coworkers at bottom
     let active_coworker_count = app.coworkers.len();
     let coworker_section_height = if active_coworker_count > 0 {
-        // 1 header line + 1 blank line + N coworker lines + 2 for borders
-        active_coworker_count as u16 + 4
+        // 1 header line + N coworker rows + 2 for table borders
+        active_coworker_count as u16 + 3
     } else {
         0 // No coworkers, don't show the section
     };
@@ -424,72 +424,86 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
 
 /// Draw the coworker status section (bottom of board sidebar)
 fn draw_coworker_status(f: &mut Frame, app: &App, area: Rect) {
-    let mut lines = Vec::new();
+    // Split area: header at top, table below
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header line
+            Constraint::Min(0),    // Table rows
+        ])
+        .split(area);
 
     // Header: "Coworkers (N/10)" in cyan, bold
     let active_count = app.coworkers.len();
     let max_coworkers = 10; // Hardcoded constant matching daemon's default
     let header = format!("  Coworkers ({}/{})", active_count, max_coworkers);
-    lines.push(Line::from(vec![Span::styled(
+    let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
         header,
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
     )]));
+    f.render_widget(header_paragraph, chunks[0]);
 
-    // Blank line after header
-    lines.push(Line::from(""));
+    // Build table rows for coworkers
+    let rows: Vec<Row> = app
+        .coworkers
+        .iter()
+        .map(|cw| {
+            // Health dot
+            let health_dot = "●"; // U+25CF BLACK CIRCLE
+            let health_color = match cw.health.as_str() {
+                "green" => Color::Green,
+                "yellow" => Color::Yellow,
+                "red" => Color::Red,
+                _ => Color::Green,
+            };
 
-    // One line per active coworker
-    for cw in &app.coworkers {
-        // Health dot
-        let health_dot = match cw.health.as_str() {
-            "green" => "●",  // U+25CF BLACK CIRCLE
-            "yellow" => "●", // Same symbol, styled differently
-            "red" => "●",
-            _ => "●",
-        };
-        let health_color = match cw.health.as_str() {
-            "green" => Color::Green,
-            "yellow" => Color::Yellow,
-            "red" => Color::Red,
-            _ => Color::Green,
-        };
+            // Build cells: [health_dot, name, task_id, phase, pr_number]
+            let mut cells = vec![
+                Cell::from(health_dot).style(Style::default().fg(health_color)),
+                Cell::from(cw.name.clone()),
+            ];
 
-        // Format: "● amsterdam  !1108 dev #123"
-        let mut parts = vec![
-            Span::styled(
-                format!("{} ", health_dot),
-                Style::default().fg(health_color),
-            ),
-            Span::raw(format!("{}  ", cw.name)),
-        ];
+            // Task ID (!1108)
+            cells.push(Cell::from(
+                cw.task_id.map(|id| format!("!{}", id)).unwrap_or_default(),
+            ));
 
-        // Task ID (!1108)
-        if let Some(task_id) = cw.task_id {
-            parts.push(Span::raw(format!("!{} ", task_id)));
-        }
+            // Phase abbreviation (dev/test/PR/etc)
+            cells.push(Cell::from(cw.phase.clone().unwrap_or_default()));
 
-        // Phase abbreviation (dev/test/PR/etc)
-        if let Some(ref phase) = cw.phase {
-            parts.push(Span::raw(format!("{} ", phase)));
-        }
+            // PR number (#123)
+            cells.push(Cell::from(
+                cw.pr_number
+                    .map(|pr| format!("#{}", pr))
+                    .unwrap_or_default(),
+            ));
 
-        // PR number (#123)
-        if let Some(pr_number) = cw.pr_number {
-            parts.push(Span::raw(format!("#{}", pr_number)));
-        }
+            Row::new(cells)
+        })
+        .collect();
 
-        lines.push(Line::from(parts));
-    }
+    // Define column widths
+    // [dot, name, task, phase, PR]
+    let widths = [
+        Constraint::Length(2), // Health dot + space
+        Constraint::Min(10),   // Name (flexible)
+        Constraint::Length(6), // Task ID (!1234)
+        Constraint::Length(6), // Phase (dev/test/PR/etc)
+        Constraint::Length(5), // PR number (#123)
+    ];
 
-    // Render the panel with borders
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::White));
+    // Create table (no borders, no header)
+    let table = Table::new(rows, widths)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)),
+        )
+        .column_spacing(1); // Space between columns
 
-    let paragraph = Paragraph::new(lines).block(block);
-    f.render_widget(paragraph, area);
+    f.render_widget(table, chunks[1]);
 }
 
 /// Draw stacked repo status lines (one per repo, or single line for single-repo)
