@@ -3244,7 +3244,7 @@ fn parse_attach_target(target: &str) -> Result<AttachTarget, String> {
 }
 
 /// Resolve an attach target to a coworker name using daemon state.
-fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
+async fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, String> {
     let parsed = parse_attach_target(target)?;
 
     match parsed {
@@ -3261,7 +3261,7 @@ fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, St
         }
         AttachTarget::Pr(pr_num) => {
             // Check reviewer assignments
-            let persistent = state.persistent_state.blocking_lock();
+            let persistent = state.persistent_state.lock().await;
             if let Some(reviewer) = persistent.github.get_reviewer(pr_num) {
                 return Ok(reviewer.to_lowercase());
             }
@@ -3287,7 +3287,7 @@ fn resolve_attach_target(target: &str, state: &DaemonState) -> Result<String, St
 /// Pauses the headless coworker process and returns session info so the CLI
 /// can create a tmux window with `claude --resume <session-id>`.
 async fn handle_session_attach(id: RequestId, target: &str, state: &DaemonState) -> Response {
-    let name = match resolve_attach_target(target, state) {
+    let name = match resolve_attach_target(target, state).await {
         Ok(n) => n,
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
