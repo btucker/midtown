@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use tracing::{debug, info, warn};
 
 use super::DaemonState;
@@ -232,6 +234,16 @@ pub enum Effect {
     ///
     /// Catches branches left behind after worktree removal.
     CleanStaleBranches,
+    /// Clean a coworker's target/ directory to reclaim disk space.
+    ///
+    /// Called when a coworker goes on break. Deletes the build artifacts
+    /// (target/ dir) to free up 4-7GB per coworker. They'll rebuild when
+    /// recalled. This prevents disk exhaustion from idle coworker builds.
+    ///
+    /// `working_dir` is the coworker's actual working directory (resolved
+    /// from the coworker record at decision time), not the legacy
+    /// `worktree_path()` which only covers coworker-named worktrees.
+    CleanWorktreeTarget { name: String, working_dir: PathBuf },
     /// Clean up a task-based worktree after its PR is merged.
     ///
     /// Looks up the worktree in the registry by PR number or branch name,
@@ -983,6 +995,51 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         cleaned.len(),
                         cleaned.join(", ")
                     );
+                }
+            }
+            Effect::CleanWorktreeTarget { name, working_dir } => {
+                let target_path = working_dir.join("target");
+
+                if !target_path.exists() {
+                    debug!(
+                        "Target directory for {} doesn't exist at {}, skipping cleanup",
+                        name,
+                        target_path.display()
+                    );
+                    continue;
+                }
+
+                // Brief delay to let the coworker process finish terminating.
+                // ShutdownCoworker sends a non-blocking kill signal, so the
+                // process may still be writing to target/ when we get here.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                let name_clone = name.clone();
+                match tokio::task::spawn_blocking(move || {
+                    match std::fs::remove_dir_all(&target_path) {
+                        Ok(()) => {
+                            info!(
+                                "Cleaned target/ directory for {} to reclaim disk space",
+                                name_clone
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to clean target/ directory for {}: {}",
+                                name_clone, e
+                            );
+                        }
+                    }
+                })
+                .await
+                {
+                    Ok(()) => {}
+                    Err(e) => {
+                        warn!(
+                            "spawn_blocking panicked during target/ cleanup for {}: {}",
+                            name, e
+                        );
+                    }
                 }
             }
             Effect::CleanupMergedWorktree { pr_number, branch } => {
