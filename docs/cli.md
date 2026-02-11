@@ -48,10 +48,10 @@ Attach to a headless coworker's session in an interactive tmux window for debugg
 
 | Command | Description |
 |---------|-------------|
-| `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>]` | Create a new task (optionally blocked by task IDs, optionally routed to a channel) |
+| `midtown task create <subject> --description <desc> [--blocked-by <ids>] [--channel <name>] [--model <provider/model>]` | Create a new task (optionally blocked by task IDs, routed to a channel, or assigned a model) |
 | `midtown task list [--all]` | List tasks (pending/in-progress by default) |
 | `midtown task view <id>` | View task details |
-| `midtown task update <id> [--owner <name>] [--status <status>] [--channel <name>]` | Update a task |
+| `midtown task update <id> [--owner <name>] [--status <status>] [--channel <name>] [--model <provider/model>]` | Update a task (use `--model ""` to clear) |
 
 ## Pull Requests
 

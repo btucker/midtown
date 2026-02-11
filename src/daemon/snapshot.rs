@@ -136,6 +136,12 @@ pub struct WorldSnapshot {
     /// Maps task ID → channel name. Used by rules.rs to route coworker messages
     /// to the appropriate topic channel based on the task they're working on.
     pub task_channel: HashMap<String, String>,
+    /// Task-to-model assignment mapping for coworker spawning.
+    /// Maps task ID → model specification (e.g., "claude/opus", "claude/sonnet").
+    /// Used by dispatch.rs to launch coworkers with the requested model when spawning
+    /// for a task. Stored in DaemonPersistentState and loaded here for decision functions.
+    #[serde(default)]
+    pub task_model_map: HashMap<String, String>,
 
     // ── PR / GitHub state ───────────────────────────────────────────────
     /// Coworkers who have at least one open PR.
@@ -399,6 +405,12 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         ps.task_channel.clone()
     };
 
+    // Task-to-model mapping from persistent state
+    let task_model_map: HashMap<String, String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.task_model.clone()
+    };
+
     // ── PR / GitHub state ───────────────────────────────────────────────
     let coworkers_with_open_prs: HashSet<String> = super::pr::get_coworkers_with_open_prs(state)
         .into_iter()
@@ -593,6 +605,7 @@ pub async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
         pending_tasks_with_owners,
         pending_tasks_without_owners,
         task_channel,
+        task_model_map,
         coworkers_with_open_prs,
         coworkers_with_merged_prs,
         merged_pr_numbers,
@@ -660,6 +673,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         pending_tasks_with_owners: vec![],
         pending_tasks_without_owners: vec![],
         task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
         coworkers_with_open_prs: HashSet::new(),
         coworkers_with_merged_prs: HashSet::new(),
         merged_pr_numbers: HashSet::new(),
@@ -762,6 +776,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -854,6 +869,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -1017,6 +1033,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -1093,6 +1110,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),

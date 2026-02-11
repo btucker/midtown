@@ -361,6 +361,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             let channel = params
                 .and_then(|p| p.get("channel"))
                 .and_then(|v| v.as_str());
+            let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
 
             match subject {
                 Some(subject) => {
@@ -370,6 +371,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         description,
                         blocked_by.as_deref(),
                         channel,
+                        model,
                         state,
                     )
                     .await
@@ -402,6 +404,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                     let channel = params
                         .and_then(|p| p.get("channel"))
                         .and_then(|v| v.as_str());
+                    let model = params.and_then(|p| p.get("model")).and_then(|v| v.as_str());
 
                     handle_task_update(
                         request.id,
@@ -411,6 +414,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
                         description,
                         blocked_by.as_deref(),
                         channel,
+                        model,
                         state,
                     )
                 }
@@ -424,6 +428,16 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
             match id {
                 Some(id) => handle_task_done(request.id, id, state),
+                None => Response::error(request.id, RpcError::invalid_params()),
+            }
+        }
+
+        "task.metadata" => {
+            let params = request.params.as_ref();
+            let id = params.and_then(|p| p.get("id")).and_then(|v| v.as_str());
+
+            match id {
+                Some(id) => handle_task_metadata(request.id, id, state),
                 None => Response::error(request.id, RpcError::invalid_params()),
             }
         }
@@ -1486,6 +1500,7 @@ async fn handle_task_create(
     description: &str,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
+    model: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let repo_name = state.repo_name.clone();
@@ -1519,17 +1534,42 @@ async fn handle_task_create(
         assigned_channel.as_deref(),
     ) {
         Ok(task_id) => {
-            // Update daemon-side task-to-channel mapping if channel was provided
+            // Update daemon-side task-to-channel and task-to-model mappings if provided
             {
                 let mut ps = state.persistent_state.lock().await;
+                let mut needs_save = false;
+
+                // Apply channel mapping
                 if apply_task_channel_mapping(
                     &mut ps.task_channel,
                     &task_id.to_string(),
                     channel,
                     false,
-                ) && let Err(e) = ps.save_for_repo(&repo_name)
-                {
-                    warn!("Failed to save task-channel mapping: {}", e);
+                ) {
+                    needs_save = true;
+                }
+
+                // Apply model mapping
+                match apply_task_model_mapping(
+                    &mut ps.task_model,
+                    &task_id.to_string(),
+                    model,
+                    false,
+                ) {
+                    Ok(changed) => {
+                        if changed {
+                            needs_save = true;
+                        }
+                    }
+                    Err(e) => {
+                        // Model format validation failed - return error
+                        return Response::error(id, RpcError::new(-32602, e));
+                    }
+                }
+
+                // Save if any mapping changed
+                if needs_save && let Err(e) = ps.save_for_repo(&repo_name) {
+                    warn!("Failed to save task mappings: {}", e);
                 }
             }
 
@@ -1599,6 +1639,67 @@ fn generate_active_form(subject: &str) -> String {
     }
 }
 
+/// Validate model format: must be "provider/model" with exactly one slash.
+///
+/// Valid examples: "claude/opus", "claude/sonnet", "codex/o3", "codex/o4-mini"
+/// Invalid: "claude-opus" (no slash), "claude/opus/extra" (multiple slashes),
+///          "/opus" (empty provider), "claude/" (empty model)
+fn validate_model_format(model: &str) -> Result<(), String> {
+    let parts: Vec<&str> = model.split('/').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "Invalid model format '{}': must be '<provider>/<model>' (e.g., claude/opus)",
+            model
+        ));
+    }
+    if parts[0].is_empty() {
+        return Err(format!(
+            "Invalid model format '{}': provider cannot be empty",
+            model
+        ));
+    }
+    if parts[1].is_empty() {
+        return Err(format!(
+            "Invalid model format '{}': model cannot be empty",
+            model
+        ));
+    }
+    Ok(())
+}
+
+/// Apply a task-to-model mapping update to persistent state.
+///
+/// On `task.create`: pass `model` from the RPC params. Valid non-empty values are stored;
+/// `None` or empty strings are ignored. Invalid formats return an error.
+///
+/// On `task.update`: pass `model` from the RPC params. Valid non-empty values set/overwrite
+/// the mapping; an empty string clears it; `None` means no change.
+///
+/// Returns `Ok(true)` if the mapping was modified (caller should save persistent state).
+/// Returns `Ok(false)` if no change was made.
+/// Returns `Err` if the model format is invalid.
+fn apply_task_model_mapping(
+    task_model: &mut HashMap<String, String>,
+    task_id: &str,
+    model: Option<&str>,
+    allow_clear: bool,
+) -> Result<bool, String> {
+    match model {
+        Some(m) if m.is_empty() && allow_clear => {
+            // Empty string means clear the mapping (only on update, not create)
+            // Returns true only if a mapping was actually removed
+            Ok(task_model.remove(task_id).is_some())
+        }
+        Some(m) if !m.is_empty() => {
+            // Validate format before storing
+            validate_model_format(m)?;
+            task_model.insert(task_id.to_string(), m.to_string());
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Apply a task-to-channel mapping update to persistent state.
 ///
 /// On `task.create`: pass `channel` from the RPC params. Non-empty values are stored;
@@ -1638,6 +1739,7 @@ fn handle_task_update(
     description: Option<&str>,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
+    model: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Validate status if provided
@@ -1677,13 +1779,32 @@ fn handle_task_update(
         state.clear_task_assignment_by_task(task_id);
     }
 
-    // Update daemon-side task-to-channel mapping
+    // Update daemon-side task-to-channel and task-to-model mappings
     {
         let mut ps = state.persistent_state.blocking_lock();
-        if apply_task_channel_mapping(&mut ps.task_channel, task_id, channel, true)
-            && let Err(e) = ps.save_for_repo(&repo_name)
-        {
-            warn!("Failed to save task-channel mapping: {}", e);
+        let mut needs_save = false;
+
+        // Apply channel mapping
+        if apply_task_channel_mapping(&mut ps.task_channel, task_id, channel, true) {
+            needs_save = true;
+        }
+
+        // Apply model mapping
+        match apply_task_model_mapping(&mut ps.task_model, task_id, model, true) {
+            Ok(changed) => {
+                if changed {
+                    needs_save = true;
+                }
+            }
+            Err(e) => {
+                // Model format validation failed - return error
+                return Response::error(id, RpcError::new(-32602, e));
+            }
+        }
+
+        // Save if any mapping changed
+        if needs_save && let Err(e) = ps.save_for_repo(&repo_name) {
+            warn!("Failed to save task mappings: {}", e);
         }
     }
 
@@ -1724,6 +1845,24 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
         serde_json::json!({
             "type": "message",
             "message": format!("Task !{} completed", task_id),
+        }),
+    )
+}
+
+/// Handle task.metadata RPC — return daemon-side metadata for a task.
+///
+/// Returns channel and model mappings stored in DaemonPersistentState.
+/// These are stored separately from Claude Code's native task storage.
+fn handle_task_metadata(id: RequestId, task_id: &str, state: &DaemonState) -> Response {
+    let ps = state.persistent_state.blocking_lock();
+    let channel = ps.task_channel.get(task_id).cloned();
+    let model = ps.task_model.get(task_id).cloned();
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "channel": channel,
+            "model": model,
         }),
     )
 }
@@ -3813,6 +3952,104 @@ mod tests {
     fn test_apply_task_channel_mapping_none_on_empty_map() {
         let mut map: HashMap<String, String> = HashMap::new();
         let changed = apply_task_channel_mapping(&mut map, "42", None, true);
+        assert!(!changed);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_validate_model_format_valid() {
+        assert!(validate_model_format("claude/opus").is_ok());
+        assert!(validate_model_format("claude/sonnet").is_ok());
+        assert!(validate_model_format("claude/haiku").is_ok());
+        assert!(validate_model_format("codex/o3").is_ok());
+        assert!(validate_model_format("codex/o4-mini").is_ok());
+    }
+
+    #[test]
+    fn test_validate_model_format_invalid() {
+        // Missing slash
+        assert!(validate_model_format("claude-opus").is_err());
+        // Multiple slashes
+        assert!(validate_model_format("claude/opus/extra").is_err());
+        // Empty string
+        assert!(validate_model_format("").is_err());
+        // Only slash
+        assert!(validate_model_format("/").is_err());
+        // Empty provider
+        assert!(validate_model_format("/opus").is_err());
+        // Empty model
+        assert!(validate_model_format("claude/").is_err());
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_sets_model() {
+        let mut map = HashMap::new();
+        let changed = apply_task_model_mapping(&mut map, "42", Some("claude/opus"), false);
+        assert!(changed.is_ok());
+        assert!(changed.unwrap());
+        assert_eq!(map.get("42"), Some(&"claude/opus".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_rejects_invalid_format() {
+        let mut map = HashMap::new();
+        let result = apply_task_model_mapping(&mut map, "42", Some("invalid-format"), false);
+        assert!(result.is_err());
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_overwrites_existing() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "claude/opus".to_string());
+        let changed =
+            apply_task_model_mapping(&mut map, "42", Some("claude/sonnet"), false).unwrap();
+        assert!(changed);
+        assert_eq!(map.get("42"), Some(&"claude/sonnet".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_ignores_none() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "claude/opus".to_string());
+        let changed = apply_task_model_mapping(&mut map, "42", None, false).unwrap();
+        assert!(!changed);
+        assert_eq!(map.get("42"), Some(&"claude/opus".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_ignores_empty_without_clear() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "claude/opus".to_string());
+        // On create (allow_clear=false), empty string is ignored
+        let changed = apply_task_model_mapping(&mut map, "42", Some(""), false).unwrap();
+        assert!(!changed);
+        assert_eq!(map.get("42"), Some(&"claude/opus".to_string()));
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_clears_with_empty_on_update() {
+        let mut map = HashMap::new();
+        map.insert("42".to_string(), "claude/opus".to_string());
+        // On update (allow_clear=true), empty string clears the mapping
+        let changed = apply_task_model_mapping(&mut map, "42", Some(""), true).unwrap();
+        assert!(changed);
+        assert!(!map.contains_key("42"));
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_clear_nonexistent_is_noop() {
+        let mut map = HashMap::new();
+        // Clearing a mapping that doesn't exist returns false (no state modification)
+        let changed = apply_task_model_mapping(&mut map, "99", Some(""), true).unwrap();
+        assert!(!changed);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_apply_task_model_mapping_none_on_empty_map() {
+        let mut map: HashMap<String, String> = HashMap::new();
+        let changed = apply_task_model_mapping(&mut map, "42", None, true).unwrap();
         assert!(!changed);
         assert!(map.is_empty());
     }

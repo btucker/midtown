@@ -229,6 +229,15 @@ pub(super) fn check_and_recover_orphans(
         .and_then(|t| t.channel.clone());
     config.channel = channel.clone();
 
+    // Set model from task_model mapping if available.
+    // task_model_map stores "provider/model" (e.g., "claude/opus") but
+    // LaunchConfig.model expects just the model alias (e.g., "opus").
+    if let Some(full_model) = snap.task_model_map.get(&recovery.task_id)
+        && let Some(model_alias) = full_model.split('/').nth(1)
+    {
+        config.model = model_alias.to_string();
+    }
+
     // Reuse existing worktree if one is registered for this task (reassignment case).
     // Otherwise, compute a new worktree_id from the task subject.
     let (worktree_id, needs_registration) =
@@ -1120,6 +1129,14 @@ pub(super) fn spawn_for_pending_tasks(
                 );
                 config.working_dir = Some(wt_path.clone());
 
+                // Set model from task_model mapping if available.
+                // Extract just the model alias from "provider/model" format.
+                if let Some(full_model) = snap.task_model_map.get(tid)
+                    && let Some(model_alias) = full_model.split('/').nth(1)
+                {
+                    config.model = model_alias.to_string();
+                }
+
                 // Pre-spawn: create worktree and register assignment BEFORE spawning.
                 // prepare_spawn() validates working_dir exists, so the worktree must exist first.
                 effects.push(Effect::EnsureWorktree {
@@ -1485,6 +1502,14 @@ pub(super) fn spawn_for_pending_tasks(
             );
             config.working_dir = Some(wt_path.clone());
             config.channel = task.channel.clone();
+
+            // Set model from task_model mapping if available.
+            // Extract just the model alias from "provider/model" format.
+            if let Some(full_model) = snap.task_model_map.get(&task.id)
+                && let Some(model_alias) = full_model.split('/').nth(1)
+            {
+                config.model = model_alias.to_string();
+            }
 
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
@@ -2705,6 +2730,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -2849,6 +2875,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
@@ -2963,6 +2990,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
@@ -3050,6 +3078,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
@@ -3141,6 +3170,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
@@ -3247,6 +3277,7 @@ mod tests {
                 created_at: None,
             }],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             tasks_with_worktrees: HashSet::new(),
             task_worktree_map: HashMap::new(),
             worktree_branch_owners: HashMap::new(),
@@ -3356,6 +3387,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
@@ -3439,6 +3471,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
@@ -3567,6 +3600,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
@@ -3715,6 +3749,7 @@ mod tests {
             all_tasks: vec![],
             pending_tasks_with_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -3852,6 +3887,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -4602,6 +4638,100 @@ mod tests {
                 repo_path
             ),
             "Should recover task with contextual PR mention in subject"
+        );
+    }
+
+    #[test]
+    fn test_spawn_extracts_model_alias_from_provider_model_format() {
+        use crate::tasks::{Task, TaskStatus};
+        use std::time::SystemTime;
+
+        // Setup: task with model "claude/opus" in task_model_map
+        let mut task_model_map = HashMap::new();
+        task_model_map.insert("42".to_string(), "claude/opus".to_string());
+
+        let snap = snapshot::WorldSnapshot {
+            pending_tasks_without_owners: vec![Task {
+                id: "42".to_string(),
+                subject: "Complex algorithm task".to_string(),
+                status: TaskStatus::Pending,
+                owner: None,
+                blocked_by: vec![],
+                description: None,
+                channel: None,
+                created_at: Some(SystemTime::now()),
+            }],
+            tasks_with_worktrees: HashSet::new(),
+            task_worktree_map: HashMap::new(),
+            worktree_branch_owners: HashMap::new(),
+            merged_pr_branches: HashMap::new(),
+            is_at_dev_limit: false,
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            running_coworkers: vec![],
+            active_coworkers: vec![],
+            coworker_snapshots: vec![],
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            headless_process_health: HashMap::new(),
+            attached_coworkers: HashSet::new(),
+            in_progress_tasks: vec![],
+            busy_coworkers: HashSet::new(),
+            coworker_task_assignments: HashMap::new(),
+            all_tasks: vec![],
+            pending_tasks_with_owners: vec![],
+            task_channel: HashMap::new(),
+            task_model_map,
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            pending_task_owners: HashSet::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            active_reviewers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+            coworkers_with_unblocked_deps: HashSet::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            channel_messages: vec![],
+            daemon_logs: vec![],
+            is_at_coworker_limit: false,
+            now_utc: chrono::Utc::now(),
+            repo_name: "test-repo".to_string(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        };
+
+        let state = make_test_state();
+        let effects = spawn_for_pending_tasks(&snap, &state);
+
+        // Find the AssignAndSpawn effect and check its LaunchConfig
+        let spawn_config = effects
+            .iter()
+            .find_map(|e| {
+                if let Effect::AssignAndSpawn { config, .. } = e {
+                    Some(config)
+                } else {
+                    None
+                }
+            })
+            .expect("Should have AssignAndSpawn effect");
+
+        // LaunchConfig.model should be just "opus" (not "claude/opus")
+        assert_eq!(
+            spawn_config.model, "opus",
+            "LaunchConfig.model should be just the model alias 'opus', not the full 'claude/opus'"
         );
     }
 }

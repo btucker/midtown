@@ -453,6 +453,14 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         );
         config.channel = channel.clone();
 
+        // Preserve model preference from task_model mapping on restart.
+        // Extract just the model alias from "provider/model" format.
+        if let Some(full_model) = snap.task_model_map.get(&restart.task_id)
+            && let Some(model_alias) = full_model.split('/').nth(1)
+        {
+            config.model = model_alias.to_string();
+        }
+
         effects.push(Effect::ShutdownCoworker {
             name: restart.name.clone(),
             message: String::new(),
@@ -964,6 +972,14 @@ pub(super) async fn check_and_respawn_dead_processes(
         );
         config.channel = channel.clone();
 
+        // Preserve model preference from task_model mapping on restart.
+        // Extract just the model alias from "provider/model" format.
+        if let Some(full_model) = snap.task_model_map.get(task_id)
+            && let Some(model_alias) = full_model.split('/').nth(1)
+        {
+            config.model = model_alias.to_string();
+        }
+
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
@@ -1154,6 +1170,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             pending_tasks_without_owners: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -1306,6 +1323,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             all_tasks: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
@@ -1382,6 +1400,7 @@ mod tests {
             pending_tasks_with_owners: vec![],
             all_tasks: vec![],
             task_channel: HashMap::new(),
+            task_model_map: HashMap::new(),
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
