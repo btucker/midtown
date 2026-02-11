@@ -256,6 +256,8 @@ impl LaunchConfig {
     /// `settings_file` and `prompt_file` are pre-written files containing the
     /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
     /// is the optional pre-written file containing the initial task/review prompt.
+    /// `primary_repo` is the project root directory, used to compute the
+    /// filesystem sandbox profile (writable directories).
     ///
     /// Returns a `LaunchCommand` with the shell command and the session ID
     /// (if a fresh session was created).
@@ -264,6 +266,7 @@ impl LaunchConfig {
         settings_file: &std::path::Path,
         prompt_file: &std::path::Path,
         initial_prompt_file: Option<&std::path::Path>,
+        primary_repo: &std::path::Path,
     ) -> LaunchCommand {
         // -- Environment variables --
         let mut env_parts = vec![
@@ -291,10 +294,43 @@ impl LaunchConfig {
         let env_export = format!("export {}", env_parts.join(" "));
 
         // -- Claude CLI arguments (as structured Vec, not format! interpolation) --
-        let mut args: Vec<String> = vec![
-            "claude".to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ];
+        // On macOS, prepend sandbox-exec to restrict filesystem writes.
+        // On Linux with bwrap available, prepend bwrap.
+        // Falls back to no sandboxing if profile creation fails.
+        let writable = crate::sandbox::writable_dirs(primary_repo, &self.additional_dirs);
+        let mut args: Vec<String> = if cfg!(target_os = "macos") {
+            match crate::sandbox::sandbox_exec_prefix(&writable) {
+                Ok((_profile_path, prefix)) => {
+                    let mut a = vec!["sandbox-exec".to_string()];
+                    a.extend(prefix);
+                    a.push("claude".to_string());
+                    a.push("--dangerously-skip-permissions".to_string());
+                    a
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: sandbox setup failed, running without sandbox: {}",
+                        e
+                    );
+                    vec![
+                        "claude".to_string(),
+                        "--dangerously-skip-permissions".to_string(),
+                    ]
+                }
+            }
+        } else if cfg!(target_os = "linux") && crate::sandbox::bwrap_available() {
+            // On Linux, we prepend bwrap. Build the full bwrap command after
+            // all claude args are assembled (see below).
+            vec![
+                "claude".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ]
+        } else {
+            vec![
+                "claude".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ]
+        };
 
         // Session mode — exactly one of these
         let session_id = match &self.session_mode {
@@ -516,6 +552,7 @@ mod tests {
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(result.shell_command.contains("--session-id "));
         assert!(!result.shell_command.contains("--continue"));
@@ -533,6 +570,7 @@ mod tests {
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(result.shell_command.contains("--resume abc-123"));
         assert!(result.session_id.is_none());
@@ -545,6 +583,7 @@ mod tests {
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(
             result
@@ -570,6 +609,7 @@ mod tests {
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
             None,
+            std::path::Path::new("/tmp/test-repo"),
         );
         assert!(!result.shell_command.contains("--agent-id"));
         assert!(
