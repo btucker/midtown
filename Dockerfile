@@ -78,10 +78,19 @@ RUN useradd -m -s /bin/bash midtown
 USER midtown
 WORKDIR /home/midtown
 
+# Install bun (JavaScript runtime, also used for npm packages)
+RUN curl -fsSL https://bun.sh/install | bash
+
+ENV PATH="/home/midtown/.bun/bin:${PATH}"
+
 # Install Claude CLI
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc \
     || echo "Claude CLI install failed (may not be available in all environments)"
+
+# Install OpenAI Codex CLI
+RUN bun install -g @openai/codex \
+    || echo "Codex CLI install failed (may not be available in all environments)"
 
 ENV PATH="/home/midtown/.local/bin:${PATH}"
 

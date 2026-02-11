@@ -593,17 +593,27 @@ fn container_repo_path(repo: &Path) -> String {
 ///
 /// Only mounts what's needed — no more `$HOME`:
 /// - `~/.midtown`  → `/home/midtown/.midtown`
+/// - `~/.claude`   → `/home/midtown/.claude`
+/// - `~/.codex`    → `/home/midtown/.codex`
 /// - primary repo  → `/repos/<name>`
 /// - each add-repo → `/repos/<name>`
 fn collect_mounts(primary_repo: &Path, repos: &[PathBuf]) -> Vec<(String, String)> {
-    let midtown_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/root"))
-        .join(".midtown");
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
 
-    let mut mounts: Vec<(String, String)> = vec![(
-        midtown_dir.to_string_lossy().to_string(),
-        "/home/midtown/.midtown".to_string(),
-    )];
+    let mut mounts: Vec<(String, String)> = vec![
+        (
+            home.join(".midtown").to_string_lossy().to_string(),
+            "/home/midtown/.midtown".to_string(),
+        ),
+        (
+            home.join(".claude").to_string_lossy().to_string(),
+            "/home/midtown/.claude".to_string(),
+        ),
+        (
+            home.join(".codex").to_string_lossy().to_string(),
+            "/home/midtown/.codex".to_string(),
+        ),
+    ];
 
     let add_repo_mount = |mounts: &mut Vec<(String, String)>, repo: &Path| {
         let host = repo.to_string_lossy().to_string();
@@ -2919,20 +2929,18 @@ mod tests {
         let extra = vec![PathBuf::from("/Users/alice/projects/lib")];
         let mounts = collect_mounts(&primary, &extra);
 
-        // Should have 3 mounts: ~/.midtown, primary repo, extra repo
-        assert_eq!(mounts.len(), 3);
+        // Should have 5 mounts: ~/.midtown, ~/.claude, ~/.codex, primary repo, extra repo
+        assert_eq!(mounts.len(), 5);
 
-        // First mount is ~/.midtown → /home/midtown/.midtown
         assert_eq!(mounts[0].1, "/home/midtown/.midtown");
-        assert!(mounts[0].0.ends_with(".midtown"));
+        assert_eq!(mounts[1].1, "/home/midtown/.claude");
+        assert_eq!(mounts[2].1, "/home/midtown/.codex");
 
-        // Second mount is primary repo → /repos/myapp
-        assert_eq!(mounts[1].0, "/Users/alice/projects/myapp");
-        assert_eq!(mounts[1].1, "/repos/myapp");
+        assert_eq!(mounts[3].0, "/Users/alice/projects/myapp");
+        assert_eq!(mounts[3].1, "/repos/myapp");
 
-        // Third mount is extra repo → /repos/lib
-        assert_eq!(mounts[2].0, "/Users/alice/projects/lib");
-        assert_eq!(mounts[2].1, "/repos/lib");
+        assert_eq!(mounts[4].0, "/Users/alice/projects/lib");
+        assert_eq!(mounts[4].1, "/repos/lib");
     }
 
     #[test]
@@ -2941,7 +2949,7 @@ mod tests {
         // Same path as primary — should not be added twice
         let extra = vec![PathBuf::from("/Users/alice/projects/myapp")];
         let mounts = collect_mounts(&primary, &extra);
-        assert_eq!(mounts.len(), 2); // ~/.midtown + one repo
+        assert_eq!(mounts.len(), 4); // ~/.midtown + ~/.claude + ~/.codex + one repo
     }
 
     #[test]
