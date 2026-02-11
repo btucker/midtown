@@ -1,15 +1,16 @@
-/// Test for orphan worktree false positives (issue #1142).
-///
-/// Scenario: Legacy coworker-named worktrees (amsterdam, columbus) exist on disk
-/// but have no active coworker sessions, no assigned tasks, and no open PRs.
-/// Their branches are either fully merged to main or have commits that will never
-/// be PR'd (abandoned work).
-///
-/// Expected behavior: These worktrees should be silently cleaned up OR ignored,
-/// not flagged with warnings to the lead every hour.
-/// Root cause: The orphan detection doesn't distinguish between:
-/// 1. Orphaned tasks (work interrupted, needs recovery)
-/// 2. Abandoned worktrees (coworker on break, no active work)
+// Test for orphan worktree false positives (issue #1142).
+//
+// Scenario: Legacy coworker-named worktrees (amsterdam, columbus) exist on disk
+// but have no active coworker sessions, no assigned tasks, and no open PRs.
+// Their branches are either fully merged to main or have commits that will never
+// be PR'd (abandoned work).
+//
+// Expected behavior: These worktrees should be silently cleaned up OR ignored,
+// not flagged with warnings to the lead every hour.
+// Root cause: The orphan detection doesn't distinguish between:
+// 1. Orphaned tasks (work interrupted, needs recovery)
+// 2. Abandoned worktrees (coworker on break, no active work)
+
 #[cfg(test)]
 mod tests {
     use midtown::daemon::OrphanTracker;
