@@ -197,26 +197,32 @@ impl FullStackFixture {
     }
 
     fn start_daemon(&mut self) -> bool {
-        let build_start = std::time::Instant::now();
-        let build_result = Command::new("cargo")
-            .args(["build", "--release"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        let build_duration = build_start.elapsed();
-        eprintln!("[TIMING] cargo build --release took {:?}", build_duration);
-
-        if build_result.map(|s| !s.success()).unwrap_or(true) {
-            eprintln!("Failed to build daemon binary");
-            return false;
-        }
-
         let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("release")
             .join("midtown");
+
+        // Only build if the binary doesn't exist. CI already builds via cargo llvm-cov,
+        // so this avoids 60-180s of redundant compilation on every E2E test run.
+        if !binary_path.exists() {
+            let build_start = std::time::Instant::now();
+            let build_result = Command::new("cargo")
+                .args(["build", "--release"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+
+            let build_duration = build_start.elapsed();
+            eprintln!("[TIMING] cargo build --release took {:?}", build_duration);
+
+            if build_result.map(|s| !s.success()).unwrap_or(true) {
+                eprintln!("Failed to build daemon binary");
+                return false;
+            }
+        } else {
+            eprintln!("[TIMING] Skipped cargo build --release (binary already exists)");
+        }
 
         let _ = fs::remove_file(&self.socket_path);
         let _ = fs::remove_file(&self.pid_path);
