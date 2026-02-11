@@ -235,6 +235,8 @@ pub struct WebState {
     pub all_repo_paths: Vec<std::path::PathBuf>,
     /// Default branch name (e.g. "main" or "master")
     pub default_branch: String,
+    /// Maximum number of coworkers that can be spawned
+    pub max_coworkers: usize,
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a session, so we cache indefinitely.
     pub repo_name_cache: std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, String>>,
@@ -842,15 +844,20 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         // RPC data already has all the fields we need
         rpc_coworkers
     } else {
-        // Fall back to basic coworker data from CoworkerManager
-        let coworker_tasks: std::collections::HashMap<String, String> = tasks
+        // Fall back to CoworkerManager data, transforming to match RPC structure
+        // Build map of owner -> (task_id, subject) for active tasks
+        let coworker_tasks: std::collections::HashMap<String, (Option<u32>, String)> = tasks
             .iter()
             .filter_map(|t| {
                 let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("");
                 let owner = t.get("owner").and_then(|o| o.as_str()).unwrap_or("");
                 let subject = t.get("subject").and_then(|s| s.as_str()).unwrap_or("");
+                let task_id = t
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .and_then(|s| s.parse::<u32>().ok());
                 if status == "in_progress" && !owner.is_empty() {
-                    Some((owner.to_lowercase(), subject.to_string()))
+                    Some((owner.to_lowercase(), (task_id, subject.to_string())))
                 } else {
                     None
                 }
@@ -863,33 +870,61 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             .map(|mgr| {
                 mgr.list()
                     .into_iter()
-                    .map(|cw| {
-                        // Look up current task from task storage (case-insensitive)
-                        let mut current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
-
-                        // If no task in storage, check if this coworker is working on a PR
-                        // via the worktree registry (reviewers and PR handoffs have no task_id)
-                        if current_task.is_none()
-                            && let Some(assignment) =
-                                persistent_state.worktree_registry.get_by_coworker(&cw.name)
-                            && let Some(pr_num) = assignment.pr_number
-                        {
-                            // Format the task description based on whether this is a reviewer
-                            // (task_id is None for reviewers) or a PR handoff (has a task_id)
-                            current_task = if assignment.task_id.is_none() {
-                                Some(format!("reviewing PR #{}", pr_num))
-                            } else {
-                                Some(format!("working on PR #{}", pr_num))
-                            };
+                    .filter_map(|cw| {
+                        // Skip idle/stopped coworkers (matching daemon RPC logic)
+                        if cw.status.to_string() == "stopped" {
+                            return None;
                         }
 
-                        serde_json::json!({
+                        // Look up current task from task storage (case-insensitive)
+                        let (task_id, pr_number) = if let Some((tid, _)) =
+                            coworker_tasks.get(&cw.name.to_lowercase())
+                        {
+                            // Has a task — try to find associated PR number
+                            let pr_num = tid.and_then(|id| {
+                                pull_requests
+                                    .iter()
+                                    .find(|pr| {
+                                        pr.get("task_id").and_then(|v| v.as_u64()).map(|v| v as u32)
+                                            == Some(id)
+                                    })
+                                    .and_then(|pr| pr.get("number").and_then(|n| n.as_u64()))
+                            });
+                            (*tid, pr_num)
+                        } else if let Some(assignment) =
+                            persistent_state.worktree_registry.get_by_coworker(&cw.name)
+                        {
+                            // No task in storage, but has a worktree (reviewing or PR handoff)
+                            // Parse task_id from String to u32
+                            let task_id_u32 = assignment
+                                .task_id
+                                .as_ref()
+                                .and_then(|s| s.parse::<u32>().ok());
+                            (task_id_u32, assignment.pr_number)
+                        } else {
+                            (None, None)
+                        };
+
+                        // Derive phase from status (best-effort — daemon has more detail)
+                        // Fallback doesn't have WorkflowPhase, so use a simple heuristic
+                        let phase = if pr_number.is_some() {
+                            Some("PR") // Has a PR, likely in PR phase
+                        } else if task_id.is_some() {
+                            Some("dev") // Has a task but no PR, likely developing
+                        } else {
+                            None
+                        };
+
+                        // Health defaults to green (fallback can't access HeadlessHealth)
+                        let health = "green";
+
+                        Some(serde_json::json!({
                             "name": cw.name,
-                            "status": cw.status.to_string(),
-                            "current_task": current_task,
-                            "started_at": cw.started_at.to_rfc3339(),
-                            "model": cw.model,
-                        })
+                            "task_id": task_id,
+                            "phase": phase,
+                            "pr_number": pr_number,
+                            "health": health,
+                        }))
                     })
                     .collect()
             })
@@ -947,6 +982,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "repo_full_name": repo_full_name,
         "repo_status": repo_status,
         "repo_statuses": repo_statuses,
+        "max_coworkers": state.max_coworkers,
     });
 
     Ok(axum::Json(status))
@@ -1743,6 +1779,7 @@ mod tests {
             push_manager: None,
             all_repo_paths: Vec::new(),
             default_branch: "main".to_string(),
+            max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
             viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
@@ -2026,6 +2063,7 @@ mod tests {
             push_manager: None,
             all_repo_paths: Vec::new(),
             default_branch: "main".to_string(),
+            max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
             viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
@@ -2085,6 +2123,7 @@ mod tests {
             push_manager: None,
             all_repo_paths: Vec::new(),
             default_branch: "main".to_string(),
+            max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
             viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });
@@ -2146,6 +2185,7 @@ mod tests {
             push_manager: None,
             all_repo_paths: Vec::new(),
             default_branch: "main".to_string(),
+            max_coworkers: 8,
             repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
             viewer_tracker: Mutex::new(ViewerTracker::new("midtown-test".to_string())),
         });

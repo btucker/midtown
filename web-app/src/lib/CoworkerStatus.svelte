@@ -1,5 +1,5 @@
 <script>
-  import { coworkers } from './store.js'
+  import { coworkers, maxCoworkers } from './store.js'
 
   // Filter to only active coworkers (matching TUI logic - skip idle/completed)
   let activeCoworkers = $derived(
@@ -30,7 +30,7 @@
 {#if activeCoworkers.length > 0}
   <div class="coworker-status">
     <div class="status-header">
-      <span class="header-title">Coworkers ({activeCoworkers.length}/10)</span>
+      <span class="header-title">Coworkers ({activeCoworkers.length}/{$maxCoworkers})</span>
     </div>
     <div class="status-list">
       {#each activeCoworkers as cw}

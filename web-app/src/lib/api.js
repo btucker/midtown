@@ -6,6 +6,7 @@ import {
   activeChannel,
   connected,
   coworkers,
+  maxCoworkers,
   leadTyping,
   daemonStatus,
   kanbanData,
@@ -212,6 +213,9 @@ export async function fetchStatus() {
       const data = await res.json()
       daemonStatus.set(data)
       coworkers.set(data.coworkers || [])
+      if (data.max_coworkers !== undefined) {
+        maxCoworkers.set(data.max_coworkers)
+      }
       updateKanbanData(data)
       updateRepoStatus(data)
     }
