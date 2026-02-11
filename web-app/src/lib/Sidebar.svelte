@@ -1,8 +1,9 @@
 <script>
   import ChannelList from './ChannelList.svelte'
+  import CoworkerStatus from './CoworkerStatus.svelte'
   import UsageBars from './UsageBars.svelte'
   import AuthSwitcher from './AuthSwitcher.svelte'
-  import { coworkers, projects, activeProject, connected, detailPanelData, isWideScreen } from './store.js'
+  import { projects, activeProject, connected } from './store.js'
   import {
     pushSupported,
     pushPermission,
@@ -18,45 +19,9 @@
   } = $props()
 
   let channelsExpanded = $state(true)
-  let coworkersExpanded = $state(true)
 
   function toggleChannels() {
     channelsExpanded = !channelsExpanded
-  }
-
-  function toggleCoworkers() {
-    coworkersExpanded = !coworkersExpanded
-  }
-
-  function getCoworkerStatusColor(status) {
-    switch (status?.toLowerCase()) {
-      case 'running':
-      case 'active':
-        return '#5faf5f'
-      case 'idle':
-        return '#d7af5f'
-      case 'stopped':
-      case 'failed':
-        return '#af5f5f'
-      default:
-        return '#585858'
-    }
-  }
-
-  function handleCoworkerClick(coworker) {
-    // Only open detail panel on desktop (>1024px)
-    if ($isWideScreen) {
-      detailPanelData.set({
-        type: 'coworker',
-        data: {
-          name: coworker.name,
-          status: coworker.status,
-          current_task: coworker.current_task,
-          model: coworker.model,
-          started_at: coworker.started_at,
-        },
-      })
-    }
   }
 
   async function togglePush() {
@@ -116,41 +81,9 @@
     {/if}
   </div>
 
-  <!-- Coworkers section -->
-  <div class="sidebar-section coworkers-section">
-    <button class="section-header" onclick={toggleCoworkers}>
-      <span class="section-title">COWORKERS</span>
-      <span class="coworker-count">({$coworkers.length})</span>
-      <span class="expand-icon">{coworkersExpanded ? '\u25BC' : '\u25B6'}</span>
-    </button>
-    {#if coworkersExpanded}
-      <div class="section-content">
-        {#if $coworkers.length === 0}
-          <div class="empty-state">No active coworkers</div>
-        {:else}
-          <div class="coworker-list">
-            {#each $coworkers as cw}
-              <button class="coworker-item" onclick={() => handleCoworkerClick(cw)}>
-                <div class="coworker-header">
-                  <span
-                    class="status-dot"
-                    style="background: {getCoworkerStatusColor(cw.status)}"
-                  ></span>
-                  <span class="coworker-name">{cw.name}</span>
-                </div>
-                {#if cw.current_task}
-                  <div class="coworker-task">{cw.current_task}</div>
-                {/if}
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-  </div>
-
-  <!-- Footer section with usage bars and controls -->
+  <!-- Footer section with coworker status, usage bars, and controls -->
   <div class="sidebar-footer">
+    <CoworkerStatus />
     <UsageBars />
     <div class="footer-controls">
       <AuthSwitcher />
@@ -344,70 +277,16 @@
     padding: 0;
   }
 
-  /* Channels section uses ChannelList component - no additional styles needed */
-
-  /* Coworkers section */
-  .coworker-list {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .coworker-item {
-    width: 100%;
-    padding: 8px 14px;
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    transition: background 0.15s;
-    text-align: left;
-  }
-
-  .coworker-item:hover {
-    background: #1a1a1a;
-  }
-
-  .coworker-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 4px;
-  }
-
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .coworker-name {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: #d0d0d0;
-    text-transform: capitalize;
-  }
-
-  .coworker-task {
-    font-size: 0.75rem;
-    color: #808080;
-    margin-left: 16px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .empty-state {
-    padding: 12px 14px;
-    font-size: 0.8rem;
-    color: #585858;
-    font-style: italic;
-  }
-
   /* Footer */
   .sidebar-footer {
     margin-top: auto;
     border-top: 2px solid #2a2a2a;
     background: #0a0a0a;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   }
 
   .footer-controls {
@@ -415,8 +294,6 @@
     align-items: center;
     justify-content: flex-end;
     gap: 10px;
-    padding: 10px 14px;
-    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   }
 
   .push-toggle {

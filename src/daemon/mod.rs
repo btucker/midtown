@@ -1561,6 +1561,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
             Some(coworker_manager.clone()),
             all_repo_paths.clone(),
             default_branch.clone(),
+            config.max_coworkers,
         )
         .await
         {

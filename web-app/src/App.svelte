@@ -8,6 +8,7 @@
   import Status from './lib/Status.svelte'
   import Tmux from './lib/Tmux.svelte'
   import Kanban from './lib/Kanban.svelte'
+  import CoworkerStatus from './lib/CoworkerStatus.svelte'
   import UsageBars from './lib/UsageBars.svelte'
   import AuthSwitcher from './lib/AuthSwitcher.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, detailPanelData, isWideScreen } from './lib/store.js'
@@ -226,7 +227,10 @@
               <Kanban />
               <ChannelList />
             </div>
-            <UsageBars />
+            <div class="sidebar-bottom">
+              <CoworkerStatus />
+              <UsageBars />
+            </div>
           </aside>
 
           {#if sidebarOpen}
@@ -652,6 +656,17 @@
   .sidebar-scroll {
     flex: 1;
     overflow-y: auto;
+  }
+
+  .sidebar-bottom {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    border-top: 2px solid #2a2a2a;
+    background: #0a0a0a;
   }
 
   .channel-main {

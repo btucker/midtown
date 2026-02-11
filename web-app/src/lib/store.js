@@ -56,6 +56,9 @@ export const connected = writable(false)
 // Coworker status
 export const coworkers = writable([])
 
+// Maximum number of coworkers that can be spawned
+export const maxCoworkers = writable(8)
+
 // Lead typing/working indicator
 export const leadTyping = writable(false)
 
