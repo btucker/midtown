@@ -353,34 +353,6 @@ impl ProjectConfig {
     }
 }
 
-/// Merge new TOML table values into a target table while preserving comments.
-///
-/// This function recursively merges `new_table` into `target`:
-/// - If both values are tables, recurse
-/// - Otherwise, replace the target value with the new value
-/// - If the key doesn't exist in target, add it
-///
-/// This preserves comments and formatting from the target document
-/// while updating values from the new table.
-fn merge_tables(target: &mut Table, new_table: &Table) {
-    for (key, new_value) in new_table.iter() {
-        match (target.get_mut(key), new_value) {
-            // Both are tables - recurse
-            (Some(Item::Table(target_table)), Item::Table(new_table)) => {
-                merge_tables(target_table, new_table);
-            }
-            // Target exists but isn't a table, or new value isn't a table - replace
-            (Some(existing), new_item) => {
-                *existing = new_item.clone();
-            }
-            // Key doesn't exist in target - add it
-            (None, new_item) => {
-                target.insert(key, new_item.clone());
-            }
-        }
-    }
-}
-
 /// Configuration for Claude Code plugins.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginsConfig {
