@@ -484,6 +484,12 @@ pub(crate) struct DaemonState {
     /// a hash of the repo paths. Integrated into DaemonState (rather than a global
     /// static) so the daemon can inspect and clean it up alongside other caches.
     kanban_cache: rpc::KanbanCache,
+    /// Draining mode flag - when true, daemon stops assigning new tasks to coworkers.
+    ///
+    /// Set via `daemon.enter-drain` RPC when `midtown restart` is called without --force.
+    /// Allows coworkers to finish their current tasks without being assigned new work,
+    /// enabling graceful shutdown.
+    draining: std::sync::atomic::AtomicBool,
 }
 
 impl DaemonState {
@@ -665,6 +671,7 @@ impl DaemonState {
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
             kanban_cache: rpc::KanbanCache::new(),
+            draining: std::sync::atomic::AtomicBool::new(false),
         })
     }
 

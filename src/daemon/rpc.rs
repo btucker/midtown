@@ -188,6 +188,14 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             Response::success(request.id, serde_json::json!({"status": "shutting_down"}))
         }
 
+        "daemon.enter-drain" => {
+            info!("Drain mode requested via RPC");
+            state
+                .draining
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Response::success(request.id, serde_json::json!({"status": "draining"}))
+        }
+
         "coworker.spawn" => {
             let params = request.params.as_ref();
             let resume = params

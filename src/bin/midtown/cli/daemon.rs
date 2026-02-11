@@ -1440,26 +1440,156 @@ fn kill_orphaned_webhook_forwarders(messages: &mut Vec<String>) {
     }
 }
 
+/// Wait for coworkers to drain (reach idle state) before shutdown.
+///
+/// First signals the daemon to enter draining mode (stops new task assignments).
+/// Then polls coworker status every 500ms and displays progress. Returns once all
+/// coworkers are idle/stopped, or after the timeout expires (5 minutes).
+fn wait_for_coworkers_to_drain(timeout_secs: u64) -> Result<(), String> {
+    use std::collections::HashMap;
+
+    eprintln!("Waiting for coworkers to finish...");
+
+    let socket_path = socket_path();
+    if !socket_path.exists() {
+        // Daemon not running, nothing to drain
+        return Ok(());
+    }
+
+    // First, signal the daemon to enter draining mode (stops assigning new tasks)
+    let client = match crate::client::DaemonClient::connect() {
+        Ok(c) => c,
+        Err(_) => {
+            // Daemon stopped or connection failed
+            return Ok(());
+        }
+    };
+
+    if let Err(e) = client.enter_drain() {
+        eprintln!("Warning: Failed to enter drain mode: {}", e);
+        // Continue anyway - we'll still wait for coworkers to finish their current work
+    }
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let mut last_status: HashMap<String, String> = HashMap::new();
+
+    loop {
+        // Check timeout
+        if start.elapsed() >= timeout {
+            eprintln!("Timeout reached. Force-stopping remaining coworkers...");
+            return Ok(()); // Proceed with force shutdown
+        }
+
+        // Query daemon status via RPC
+        let client = match crate::client::DaemonClient::connect() {
+            Ok(c) => c,
+            Err(_) => {
+                // Daemon stopped or connection failed
+                return Ok(());
+            }
+        };
+
+        let response = match client.status() {
+            Ok(r) => r,
+            Err(_) => {
+                // Status query failed, assume daemon is stopping
+                return Ok(());
+            }
+        };
+
+        // Extract coworker info from the response
+        let coworkers = match response {
+            crate::cli::Response::Status(status_resp) => status_resp
+                .full_status
+                .as_ref()
+                .map(|fs| fs.coworkers.clone())
+                .unwrap_or_default(),
+            _ => {
+                // Unexpected response format
+                return Err("Unexpected status response format".to_string());
+            }
+        };
+
+        // Check if all coworkers are idle or stopped
+        let mut all_done = true;
+        let mut current_status: HashMap<String, String> = HashMap::new();
+
+        for coworker in &coworkers {
+            let status = coworker.status.to_lowercase();
+            current_status.insert(coworker.name.clone(), status.clone());
+
+            // Consider "idle", "stopped", "stopping" as done
+            // "starting", "running" are still working
+            if status != "stopped" && status != "stopping" {
+                all_done = false;
+
+                // Print status update if changed
+                if last_status.get(&coworker.name) != Some(&status) {
+                    let task_info = coworker
+                        .current_task
+                        .as_ref()
+                        .map(|t| format!(" (working on !{})", t))
+                        .unwrap_or_default();
+                    eprintln!("  {}: {}{}", coworker.name, status, task_info);
+                }
+            }
+        }
+
+        // Update tracked status
+        for (name, status) in &current_status {
+            if last_status.get(name) != Some(status) && status == "stopped" {
+                eprintln!("  {} stopped. ✓", name);
+            }
+        }
+        last_status = current_status;
+
+        if all_done {
+            eprintln!("All coworkers stopped.");
+            return Ok(());
+        }
+
+        // Sleep before next poll
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 /// Handle `midtown restart` command.
 ///
 /// Gracefully restarts the daemon and webserver while preserving the tmux
-/// session and all running Claude processes (Lead and coworkers). The daemon
-/// and webserver processes are restarted so they pick up new code, while
-/// the chat pane is also respawned.
+/// session and all running Claude processes (Lead and coworkers).
+///
+/// When `force` is false (default):
+/// - Waits for all coworkers to finish their current work and reach idle state
+/// - Displays real-time status of which coworkers are still working
+/// - Times out after 5 minutes and force-kills stuck coworkers
+///
+/// When `force` is true:
+/// - Immediately stops all coworkers without waiting
+/// - Used for urgent restarts or when daemon is unresponsive
 ///
 /// For a full fresh start, use `midtown stop && midtown start`.
-pub fn handle_restart() -> Result<Response, String> {
+pub fn handle_restart(force: bool) -> Result<Response, String> {
     if !running_inside_sandbox()
         && let Some(runtime) = load_sandbox_runtime_state_for_current_repo()
     {
         let cwd = std::env::current_dir()
             .map_err(|e| format!("Failed to get current directory: {}", e))?;
-        let args = vec![
+        let mut args = vec![
             "--format".to_string(),
             "json".to_string(),
             "restart".to_string(),
         ];
+        if force {
+            args.push("--force".to_string());
+        }
         return run_midtown_command_in_sandbox(&runtime, &cwd, &args);
+    }
+
+    // If not forcing, wait for coworkers to drain gracefully
+    if !force {
+        // Timeout after 5 minutes (300 seconds)
+        wait_for_coworkers_to_drain(300)?;
     }
 
     // Stop daemon and webserver, keep the tmux session running.
