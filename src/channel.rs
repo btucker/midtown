@@ -285,19 +285,39 @@ impl Channel {
     /// Messages are sorted by timestamp to ensure chronological order,
     /// regardless of the order they were written to the file.
     ///
-    /// Uses a non-blocking lock to avoid freezing the UI when there's lock
-    /// contention from writers. If the lock can't be acquired immediately,
-    /// returns an error and the caller can retry later.
+    /// Uses bounded retries to acquire a shared lock when there's lock contention.
+    /// Retries up to 10 times with 50ms delays (500ms total) to handle transient
+    /// lock contention from writers. Returns an error if the lock can't be acquired
+    /// after 500ms.
     pub fn read_all(&self) -> Result<Vec<Message>> {
         if !self.channel_file.exists() {
             return Ok(Vec::new());
         }
 
         let file = File::open(&self.channel_file)?;
-        // Try to acquire shared lock without blocking - avoids UI freeze when
-        // writers hold exclusive locks
-        file.try_lock_shared()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::WouldBlock, e.to_string()))?;
+
+        // Try to acquire shared lock with bounded retries. In high-concurrency scenarios
+        // (e.g., E2E tests), a write lock may be held briefly after a write completes due
+        // to OS-level file handle cleanup. Retry with short delays to avoid spurious failures.
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => break,
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "Failed to acquire shared lock after {} attempts: {}",
+                            attempt + 1,
+                            e
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
 
         let reader = BufReader::new(file);
         let mut messages = Vec::new();
