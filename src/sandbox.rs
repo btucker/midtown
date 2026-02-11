@@ -24,12 +24,21 @@ pub fn writable_dirs(primary_repo: &Path, additional_repos: &[PathBuf]) -> Vec<S
 
     let mut dirs = Vec::new();
 
+    // Canonicalize paths to resolve symlinks (e.g. macOS /var → /private/var).
+    // sandbox-exec operates on real paths, so symlinked paths won't match.
+    let canon = |p: &Path| -> String {
+        p.canonicalize()
+            .unwrap_or_else(|_| p.to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    };
+
     // Primary project repo
-    dirs.push(primary_repo.to_string_lossy().to_string());
+    dirs.push(canon(primary_repo));
 
     // Additional repos (multi-repo projects)
     for repo in additional_repos {
-        let s = repo.to_string_lossy().to_string();
+        let s = canon(repo);
         if !dirs.contains(&s) {
             dirs.push(s);
         }
@@ -280,5 +289,136 @@ mod tests {
         assert_eq!(prefix[0], "-f");
         // Clean up
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Run a command under sandbox-exec and return (success, stderr).
+    #[cfg(target_os = "macos")]
+    fn run_sandboxed(profile_path: &Path, program: &str, args: &[&str]) -> (bool, String) {
+        let output = std::process::Command::new("sandbox-exec")
+            .args(["-f", &profile_path.to_string_lossy()])
+            .arg(program)
+            .args(args)
+            .output()
+            .expect("sandbox-exec should be available on macOS");
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    }
+
+    /// Verify that sandbox-exec allows writes to explicitly permitted directories.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_sandbox_exec_allows_writes_to_permitted_dir() {
+        let tmp = tempfile::TempDir::new().expect("create temp dir");
+        // Canonicalize because macOS /var → /private/var symlink;
+        // sandbox-exec operates on real paths.
+        let real_path = tmp.path().canonicalize().expect("canonicalize");
+        let writable = vec![real_path.to_string_lossy().to_string()];
+        let profile = generate_macos_profile(&writable);
+        let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
+
+        let test_file = real_path.join("sandbox-test-allow.txt");
+        let (ok, _stderr) = run_sandboxed(
+            &profile_path,
+            "sh",
+            &["-c", &format!("echo ok > '{}'", test_file.display())],
+        );
+
+        assert!(ok, "Write to permitted dir should succeed");
+        assert!(test_file.exists(), "File should have been created");
+        assert_eq!(std::fs::read_to_string(&test_file).unwrap().trim(), "ok");
+
+        let _ = std::fs::remove_file(&profile_path);
+    }
+
+    /// Verify that sandbox-exec blocks writes to directories outside the allow list.
+    ///
+    /// The sandbox profile denies writes under `$HOME`, so we create a test dir
+    /// under `$HOME` (not in the allow list) to verify the deny rule works.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_sandbox_exec_denies_writes_to_unpermitted_dir() {
+        let home = dirs::home_dir().expect("home dir");
+        let denied = home.join(".midtown-sandbox-test-deny");
+        std::fs::create_dir_all(&denied).expect("create denied dir");
+
+        // Writable list intentionally does NOT include the denied directory
+        let writable = vec!["/tmp".to_string()];
+        let profile = generate_macos_profile(&writable);
+        let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
+
+        let test_file = denied.join("sandbox-test-deny.txt");
+        let (ok, _stderr) = run_sandboxed(
+            &profile_path,
+            "sh",
+            &["-c", &format!("echo blocked > '{}'", test_file.display())],
+        );
+
+        assert!(!ok, "Write to unpermitted dir under $HOME should fail");
+        assert!(!test_file.exists(), "File should NOT have been created");
+
+        let _ = std::fs::remove_file(&profile_path);
+        let _ = std::fs::remove_dir_all(&denied);
+    }
+
+    /// Verify that sandbox-exec still allows reads from directories outside the allow list.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_sandbox_exec_allows_reads_everywhere() {
+        let readable = tempfile::TempDir::new().expect("create readable dir");
+        let real_path = readable.path().canonicalize().expect("canonicalize");
+        let readable_file = real_path.join("readable.txt");
+        std::fs::write(&readable_file, "hello").expect("write readable file");
+
+        // Writable list does NOT include readable dir — but reads should still work
+        let writable = vec!["/tmp".to_string()];
+        let profile = generate_macos_profile(&writable);
+        let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
+
+        let (ok, _stderr) =
+            run_sandboxed(&profile_path, "cat", &[&readable_file.to_string_lossy()]);
+
+        assert!(ok, "Read from any directory should succeed");
+
+        let _ = std::fs::remove_file(&profile_path);
+    }
+
+    /// Verify sandbox with the real writable_dirs() output — the profile that
+    /// Claude Code actually runs under.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_sandbox_exec_real_profile_allows_project_writes() {
+        let project = tempfile::TempDir::new().expect("create project dir");
+        let real_project = project.path().canonicalize().expect("canonicalize");
+        let writable = writable_dirs(&real_project, &[]);
+        let profile = generate_macos_profile(&writable);
+        let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
+
+        // Should be able to write inside the project
+        let test_file = real_project.join("real-profile-test.txt");
+        let (ok, _stderr) = run_sandboxed(
+            &profile_path,
+            "sh",
+            &["-c", &format!("echo works > '{}'", test_file.display())],
+        );
+        assert!(ok, "Write to project dir with real profile should succeed");
+        assert!(test_file.exists());
+
+        // Should NOT be able to write to a dir under $HOME that's not in the allow list
+        let home = dirs::home_dir().expect("home dir");
+        let blocked_dir = home.join(".midtown-sandbox-test-real");
+        std::fs::create_dir_all(&blocked_dir).expect("create blocked dir");
+        let blocked_file = blocked_dir.join("should-not-exist.txt");
+        let (ok2, _stderr) = run_sandboxed(
+            &profile_path,
+            "sh",
+            &["-c", &format!("echo nope > '{}'", blocked_file.display())],
+        );
+        assert!(!ok2, "Write outside allowed dirs should be blocked");
+        assert!(!blocked_file.exists());
+        let _ = std::fs::remove_dir_all(&blocked_dir);
+
+        let _ = std::fs::remove_file(&profile_path);
     }
 }
