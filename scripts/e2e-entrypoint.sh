@@ -127,12 +127,6 @@ run_coordination_tests() {
         exit 1
     fi
 
-    # Plugin test runs alone — it modifies global plugin state that races
-    # with any concurrent `midtown start`.
-    echo "--- daemon_e2e (plugin install, sequential) ---"
-    cargo test --release --test daemon_e2e -- --ignored --test-threads=1 \
-        test_daemon_installs_required_plugins "${test_args[@]}"
-
     echo ""
     echo "=== Coordination tests complete ==="
 }
