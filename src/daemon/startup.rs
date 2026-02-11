@@ -8,7 +8,7 @@
 //!
 //! Workflow state is recovered when coworkers report via RPC.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -49,8 +49,22 @@ pub async fn recover_coworker_records(
 /// - Match the midtown settings pattern (scoped to this installation)
 /// - Are truly orphaned (PPID=1)
 /// - Are not tmux processes
-pub fn kill_zombie_claude_processes() {
+/// - Are NOT in the `preserve_pids` set (intentionally detached sessions from clean shutdown)
+///
+/// The `preserve_pids` parameter allows the caller to protect processes that were
+/// intentionally detached during a clean daemon shutdown. These processes have PPID=1
+/// (same as crash orphans) but should be left alive so they can die naturally from
+/// broken pipes while the daemon spawns replacement `--resume` processes.
+pub fn kill_zombie_claude_processes(preserve_pids: &HashSet<u32>) {
     info!("Scanning for zombie Claude headless processes...");
+
+    if !preserve_pids.is_empty() {
+        info!(
+            "Preserving {} PID(s) from persisted sessions: {:?}",
+            preserve_pids.len(),
+            preserve_pids
+        );
+    }
 
     // Use the same pattern as the rest of the codebase to scope to this midtown installation
     let pattern = "claude.*--settings.*/midtown/.*-settings\\.json";
@@ -81,9 +95,19 @@ pub fn kill_zombie_claude_processes() {
         return;
     }
 
-    // Filter to only truly orphaned processes (PPID=1) and exclude tmux
+    // Filter to only truly orphaned processes (PPID=1), exclude tmux,
+    // and skip PIDs from intentionally detached sessions.
     let mut zombie_pids = Vec::new();
     for pid in candidate_pids {
+        // Skip PIDs that belong to intentionally detached sessions
+        if preserve_pids.contains(&pid) {
+            info!(
+                "Skipping PID {} — belongs to a persisted session (intentionally detached)",
+                pid
+            );
+            continue;
+        }
+
         // Check if process is orphaned (PPID=1)
         let ppid = get_ppid(pid);
         if ppid != Some(1) {
@@ -286,6 +310,26 @@ pub async fn recover_headless_sessions(
     effects
 }
 
+/// Extract PIDs from persisted headless sessions to protect from zombie cleanup.
+///
+/// Returns a set of PIDs that were intentionally detached during a clean daemon
+/// shutdown. These should NOT be killed by `kill_zombie_claude_processes()` — they
+/// will die naturally from broken pipes while the daemon spawns `--resume` replacements.
+///
+/// Only includes PIDs that are verified to still be running claude processes,
+/// guarding against PID reuse.
+pub async fn persisted_session_pids(
+    persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
+) -> HashSet<u32> {
+    let state = persistent_state.lock().await;
+    state
+        .headless_sessions
+        .values()
+        .filter_map(|info| info.pid)
+        .filter(|&pid| verify_claude_process(pid))
+        .collect()
+}
+
 /// Extract the names of coworkers being recovered from persisted headless sessions.
 ///
 /// Called during startup to pre-register recovering coworkers in the daemon's
@@ -436,5 +480,82 @@ mod tests {
         let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
         let names = recovering_coworker_names(&persistent_state).await;
         assert!(names.is_empty());
+    }
+
+    // --- Tests for kill_zombie_claude_processes preserve_pids ---
+
+    #[test]
+    fn test_kill_zombie_with_empty_preserve_set() {
+        // With an empty preserve set, behavior is the same as before:
+        // all orphaned claude processes would be killed. Since we can't
+        // control real processes in a unit test, we just verify the function
+        // doesn't panic with an empty set.
+        let preserve = HashSet::new();
+        kill_zombie_claude_processes(&preserve);
+    }
+
+    #[test]
+    fn test_kill_zombie_with_preserve_pids() {
+        // Verify that the function accepts a non-empty preserve set.
+        // Real process interaction is tested via E2E, but we verify
+        // the function signature and basic flow don't panic.
+        let mut preserve = HashSet::new();
+        preserve.insert(99998);
+        preserve.insert(99999);
+        kill_zombie_claude_processes(&preserve);
+    }
+
+    #[tokio::test]
+    async fn test_persisted_session_pids_extracts_pids() {
+        let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+
+        {
+            let mut state = persistent_state.lock().await;
+            // Session with a PID
+            state.headless_sessions.insert(
+                "amsterdam".to_string(),
+                test_session_info("amsterdam", Some(42)),
+            );
+            // Session without a PID
+            let mut no_pid_info = test_session_info("columbus", Some(43));
+            no_pid_info.pid = None;
+            state
+                .headless_sessions
+                .insert("columbus".to_string(), no_pid_info);
+        }
+
+        let pids = persisted_session_pids(&persistent_state).await;
+        // PID 99999 doesn't exist as a real claude process, so verify_claude_process
+        // will filter it out. The result should be empty since no test PIDs are real.
+        assert!(
+            pids.is_empty(),
+            "Non-existent PIDs should be filtered out by verify_claude_process"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_persisted_session_pids_empty_state() {
+        let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+        let pids = persisted_session_pids(&persistent_state).await;
+        assert!(pids.is_empty());
+    }
+
+    #[test]
+    fn test_verify_claude_process_nonexistent_pid() {
+        // A PID that almost certainly doesn't exist should return false
+        assert!(
+            !verify_claude_process(4294967295),
+            "Non-existent PID should not verify as claude process"
+        );
+    }
+
+    #[test]
+    fn test_get_ppid_nonexistent_pid() {
+        // A PID that doesn't exist should return None
+        assert_eq!(
+            get_ppid(4294967295),
+            None,
+            "Non-existent PID should have no parent"
+        );
     }
 }

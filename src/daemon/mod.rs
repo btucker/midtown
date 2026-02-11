@@ -1648,9 +1648,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<()> {
     startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
 
     // Kill any zombie Claude headless processes left from crashes or unclean shutdowns.
-    // This only kills truly orphaned (PPID=1) processes from crashes — NOT processes
-    // that were intentionally detached during a clean daemon restart.
-    startup::kill_zombie_claude_processes();
+    // We first collect PIDs from persisted sessions — these were intentionally detached
+    // during a clean shutdown and should NOT be killed. They'll die naturally from broken
+    // pipes while we spawn --resume replacements.
+    let preserve_pids = startup::persisted_session_pids(&state.persistent_state).await;
+    startup::kill_zombie_claude_processes(&preserve_pids);
 
     // CRITICAL: Restore task assignments from disk BEFORE session recovery.
     // This must happen first so that the in-memory coworker_task_assignments map
