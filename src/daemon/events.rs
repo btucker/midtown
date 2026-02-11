@@ -111,9 +111,8 @@ pub async fn evaluate_tick(
                 // Skip cleanup if retention is set to 0
                 if retention_hours > 0 {
                     let retention_period = chrono::Duration::hours(retention_hours as i64);
-                    let ps = state.persistent_state.lock().await;
                     effects.extend(super::health::check_for_stale_worktrees(
-                        &ps.worktree_registry,
+                        &snap.worktree_registry,
                         &snap.active_names,
                         retention_period,
                     ));
