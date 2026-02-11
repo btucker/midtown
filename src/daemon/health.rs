@@ -818,6 +818,46 @@ pub(super) fn check_and_nudge_api_errors(
     effects
 }
 
+/// Detect coworkers with tool name conflicts and shut them down for fresh restart.
+///
+/// "Tool names must be unique" is an unrecoverable API error caused by duplicate
+/// tool registrations (e.g., from session resume loading saved tools + plugin
+/// re-registration). The affected session loops on 400 errors indefinitely.
+///
+/// The primary fix is in `headless.rs` (skip `--settings` on resume), but this
+/// serves as defense in depth: detect the error via stderr, shut down the session,
+/// and let normal task dispatch respawn it.
+pub(super) fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    if snap.tool_name_conflict_coworkers.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+
+    for name in &snap.tool_name_conflict_coworkers {
+        warn!(
+            "Coworker {} has tool name conflict — shutting down for fresh restart",
+            name
+        );
+
+        effects.push(Effect::ShutdownCoworker {
+            name: name.clone(),
+            message: String::new(),
+            session_id: None,
+        });
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: format!(
+                "🔧 Coworker {} hit 'Tool names must be unique' error — restarting with fresh session",
+                name
+            ),
+            channel: None,
+        });
+    }
+
+    effects
+}
+
 /// Detect headless coworkers whose process has exited unexpectedly and restart them.
 ///
 /// Unlike tmux-based zombie detection (blank pane), this checks if the headless
@@ -1095,6 +1135,7 @@ mod tests {
             usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
             usage_limited_coworkers: HashSet::new(),
             api_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
             channel_messages: vec![],
             daemon_logs: vec![],
             tasks_with_worktrees: HashSet::new(),

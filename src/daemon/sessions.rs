@@ -57,6 +57,8 @@ pub struct CoworkerSession {
     pub has_running_subagent: bool,
     /// Whether the session has a pending tool execution (tool_use seen, no tool_result yet).
     pub has_pending_tool: bool,
+    /// Whether the session hit "Tool names must be unique" (unrecoverable, needs fresh restart).
+    pub has_tool_name_conflict: bool,
     /// File handle for writing stream events to JSONL log.
     /// Used for debugging and `midtown coworker view`.
     output_log: Option<std::fs::File>,
@@ -97,6 +99,7 @@ impl CoworkerSession {
             has_api_error: false,
             has_running_subagent: false,
             has_pending_tool: false,
+            has_tool_name_conflict: false,
             output_log,
             output_log_path,
         }
@@ -308,7 +311,22 @@ impl SessionManager {
             // Drain stderr first to prevent pipe buffer deadlock.
             // If stderr writes >64KB without draining, the child process blocks.
             // This must happen every tick, not just on exit.
-            let _ = session.drain_stderr().await;
+            let stderr_lines = session.drain_stderr().await;
+            // Check for unrecoverable "Tool names must be unique" error.
+            // This happens when resuming a session with conflicting tool definitions
+            // and cannot be resolved by retrying — the session needs a fresh restart.
+            if !cs.has_tool_name_conflict {
+                for line in &stderr_lines {
+                    if line.contains("Tool names must be unique") {
+                        warn!(
+                            "Session '{}' hit 'Tool names must be unique' error — needs fresh restart",
+                            name
+                        );
+                        cs.has_tool_name_conflict = true;
+                        break;
+                    }
+                }
+            }
 
             // Non-blocking drain: try to read events without waiting.
             // Use tokio::time::timeout with zero duration to poll.
@@ -534,6 +552,7 @@ impl SessionManager {
                     has_api_error: cs.has_api_error,
                     has_running_subagent: cs.has_running_subagent,
                     has_pending_tool: cs.has_pending_tool,
+                    has_tool_name_conflict: cs.has_tool_name_conflict,
                     exit_code: None,
                 },
             );
@@ -739,6 +758,7 @@ mod tests {
                 has_api_error: false,
                 has_running_subagent: false,
                 has_pending_tool: false,
+                has_tool_name_conflict: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
             },
