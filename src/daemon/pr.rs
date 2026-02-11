@@ -1891,6 +1891,7 @@ async fn collect_reviewer_effects_with_source(
                     current_coworker: None,           // Will be set by BindCoworkerToWorktree
                     pr_number: Some(pr_number),
                     created_at: chrono::Utc::now(),
+                    completed_at: None, // Will be set when PR is reviewed and merged
                 },
             },
             // Bind the reviewer to the worktree

@@ -1977,6 +1977,18 @@ fn handle_task_done(id: RequestId, task_id: &str, state: &DaemonState) -> Respon
         );
     }
 
+    // Mark worktree as completed (for time-based cleanup)
+    {
+        let mut ps = state.persistent_state.blocking_lock();
+        if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(task_id) {
+            ps.worktree_registry
+                .mark_completed(&wt_id, chrono::Utc::now());
+            if let Err(e) = ps.save_for_repo(&repo_name) {
+                warn!("Failed to save worktree completion timestamp: {}", e);
+            }
+        }
+    }
+
     // Clear in-memory tracking
     state.clear_task_assignment_by_task(task_id);
 

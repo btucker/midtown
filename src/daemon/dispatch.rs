@@ -271,6 +271,7 @@ pub(super) fn check_and_recover_orphans(
                 current_coworker: None,
                 pr_number: None,
                 created_at: chrono::Utc::now(),
+                completed_at: None,
             },
         });
     }
@@ -1153,6 +1154,7 @@ pub(super) fn spawn_for_pending_tasks(
                             current_coworker: None,
                             pr_number: None,
                             created_at: chrono::Utc::now(),
+                            completed_at: None,
                         },
                     });
                 }
@@ -1534,6 +1536,7 @@ pub(super) fn spawn_for_pending_tasks(
                         current_coworker: None,
                         pr_number: None,
                         created_at: chrono::Utc::now(),
+                        completed_at: None,
                     },
                 });
             }
