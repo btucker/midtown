@@ -303,6 +303,9 @@ Use `midtown task` CLI commands to manage tasks. The daemon writes directly — 
 # Create a task (daemon assigns it automatically)
 midtown task create "Subject" --description "Details..."
 
+# Create a task linked to an existing PR (for review feedback, fixes, etc.)
+midtown task create "Address review feedback" --description "Fix issues from PR #940 review" --pr 940
+
 # View tasks
 midtown task list
 midtown task view <id>
@@ -313,9 +316,17 @@ midtown task update <id> --status in_progress
 midtown task update <id> --description "Updated details..."
 midtown task update <id> --blocked-by 5,6
 
+# Link a task to an existing PR (if not auto-detected)
+midtown task update <id> --pr <pr-number>
+
 # Mark a task as done
 midtown task done <id>
 ```
+
+**Task-PR associations:**
+- When a coworker opens a PR with `[Midtown !XXX]` in the title, the daemon automatically links task XXX to that PR
+- Use `--pr` when creating tasks for existing PRs (review feedback, follow-up fixes)
+- Explicit PR links prevent false positives (e.g., task mentions "PR #940 fix insufficient" as context but creates a different PR)
 
 **Do NOT use Claude Code's TaskCreate/TaskUpdate/TaskList tools** — those write to a different location and won't be seen by coworkers or the daemon.
 

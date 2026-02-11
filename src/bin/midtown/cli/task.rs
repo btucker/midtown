@@ -22,6 +22,9 @@ pub enum TaskCommand {
         /// Optional model for coworker (e.g., claude/opus, claude/sonnet)
         #[arg(long)]
         model: Option<String>,
+        /// Explicit PR number associated with this task
+        #[arg(long)]
+        pr: Option<u64>,
     },
     /// Claim a task
     Claim {
@@ -50,6 +53,9 @@ pub enum TaskCommand {
         /// Set model for coworker (e.g., claude/opus, claude/sonnet)
         #[arg(long)]
         model: Option<String>,
+        /// Set explicit PR number associated with this task
+        #[arg(long)]
+        pr: Option<u64>,
     },
     /// Mark a task as done
     Done {
@@ -92,12 +98,14 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             blocked_by,
             channel,
             model,
+            pr,
         } => client.task_create(
             subject,
             description,
             blocked_by.as_deref(),
             channel.as_deref(),
             model.as_deref(),
+            *pr,
         ),
         TaskCommand::Update {
             id,
@@ -107,6 +115,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             blocked_by,
             channel,
             model,
+            pr,
         } => client.task_update(
             id,
             owner.as_deref(),
@@ -115,6 +124,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             blocked_by.as_deref(),
             channel.as_deref(),
             model.as_deref(),
+            *pr,
         ),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),
