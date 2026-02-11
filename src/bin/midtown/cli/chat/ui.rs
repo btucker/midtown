@@ -227,8 +227,8 @@ fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> Vec<Hyperlink> 
     // Split board area vertically: tasks at top, coworkers at bottom
     let active_coworker_count = app.coworkers.len();
     let coworker_section_height = if active_coworker_count > 0 {
-        // 1 header line + 1 blank line + N coworker lines + 2 for borders
-        active_coworker_count as u16 + 4
+        // 1 header line + N coworker rows + 2 for table borders
+        active_coworker_count as u16 + 3
     } else {
         0 // No coworkers, don't show the section
     };
