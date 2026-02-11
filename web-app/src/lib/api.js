@@ -316,9 +316,10 @@ export function connectWebSocket() {
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout)
       reconnectTimeout = null
-      // Fetch recent history to get messages sent during disconnection
-      fetchHistory()
     }
+    // Always fetch history on connect/reconnect to ensure messages are loaded.
+    // This handles both initial connections and reconnects after disconnection.
+    fetchHistory()
   }
 
   ws.onclose = () => {
