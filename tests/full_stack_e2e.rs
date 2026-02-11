@@ -197,12 +197,16 @@ impl FullStackFixture {
     }
 
     fn start_daemon(&mut self) -> bool {
+        let build_start = std::time::Instant::now();
         let build_result = Command::new("cargo")
             .args(["build", "--release"])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+
+        let build_duration = build_start.elapsed();
+        eprintln!("[TIMING] cargo build --release took {:?}", build_duration);
 
         if build_result.map(|s| !s.success()).unwrap_or(true) {
             eprintln!("Failed to build daemon binary");
@@ -413,6 +417,8 @@ fn window_exists(session: &str, window: &str) -> bool {
 #[ignore]
 #[timeout(300_000)] // 5 minutes: daemon startup (30s) + Claude CLI launch (60s) + TUI render (30s) + CI overhead (~3x local)
 fn test_daemon_spawns_lead_with_real_claude() {
+    let test_start = std::time::Instant::now();
+
     // Skip when using a stub command - this test requires real Claude TUI output
     if std::env::var("MIDTOWN_LEAD_COMMAND").is_ok() {
         eprintln!("MIDTOWN_LEAD_COMMAND is set (stub mode), skipping real Claude test");
@@ -430,18 +436,23 @@ fn test_daemon_spawns_lead_with_real_claude() {
         return;
     }
 
+    let setup_start = std::time::Instant::now();
     let mut fixture = match FullStackFixture::new() {
         Some(f) => f,
         None => return,
     };
+    eprintln!("[TIMING] Fixture setup took {:?}", setup_start.elapsed());
 
+    let daemon_start = std::time::Instant::now();
     if !fixture.start_daemon() {
         return;
     }
+    eprintln!("[TIMING] start_daemon() took {:?}", daemon_start.elapsed());
 
     let session = fixture.tmux_session_name();
 
     // Wait for the lead window to appear (up to 60s)
+    let window_wait_start = std::time::Instant::now();
     let mut lead_found = false;
     for _ in 0..60 {
         thread::sleep(Duration::from_secs(1));
@@ -450,6 +461,10 @@ fn test_daemon_spawns_lead_with_real_claude() {
             break;
         }
     }
+    eprintln!(
+        "[TIMING] Waiting for lead window took {:?}",
+        window_wait_start.elapsed()
+    );
 
     assert!(
         lead_found,
@@ -458,6 +473,7 @@ fn test_daemon_spawns_lead_with_real_claude() {
     );
 
     // Verify the lead pane has visible output (TUI rendered)
+    let tui_wait_start = std::time::Instant::now();
     let mut has_output = false;
     for _ in 0..30 {
         thread::sleep(Duration::from_secs(1));
@@ -468,6 +484,11 @@ fn test_daemon_spawns_lead_with_real_claude() {
             break;
         }
     }
+    eprintln!(
+        "[TIMING] Waiting for TUI output took {:?}",
+        tui_wait_start.elapsed()
+    );
+    eprintln!("[TIMING] TOTAL test duration: {:?}", test_start.elapsed());
 
     assert!(
         has_output,
