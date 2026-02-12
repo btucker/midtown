@@ -159,7 +159,7 @@ enum Commands {
     },
     /// Manage authentication profiles for multi-account support
     Auth {
-        /// Show account/profile status for a specific provider only (list only)
+        /// Auth provider to manage (prompts if not specified for switch/remove)
         #[arg(long, value_enum)]
         provider: Option<AuthProviderArg>,
 
@@ -560,26 +560,27 @@ fn main() {
     }
 
     // Auth command (no daemon required - profile management)
-    // Bare `midtown auth` defaults to `midtown auth list` showing all providers
+    // Bare `midtown auth` defaults to `midtown auth list`
     if let Commands::Auth { provider, command } = &command {
         let cmd = command.clone().unwrap_or(AuthCommand::List);
         let result = if let Some(provider_arg) = provider {
             // Explicit provider specified: use single-provider handling
             cli::handle_auth(&cmd, (*provider_arg).into())
         } else {
-            // No provider specified
+            // No provider specified: behavior depends on command
             match cmd {
-                AuthCommand::List => {
-                    // Default: show all providers
-                    cli::handle_auth_list_all_providers()
-                }
-                AuthCommand::Login { .. } => {
-                    // Prompt for provider selection
-                    cli::handle_auth_login_with_prompt(&cmd)
-                }
+                // List shows all providers by default (no prompt needed)
+                AuthCommand::List => cli::handle_auth_list_all_providers(),
+                // Other commands prompt for provider selection
                 _ => {
-                    // For switch/remove, default to "claude" for backward compatibility
-                    cli::handle_auth(&cmd, AuthProviderArg::Claude.into())
+                    let provider = match cli::prompt_provider_selection_all() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            handle_result(format, Err(e));
+                            return;
+                        }
+                    };
+                    cli::handle_auth(&cmd, provider)
                 }
             }
         };

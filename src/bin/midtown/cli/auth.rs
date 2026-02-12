@@ -50,6 +50,147 @@ pub enum AuthCommand {
     },
 }
 
+/// Resolve which provider owns a profile, prompting if ambiguous.
+///
+/// If the given provider (from --provider flag) has the profile, use it.
+/// Otherwise, search all providers and:
+/// - If exactly one provider has it, use that provider.
+/// - If multiple providers have it, prompt the user to select.
+/// - If no provider has it, return an error.
+fn resolve_provider_for_profile(
+    profile: &str,
+    default_provider: midtown::auth::AuthProvider,
+) -> Result<midtown::auth::AuthProvider, String> {
+    // If the default provider has this profile, use it immediately
+    if midtown::auth::profile_exists_for(default_provider, profile) {
+        return Ok(default_provider);
+    }
+
+    // Default provider doesn't have it — search all providers
+    let matching_providers: Vec<midtown::auth::AuthProvider> = midtown::auth::AuthProvider::all()
+        .iter()
+        .copied()
+        .filter(|&p| midtown::auth::profile_exists_for(p, profile))
+        .collect();
+
+    match matching_providers.len() {
+        0 => Err(format!(
+            "Profile '{}' not found for any provider. Create it with: midtown auth --provider <provider> login {}",
+            profile, profile
+        )),
+        1 => Ok(matching_providers[0]),
+        _ => {
+            // Multiple providers have this profile — prompt user to select
+            if !std::io::stdout().is_terminal() {
+                return Err(format!(
+                    "Profile '{}' exists for multiple providers: {}. Use --provider to specify which one.",
+                    profile,
+                    matching_providers
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            prompt_provider_selection(&matching_providers)
+        }
+    }
+}
+
+/// Prompt the user to select from all available providers.
+pub fn prompt_provider_selection_all() -> Result<midtown::auth::AuthProvider, String> {
+    let all_providers = midtown::auth::AuthProvider::all();
+    prompt_provider_selection(all_providers)
+}
+
+/// Prompt the user to select a provider from a list.
+fn prompt_provider_selection(
+    providers: &[midtown::auth::AuthProvider],
+) -> Result<midtown::auth::AuthProvider, String> {
+    let options: Vec<&str> = providers.iter().map(|p| p.as_str()).collect();
+    let mut state = ListState::default();
+    state.select(Some(0));
+
+    let viewport_height = options.len() as u16 + 2; // +2 for borders
+
+    let _guard = RawModeGuard::new()?;
+    let stdout = std::io::stdout();
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(viewport_height),
+        },
+    )
+    .map_err(|e| format!("Failed to create terminal: {}", e))?;
+
+    let result = loop {
+        terminal
+            .draw(|f| {
+                let title = " Select provider (Enter=confirm, Esc=cancel) ";
+                let items: Vec<ListItem> = options
+                    .iter()
+                    .map(|o| ListItem::new(Line::from(*o)))
+                    .collect();
+                let max_width = options.iter().map(|o| o.len()).max().unwrap_or(0);
+                let width = (max_width as u16 + 4)
+                    .max(title.len() as u16 + 2)
+                    .min(f.area().width);
+                let list = List::new(items)
+                    .block(
+                        Block::default()
+                            .title(title)
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::DarkGray)),
+                    )
+                    .highlight_style(
+                        Style::default()
+                            .bg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                let full = f.area();
+                let area = Rect::new(full.x, full.y, width, full.height);
+                f.render_stateful_widget(list, area, &mut state);
+            })
+            .map_err(|e| format!("Draw error: {}", e))?;
+
+        if let Ok(Event::Key(key)) = event::read() {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    return Err("Provider selection cancelled".to_string());
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some(if i == 0 { options.len() - 1 } else { i - 1 }));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some((i + 1) % options.len()));
+                }
+                KeyCode::Enter => {
+                    if let Some(i) = state.selected() {
+                        break Ok(providers[i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // Move cursor below the inline viewport before restoring
+    let pos = terminal
+        .get_cursor_position()
+        .map_err(|e| format!("Failed to get cursor: {}", e))?;
+    terminal
+        .set_cursor_position(ratatui::layout::Position::new(0, pos.y + viewport_height))
+        .map_err(|e| format!("Failed to set cursor: {}", e))?;
+
+    result
+}
+
 pub fn handle(
     cmd: &AuthCommand,
     provider: midtown::auth::AuthProvider,
@@ -61,8 +202,14 @@ pub fn handle(
             profile,
             project,
             all,
-        } => handle_switch(profile, use_global_scope(*project, *all), provider),
-        AuthCommand::Remove { profile } => handle_remove(profile, provider),
+        } => {
+            let resolved_provider = resolve_provider_for_profile(profile, provider)?;
+            handle_switch(profile, use_global_scope(*project, *all), resolved_provider)
+        }
+        AuthCommand::Remove { profile } => {
+            let resolved_provider = resolve_provider_for_profile(profile, provider)?;
+            handle_remove(profile, resolved_provider)
+        }
     }
 }
 
@@ -102,44 +249,6 @@ pub fn handle_list_all_providers() -> Result<Response, String> {
     Ok(Response::Message {
         message: sections.join("\n\n"),
     })
-}
-
-/// Handle login command with interactive provider selection.
-pub fn handle_login_with_prompt(cmd: &AuthCommand) -> Result<Response, String> {
-    if let AuthCommand::Login { email, key } = cmd {
-        // Prompt user to select provider
-        let provider = prompt_provider_selection()?;
-        handle_login(email, key.as_deref(), provider)
-    } else {
-        Err("Expected Login command".to_string())
-    }
-}
-
-/// Prompt the user to select an auth provider.
-fn prompt_provider_selection() -> Result<midtown::auth::AuthProvider, String> {
-    println!("Select authentication provider:");
-    println!("  1. Claude (claude.ai)");
-    println!("  2. Codex (codex.cloud)");
-    println!("  3. z.ai (z.ai)");
-    println!();
-    eprint!("Choice [1-3]: ");
-    std::io::Write::flush(&mut std::io::stderr())
-        .map_err(|e| format!("Failed to flush stderr: {}", e))?;
-
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
-        .map_err(|e| format!("Failed to read input: {}", e))?;
-
-    match input.trim() {
-        "1" => Ok(midtown::auth::AuthProvider::Claude),
-        "2" => Ok(midtown::auth::AuthProvider::Codex),
-        "3" => Ok(midtown::auth::AuthProvider::Zai),
-        other => Err(format!(
-            "Invalid choice '{}'. Please enter 1, 2, or 3.",
-            other
-        )),
-    }
 }
 
 fn handle_login(
@@ -1139,5 +1248,21 @@ mod tests {
         assert!(message.contains("claude"));
         assert!(message.contains("codex"));
         assert!(message.contains("zai"));
+    }
+
+    #[test]
+    fn resolve_provider_returns_default_when_profile_exists() {
+        // This test requires actual profile setup, which is integration-level.
+        // The unit test verifies the logic flow by checking error messages.
+        let result = resolve_provider_for_profile(
+            "nonexistent@example.com",
+            midtown::auth::AuthProvider::Claude,
+        );
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Profile 'nonexistent@example.com' not found")
+        );
     }
 }

@@ -330,9 +330,9 @@ When Midtown launches a session, it sets provider-specific env vars:
 | `midtown auth login <email>` | Create/re-authenticate a profile (prompts for provider selection). |
 | `midtown auth --provider <provider> login <email>` | Create/re-authenticate a profile for a specific provider. |
 | `midtown auth --provider zai login <email> --key <api-key>` | Create z.ai profile non-interactively (for scripts/CI). |
-| `midtown auth switch <profile> [--project]` | Switch active claude profile (global by default; use `--project` for current repo only). |
+| `midtown auth switch <profile> [--project]` | Switch active profile (prompts for provider if ambiguous; global by default, use `--project` for current repo only). |
 | `midtown auth --provider <provider> switch <profile> [--project]` | Switch active profile for a specific provider. |
-| `midtown auth remove <profile>` | Remove a claude profile (defaults to claude provider). |
+| `midtown auth remove <profile>` | Remove a profile (prompts for provider if ambiguous). |
 | `midtown auth --provider <provider> remove <profile>` | Remove a profile for a specific provider. |
 
 ### Example Workflow
@@ -359,7 +359,7 @@ midtown auth list
 # List only Claude profiles
 midtown auth --provider claude list
 
-# Switch Claude profile globally (default)
+# Switch profile globally (prompts for provider if profile exists on multiple)
 midtown auth switch work@example.com
 
 # Switch Claude profile for current project only
