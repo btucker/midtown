@@ -1436,11 +1436,6 @@ mod tests {
         }
     }
 
-    // Legacy alias — all coworkers are now isolated
-    fn cw_isolated(name: &str, minutes_old: i64) -> CoworkerSnapshot {
-        cw(name, minutes_old)
-    }
-
     fn set(items: &[&str]) -> HashSet<String> {
         items.iter().map(|s| s.to_string()).collect()
     }
@@ -1459,312 +1454,229 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Builder for decide_idle_shutdowns — eliminates 13-arg boilerplate
+    // -----------------------------------------------------------------------
+
+    /// Test context builder for `decide_idle_shutdowns`.
+    ///
+    /// All sets default to empty; callers only set the fields they care about.
+    #[derive(Default)]
+    struct IdleShutdownCtx {
+        coworkers: Vec<CoworkerSnapshot>,
+        busy: HashSet<String>,
+        open_prs: HashSet<String>,
+        reviewers: HashSet<String>,
+        unblocked_deps: HashSet<String>,
+        ci_passed: HashSet<String>,
+        usage_limited: HashSet<String>,
+        api_error: HashSet<String>,
+        pending_tasks: HashSet<String>,
+        review_feedback: HashSet<String>,
+        records: HashMap<String, CoworkerRecord>,
+        minimum_lifetime: Duration,
+    }
+
+    impl IdleShutdownCtx {
+        /// Start with a single coworker (10 min old) and 5 min minimum lifetime.
+        fn one(name: &str) -> Self {
+            Self {
+                coworkers: vec![cw(name, 10)],
+                minimum_lifetime: Duration::from_secs(300),
+                ..Default::default()
+            }
+        }
+
+        /// Start with a young coworker (2 min old).
+        fn one_young(name: &str) -> Self {
+            Self {
+                coworkers: vec![cw(name, 2)],
+                minimum_lifetime: Duration::from_secs(300),
+                ..Default::default()
+            }
+        }
+
+        fn busy(mut self, names: &[&str]) -> Self {
+            self.busy = set(names);
+            self
+        }
+        fn open_prs(mut self, names: &[&str]) -> Self {
+            self.open_prs = set(names);
+            self
+        }
+        fn reviewers(mut self, names: &[&str]) -> Self {
+            self.reviewers = set(names);
+            self
+        }
+        fn unblocked_deps(mut self, names: &[&str]) -> Self {
+            self.unblocked_deps = set(names);
+            self
+        }
+        fn ci_passed(mut self, names: &[&str]) -> Self {
+            self.ci_passed = set(names);
+            self
+        }
+        fn usage_limited(mut self, names: &[&str]) -> Self {
+            self.usage_limited = set(names);
+            self
+        }
+        fn api_error(mut self, names: &[&str]) -> Self {
+            self.api_error = set(names);
+            self
+        }
+        fn pending_tasks(mut self, names: &[&str]) -> Self {
+            self.pending_tasks = set(names);
+            self
+        }
+        fn review_feedback(mut self, names: &[&str]) -> Self {
+            self.review_feedback = set(names);
+            self
+        }
+        fn records(mut self, records: HashMap<String, CoworkerRecord>) -> Self {
+            self.records = records;
+            self
+        }
+        fn with_idle_record(mut self, name: &str) -> Self {
+            self.records = lifecycle_with(
+                name,
+                SessionHealth::Idle {
+                    since: Instant::now() - Duration::from_secs(60),
+                },
+            );
+            self
+        }
+
+        fn run(&self) -> (Vec<ShutdownDecision>, Vec<HealthTransition>) {
+            decide_idle_shutdowns(
+                &self.coworkers,
+                &self.busy,
+                &self.open_prs,
+                &self.reviewers,
+                &self.unblocked_deps,
+                &self.ci_passed,
+                &self.usage_limited,
+                &self.api_error,
+                &self.pending_tasks,
+                &self.review_feedback,
+                &self.records,
+                Utc::now(),
+                self.minimum_lifetime,
+            )
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper for ProcessHealth construction in stuck detection tests
+    // -----------------------------------------------------------------------
+
+    /// Create a default `ProcessHealth` for a stuck coworker (alive, no events for 10 min).
+    fn stuck_health(now: DateTime<Utc>) -> crate::daemon::snapshot::ProcessHealth {
+        crate::daemon::snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            exit_code: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // decide_idle_shutdowns tests
     // -----------------------------------------------------------------------
 
     #[test]
     fn idle_shutdown_after_timeout() {
-        let coworkers = vec![cw("york", 10)];
-        let mut phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        let (decisions, transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-        apply_health_transitions(&mut phases, transitions);
-
+        let ctx = IdleShutdownCtx::one("york").with_idle_record("york");
+        let (decisions, transitions) = ctx.run();
+        let mut records = ctx.records.clone();
+        apply_health_transitions(&mut records, transitions);
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "york");
-        assert!(get_health(&phases, "york").is_none());
+        assert!(get_health(&records, "york").is_none());
     }
 
     #[test]
     fn idle_shutdown_skips_busy_coworker() {
-        let coworkers = vec![cw("york", 10)];
-        let mut phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        let (decisions, transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&["york"]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-        apply_health_transitions(&mut phases, transitions);
-
+        let ctx = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .busy(&["york"]);
+        let (decisions, transitions) = ctx.run();
+        let mut records = ctx.records.clone();
+        apply_health_transitions(&mut records, transitions);
         assert!(decisions.is_empty());
-        // Busy coworker removed from idle tracking
-        assert!(get_health(&phases, "york").is_none());
+        assert!(get_health(&records, "york").is_none());
     }
 
     #[test]
     fn idle_shutdown_skips_coworker_with_open_pr() {
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&["york"]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        let (decisions, _) = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .open_prs(&["york"])
+            .run();
         assert!(decisions.is_empty());
     }
 
     #[test]
     fn idle_shutdown_skips_active_reviewer() {
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&["york"]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        let (decisions, _) = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .reviewers(&["york"])
+            .run();
         assert!(decisions.is_empty());
     }
 
     #[test]
     fn idle_shutdown_skips_coworker_with_unblocked_deps() {
-        let coworkers = vec![cw("york", 10)];
-        let mut phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        let (decisions, transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&["york"]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-        apply_health_transitions(&mut phases, transitions);
-
+        let ctx = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .unblocked_deps(&["york"]);
+        let (decisions, transitions) = ctx.run();
+        let mut records = ctx.records.clone();
+        apply_health_transitions(&mut records, transitions);
         assert!(decisions.is_empty());
-        // Coworker with unblocked deps removed from idle tracking
-        assert!(get_health(&phases, "york").is_none());
+        assert!(get_health(&records, "york").is_none());
     }
 
     #[test]
     fn idle_shutdown_skips_young_coworker() {
-        let coworkers = vec![cw("york", 2)]; // Only 2 minutes old
-        let mut phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        let (decisions, transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-        apply_health_transitions(&mut phases, transitions);
-
+        let ctx = IdleShutdownCtx::one_young("york").with_idle_record("york");
+        let (decisions, transitions) = ctx.run();
+        let mut records = ctx.records.clone();
+        apply_health_transitions(&mut records, transitions);
         assert!(decisions.is_empty());
-        // Young coworker also removed from idle tracking
-        assert!(get_health(&phases, "york").is_none());
+        assert!(get_health(&records, "york").is_none());
     }
 
     #[test]
     fn idle_shutdown_isolated_coworker_immediate() {
-        let coworkers = vec![cw_isolated("reviewer", 10)];
-        let phases: HashMap<String, CoworkerRecord> = HashMap::new();
-
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        let (decisions, _) = IdleShutdownCtx::one("reviewer").run();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "reviewer");
     }
 
     #[test]
     fn idle_shutdown_immediate_for_unprotected_coworker() {
-        // Unprotected coworkers are sent on break immediately (no delay)
-        let coworkers = vec![cw("york", 10)];
-        let phases: HashMap<String, CoworkerRecord> = HashMap::new();
-
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
-        // Immediate shutdown — no tracking delay
+        let (decisions, _) = IdleShutdownCtx::one("york").run();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].name, "york");
     }
 
     #[test]
     fn idle_shutdown_skips_coworker_with_open_pr_no_ci() {
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // york has an open PR but CI has NOT passed — should NOT shutdown (protected by open PR)
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&["york"]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        let (decisions, _) = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .open_prs(&["york"])
+            .run();
         assert!(decisions.is_empty());
     }
 
     #[test]
     fn idle_shutdown_sends_idle_coworker_on_break_despite_pane_activity() {
-        // Bug #62: Idle coworkers with no task should be sent on break even if
-        // their pane content changed recently. Pane changes for idle coworkers
-        // come from daemon nudges, Claude Code UI updates, etc. — not real work.
-        let coworkers = vec![cw("york", 10)];
-        let mut phases = HashMap::new();
-        phases.insert(
-            "york".to_string(),
-            CoworkerRecord {
-                health: Some(SessionHealth::Idle {
-                    since: Instant::now() - Duration::from_secs(60),
-                }),
-                ..Default::default()
-            },
-        );
-
-        // york is idle, no tasks, no PRs, no reviews — should go on break
-        // even though pane content changed recently
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]),
-            &set(&[]), // usage_limited_coworkers
-            &set(&[]), // api_error_coworkers
-            &set(&[]), // pending_task_owners
-            &set(&[]), // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        // Bug #62: Pane changes for idle coworkers come from daemon nudges, not real work.
+        let (decisions, _) = IdleShutdownCtx::one("york").with_idle_record("york").run();
         assert_eq!(
             decisions.len(),
             1,
@@ -1776,34 +1688,11 @@ mod tests {
     #[test]
     fn idle_shutdown_allows_coworker_with_ci_passed_pr_to_break() {
         // Bug #4: Coworkers waiting for PR review (CI passed) should go on break.
-        // The daemon will respawn them when review feedback arrives.
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // york has an open PR AND CI is passing — should be ALLOWED to break
-        // (waiting for review feedback)
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),       // not busy
-            &set(&["york"]), // has open PR
-            &set(&[]),       // not reviewing
-            &set(&[]),       // no unblocked deps
-            &set(&["york"]), // CI PASSED
-            &set(&[]),       // usage_limited
-            &set(&[]),       // api_error
-            &set(&[]),       // pending_task_owners
-            &set(&[]),       // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
-        // The new behavior: coworkers with CI-passed PRs CAN go on break
+        let (decisions, _) = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .open_prs(&["york"])
+            .ci_passed(&["york"])
+            .run();
         assert_eq!(
             decisions.len(),
             1,
@@ -1814,33 +1703,10 @@ mod tests {
 
     #[test]
     fn idle_shutdown_skips_usage_limited_coworker() {
-        // Coworkers at usage limit should be protected from idle shutdown.
-        // They're frozen waiting for the limit to reset, not truly idle.
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // york is at usage limit — should NOT be sent on break
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),       // not busy
-            &set(&[]),       // no open PR
-            &set(&[]),       // not reviewing
-            &set(&[]),       // no unblocked deps
-            &set(&[]),       // no ci_passed
-            &set(&["york"]), // usage_limited
-            &set(&[]),       // api_error
-            &set(&[]),       // pending_task_owners
-            &set(&[]),       // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        let (decisions, _) = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .usage_limited(&["york"])
+            .run();
         assert!(
             decisions.is_empty(),
             "usage-limited coworker should be protected from idle shutdown"
@@ -1849,33 +1715,10 @@ mod tests {
 
     #[test]
     fn idle_shutdown_skips_api_error_coworker() {
-        // Coworkers with API errors should be protected from idle shutdown.
-        // They're waiting for the API to recover, not truly idle.
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // york has API error — should NOT be sent on break
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),       // not busy
-            &set(&[]),       // no open PR
-            &set(&[]),       // not reviewing
-            &set(&[]),       // no unblocked deps
-            &set(&[]),       // no ci_passed
-            &set(&[]),       // not usage_limited
-            &set(&["york"]), // HAS API ERROR
-            &set(&[]),       // pending_task_owners
-            &set(&[]),       // review_feedback_pr_coworkers
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        let (decisions, _) = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .api_error(&["york"])
+            .run();
         assert!(
             decisions.is_empty(),
             "API error coworker should be protected from idle shutdown"
@@ -1884,34 +1727,11 @@ mod tests {
 
     #[test]
     fn idle_shutdown_skips_coworker_with_pending_assigned_task() {
-        // Bug #753 (Bug 2): Lexington was sent on break despite having a pending
-        // task (#753) assigned to them. The daemon should protect coworkers who
-        // have pending tasks assigned, not just in-progress ones.
-        let coworkers = vec![cw("lexington", 10)];
-        let phases = lifecycle_with(
-            "lexington",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // lexington has a pending task assigned — should NOT be sent on break
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),            // not busy (task is pending, not in-progress)
-            &set(&[]),            // no open PR
-            &set(&[]),            // not reviewing
-            &set(&[]),            // no unblocked deps
-            &set(&[]),            // no ci_passed
-            &set(&[]),            // not usage_limited
-            &set(&[]),            // no api_error
-            &set(&["lexington"]), // HAS PENDING TASK ASSIGNED
-            &set(&[]),            // no review_feedback
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        // Bug #753 (Bug 2): Coworkers with pending tasks should be protected.
+        let (decisions, _) = IdleShutdownCtx::one("lexington")
+            .with_idle_record("lexington")
+            .pending_tasks(&["lexington"])
+            .run();
         assert!(
             decisions.is_empty(),
             "coworker with pending task assigned should be protected from idle shutdown"
@@ -1920,34 +1740,13 @@ mod tests {
 
     #[test]
     fn idle_shutdown_skips_coworker_with_review_feedback_pr() {
-        // Bug #753 (Bug 1): Madison's PR had CI passed + review feedback but she
-        // was still sent on break, causing a spawn→idle→break loop. Coworkers whose
-        // PRs have review feedback needing action should be protected.
-        let coworkers = vec![cw("madison", 10)];
-        let phases = lifecycle_with(
-            "madison",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // madison has an open PR with CI passed AND review feedback — should NOT break
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),          // not busy
-            &set(&["madison"]), // has open PR
-            &set(&[]),          // not reviewing
-            &set(&[]),          // no unblocked deps
-            &set(&["madison"]), // CI PASSED
-            &set(&[]),          // not usage_limited
-            &set(&[]),          // no api_error
-            &set(&[]),          // no pending_task_owners
-            &set(&["madison"]), // HAS REVIEW FEEDBACK
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        // Bug #753 (Bug 1): CI passed + review feedback → protect (prevents spawn→idle→break loop).
+        let (decisions, _) = IdleShutdownCtx::one("madison")
+            .with_idle_record("madison")
+            .open_prs(&["madison"])
+            .ci_passed(&["madison"])
+            .review_feedback(&["madison"])
+            .run();
         assert!(
             decisions.is_empty(),
             "coworker with CI-passed PR and review feedback should be protected from \
@@ -1957,42 +1756,17 @@ mod tests {
 
     #[test]
     fn idle_shutdown_still_allows_break_for_ci_passed_pr_without_feedback() {
-        // Regression guard: coworkers with CI-passed PRs but NO review feedback
-        // should still be allowed to go on break (original behavior).
-        let coworkers = vec![cw("york", 10)];
-        let phases = lifecycle_with(
-            "york",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]),       // not busy
-            &set(&["york"]), // has open PR
-            &set(&[]),       // not reviewing
-            &set(&[]),       // no unblocked deps
-            &set(&["york"]), // CI PASSED
-            &set(&[]),       // not usage_limited
-            &set(&[]),       // no api_error
-            &set(&[]),       // no pending_task_owners
-            &set(&[]),       // NO review feedback
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-
+        let (decisions, _) = IdleShutdownCtx::one("york")
+            .with_idle_record("york")
+            .open_prs(&["york"])
+            .ci_passed(&["york"])
+            .run();
         assert_eq!(
             decisions.len(),
             1,
             "coworker with CI-passed PR but no review feedback should still go on break"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // decide_pr_issue_action tests
-    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // decide_pr_issue_action tests
@@ -3266,14 +3040,9 @@ mod tests {
         assert!(matches!(action, MentionAction::Skip { .. }));
     }
 
-    /// Snapshot from bug #756: madison was in a break/respawn loop for 4+ hours
-    /// with 4 duplicate tmux windows accumulating. The snapshot captures the state
-    /// where madison has an open PR (#649) with CI passed AND review feedback,
-    /// but was being repeatedly shut down.
-    ///
-    /// The review_feedback_pr_coworkers field didn't exist in the snapshot (captured
-    /// before PR #650), so we reconstruct it from the channel messages which show
-    /// review feedback was present.
+    /// Snapshot from bug #756: madison was in a break/respawn loop for 4+ hours.
+    /// She had an open PR (#649) with CI passed AND review feedback. The fix
+    /// (PR #650) added review_feedback_pr_coworkers protection.
     #[test]
     fn snapshot_20260205_madison_break_loop_protected_by_review_feedback() {
         let fixture = include_str!(
@@ -3281,7 +3050,7 @@ mod tests {
         );
         let snapshot: serde_json::Value = serde_json::from_str(fixture).unwrap();
 
-        // Extract coworker list from snapshot
+        // Verify snapshot state
         let active = &snapshot["active_coworkers"];
         assert!(
             active
@@ -3292,16 +3061,7 @@ mod tests {
             "madison should be in active_coworkers"
         );
 
-        let coworkers = vec![cw("madison", 10)];
-
-        let mut phases = lifecycle_with(
-            "madison",
-            SessionHealth::Idle {
-                since: Instant::now() - Duration::from_secs(60),
-            },
-        );
-
-        // From snapshot: madison has open PR with CI passed
+        // Extract sets from snapshot
         let coworkers_with_open_prs: HashSet<String> = snapshot["coworkers_with_open_prs"]
             .as_array()
             .unwrap()
@@ -3314,34 +3074,21 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-
         assert!(coworkers_with_open_prs.contains("madison"));
         assert!(ci_passed.contains("madison"));
 
-        // Channel messages confirm review feedback exists — reconstruct the field
-        // that was added in PR #650 to fix the original break loop (#753)
-        let review_feedback = set(&["madison"]);
+        let (decisions, _) = IdleShutdownCtx::one("madison")
+            .with_idle_record("madison")
+            .open_prs(
+                &coworkers_with_open_prs
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>(),
+            )
+            .ci_passed(&ci_passed.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+            .review_feedback(&["madison"])
+            .run();
 
-        let (decisions, _transitions) = decide_idle_shutdowns(
-            &coworkers,
-            &set(&[]), // not busy
-            &coworkers_with_open_prs,
-            &set(&[]), // not reviewing
-            &set(&[]), // no unblocked deps
-            &ci_passed,
-            &set(&[]),        // not usage limited
-            &set(&[]),        // no api errors
-            &set(&[]),        // no pending tasks
-            &review_feedback, // HAS review feedback
-            &phases,
-            Utc::now(),
-            Duration::from_secs(300),
-        );
-        apply_health_transitions(&mut phases, _transitions);
-
-        // With the review_feedback protection (PR #650), madison should NOT be
-        // shut down — she has an open PR with CI passed but also review feedback
-        // to address. Without this protection, the break/respawn loop occurs.
         assert!(
             decisions.is_empty(),
             "madison should NOT be sent on break when she has review feedback on her PR. \
@@ -3400,84 +3147,57 @@ mod tests {
     // decide_stuck_coworker_restarts tests (ProcessHealth-based)
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn stuck_detection_triggers_for_no_events() {
-        use crate::daemon::snapshot::ProcessHealth;
-
-        let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "riverside".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix bug".to_string(),
-            "riverside".to_string(),
-        )];
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
+    /// Run `decide_stuck_coworker_restarts` with a single health entry and task.
+    fn run_stuck_check(
+        name: &str,
+        health: crate::daemon::snapshot::ProcessHealth,
+        now: DateTime<Utc>,
+        usage_limited: &HashSet<String>,
+        api_error: &HashSet<String>,
+        attached: &HashSet<String>,
+    ) -> Vec<StuckCoworkerRestart> {
+        let mut map = HashMap::new();
+        map.insert(name.to_string(), health);
+        let tasks = vec![("42".to_string(), "Fix bug".to_string(), name.to_string())];
+        decide_stuck_coworker_restarts(
+            &map,
             &tasks,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+            usage_limited,
+            api_error,
+            attached,
             now,
             Duration::from_secs(180),
-        );
+        )
+    }
 
+    #[test]
+    fn stuck_detection_triggers_for_no_events() {
+        let now = Utc::now();
+        let restarts = run_stuck_check(
+            "riverside",
+            stuck_health(now),
+            now,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
         assert_eq!(restarts.len(), 1);
         assert_eq!(restarts[0].name, "riverside");
     }
 
     #[test]
     fn stuck_detection_skips_recent_events() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "riverside".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::seconds(30)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix bug".to_string(),
-            "riverside".to_string(),
-        )];
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
-            &tasks,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+        let mut h = stuck_health(now);
+        h.last_event_at = Some(now - chrono::Duration::seconds(30));
+        let restarts = run_stuck_check(
+            "riverside",
+            h,
             now,
-            Duration::from_secs(180),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
         );
-
         assert!(
             restarts.is_empty(),
             "recent events should not trigger stuck"
@@ -3486,40 +3206,15 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_usage_limited() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "york".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: true,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "york".to_string())];
-
-        let mut usage_limited = HashSet::new();
-        usage_limited.insert("york".to_string());
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
-            &tasks,
-            &usage_limited,
-            &HashSet::new(),
-            &HashSet::new(),
+        let restarts = run_stuck_check(
+            "york",
+            stuck_health(now),
             now,
-            Duration::from_secs(180),
+            &set(&["york"]),
+            &HashSet::new(),
+            &HashSet::new(),
         );
-
         assert!(
             restarts.is_empty(),
             "usage-limited coworker should be skipped"
@@ -3528,82 +3223,31 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_api_error() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "madison".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: true,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix bug".to_string(),
-            "madison".to_string(),
-        )];
-
-        let mut api_error = HashSet::new();
-        api_error.insert("madison".to_string());
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
-            &tasks,
-            &HashSet::new(),
-            &api_error,
-            &HashSet::new(),
+        let restarts = run_stuck_check(
+            "madison",
+            stuck_health(now),
             now,
-            Duration::from_secs(180),
+            &HashSet::new(),
+            &set(&["madison"]),
+            &HashSet::new(),
         );
-
         assert!(restarts.is_empty(), "API error coworker should be skipped");
     }
 
     #[test]
     fn stuck_detection_skips_running_subagent() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "park".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                // Last parent event was 10 minutes ago — normally stuck
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                // But has a running subagent, so parent stream is expected to be quiet
-                has_running_subagent: true,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "park".to_string())];
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
-            &tasks,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+        let mut h = stuck_health(now);
+        h.has_running_subagent = true;
+        let restarts = run_stuck_check(
+            "park",
+            h,
             now,
-            Duration::from_secs(180),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
         );
-
         assert!(
             restarts.is_empty(),
             "coworker with running subagent should not be flagged as stuck"
@@ -3612,41 +3256,18 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_dead_processes() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "broadway".to_string(),
-            ProcessHealth {
-                is_alive: false,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: Some(1),
-            },
-        );
-
-        let tasks = vec![(
-            "42".to_string(),
-            "Fix bug".to_string(),
-            "broadway".to_string(),
-        )];
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
-            &tasks,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+        let mut h = stuck_health(now);
+        h.is_alive = false;
+        h.exit_code = Some(1);
+        let restarts = run_stuck_check(
+            "broadway",
+            h,
             now,
-            Duration::from_secs(180),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
         );
-
         assert!(
             restarts.is_empty(),
             "dead processes are handled by check_and_respawn_dead_processes"
@@ -3655,40 +3276,15 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_attached_coworkers() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "park".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let tasks = vec![("42".to_string(), "Fix bug".to_string(), "park".to_string())];
-
-        let mut attached = HashSet::new();
-        attached.insert("park".to_string());
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
-            &tasks,
-            &HashSet::new(),
-            &HashSet::new(),
-            &attached,
+        let restarts = run_stuck_check(
+            "park",
+            stuck_health(now),
             now,
-            Duration::from_secs(180),
+            &HashSet::new(),
+            &HashSet::new(),
+            &set(&["park"]),
         );
-
         assert!(
             restarts.is_empty(),
             "attached coworker should not be flagged as stuck"
@@ -3697,43 +3293,17 @@ mod tests {
 
     #[test]
     fn stuck_detection_skips_pending_tool_execution() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "broadway".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                // Last event was 10 minutes ago — normally stuck
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                // But has a pending tool (saw tool_use, waiting for tool_result)
-                has_pending_tool: true,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let tasks = vec![(
-            "42".to_string(),
-            "Build project".to_string(),
-            "broadway".to_string(),
-        )];
-
-        let restarts = decide_stuck_coworker_restarts(
-            &health,
-            &tasks,
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+        let mut h = stuck_health(now);
+        h.has_pending_tool = true;
+        let restarts = run_stuck_check(
+            "broadway",
+            h,
             now,
-            Duration::from_secs(180),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
         );
-
         assert!(
             restarts.is_empty(),
             "coworker with pending tool execution should not be flagged as stuck"
@@ -4328,42 +3898,43 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
     // decide_stuck_reviewer_restarts tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn stuck_reviewer_detected() {
-        use crate::daemon::snapshot::ProcessHealth;
-
-        let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "riverside".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let mut reviewer_assignments = HashMap::new();
-        reviewer_assignments.insert("riverside".to_string(), 42u64);
-
-        let restarts = decide_stuck_reviewer_restarts(
-            &health,
-            &reviewer_assignments,
-            &HashMap::new(), // no prior restarts
-            &HashSet::new(),
+    /// Run `decide_stuck_reviewer_restarts` with a single reviewer entry.
+    fn run_stuck_reviewer_check(
+        name: &str,
+        health: crate::daemon::snapshot::ProcessHealth,
+        pr_number: u64,
+        now: DateTime<Utc>,
+        restart_counts: &HashMap<u64, u32>,
+        usage_limited: &HashSet<String>,
+    ) -> Vec<StuckReviewerRestart> {
+        let mut map = HashMap::new();
+        map.insert(name.to_string(), health);
+        let mut assignments = HashMap::new();
+        assignments.insert(name.to_string(), pr_number);
+        decide_stuck_reviewer_restarts(
+            &map,
+            &assignments,
+            restart_counts,
+            usage_limited,
             &HashSet::new(),
             &HashSet::new(),
             now,
             Duration::from_secs(300),
             2,
-        );
+        )
+    }
 
+    #[test]
+    fn stuck_reviewer_detected() {
+        let now = Utc::now();
+        let restarts = run_stuck_reviewer_check(
+            "riverside",
+            stuck_health(now),
+            42,
+            now,
+            &HashMap::new(),
+            &HashSet::new(),
+        );
         assert_eq!(restarts.len(), 1);
         assert_eq!(restarts[0].name, "riverside");
         assert_eq!(restarts[0].pr_number, 42);
@@ -4372,43 +3943,15 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
 
     #[test]
     fn stuck_reviewer_skipped_usage_limited() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "york".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: true,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let mut reviewer_assignments = HashMap::new();
-        reviewer_assignments.insert("york".to_string(), 42u64);
-
-        let mut usage_limited = HashSet::new();
-        usage_limited.insert("york".to_string());
-
-        let restarts = decide_stuck_reviewer_restarts(
-            &health,
-            &reviewer_assignments,
-            &HashMap::new(),
-            &usage_limited,
-            &HashSet::new(),
-            &HashSet::new(),
+        let restarts = run_stuck_reviewer_check(
+            "york",
+            stuck_health(now),
+            42,
             now,
-            Duration::from_secs(300),
-            2,
+            &HashMap::new(),
+            &set(&["york"]),
         );
-
         assert!(
             restarts.is_empty(),
             "usage-limited reviewer should be skipped"
@@ -4417,40 +3960,11 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
 
     #[test]
     fn stuck_reviewer_skipped_subagent() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "park".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: true,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let mut reviewer_assignments = HashMap::new();
-        reviewer_assignments.insert("park".to_string(), 42u64);
-
-        let restarts = decide_stuck_reviewer_restarts(
-            &health,
-            &reviewer_assignments,
-            &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            now,
-            Duration::from_secs(300),
-            2,
-        );
-
+        let mut h = stuck_health(now);
+        h.has_running_subagent = true;
+        let restarts =
+            run_stuck_reviewer_check("park", h, 42, now, &HashMap::new(), &HashSet::new());
         assert!(
             restarts.is_empty(),
             "reviewer with running subagent should be skipped"
@@ -4459,44 +3973,17 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
 
     #[test]
     fn stuck_reviewer_max_restarts_stops_loop() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "broadway".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        let mut reviewer_assignments = HashMap::new();
-        reviewer_assignments.insert("broadway".to_string(), 42u64);
-
-        // PR 42 already has 2 restarts (= MAX_REVIEWER_RESTARTS)
         let mut restart_counts = HashMap::new();
         restart_counts.insert(42u64, 2u32);
-
-        let restarts = decide_stuck_reviewer_restarts(
-            &health,
-            &reviewer_assignments,
+        let restarts = run_stuck_reviewer_check(
+            "broadway",
+            stuck_health(now),
+            42,
+            now,
             &restart_counts,
             &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            now,
-            Duration::from_secs(300),
-            2,
         );
-
         assert!(
             restarts.is_empty(),
             "reviewer at max restarts should not be flagged (loop broken)"
@@ -4505,31 +3992,12 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
 
     #[test]
     fn stuck_reviewer_no_assignment_not_flagged() {
-        use crate::daemon::snapshot::ProcessHealth;
-
         let now = Utc::now();
-        let mut health = HashMap::new();
-        health.insert(
-            "madison".to_string(),
-            ProcessHealth {
-                is_alive: true,
-                last_event_at: Some(now - chrono::Duration::minutes(10)),
-                has_usage_limit: false,
-                usage_limit_reset_at: None,
-                has_api_error: false,
-                has_running_subagent: false,
-                has_pending_tool: false,
-                has_tool_name_conflict: false,
-                exit_code: None,
-            },
-        );
-
-        // madison has NO reviewer assignment
-        let reviewer_assignments = HashMap::new();
-
+        let mut map = HashMap::new();
+        map.insert("madison".to_string(), stuck_health(now));
         let restarts = decide_stuck_reviewer_restarts(
-            &health,
-            &reviewer_assignments,
+            &map,
+            &HashMap::new(), // no reviewer assignment
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -4538,7 +4006,6 @@ API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gatewa
             Duration::from_secs(300),
             2,
         );
-
         assert!(
             restarts.is_empty(),
             "coworker without PR assignment should not be flagged"
